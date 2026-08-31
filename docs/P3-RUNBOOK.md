@@ -118,7 +118,7 @@ The A2A task history is the invocation evidence — kagent records the tool
 call and its response as structured message parts. The tool server's own
 log is a second witness:
 
-```
+```text
 msg="executing command" command=kubectl args="[get configmap -n default -o wide]"
 ```
 
