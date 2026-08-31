@@ -4,14 +4,14 @@ P1's agent talks; P2 lets it think with any hosted model; P3 gives it hands:
 a tool it can call, wired through MCP — kagent's native tool mechanism. The
 topology stays agent-as-code: one new Agent YAML
 ([`k8s/tools-agent.yaml`](../k8s/tools-agent.yaml)) and a few lines of helm
-values. Tomte builds **no** MCP runtime, proxy, or gateway in this phase.
+values. Kaimahi builds **no** MCP runtime, proxy, or gateway in this phase.
 
 > **⚠️ P3 tools are ungoverned.** The agent can now act on the world through
 > whatever tools it is wired to, with no egress enforcement, no tool
 > permits, no approval workflow, and no audit trail in front of the calls.
 > The only limits here are the demo's own lockdown (read-only tool server,
 > single-tool allowlist). That governance — an enforcing MCP gateway at
-> exactly this seam — is Tomte's actual product and arrives in P4.
+> exactly this seam — is Kaimahi's actual product and arrives in P4.
 
 ## What ships, and what was already there
 
@@ -136,7 +136,7 @@ a different small model, re-run the trials before trusting it in CI.
 ## Where P4 mounts
 
 Every tool call in P3 flows agent → RemoteMCPServer URL → tool server.
-That URL is the governance seam: P4 puts Tomte's enforcing MCP gateway
+That URL is the governance seam: P4 puts Kaimahi's enforcing MCP gateway
 between the two, so permits, approvals, egress policy, and audit apply to
 every connector — including authenticated ones (`headersFrom` + a Secret
 captured stdin-only), which P3 deliberately avoids by choosing a keyless

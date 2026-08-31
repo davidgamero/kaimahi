@@ -6,7 +6,7 @@
 # k8s/kagent-values.yaml, locked to read-only k8s tools) is published by the
 # kagent chart as the `kagent-tool-server` RemoteMCPServer, and this Agent
 # wires to it via spec.declarative.tools — kagent's native MCP mechanism.
-# Tomte ships no MCP runtime, proxy, or gateway here; that seam is where the
+# Kaimahi ships no MCP runtime, proxy, or gateway here; that seam is where the
 # P4 governance gateway mounts.
 #
 # k8s/hello-world.yaml (the P1 artifact) is deliberately never mutated: its
@@ -14,7 +14,7 @@
 #
 # WARNING: P3 tools are UNGOVERNED. The single-tool allowlist below and the
 # tool server's read-only lockdown are the only limits — egress enforcement,
-# tool permits, and audit arrive with the Tomte governance plane in P4.
+# tool permits, and audit arrive with the Kaimahi governance plane in P4.
 apiVersion: kagent.dev/v1alpha2
 kind: Agent
 metadata:
@@ -37,7 +37,7 @@ spec:
         limits:
           memory: 1Gi
     systemMessage: |
-      You are Tomte's tools demo agent, running on Kubernetes via kagent.
+      You are Kaimahi's tools demo agent, running on Kubernetes via kagent.
       You have one tool: k8s_get_resources, which lists live Kubernetes
       resources. Whenever the user asks about the cluster (pods, services,
       configmaps, namespaces...), you MUST call k8s_get_resources and answer
