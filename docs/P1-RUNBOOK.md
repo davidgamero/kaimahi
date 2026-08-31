@@ -69,10 +69,14 @@ kubectl apply -f k8s/hello-world.yaml
 bin/kagent invoke --agent hello-world --task "Hello! Who are you and where are you running?"
 ```
 
-Expected reply (model output varies):
+Expected reply (verbatim from a real run; model output varies):
 
 > I am your hello-world agent named "hello_world". I am running on
 > Kubernetes via kagent.
+
+(The underscored `hello_world` is not a typo: kagent's runtime normalizes
+the agent name to `hello_world` internally, and that is the name the model
+sees and repeats.)
 
 Other ways in, all shipped by kagent:
 
@@ -93,6 +97,9 @@ bin/kagent dashboard                    # kagent's web UI
   so a pod restart re-pulls (`make model`). Deliberate — no PVC to manage in
   a demo.
 - **Version pin**: kagent v0.9.12 (latest stable; 0.10 is still in RC).
-  The Agent CRD's `runtime: go` variant is not usable at this version — its
-  image (`golang-adk:0.9.12`) is not published; stay on the default python
-  runtime.
+  The Agent CRD's `runtime: go` variant does not work out of the box at this
+  version: the chart's default registry (`cr.kagent.dev`) does not carry
+  `golang-adk:0.9.12` (ImagePullBackOff), though the image does exist on
+  `ghcr.io`. If you need the go runtime, set
+  `controller.agentImage.registry=ghcr.io` in `k8s/kagent-values.yaml`;
+  P1 stays on the default python runtime.
