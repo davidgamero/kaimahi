@@ -1,7 +1,7 @@
-# Thin glue over kind + helm + kubectl + the kagent CLI. No Tomte CLI here —
+# Thin glue over kind + helm + kubectl + the kagent CLI. No Kaimahi CLI here —
 # kagent already ships one (see docs/P1-RUNBOOK.md for the full story).
 
-KIND_CLUSTER   ?= tomte-p1
+KIND_CLUSTER   ?= kaimahi-p1
 KUBE_CTX       := kind-$(KIND_CLUSTER)
 KAGENT_VERSION ?= 0.9.12
 MODEL          ?= qwen2.5:3b

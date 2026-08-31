@@ -1,20 +1,20 @@
-# tomte
+# kaimahi
 
-Tomte makes agentic workflows accessible and safe to delegate.
+Kaimahi makes agentic workflows accessible and safe to delegate.
 
 Agents run on [kagent](https://kagent.dev) — declarative Kubernetes agents
-defined as YAML (the Agent CRD is the agent-as-code topology artifact). Tomte
+defined as YAML (the Agent CRD is the agent-as-code topology artifact). Kaimahi
 does not rebuild what kagent already ships (agent runtime, CLI, dashboard,
-model providers, MCP tools). Tomte's product is the **governance plane** kagent
+model providers, MCP tools). Kaimahi's product is the **governance plane** kagent
 lacks: budgets and spend metering, approval workflows and blast-radius permits,
 credential custody (keys never reach the agent), egress enforcement, and audit.
 
-> "tomte" is used here as a working project name only; no trademark rights are
-> claimed.
+> "kaimahi" (te reo Māori for "worker") is used here as a working project name
+> only; no trademark rights are claimed.
 
-## Why Tomte when kagent exists?
+## Why Kaimahi when kagent exists?
 
-kagent answers *"how do agents run on Kubernetes."* Tomte answers *"how do
+kagent answers *"how do agents run on Kubernetes."* Kaimahi answers *"how do
 you let people delegate to them safely."* The governance plane is the set of
 controls a platform or security team needs before handing real work to
 agents:
@@ -53,7 +53,7 @@ seams (ModelConfig base URL, MCP tool server).
    subscription path replaces it — see docs/P2-RUNBOOK.md.)
 3. **Connectors/tools** — via MCP, kagent's native tool mechanism.
 4. **Governance** — mounted at kagent's existing seams: ModelConfig base_url
-   pointed at a Tomte metering/enforcing proxy, an enforcing MCP gateway, and
+   pointed at a Kaimahi metering/enforcing proxy, an enforcing MCP gateway, and
    permits/approvals compiled down to kagent resources.
 
 The arc is cloud-agnostic — kagent runs on any conformant Kubernetes — with

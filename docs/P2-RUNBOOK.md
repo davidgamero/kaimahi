@@ -8,7 +8,7 @@ cluster, same agent YAML, same `make chat`.
 
 > **⚠️ Spend is ungoverned in P2.** Switching the agent to a hosted preset
 > sends every conversation to a billed API with no budget, metering, or
-> ledger in front of it. That governance is Tomte's actual product and
+> ledger in front of it. That governance is Kaimahi's actual product and
 > arrives in P4. Until then, treat a hosted preset like a live credit card.
 
 ## The presets
@@ -71,7 +71,7 @@ the demo's point is one agent changing its mind, not many agents).
 
 kagent 0.9.12 has an `azureOpenAI` provider, but its `apiVersion` field is
 **required**, and that field belongs to Azure's legacy per-version API
-surface. Tomte pins Foundry's **v1 GA** API, which is a plain
+surface. Kaimahi pins Foundry's **v1 GA** API, which is a plain
 OpenAI-compatible endpoint with **no** api-version parameter. The two are
 incompatible, so the `azure-foundry` preset uses `provider: OpenAI` with the
 v1 base URL:
@@ -110,7 +110,11 @@ make chat
 
 `make copilot-secret` (script: `scripts/copilot-secret.sh`) logs you in
 once via GitHub's device flow (open the printed URL, enter the code),
-caches that OAuth token 0600 under `~/.config/tomte/`, exchanges it at
+caches that OAuth token 0600 under `~/.config/kaimahi/` (override with
+`KAIMAHI_COPILOT_TOKEN_FILE`; if you logged in under the old tomte name,
+migrate the cache once with `mkdir -p ~/.config/kaimahi &&
+mv ~/.config/tomte/copilot-oauth-token ~/.config/kaimahi/` — or just
+log in again), exchanges it at
 GitHub's Copilot token endpoint, and stores **only the short-lived Copilot
 token** in-cluster. Custody properties worth knowing:
 

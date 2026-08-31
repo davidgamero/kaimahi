@@ -69,7 +69,7 @@ jobs:
       # keys in CI (public repo, fork-exposed PR CI) — the switch is exercised
       # with the keyless in-cluster Ollama preset.
       - name: Validate model presets against live CRDs (server dry-run)
-        run: kubectl --context kind-tomte-p1 apply --dry-run=server -f k8s/models/
+        run: kubectl --context kind-kaimahi-p1 apply --dry-run=server -f k8s/models/
       - name: Switch preset and converse again (keyless)
         run: |
           make use PRESET=ollama
@@ -88,34 +88,34 @@ jobs:
       # ServiceAccount can neither read Secrets nor write anything.
       - name: Assert tool-server lockdown posture
         run: |
-          kubectl --context kind-tomte-p1 -n kagent logs deploy/kagent-tools \
+          kubectl --context kind-kaimahi-p1 -n kagent logs deploy/kagent-tools \
             > tools.log
           grep -q 'Running in read-only mode' tools.log
           # `! cmd` is exempt from errexit, so compare can-i's answer
           # explicitly — each check aborts the step on the wrong answer.
-          secrets=$(kubectl --context kind-tomte-p1 auth can-i get secrets \
+          secrets=$(kubectl --context kind-kaimahi-p1 auth can-i get secrets \
             --as=system:serviceaccount:kagent:kagent-tools || true)
           test "$secrets" = no
-          writes=$(kubectl --context kind-tomte-p1 auth can-i create pods \
+          writes=$(kubectl --context kind-kaimahi-p1 auth can-i create pods \
             --as=system:serviceaccount:kagent:kagent-tools || true)
           test "$writes" = no
-          kubectl --context kind-tomte-p1 auth can-i list pods \
+          kubectl --context kind-kaimahi-p1 auth can-i list pods \
             --as=system:serviceaccount:kagent:kagent-tools
       - name: Tool call through MCP (keyless)
         run: |
           probe="probe-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
-          kubectl --context kind-tomte-p1 -n default create configmap "$probe" \
-            --from-literal=owner=tomte-p3-ci
+          kubectl --context kind-kaimahi-p1 -n default create configmap "$probe" \
+            --from-literal=owner=kaimahi-p3-ci
           make chat AGENT=hello-tools \
             TASK='List the configmaps in the default namespace.' | tee tool-chat.out
           python3 scripts/verify-chat.py tool-chat.out k8s_get_resources "$probe"
       - name: Cluster state on failure
         if: failure()
         run: |
-          kubectl --context kind-tomte-p1 get pods -A || true
-          kubectl --context kind-tomte-p1 -n kagent describe agent hello-world || true
-          kubectl --context kind-tomte-p1 -n kagent logs deploy/hello-world --tail=100 || true
-          kubectl --context kind-tomte-p1 -n kagent describe agent hello-tools || true
-          kubectl --context kind-tomte-p1 -n kagent logs deploy/hello-tools --tail=100 || true
-          kubectl --context kind-tomte-p1 -n kagent describe remotemcpserver kagent-tool-server || true
-          kubectl --context kind-tomte-p1 -n kagent logs deploy/kagent-tools --tail=50 || true
+          kubectl --context kind-kaimahi-p1 get pods -A || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-world || true
+          kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-world --tail=100 || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-tools || true
+          kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-tools --tail=100 || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe remotemcpserver kagent-tool-server || true
+          kubectl --context kind-kaimahi-p1 -n kagent logs deploy/kagent-tools --tail=50 || true

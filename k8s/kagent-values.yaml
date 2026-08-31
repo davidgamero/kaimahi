@@ -10,7 +10,7 @@
 #     with no Secrets access, writes disabled at the app layer too. The
 #     chart itself publishes it as the `kagent-tool-server` RemoteMCPServer.
 #     Even so: P3 tools are UNGOVERNED (no egress enforcement, no tool
-#     permits, no audit) until the Tomte governance plane lands in P4.
+#     permits, no audit) until the Kaimahi governance plane lands in P4.
 providers:
   default: ollama
   ollama:

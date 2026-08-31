@@ -2,7 +2,7 @@
 # Mint a short-lived GitHub Copilot API token and store it in-cluster as the
 # github-copilot-token Secret (key: api-key), for the github-copilot preset.
 #
-# Flow: GitHub device login (once, token cached 0600 under ~/.config/tomte/)
+# Flow: GitHub device login (once, token cached 0600 under ~/.config/kaimahi/)
 #   -> exchange at GitHub's Copilot token endpoint
 #   -> kubectl create secret from a 0600 temp file.
 #
@@ -22,7 +22,7 @@ set -euo pipefail
 umask 077
 
 CLIENT_ID="01ab8ac9400c4e429b23" # GitHub's VS Code OAuth app (Copilot-entitled)
-TOKEN_FILE="${TOMTE_COPILOT_TOKEN_FILE:-$HOME/.config/tomte/copilot-oauth-token}"
+TOKEN_FILE="${KAIMAHI_COPILOT_TOKEN_FILE:-$HOME/.config/kaimahi/copilot-oauth-token}"
 KUBECTL="${KUBECTL:-kubectl}"
 NAMESPACE=kagent
 SECRET_NAME=github-copilot-token

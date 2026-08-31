@@ -4,7 +4,7 @@ From an empty machine to a conversation with an agent that is defined
 entirely in YAML (`k8s/hello-world.yaml` — the agent-as-code artifact).
 
 Everything runs on [kagent](https://kagent.dev): kagent's controller
-provisions the agent, kagent's CLI talks to it. Tomte adds no runtime code in
+provisions the agent, kagent's CLI talks to it. Kaimahi adds no runtime code in
 this phase — just the YAML, a values file, and this runbook (see the P1 PR
 for the survey that justifies each file).
 
@@ -32,11 +32,16 @@ make chat TASK="What are you defined in?"
 
 `make down` deletes the kind cluster.
 
+> **Migrating from the tomte name?** The kind cluster is now `kaimahi-p1`.
+> An existing `tomte-p1` cluster keeps working via
+> `make up KIND_CLUSTER=tomte-p1` (and the same override on every other
+> target), or start fresh: `kind delete cluster --name tomte-p1 && make up`.
+
 ## What `make up` does, step by step
 
 ```bash
 # 1. Local Kubernetes cluster
-kind create cluster --name tomte-p1
+kind create cluster --name kaimahi-p1
 
 # 2. In-cluster Ollama model server (namespace, deployment, service)
 kubectl apply -f k8s/ollama.yaml
