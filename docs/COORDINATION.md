@@ -64,9 +64,10 @@ build anything AKS-specific without a survey-backed justification.
 | Lane | Owner | Status | Notes |
 |------|-------|--------|-------|
 | Repo bootstrap (LICENSE, README, CI, board) | coordinator | pushed to gambtho/tomte main | initial commit |
-| P1: kagent hello world on kind | W1 worker | PR #2 open; hygiene green, e2e running; coordinator verification pending | contended dir: whole repo until it lands |
+| P1: kagent hello world on kind | W1 worker | PR #2 MERGED (rebase e91ff88..a284923); coordinator verified (delta sheet below) | lane closed |
 | README value-prop + Azure path (D6) | coordinator | PR #1 MERGED (verified on main, 94bbaef) | docs-only |
-| P2–P4 | — | blocked on P1 merge | no pre-stacked PR bases |
+| P2: LLM-enhanced via ModelConfig | unassigned | UNBLOCKED by P1 merge; awaiting coordinator blindspot pass + GO | contended: k8s/ + Makefile |
+| P3–P4 | — | blocked on P2 merge | no pre-stacked PR bases |
 
 ## Decisions (user rulings, verbatim)
 
@@ -185,4 +186,33 @@ Constraints:
 
 ## Delta sheets from finished lanes
 
-(none yet)
+### P1 — kagent hello world on kind (PR #2, merged 2026-08-31)
+
+Delivered on main: `k8s/hello-world.yaml` (ModelConfig + Agent — the
+agent-as-code artifact), `k8s/ollama.yaml`, `k8s/kagent-values.yaml`,
+`Makefile` (up/chat/down), `docs/P1-RUNBOOK.md`, CI `e2e-hello-world` job.
+
+Coordinator verification (independent, 2026-08-31): tree confirmed on main
+at a284923; live agent chatted via `make chat` (A2A task state=completed,
+coherent self-description); live cluster diffed against origin/main — P1
+payload identical, docs-only drift; pins confirmed (kagent 0.9.12,
+qwen2.5:3b, keyless — zero Secret/key references in deliverables); main CI
+run 33436458466 green including e2e.
+
+Deviations (worker-reported, carried forward for P2+):
+
+- **Model: qwen2.5:3b, not chart-default llama3.2** — kagent's python
+  runtime (Google ADK) injects a builtin `ask_user` tool; small Llamas call
+  it with malformed args and the invocation fails (`'str' object has no
+  attribute 'get'`); system-message prohibition doesn't stop them. P2 model
+  choices must be invocation-tested, not assumed.
+- **kagent pinned v0.9.12** (0.10 is RC). `runtime: go` unusable at 0.9.12
+  unless `controller.agentImage.registry=ghcr.io` is set (golang-adk image
+  absent from default registry).
+- **Chart sample agents/tool servers disabled** — one-agent demo; P3
+  re-enables tooling deliberately.
+- **kagent's bundled PostgreSQL runs in-cluster** — kagent brings its own
+  store; Tomte added none (consistent with "cluster is the store" until P4,
+  but note the cluster now contains a kagent-internal DB).
+- **CI runners are 2-CPU** — Ollama resource requests were shrunk so kagent
+  schedules; keep e2e resource budgets in mind for P2's larger flows.
