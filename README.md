@@ -24,6 +24,35 @@ Every step of the journey — provision, deploy, converse, switch models, add
 tools, tear down — is a command with an exit code. Nothing requires a
 browser, and nothing requires this repo to be the thing you build in.
 
+### Where it is going: `kaimahi create`
+
+The intended front door is one command that does the heavy lifting, run
+without cloning anything:
+
+```bash
+npx kaimahi create agent support-triage \
+  --model anthropic \
+  --instructions ./triage.md \
+  --tools kagent-tool-server:k8s_get_resources \
+  --out k8s/
+```
+
+It generates the agent-as-code YAML — Agent, ModelConfig, tool wiring, and
+the Secret *references* to go with them — validates it (server-side dry-run
+when a cluster is reachable), and prints the next command. You get a
+reviewable file, not a black box: the artifact it writes is the same YAML
+you would have hand-written, and it is yours from that point on.
+
+> **`kaimahi create` is proposed, not built.** No package is published and
+> the `kaimahi` npm name is unclaimed. The design, the survey against
+> kagent's own CLI, and the security model are in `docs/CLI-PROPOSAL.md`
+> (proposed separately); it needs a ruling before any code is written.
+> Everything else on this page works today.
+
+### What that looks like today
+
+The same journey, from a clone, via make:
+
 | Consume it as | How |
 |---|---|
 | **Local dev** | `make up` on kind; keyless, free, offline-capable model |
@@ -34,7 +63,8 @@ browser, and nothing requires this repo to be the thing you build in.
 
 The CLI surface is deliberately thin glue over `kind`, `helm`, `kubectl`, and
 kagent's own CLI. kagent already ships a CLI and a dashboard; kaimahi does
-not rebuild them.
+not rebuild them, and `create` is proposed only for the gap they leave:
+scaffolding declarative agent YAML.
 
 ## Quickstart
 
@@ -178,9 +208,11 @@ on model capability.
 | 3 | Connectors/tools via MCP | **shipped** — `hello-tools` |
 | 4 | Governance plane at kagent's seams | designed, not built |
 
-Under consideration, not committed: an `npx`-installable **`create agent`**
-scaffolder — the zero-to-cluster journey the Makefile encodes, without the
-clone. Scaffold only; it would not duplicate kagent's runtime commands.
+**`kaimahi create`** — the `npx` scaffolder above — is designed and specified
+in `docs/CLI-PROPOSAL.md` (proposed separately), pending a ruling on the
+open decisions there (publishing, the CRUD boundary, and sequencing against
+phase 4). Scaffold only: it generates YAML and delegates to kagent for
+everything kagent already does.
 
 Cloud-agnostic (kagent runs on any conformant Kubernetes) with first-class
 attention to the Azure path: **AKS** as the managed target, **Azure AI

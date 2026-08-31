@@ -87,6 +87,32 @@ Repo history: the original `gambtho/tomte` was renamed to
 [`gambtho/tomte-old`](https://github.com/gambtho/tomte-old) and archived
 (D5); the redux was a fresh repo, later renamed to `gambtho/kaimahi` (D10).
 
+## Also recommended: hob — blocked, taken
+
+**hob** — a hobgoblin or household spirit in English folklore that does the
+chores around the house at night. You feed it and you do not insult it, or
+it stops helping. Three letters, an easy binary name, and the same
+folklore lineage as *tomte* — the household spirit that does the work while
+you sleep is a genuinely good metaphor for a delegated agent.
+
+**It is taken.** Verified 2026-09-01:
+
+| Namespace | `hob` | Detail |
+|---|---|---|
+| npm | **TAKEN** | published at 0.0.1 |
+| PyPI | **TAKEN** | `hob` 0.3.3 — "A multi-language code generator for the Opera Scope Protocol" |
+| GitHub handle | **TAKEN** | |
+| `hob.dev` | **TAKEN** | registered 2026-03-12 |
+| crates.io | free | |
+| `hob.io`, `hob.sh` | free | |
+| npm `hob-cli`, `create-hob` | free | |
+
+Short names are the first to go; three letters on npm, PyPI, GitHub, and
+`.dev` simultaneously was never likely. The fallbacks that remain
+(`hob-cli`, `create-hob`, `hob.io`) give up exactly the property that made
+the name attractive — that it was short and unqualified. That is why it was
+not pursued, not because the metaphor was wrong.
+
 ## Rejected / not pursued
 
 | Name | Why not |
