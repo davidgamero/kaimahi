@@ -44,11 +44,13 @@ before writing anything new.
    kagent Agent YAML; driven end to end via CLI. This is the leadership demo;
    the YAML is the artifact.
 2. **P2 — LLM-enhanced**: via kagent ModelConfig. Endpoint targets that matter
-   to leadership: Anthropic, OpenAI, OpenRouter, GitHub Models (say "included
-   with GitHub Copilot plans"; never claim api.githubcopilot.com support —
-   undocumented, token-exchange only), Azure AI Foundry (pin the v1 GA API —
-   plain OpenAI-compatible, no api-version param), any OpenAI-compatible base
-   URL, local models.
+   to leadership: Anthropic, OpenAI, OpenRouter, GitHub Copilot subscription
+   (per D8: api.githubcopilot.com directly; the pre-D8 "never claim
+   api.githubcopilot.com support" guardrail is superseded, but its caveat —
+   undocumented API surface, expiring token — must stay documented; GitHub
+   Models itself RETIRED 2026-07-30, verified 410), Azure AI Foundry (pin
+   the v1 GA API — plain OpenAI-compatible, no api-version param), any
+   OpenAI-compatible base URL, local models. DELIVERED by PR #3.
 
    CRD reality at kagent 0.9.12 (verified against the live cluster,
    2026-08-31): no OpenRouter/GitHub Models provider exists — every
@@ -73,8 +75,9 @@ build anything AKS-specific without a survey-backed justification.
 | Repo bootstrap (LICENSE, README, CI, board) | coordinator | pushed to gambtho/tomte main | initial commit |
 | P1: kagent hello world on kind | W1 worker | PR #2 MERGED (rebase e91ff88..a284923); coordinator verified (delta sheet below) | lane closed |
 | README value-prop + Azure path (D6) | coordinator | PR #1 MERGED (verified on main, 94bbaef) | docs-only |
-| P2: LLM-enhanced via ModelConfig | unassigned | GO — blindspot pass done, D7 recorded, W2 prompt ready (below) | contended: k8s/ + Makefile |
-| P3–P4 | — | blocked on P2 merge | no pre-stacked PR bases |
+| P2: LLM-enhanced via ModelConfig | W2 worker | PR #3 MERGED (d1a584d, tree-identical to checks-green branch); coordinator verified (delta sheet below) | lane closed |
+| P3: connectors/tools via MCP | unassigned | UNBLOCKED by P2 merge; awaiting coordinator blindspot pass + GO | live tomte-p1 cluster available (agent on keyless ollama preset) |
+| P4 | — | blocked on P3 merge | no pre-stacked PR bases |
 
 ## Decisions (user rulings, verbatim)
 
@@ -86,7 +89,8 @@ build anything AKS-specific without a survey-backed justification.
 | D4 | 2026-08-31 | Coordinator may push board-doc-only commits direct to main | "Yes, board doc only (Recommended)" |
 | D5 | 2026-08-31 | Old repo renamed to gambtho/tomte-old and archived; fresh gambtho/tomte created for the redux | "i changed my mind, i moved the existing tomte repo to gambtho/tomte-old and archived it. i'll create a new tomte repo for this" |
 | D6 | 2026-08-31 | AKS is the named managed-Kubernetes target for the arc (kind stays the local/demo path); README gains a value-prop-over-kagent section and an Azure-path paragraph (GitHub Models phrasing per the P2 guardrail) | "i am wondering if we need to add more to our value proposition over kagent -- maybe also mention that we're ensuring smooth integration with AKS / github copilot models/ Azure AI foundry" — ruled via options: "Both (Recommended)", "Yes, record as D6 (Recommended)" |
-| D7 | 2026-08-31 | P2 keyed live verification uses GitHub Models only; auth must flow through the GitHub CLI (`gh auth token` → K8s Secret, stdin-only). Other endpoints ship as documented presets marked not-live-verified | "github models, but we need to support login via github cli for it" |
+| D7 | 2026-08-31 | ~~P2 keyed live verification uses GitHub Models only; auth must flow through the GitHub CLI (`gh auth token` → K8s Secret, stdin-only)~~ SUPERSEDED by D8: GitHub Models is retired and gh tokens are not Copilot-entitled | "github models, but we need to support login via github cli for it" |
+| D8 | 2026-08-31 | P2's keyed path is the Copilot subscription's model API directly (api.githubcopilot.com, no local proxy), superseding D7. Forced by two verified facts: GitHub Models retired 2026-07-30 (endpoint returns 410) and gh CLI tokens fail the Copilot token exchange (403) — device flow required. The endpoint's undocumented-surface caveat must stay documented wherever the preset appears | ruled mid-lane in the P2 worker session (not captured verbatim); recorded per PR #3 "Deviations & decisions" item 2 and the user-relayed close-out; ratified by the user's merge of PR #3 |
 
 Old-repo history is preserved at https://github.com/gambtho/tomte-old
 (archived, read-only). No local checkout of it exists (deleted 2026-08-31);
@@ -154,6 +158,10 @@ clone from the archive when P4 port evaluation needs the source.
 - No blanket $0 pricing by inference (see rejected list).
 - Record spend before honoring failures: every billed provider call gets
   ledgered even when the surrounding operation fails.
+- Key-bearing shell steps live in standalone scripts with
+  `set -euo pipefail`, never in make recipes: make runs recipes under dash
+  with no pipefail, and a failed pipe stage can fail OPEN (P2 caught a
+  make-recipe draft storing an empty Secret on a failed token exchange).
 - K8s track needs no database — the cluster is the store until P4.
 
 ## Ready-to-paste worker prompts
@@ -278,3 +286,43 @@ Deviations (worker-reported, carried forward for P2+):
   but note the cluster now contains a kagent-internal DB).
 - **CI runners are 2-CPU** — Ollama resource requests were shrunk so kagent
   schedules; keep e2e resource budgets in mind for P2's larger flows.
+
+### P2 — hosted-LLM ModelConfig presets (PR #3, merged 2026-08-31)
+
+Delivered on main (d1a584d): seven presets in `k8s/models/` (anthropic,
+openai, openrouter, azure-foundry, openai-compatible, ollama,
+github-copilot), `make use PRESET=x` switching (merge-patches the Agent;
+`k8s/hello-world.yaml` never mutated), stdin-only key custody
+(`make model-secret`), device-flow Copilot token custody
+(`scripts/copilot-secret.sh` + `make copilot-secret`), `docs/P2-RUNBOOK.md`,
+keyless CI extensions (server-side dry-run of presets + ollama switch e2e).
+
+Coordinator verification (independent, 2026-08-31): main tree byte-identical
+to the checks-green branch (tree 528da638); PR checks + post-merge main run
+33442951163 green (hygiene + e2e); GitHub Models retirement verified
+externally (changelog live, models.github.ai returns 410 unauthenticated);
+`scripts/copilot-secret.sh` reviewed against the custody rules (pipefail,
+umask 077, pipes/0600-only token bytes, non-empty checks before kubectl, no
+redirect-following on keyed calls, dry-run|apply with no delete-then-create
+gap); live cluster spot-checked (agent on ollama preset, chat
+state=completed, github-copilot ModelConfig present from keyed run).
+
+Deviations (worker-reported; carried forward):
+
+- **GitHub Models retired 2026-07-30** → D7 unexecutable → D8 pivot to the
+  Copilot subscription API via device flow (gh tokens 403 at the exchange).
+  Live-verified end to end (gpt-5-mini, state=completed, usage metered by
+  the endpoint). Token expires; re-run `make copilot-secret` to rotate —
+  auto-refresh deliberately deferred to P4 governance.
+- **Fail-open Secret bug caught pre-merge**: make-recipe pipeline (dash, no
+  pipefail) stored an empty Secret on a failed exchange; rewritten as a
+  fail-closed script. Now standing security guidance (above).
+- **README D6 wording adjusted** for the retirement (flagged by the worker;
+  coordinator finds the new wording consistent with D6+D8).
+- Only ollama + github-copilot are live-verified; the other five presets are
+  schema-valid (server-side dry-run in CI) and marked not-live-verified in
+  the runbook.
+- `k8s/models/ollama.yaml` duplicates hello-world-model's substance so
+  switching is uniform; the P1 artifact stays self-contained.
+- Anthropic preset defaults to `claude-opus-5`; `model:` is a one-line edit
+  per preset.
