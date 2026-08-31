@@ -13,7 +13,7 @@ OS   := $(shell uname -s | tr A-Z a-z)
 ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
 
 .PHONY: up cluster ollama model kagent agent chat down status \
-	model-secret use use-ollama
+	model-secret copilot-secret use use-ollama
 
 ## up: everything from an empty machine to a ready agent
 up: cluster ollama model kagent agent status
@@ -60,6 +60,12 @@ model-secret:
 	@echo 'Paste the API key, press Enter, then Ctrl-D:' >&2
 	@tr -d '\n' | $(KUBECTL) -n kagent create secret generic $(NAME) \
 		--from-file=api-key=/dev/stdin
+
+## copilot-secret: GitHub device login (cached), then mint a short-lived
+## Copilot API token and store it as the github-copilot-token Secret.
+## Fail-closed, token bytes only in pipes/0600 files — see the script.
+copilot-secret:
+	@KUBECTL="$(KUBECTL)" bash scripts/copilot-secret.sh
 
 ## use: switch the hello-world agent to a model preset from k8s/models/
 # (e.g. make use PRESET=anthropic). Hosted presets need their Secret first
