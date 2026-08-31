@@ -49,6 +49,13 @@ before writing anything new.
    undocumented, token-exchange only), Azure AI Foundry (pin the v1 GA API —
    plain OpenAI-compatible, no api-version param), any OpenAI-compatible base
    URL, local models.
+
+   CRD reality at kagent 0.9.12 (verified against the live cluster,
+   2026-08-31): no OpenRouter/GitHub Models provider exists — every
+   OpenAI-compatible endpoint rides `provider: OpenAI` + `openAI.baseUrl`.
+   kagent's `azureOpenAI` provider REQUIRES `apiVersion`, which conflicts
+   with the v1 GA pin above — so the Azure path is also `provider: OpenAI`
+   with the Foundry v1 base URL; do not use provider AzureOpenAI.
 3. **P3 — connectors/tools** via MCP (kagent's native tool mechanism).
 4. **P4 — governance** mounts at kagent's seams: ModelConfig BYO base_url →
    Tomte metering/enforcing proxy; kagent MCP tool server → Tomte enforcing
@@ -66,7 +73,7 @@ build anything AKS-specific without a survey-backed justification.
 | Repo bootstrap (LICENSE, README, CI, board) | coordinator | pushed to gambtho/tomte main | initial commit |
 | P1: kagent hello world on kind | W1 worker | PR #2 MERGED (rebase e91ff88..a284923); coordinator verified (delta sheet below) | lane closed |
 | README value-prop + Azure path (D6) | coordinator | PR #1 MERGED (verified on main, 94bbaef) | docs-only |
-| P2: LLM-enhanced via ModelConfig | unassigned | UNBLOCKED by P1 merge; awaiting coordinator blindspot pass + GO | contended: k8s/ + Makefile |
+| P2: LLM-enhanced via ModelConfig | unassigned | GO — blindspot pass done, D7 recorded, W2 prompt ready (below) | contended: k8s/ + Makefile |
 | P3–P4 | — | blocked on P2 merge | no pre-stacked PR bases |
 
 ## Decisions (user rulings, verbatim)
@@ -79,6 +86,7 @@ build anything AKS-specific without a survey-backed justification.
 | D4 | 2026-08-31 | Coordinator may push board-doc-only commits direct to main | "Yes, board doc only (Recommended)" |
 | D5 | 2026-08-31 | Old repo renamed to gambtho/tomte-old and archived; fresh gambtho/tomte created for the redux | "i changed my mind, i moved the existing tomte repo to gambtho/tomte-old and archived it. i'll create a new tomte repo for this" |
 | D6 | 2026-08-31 | AKS is the named managed-Kubernetes target for the arc (kind stays the local/demo path); README gains a value-prop-over-kagent section and an Azure-path paragraph (GitHub Models phrasing per the P2 guardrail) | "i am wondering if we need to add more to our value proposition over kagent -- maybe also mention that we're ensuring smooth integration with AKS / github copilot models/ Azure AI foundry" — ruled via options: "Both (Recommended)", "Yes, record as D6 (Recommended)" |
+| D7 | 2026-08-31 | P2 keyed live verification uses GitHub Models only; auth must flow through the GitHub CLI (`gh auth token` → K8s Secret, stdin-only). Other endpoints ship as documented presets marked not-live-verified | "github models, but we need to support login via github cli for it" |
 
 Old-repo history is preserved at https://github.com/gambtho/tomte-old
 (archived, read-only). No local checkout of it exists (deleted 2026-08-31);
@@ -182,6 +190,60 @@ Constraints:
 - Report to the coordinator (via the PR description's "Deviations & decisions"
   section) anything you decided that the board doesn't already rule on, and
   anything that surprised you (delta sheet).
+```
+
+### W2 — P2: LLM-enhanced via ModelConfig (UNASSIGNED — paste into a fresh CLI session in this repo)
+
+```
+You are a worker session for the Tomte project (repo root: this checkout).
+Read docs/COORDINATION.md first — prime directive, process rules, security
+standing guidance, decisions D1–D7, and the P1 delta sheet all bind you.
+Your lane: P2 — the hello-world stack from P1 upgraded so agents think with
+hosted LLM endpoints via kagent ModelConfig.
+
+Constraints:
+- SURVEY FIRST (prime directive): record in the PR what kagent 0.9.12
+  already ships for this and why each net-new file is justified. The board's
+  P2 arc entry records CRD reality verified against the live cluster:
+  OpenRouter / GitHub Models / Azure AI Foundry / any-compatible endpoints
+  all use `provider: OpenAI` + `openAI.baseUrl`; do NOT use provider
+  AzureOpenAI (its required apiVersion conflicts with the board's Foundry
+  v1 GA pin — document this in the runbook).
+- Deliverables:
+  (a) Per-endpoint ModelConfig presets committed as YAML (suggested:
+      k8s/models/): Anthropic, OpenAI, OpenRouter, GitHub Models, Azure AI
+      Foundry (v1 GA), generic OpenAI-compatible base URL — plus the
+      existing Ollama path. Every preset references keys ONLY via
+      apiKeySecret/apiKeySecretKey. No key material or key-bearing field
+      ever appears in YAML, ConfigMap, argv, env listings, or logs.
+  (b) GitHub CLI login for GitHub Models (D7): a make target that checks
+      `gh auth status`, then pipes `gh auth token` straight into
+      `kubectl create secret ... --from-file=...=/dev/stdin` (stdin-only —
+      never --from-literal, never a shell variable echoed anywhere).
+      Document the scope caveat: the gh OAuth token is broader than needed;
+      a fine-grained PAT with models:read is the least-privilege
+      alternative. Phrasing guardrail: GitHub Models is "included with
+      GitHub Copilot plans" — never claim api.githubcopilot.com support.
+  (c) A way to switch the agent between presets (simplest mechanism that
+      works; state your choice + alternatives in the PR).
+  (d) Runbook section (extend docs/ from P1's pattern) including an
+      explicit warning that P2 spend is ungoverned — metering arrives in
+      P4.
+  (e) CI stays KEYLESS — the repo is public and PR CI is fork-exposed; no
+      repo secrets in workflows. Extend CI only with what runs keyless
+      (e.g. preset YAML validated against the CRDs in the existing e2e
+      cluster via kubectl apply --dry-run=server).
+- Live verification (real, per process rules): GitHub Models end to end —
+  gh-CLI-sourced Secret, preset applied, agent switched to it, `make chat`
+  returns an A2A task state=completed with a non-empty reply. Paste
+  evidence (commands + trimmed output) in the PR. P1 delta rule: a preset
+  counts as live-verified only if actually invoked — schema-valid is not
+  verified. Mark every other hosted preset "not live-verified" in the
+  runbook. The keyless Ollama e2e must still pass at every commit.
+- Branch from current main; PR targets main; no stacked bases. Lane ends at
+  PR-open-with-checks-green — do not merge.
+- Report deviations and surprises in the PR's "Deviations & decisions"
+  section (delta sheet).
 ```
 
 ## Delta sheets from finished lanes
