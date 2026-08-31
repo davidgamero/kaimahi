@@ -22,9 +22,27 @@ spec:
       labels:
         app: ollama
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: ollama
           image: ollama/ollama:0.11.8
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            # Non-root: keep everything Ollama writes (models, its keypair)
+            # on the mounted volume instead of /root.
+            - name: HOME
+              value: /data
+            - name: OLLAMA_MODELS
+              value: /data/models
           ports:
             - containerPort: 11434
               name: http
@@ -43,7 +61,7 @@ spec:
               port: http
           volumeMounts:
             - name: models
-              mountPath: /root/.ollama
+              mountPath: /data
       volumes:
         # emptyDir: models re-pull on pod restart. Fine for a demo cluster;
         # a PVC would outlive the pod but P1 keeps moving parts minimal.

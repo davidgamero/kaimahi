@@ -64,6 +64,7 @@ $(KAGENT):
 	mkdir -p bin
 	curl -sSfLo $(KAGENT) https://github.com/kagent-dev/kagent/releases/download/v$(KAGENT_VERSION)/kagent-$(OS)-$(ARCH)
 	curl -sSfLo $(KAGENT).sha256 https://github.com/kagent-dev/kagent/releases/download/v$(KAGENT_VERSION)/kagent-$(OS)-$(ARCH).sha256
-	@test "$$(sha256sum $(KAGENT) | cut -d' ' -f1)" = "$$(cut -d' ' -f1 $(KAGENT).sha256)" || \
+	@sum=$$(if [ "$(OS)" = darwin ]; then shasum -a 256 $(KAGENT); else sha256sum $(KAGENT); fi | cut -d' ' -f1); \
+	test "$$sum" = "$$(cut -d' ' -f1 $(KAGENT).sha256)" || \
 		{ echo 'kagent CLI checksum mismatch' >&2; rm -f $(KAGENT); exit 1; }
 	chmod +x $(KAGENT)
