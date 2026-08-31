@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Required files present
+        run: |
+          test -f LICENSE
+          test -f README.md
+          test -f docs/COORDINATION.md
+      - name: All YAML parses
+        run: |
+          python3 - <<'EOF'
+          import pathlib, sys, yaml
+          failed = False
+          for p in pathlib.Path(".").rglob("*.y*ml"):
+              if ".git" in p.parts:
+                  continue
+              try:
+                  list(yaml.safe_load_all(p.read_text()))
+              except Exception as e:
+                  print(f"{p}: {e}")
+                  failed = True
+          sys.exit(1 if failed else 0)
+          EOF
+      - name: No secrets in tree
+        run: |
+          ! grep -rEIn --exclude-dir=.git \
+            '(sk[-]ant-|sk[-]proj-|api[_-]?key[[:space:]]*[:=][[:space:]]*["'"'"'][A-Za-z0-9_-]{20,})' . \
+            || { echo "possible credential committed"; exit 1; }
