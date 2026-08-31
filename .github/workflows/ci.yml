@@ -57,18 +57,18 @@ jobs:
         run: |
           make chat | tee chat.out
           # Fail closed: require a completed A2A task with non-empty reply text.
-          python3 - <<'EOF'
-          import json, re, sys
-          raw = open("chat.out").read()
-          m = re.search(r'^\{.*\}$', raw, re.M | re.S)
-          d = json.loads(m.group(0))
-          state = d.get("status", {}).get("state")
-          texts = [p.get("text", "") for a in d.get("artifacts", [])
-                   for p in a.get("parts", [])]
-          reply = "\n".join(t for t in texts if t.strip())
-          print(f"state={state}\nreply:\n{reply}")
-          sys.exit(0 if state == "completed" and reply else 1)
-          EOF
+          python3 scripts/verify-chat.py chat.out
+      # P2, keyless: the model presets must be schema-valid against the live
+      # CRDs, and the preset-switch mechanism must work end to end. No hosted
+      # keys in CI (public repo, fork-exposed PR CI) — the switch is exercised
+      # with the keyless in-cluster Ollama preset.
+      - name: Validate model presets against live CRDs (server dry-run)
+        run: kubectl --context kind-tomte-p1 apply --dry-run=server -f k8s/models/
+      - name: Switch preset and converse again (keyless)
+        run: |
+          make use PRESET=ollama
+          make chat | tee chat-preset.out
+          python3 scripts/verify-chat.py chat-preset.out
       - name: Cluster state on failure
         if: failure()
         run: |

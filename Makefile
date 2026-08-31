@@ -12,7 +12,8 @@ KUBECTL        := kubectl --context $(KUBE_CTX)
 OS   := $(shell uname -s | tr A-Z a-z)
 ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
 
-.PHONY: up cluster ollama model kagent agent chat down status
+.PHONY: up cluster ollama model kagent agent chat down status \
+	model-secret use use-ollama
 
 ## up: everything from an empty machine to a ready agent
 up: cluster ollama model kagent agent status
@@ -50,6 +51,32 @@ chat: $(KAGENT)
 	@$(KUBECTL) -n kagent port-forward svc/kagent-controller 8083:8083 >/dev/null 2>&1 & \
 	pf=$$!; trap 'kill $$pf 2>/dev/null' EXIT; sleep 3; \
 	$(KAGENT) invoke --agent hello-world --task "$(TASK)"
+
+## model-secret: store an API key as a K8s Secret, stdin-only (paste, Enter, Ctrl-D).
+# The key never touches argv, env listings, YAML, or logs; tr strips the
+# trailing newline so it doesn't corrupt the Authorization header.
+model-secret:
+	@test -n "$(NAME)" || { echo 'usage: make model-secret NAME=<preset>-api-key' >&2; exit 1; }
+	@echo 'Paste the API key, press Enter, then Ctrl-D:' >&2
+	@tr -d '\n' | $(KUBECTL) -n kagent create secret generic $(NAME) \
+		--from-file=api-key=/dev/stdin
+
+## use: switch the hello-world agent to a model preset from k8s/models/
+# (e.g. make use PRESET=anthropic). Hosted presets need their Secret first
+# (make model-secret) — and remember: P2 spend is ungoverned until P4.
+use:
+	@test -n "$(PRESET)" || { echo 'usage: make use PRESET=<name from k8s/models/>' >&2; exit 1; }
+	$(KUBECTL) apply -f k8s/models/$(PRESET).yaml
+	$(KUBECTL) -n kagent patch agent hello-world --type merge \
+		-p '{"spec":{"declarative":{"modelConfig":"$(PRESET)"}}}'
+	$(KUBECTL) -n kagent rollout status deploy/hello-world --timeout=180s
+	$(KUBECTL) -n kagent wait \
+		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
+		agent/hello-world --timeout=300s
+
+## use-ollama: switch back to the keyless in-cluster model
+use-ollama:
+	$(MAKE) use PRESET=ollama
 
 status:
 	$(KUBECTL) -n kagent get agents,modelconfigs
