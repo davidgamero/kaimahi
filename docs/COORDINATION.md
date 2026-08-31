@@ -76,8 +76,8 @@ build anything AKS-specific without a survey-backed justification.
 | P1: kagent hello world on kind | W1 worker | PR #2 MERGED (rebase e91ff88..a284923); coordinator verified (delta sheet below) | lane closed |
 | README value-prop + Azure path (D6) | coordinator | PR #1 MERGED (verified on main, 94bbaef) | docs-only |
 | P2: LLM-enhanced via ModelConfig | W2 worker | PR #3 MERGED (d1a584d, tree-identical to checks-green branch); coordinator verified (delta sheet below) | lane closed |
-| P3: connectors/tools via MCP | unassigned | GO — blindspot pass done, W3 prompt ready (below) | contended: k8s/ + Makefile + CI; live tomte-p1 cluster available |
-| Rename lane: in-repo tomte → kaimahi (D9/D10) | unassigned | queued behind P3 merge | repo already renamed on GitHub; redirects active |
+| P3: connectors/tools via MCP | W3 worker | PR #4 MERGED (99edd8a); coordinator verified incl. live tool call (delta sheet below) | lane closed |
+| Rename lane: in-repo tomte → kaimahi (D9/D10) | unassigned | GO — W-rename prompt ready (below) | board itself excluded (coordinator-owned) |
 | P4 | — | blocked on P3 merge | no pre-stacked PR bases |
 
 ## Decisions (user rulings, verbatim)
@@ -312,6 +312,52 @@ Constraints:
   section (delta sheet).
 ```
 
+### W-RENAME — in-repo rename tomte → kaimahi (UNASSIGNED — paste into a fresh CLI session in this repo)
+
+```
+You are a worker session for this project (repo root: this checkout — now
+gambtho/kaimahi on GitHub; old gambtho/tomte URLs redirect). Read
+docs/COORDINATION.md first — process rules and decisions D9/D10 govern
+this lane. Your lane: the in-repo rename tomte → kaimahi.
+
+Scope (rename in): README.md (title, prose, and the working-name footnote —
+keep the no-trademark-claimed wording, now for "kaimahi", and state
+factually that kaimahi is te reo Māori for "worker"; nothing more —
+cultural acknowledgment wording beyond that fact awaits D9's pending
+cultural read), docs/P1/P2/P3 runbooks, Makefile, scripts/, k8s/ (comments
+AND agent systemMessages — mutating k8s/hello-world.yaml is explicitly
+authorized for this lane only; the P1-artifact never-mutate precedent
+yields to an identity change), .github/workflows/.
+
+Specific decisions, choose and state in the PR:
+- KIND_CLUSTER tomte-p1 → kaimahi-p1 (or argue otherwise). Document the
+  local-migration note: existing tomte-p1 clusters keep working via
+  KIND_CLUSTER=tomte-p1, or `kind delete cluster --name tomte-p1` and a
+  fresh `make up`.
+- scripts/copilot-secret.sh: TOMTE_COPILOT_TOKEN_FILE env var and
+  ~/.config/tomte/ path → kaimahi equivalents; decide whether to honor the
+  old location once (simple mv note in the runbook is acceptable).
+
+Explicitly OUT of scope:
+- docs/COORDINATION.md — coordinator-owned; do not touch it.
+- Anything outward-facing: no npm/PyPI/crates/domain/org claims, no
+  GitHub settings changes (the repo rename is already done). D9's gates
+  (cultural read, trademark counsel) are not yours to close.
+- Links to https://github.com/gambtho/tomte-old — historical, keep as-is.
+
+Verification: after the rename run a full audit — `grep -riIn tomte .`
+(excluding .git and docs/COORDINATION.md) — and list every surviving hit
+in the PR with its justification (tomte-old links should be the bulk).
+Repo-URL references should point at gambtho/kaimahi, not rely on
+redirects. Full CI must stay green (the e2e exercises P1+P2+P3 paths);
+run `make up`/`make chat` locally if you change anything load-bearing in
+the Makefile.
+
+Branch from current main; PR targets main; no stacked bases. Lane ends at
+PR-open-with-checks-green — do not merge. Report deviations in the PR's
+"Deviations & decisions" section.
+```
+
 ## Delta sheets from finished lanes
 
 ### P1 — kagent hello world on kind (PR #2, merged 2026-08-31)
@@ -384,3 +430,40 @@ Deviations (worker-reported; carried forward):
   switching is uniform; the P1 artifact stays self-contained.
 - Anthropic preset defaults to `claude-opus-5`; `model:` is a one-line edit
   per preset.
+
+### P3 — MCP connectors/tools (PR #4, merged 2026-08-31)
+
+Delivered on main (99edd8a): kagent's bundled tool server enabled and
+locked down via `k8s/kagent-values.yaml` (read-only RBAC, Secrets
+explicitly excluded), `k8s/tools-agent.yaml` (hello-tools Agent wired via
+spec.declarative.tools), `make tools-agent` / `make chat AGENT=...`,
+`docs/P3-RUNBOOK.md`, keyless CI e2e extended with a fail-closed
+tool-invocation assertion (A2A function_call parts).
+
+Coordinator verification (independent, 2026-08-31): branch-vs-main diff is
+the two D10 board lines only — P3 payload identical; PR checks + post-merge
+main runs green (e2e 6m10s incl. tool step); live cluster check ran a fresh
+tool-requiring task → real function_call, state=completed; hello-tools
+Ready, chart-managed RemoteMCPServer Accepted.
+
+Coordinator ruling on the flagged deviation: tool server via helm values
+(not a standalone committed CRD YAML) is ACCEPTED — the chart ships the
+Deployment + RemoteMCPServer; committing a duplicate would shadow the
+chart-managed resource and violate the prime directive. The lockdown block
+in kagent-values.yaml is the committed artifact.
+
+Deviations (worker-reported; carried forward):
+
+- ToolServer v1alpha1 is legacy at 0.9.12; MCPServer/RemoteMCPServer is the
+  supported path (runbook records it).
+- RemoteMCPServer's first reconcile can race the tool-server pod
+  (Accepted=False, self-heals ~1 min); glue waits on Accepted before
+  applying the agent.
+- New small-model failure mode: correct tool call + correct response but
+  WRONG summary (claimed emptiness). P1's delta covered malformed calls;
+  this is the relaying side. Mitigated via system-message wording (10/10
+  after); swap-a-model testers must re-measure both failure modes.
+- hello-tools requests shrunk (50m/320Mi) for the 2-CPU CI runner — node
+  was at ~95% requests before the shrink; P4 must budget accordingly.
+- `make up` is cumulative (includes the tools agent), P1/P2 e2e steps
+  unchanged.
