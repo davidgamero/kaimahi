@@ -12,6 +12,27 @@ credential custody (keys never reach the agent), egress enforcement, and audit.
 > "tomte" is used here as a working project name only; no trademark rights are
 > claimed.
 
+## Why Tomte when kagent exists?
+
+kagent answers *"how do agents run on Kubernetes."* Tomte answers *"how do
+you let people delegate to them safely."* The governance plane is the set of
+controls a platform or security team needs before handing real work to
+agents:
+
+- **Budgets and spend metering** — an agent cannot silently burn through an
+  API budget; every billed provider call is ledgered, even when the
+  surrounding operation fails.
+- **Approvals and blast-radius permits** — consequential actions wait for a
+  human yes, scoped to exactly what was approved.
+- **Credential custody** — provider keys live in the governance plane and
+  never reach agent pods, YAML, or logs.
+- **Egress enforcement** — agents reach only the endpoints they are
+  permitted to.
+- **Audit** — who ran what, with which model, at what cost.
+
+None of this forks or wraps the runtime: it mounts at kagent's existing
+seams (ModelConfig base URL, MCP tool server).
+
 ## What is built
 
 - Repository hygiene: license, CI, and the coordination process
@@ -34,6 +55,12 @@ serves as a reference and port source, not a base.
 4. **Governance** — mounted at kagent's existing seams: ModelConfig base_url
    pointed at a Tomte metering/enforcing proxy, an enforcing MCP gateway, and
    permits/approvals compiled down to kagent resources.
+
+The arc is cloud-agnostic — kagent runs on any conformant Kubernetes — with
+first-class attention to the Azure path: **AKS** is the managed-cluster
+target (kind stays the local/demo path), with **Azure AI Foundry** and
+**GitHub Models** (included with GitHub Copilot plans) among the model
+endpoints.
 
 ## Development
 
