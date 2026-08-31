@@ -97,9 +97,13 @@ json_field "$workdir/exchange.json" token > "$workdir/copilot-token"
   echo "exchange response contained no token — refusing to store a Secret" >&2
   exit 1; }
 
+# Create-or-update in one apply so the existing Secret stays intact if this
+# fails partway (no delete-then-create gap). The manifest carrying the token
+# exists only inside the pipe — never on disk, argv, or in logs.
 # shellcheck disable=SC2086 # KUBECTL deliberately carries --context args
-$KUBECTL -n "$NAMESPACE" delete secret "$SECRET_NAME" --ignore-not-found >/dev/null
 $KUBECTL -n "$NAMESPACE" create secret generic "$SECRET_NAME" \
-  --from-file=api-key="$workdir/copilot-token"
+  --from-file=api-key="$workdir/copilot-token" \
+  --dry-run=client -o yaml \
+  | $KUBECTL -n "$NAMESPACE" apply -f -
 echo "Secret $SECRET_NAME refreshed. Note: the Copilot token expires;" >&2
 echo "re-run this (then 'make use PRESET=github-copilot') when auth fails." >&2
