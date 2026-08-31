@@ -35,19 +35,17 @@ seams (ModelConfig base URL, MCP tool server).
 
 ## What is built
 
+- **P1 — hello world on Kubernetes**: a hello-world agent defined entirely in
+  YAML (`k8s/hello-world.yaml`), running on kagent in a local kind cluster,
+  driven end to end via CLI. Keyless (in-cluster Ollama model). Start with
+  `make up && make chat` — full walkthrough in
+  [docs/P1-RUNBOOK.md](docs/P1-RUNBOOK.md).
 - Repository hygiene: license, CI, and the coordination process
   (`docs/COORDINATION.md`).
 
-Nothing else yet — this is a deliberate fresh start. The previous incarnation
-of the project is preserved at
-[gambtho/tomte-old](https://github.com/gambtho/tomte-old) (archived) and
-serves as a reference and port source, not a base.
-
 ## What is designed (the arc)
 
-1. **Hello world on Kubernetes** — kagent on a kind cluster; a hello-world
-   agent defined as a kagent Agent YAML; driven end to end via CLI. The YAML
-   is the demo artifact.
+1. **Hello world on Kubernetes** — *built, see above.*
 2. **LLM-enhanced agent** — via kagent ModelConfig: Anthropic, OpenAI,
    OpenRouter, GitHub Models, Azure AI Foundry, any OpenAI-compatible base
    URL, local models.
