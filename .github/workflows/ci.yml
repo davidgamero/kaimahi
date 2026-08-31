@@ -69,9 +69,27 @@ jobs:
           make use PRESET=ollama
           make chat | tee chat-preset.out
           python3 scripts/verify-chat.py chat-preset.out
+      # P3, keyless: prove a REAL MCP tool call, not a plausible answer. A
+      # ConfigMap with an unguessable random name is created, the tools
+      # agent is asked to list configmaps, and the verifier requires a
+      # function_call + successful function_response for k8s_get_resources
+      # in the A2A history AND the random name in the reply — data the
+      # model can only have via the live tool round-trip. Fail-closed.
+      - name: Tool call through MCP (keyless)
+        run: |
+          probe="probe-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
+          kubectl --context kind-tomte-p1 -n default create configmap "$probe" \
+            --from-literal=owner=tomte-p3-ci
+          make chat AGENT=hello-tools \
+            TASK='List the configmaps in the default namespace.' | tee tool-chat.out
+          python3 scripts/verify-chat.py tool-chat.out k8s_get_resources "$probe"
       - name: Cluster state on failure
         if: failure()
         run: |
           kubectl --context kind-tomte-p1 get pods -A || true
           kubectl --context kind-tomte-p1 -n kagent describe agent hello-world || true
           kubectl --context kind-tomte-p1 -n kagent logs deploy/hello-world --tail=100 || true
+          kubectl --context kind-tomte-p1 -n kagent describe agent hello-tools || true
+          kubectl --context kind-tomte-p1 -n kagent logs deploy/hello-tools --tail=100 || true
+          kubectl --context kind-tomte-p1 -n kagent describe remotemcpserver kagent-tool-server || true
+          kubectl --context kind-tomte-p1 -n kagent logs deploy/kagent-tools --tail=50 || true
