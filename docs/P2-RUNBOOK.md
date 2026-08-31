@@ -16,6 +16,7 @@ cluster, same agent YAML, same `make chat`.
 | Preset (`k8s/models/`) | Endpoint | Key Secret expected | Live-verified? |
 |---|---|---|---|
 | `ollama` | in-cluster Ollama (keyless, free) | none | **yes** — keyless e2e in CI |
+| `github-copilot` | Copilot subscription (OpenAI models via api.githubcopilot.com) | `github-copilot-token` (via `make copilot-secret`) | **yes** — 2026-08-31, `gpt-5-mini`, A2A completed |
 | `anthropic` | Anthropic first-party API | `anthropic-api-key` | not live-verified |
 | `openai` | OpenAI first-party API | `openai-api-key` | not live-verified |
 | `openrouter` | OpenRouter gateway | `openrouter-api-key` | not live-verified |
@@ -26,8 +27,8 @@ cluster, same agent YAML, same `make chat`.
 the kagent 0.9.12 CRDs (CI proves this with a server-side dry-run every
 run), but no real completion has been bought through it yet. A preset only
 graduates to live-verified when an actual `make chat` completes through the
-endpoint. See "GitHub Models is retired" below for why P2's planned keyed
-verification target no longer exists.
+endpoint. See the GitHub section below for how the retirement of GitHub
+Models reshaped P2's keyed verification target.
 
 ## Storing an API key (stdin-only)
 
@@ -85,7 +86,7 @@ same pattern covers OpenRouter and any other OpenAI-compatible endpoint —
 at 0.9.12 there is no provider-specific CRD support for them, and none is
 needed.
 
-## GitHub Models is retired (was: the D7 verification path)
+## GitHub: Models is retired; the Copilot subscription path replaces it
 
 The board's D7 ruling selected GitHub Models (authenticated via the GitHub
 CLI) as P2's keyed live-verification endpoint. That service no longer
@@ -94,19 +95,44 @@ model catalog, inference API, and BYOK, for all customers including existing
 ones ([changelog](https://github.blog/changelog/2026-07-30-github-models-is-now-retired/)).
 Verified directly on 2026-08-31: `https://models.github.ai/inference/...`
 returns HTTP 410 (`github_models_retirement_brownout`) even with a valid
-`gh` OAuth token.
+`gh` OAuth token. No preset for it ships.
 
-Consequences:
+What a GitHub subscription still provides (user ruling, superseding D7's
+endpoint): **GitHub Copilot plans include API access to OpenAI and other
+models** at `api.githubcopilot.com`, an OpenAI-compatible endpoint. The
+`github-copilot` preset targets it:
 
-- No `github-models` preset ships — committing a preset for a dead endpoint
-  would be a standing trap.
-- The planned `gh auth token → kubectl create secret` flow buys nothing
-  anymore; it is not shipped either.
-- GitHub's own migration pointer is Microsoft/Azure AI Foundry, which the
-  `azure-foundry` preset already covers.
-- The Copilot API (`api.githubcopilot.com`) is **not** a substitute: it is
-  undocumented, token-exchange only, and out of bounds per the board.
+```bash
+make copilot-secret                 # GitHub device login -> Copilot token -> K8s Secret
+make use PRESET=github-copilot
+make chat
+```
 
-Which endpoint replaces GitHub Models for keyed live verification is a
-user/coordinator ruling (supersedes D7); until then every hosted preset
-stays marked not-live-verified.
+`make copilot-secret` (script: `scripts/copilot-secret.sh`) logs you in
+once via GitHub's device flow (open the printed URL, enter the code),
+caches that OAuth token 0600 under `~/.config/tomte/`, exchanges it at
+GitHub's Copilot token endpoint, and stores **only the short-lived Copilot
+token** in-cluster. Custody properties worth knowing:
+
+- D7 asked for `gh` CLI login, but the gh CLI's own OAuth token is not
+  Copilot-entitled — the exchange returns 403 (verified 2026-08-31). The
+  device flow authenticates as the Copilot-entitled VS Code OAuth client,
+  which is what Copilot tooling itself does. Same terminal-login UX, one
+  extra browser approval on first run.
+- The device-flow OAuth token never enters the cluster — only the
+  short-lived exchange token does. All token bytes travel through 0600
+  temp files and pipes; nothing touches argv, env listings, YAML, or
+  logs, and no keyed call follows redirects. Fail-closed: a failed or
+  empty exchange stores nothing.
+- The exchanged token **expires** (typically within hours). When the agent
+  starts failing auth, re-run `make copilot-secret` and then
+  `make use PRESET=github-copilot` (the pod must restart to pick up the
+  rotated Secret). An in-cluster auto-refresher is deliberately out of
+  P2's scope — that is governance-plane territory (P4).
+- `api.githubcopilot.com` is **not part of GitHub's documented public API
+  surface** (GitHub's documented programmatic paths are the Copilot CLI/SDK
+  and BYOK). It is the endpoint GitHub's own clients and sanctioned
+  third-party integrations use, but treat it as subject to change without
+  notice, and mind your plan's premium-request accounting.
+- Model IDs are the Copilot catalog's (e.g. `gpt-5-mini`, `gpt-4o-mini`,
+  `claude-*`, `gemini-*`); the preset defaults to `gpt-5-mini`.
