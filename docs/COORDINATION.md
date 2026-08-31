@@ -64,7 +64,8 @@ build anything AKS-specific without a survey-backed justification.
 | Lane | Owner | Status | Notes |
 |------|-------|--------|-------|
 | Repo bootstrap (LICENSE, README, CI, board) | coordinator | pushed to gambtho/tomte main | initial commit |
-| P1: kagent hello world on kind | unassigned | prompt ready (below); GO | contended dir: whole repo until it lands |
+| P1: kagent hello world on kind | W1 worker | PR #2 open; hygiene green, e2e running; coordinator verification pending | contended dir: whole repo until it lands |
+| README value-prop + Azure path (D6) | coordinator | PR #1 MERGED (verified on main, 94bbaef) | docs-only |
 | P2–P4 | — | blocked on P1 merge | no pre-stacked PR bases |
 
 ## Decisions (user rulings, verbatim)
@@ -98,6 +99,20 @@ clone from the archive when P4 port evaluation needs the source.
 - **Blanket $0 pricing inferred from URL/provider** — rejected; local/free is
   an explicit user-answered classification (GitHub Models has opt-in paid
   billing).
+
+## Under consideration (not GO — do not build yet)
+
+- **`npx tomte create agent`** — user feedback 2026-08-31: "one other good
+  piece of feedback we should consider -- an npx tomte create agent command."
+  Coordinator assessment: fits the leadership "simple cli" quote; fills the
+  zero-to-cluster scaffolding gap kagent's runtime CLI doesn't own (P1's
+  Makefile is this journey in glue form). Becomes a lane only after P1
+  merges, and only with: (1) a written survey justifying it against kagent's
+  CLI — scaffold/bootstrap only, no duplication of kagent runtime commands;
+  (2) npm publishing deferred — `npx github:gambtho/tomte` suffices for dev;
+  claiming the `tomte` npm name is an outward-facing naming commitment that
+  needs explicit user approval (trademark counsel still owed on the name);
+  (3) sequencing between P1 and P2 so P2 can extend the same scaffold.
 
 ## Process rules (proven over ~60 PRs; keep)
 
