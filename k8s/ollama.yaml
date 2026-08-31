@@ -29,9 +29,12 @@ spec:
             - containerPort: 11434
               name: http
           resources:
+            # Requests stay small so the demo also schedules on a 2-CPU CI
+            # runner (kagent's own pods need ~600m); no CPU limit, so
+            # inference can still burst to whatever the node has.
             requests:
-              cpu: "1"
-              memory: 2Gi
+              cpu: 250m
+              memory: 1Gi
             limits:
               memory: 6Gi
           readinessProbe:
