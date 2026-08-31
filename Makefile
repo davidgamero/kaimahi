@@ -5,6 +5,7 @@ KIND_CLUSTER   ?= tomte-p1
 KUBE_CTX       := kind-$(KIND_CLUSTER)
 KAGENT_VERSION ?= 0.9.12
 MODEL          ?= qwen2.5:3b
+AGENT          ?= hello-world
 TASK           ?= Hello! Who are you and where are you running?
 KAGENT         ?= bin/kagent
 KUBECTL        := kubectl --context $(KUBE_CTX)
@@ -12,11 +13,11 @@ KUBECTL        := kubectl --context $(KUBE_CTX)
 OS   := $(shell uname -s | tr A-Z a-z)
 ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
 
-.PHONY: up cluster ollama model kagent agent chat down status \
+.PHONY: up cluster ollama model kagent agent tools-agent chat down status \
 	model-secret copilot-secret use use-ollama
 
-## up: everything from an empty machine to a ready agent
-up: cluster ollama model kagent agent status
+## up: everything from an empty machine to ready agents (hello-world + tools)
+up: cluster ollama model kagent agent tools-agent status
 
 cluster:
 	kind get clusters 2>/dev/null | grep -qx '$(KIND_CLUSTER)' || \
@@ -46,11 +47,23 @@ agent:
 		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
 		agent/hello-world --timeout=300s
 
-## chat: one question to the agent via the kagent CLI (override with TASK=...)
+## tools-agent: the P3 tools-enabled agent (kagent-tools MCP server comes
+## from the kagent helm install; this applies the Agent wired to it)
+tools-agent:
+	$(KUBECTL) -n kagent wait \
+		--for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True \
+		remotemcpserver/kagent-tool-server --timeout=300s
+	$(KUBECTL) apply -f k8s/tools-agent.yaml
+	$(KUBECTL) -n kagent wait \
+		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
+		agent/hello-tools --timeout=300s
+
+## chat: one question to an agent via the kagent CLI (override with TASK=...,
+## AGENT=hello-tools for the P3 tools agent)
 chat: $(KAGENT)
 	@$(KUBECTL) -n kagent port-forward svc/kagent-controller 8083:8083 >/dev/null 2>&1 & \
 	pf=$$!; trap 'kill $$pf 2>/dev/null' EXIT; sleep 3; \
-	$(KAGENT) invoke --agent hello-world --task "$(TASK)"
+	$(KAGENT) invoke --agent $(AGENT) --task "$(TASK)"
 
 ## model-secret: store an API key as a K8s Secret, stdin-only (paste, Enter, Ctrl-D).
 # The key never touches argv, env listings, YAML, or logs; tr strips the

@@ -1,11 +1,16 @@
-# Helm values for the kagent chart (P1 hello-world install).
+# Helm values for the kagent chart (P1 hello-world install, P3 tools).
 #
-# Two jobs only:
+# Three jobs only:
 #  1. Point kagent's default model provider at the in-cluster Ollama service
 #     (keyless — no API-key Secret anywhere in this phase).
-#  2. Turn off the chart's sample agents and optional tool servers so the
-#     demo cluster contains exactly one agent: ours. P3 re-enables tooling
-#     (MCP) deliberately.
+#  2. Turn off the chart's sample agents and unused optional tool servers so
+#     the demo cluster contains exactly the agents we define.
+#  3. P3: re-enable kagent's own bundled MCP tool server (kagent-tools),
+#     locked down as far as its knobs go — k8s tools only, read-only RBAC
+#     with no Secrets access, writes disabled at the app layer too. The
+#     chart itself publishes it as the `kagent-tool-server` RemoteMCPServer.
+#     Even so: P3 tools are UNGOVERNED (no egress enforcement, no tool
+#     permits, no audit) until the Tomte governance plane lands in P4.
 providers:
   default: ollama
   ollama:
@@ -36,7 +41,26 @@ cilium-debug-agent:
   enabled: false
 
 kagent-tools:
-  enabled: false
+  enabled: true
+  tools:
+    # k8s provider only — no helm/istio/cilium/argo/prometheus tool surface.
+    enabledTools:
+      - k8s
+    # Belt and braces with rbac.readOnly: refuse write operations in the
+    # application layer as well as at the API server.
+    args:
+      - --read-only
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+  rbac:
+    # Read-only ClusterRole (get/list/watch) instead of the default
+    # cluster-admin; allowSecrets stays false, so the tool server cannot
+    # read Secrets even though the agent can ask it about the cluster.
+    readOnly: true
 grafana-mcp:
   enabled: false
 querydoc:
