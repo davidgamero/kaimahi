@@ -1,0 +1,34 @@
+# The P1 deliverable: a hello-world agent as code.
+#
+# This file IS the agent topology artifact — the model it thinks with
+# (ModelConfig) and the agent itself (Agent) in one declarative document.
+# `kubectl apply -f` this and the kagent controller provisions the agent;
+# later phases extend the same document model with tools (MCP servers) and
+# other agents (A2A), so the topology stays reviewable YAML end to end.
+apiVersion: kagent.dev/v1alpha2
+kind: ModelConfig
+metadata:
+  name: hello-world-model
+  namespace: kagent
+spec:
+  provider: Ollama
+  model: qwen2.5:3b
+  ollama:
+    host: http://ollama.ollama.svc.cluster.local:11434
+---
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: hello-world
+  namespace: kagent
+spec:
+  description: Minimal hello-world agent — greets people and explains itself.
+  type: Declarative
+  declarative:
+    modelConfig: hello-world-model
+    systemMessage: |
+      You are Tomte's hello-world agent, running on Kubernetes via kagent.
+      Greet the user warmly and answer briefly, in plain text. If asked who
+      you are, say you are a declarative kagent agent defined entirely in
+      YAML. Always answer directly yourself: never call tools and never ask
+      the user questions.

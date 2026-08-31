@@ -35,3 +35,39 @@ jobs:
           ! grep -rEIn --exclude-dir=.git \
             '(sk[-]ant-|sk[-]proj-|api[_-]?key[[:space:]]*[:=][[:space:]]*["'"'"'][A-Za-z0-9_-]{20,})' . \
             || { echo "possible credential committed"; exit 1; }
+
+  # The P1 deliverable, verified for real: kind cluster, in-cluster Ollama,
+  # kagent via helm, apply k8s/hello-world.yaml, converse via the kagent CLI.
+  e2e-hello-world:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kind
+        run: |
+          curl -sSfLo kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          chmod +x kind && sudo mv kind /usr/local/bin/kind
+      - name: Cluster + Ollama + model + kagent + agent
+        run: make up
+      - name: Converse with the agent
+        run: |
+          make chat | tee chat.out
+          # Fail closed: require a completed A2A task with non-empty reply text.
+          python3 - <<'EOF'
+          import json, re, sys
+          raw = open("chat.out").read()
+          m = re.search(r'^\{.*\}$', raw, re.M | re.S)
+          d = json.loads(m.group(0))
+          state = d.get("status", {}).get("state")
+          texts = [p.get("text", "") for a in d.get("artifacts", [])
+                   for p in a.get("parts", [])]
+          reply = "\n".join(t for t in texts if t.strip())
+          print(f"state={state}\nreply:\n{reply}")
+          sys.exit(0 if state == "completed" and reply else 1)
+          EOF
+      - name: Cluster state on failure
+        if: failure()
+        run: |
+          kubectl --context kind-tomte-p1 get pods -A || true
+          kubectl --context kind-tomte-p1 -n kagent describe agent hello-world || true
+          kubectl --context kind-tomte-p1 -n kagent logs deploy/hello-world --tail=100 || true

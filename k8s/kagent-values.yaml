@@ -1,0 +1,43 @@
+# Helm values for the kagent chart (P1 hello-world install).
+#
+# Two jobs only:
+#  1. Point kagent's default model provider at the in-cluster Ollama service
+#     (keyless — no API-key Secret anywhere in this phase).
+#  2. Turn off the chart's sample agents and optional tool servers so the
+#     demo cluster contains exactly one agent: ours. P3 re-enables tooling
+#     (MCP) deliberately.
+providers:
+  default: ollama
+  ollama:
+    provider: Ollama
+    model: qwen2.5:3b
+    config:
+      host: http://ollama.ollama.svc.cluster.local:11434
+
+k8s-agent:
+  enabled: false
+kgateway-agent:
+  enabled: false
+istio-agent:
+  enabled: false
+promql-agent:
+  enabled: false
+observability-agent:
+  enabled: false
+argo-rollouts-agent:
+  enabled: false
+helm-agent:
+  enabled: false
+cilium-policy-agent:
+  enabled: false
+cilium-manager-agent:
+  enabled: false
+cilium-debug-agent:
+  enabled: false
+
+kagent-tools:
+  enabled: false
+grafana-mcp:
+  enabled: false
+querydoc:
+  enabled: false
