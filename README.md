@@ -47,8 +47,9 @@ seams (ModelConfig base URL, MCP tool server).
 
 1. **Hello world on Kubernetes** — *built, see above.*
 2. **LLM-enhanced agent** — via kagent ModelConfig: Anthropic, OpenAI,
-   OpenRouter, GitHub Models, Azure AI Foundry, any OpenAI-compatible base
-   URL, local models.
+   OpenRouter, Azure AI Foundry, any OpenAI-compatible base URL, local
+   models. (GitHub Models was on this list until GitHub retired the service
+   on 2026-07-30 — see docs/P2-RUNBOOK.md.)
 3. **Connectors/tools** — via MCP, kagent's native tool mechanism.
 4. **Governance** — mounted at kagent's existing seams: ModelConfig base_url
    pointed at a Tomte metering/enforcing proxy, an enforcing MCP gateway, and
@@ -56,9 +57,8 @@ seams (ModelConfig base URL, MCP tool server).
 
 The arc is cloud-agnostic — kagent runs on any conformant Kubernetes — with
 first-class attention to the Azure path: **AKS** is the managed-cluster
-target (kind stays the local/demo path), with **Azure AI Foundry** and
-**GitHub Models** (included with GitHub Copilot plans) among the model
-endpoints.
+target (kind stays the local/demo path), with **Azure AI Foundry** among the
+model endpoints.
 
 ## Development
 
