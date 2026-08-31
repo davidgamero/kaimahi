@@ -125,7 +125,13 @@ msg="executing command" command=kubectl args="[get configmap -n default -o wide]
 Live verification 2026-08-31: qwen2.5:3b called `k8s_get_resources` with
 correct arguments on the first attempt and echoed the probe name back
 (`state=completed`). The P1 model pin holds for the tool path — no model
-change was needed.
+change was needed. One reliability wrinkle surfaced during repeat trials:
+the model occasionally invoked the tool correctly, received the probe in
+the response, and still *summarized* it away ("There are no configmaps…").
+The system message therefore orders it to copy the tool table's NAME column
+verbatim and never claim emptiness when rows exist; with that wording the
+probe check passed 10/10 consecutive fresh-cluster trials. If you swap in
+a different small model, re-run the trials before trusting it in CI.
 
 ## Where P4 mounts
 
