@@ -76,7 +76,7 @@ build anything AKS-specific without a survey-backed justification.
 | P1: kagent hello world on kind | W1 worker | PR #2 MERGED (rebase e91ff88..a284923); coordinator verified (delta sheet below) | lane closed |
 | README value-prop + Azure path (D6) | coordinator | PR #1 MERGED (verified on main, 94bbaef) | docs-only |
 | P2: LLM-enhanced via ModelConfig | W2 worker | PR #3 MERGED (d1a584d, tree-identical to checks-green branch); coordinator verified (delta sheet below) | lane closed |
-| P3: connectors/tools via MCP | unassigned | UNBLOCKED by P2 merge; awaiting coordinator blindspot pass + GO | live tomte-p1 cluster available (agent on keyless ollama preset) |
+| P3: connectors/tools via MCP | unassigned | GO — blindspot pass done, W3 prompt ready (below) | contended: k8s/ + Makefile + CI; live tomte-p1 cluster available |
 | P4 | — | blocked on P3 merge | no pre-stacked PR bases |
 
 ## Decisions (user rulings, verbatim)
@@ -251,6 +251,61 @@ Constraints:
   runbook. The keyless Ollama e2e must still pass at every commit.
 - Branch from current main; PR targets main; no stacked bases. Lane ends at
   PR-open-with-checks-green — do not merge.
+- Report deviations and surprises in the PR's "Deviations & decisions"
+  section (delta sheet).
+```
+
+### W3 — P3: connectors/tools via MCP (UNASSIGNED — paste into a fresh CLI session in this repo)
+
+```
+You are a worker session for the Tomte project (repo root: this checkout).
+Read docs/COORDINATION.md first — prime directive, process rules, security
+standing guidance, decisions D1–D9, and BOTH delta sheets (P1, P2) bind
+you. Your lane: P3 — the demo agent gains connectors/tools via MCP,
+kagent's native tool mechanism.
+
+Constraints:
+- SURVEY FIRST (prime directive): kagent 0.9.12 ships the whole MCP stack
+  (verified on the live cluster): an MCPServer CRD (v1alpha1) that deploys
+  a tool server in-cluster (stdio transport via a sidecar gateway spawning
+  uvx/npx per session — 2-8s startup, mind timeouts — or http), a
+  RemoteMCPServer CRD (v1alpha2, SSE/STREAMABLE_HTTP) for existing
+  endpoints, and Agent.spec.declarative.tools[] wiring (type: McpServer,
+  headersFrom, allowedHeaders). Your survey must also settle the
+  ToolServer-vs-MCPServer/RemoteMCPServer version split — which is the
+  supported path at 0.9.12 — and record it. Tomte builds NO MCP runtime,
+  proxy, or gateway machinery — the enforcing MCP gateway is P4. Net-new
+  is CRD data, thin Makefile/script glue, docs, and CI only; justify each
+  file in the PR.
+- Deliverables:
+  (a) A tool server as committed YAML (k8s/ pattern): prefer the simplest
+      useful MCP server, keyless, deterministic, and no external egress if
+      achievable (CI must be able to assert its output fail-closed). State
+      your choice + alternatives in the PR.
+  (b) The agent wired to it via spec.declarative.tools. Precedent from P2:
+      k8s/hello-world.yaml (the P1 artifact) is never mutated — extend via
+      a patch mechanism like make use, or a separate tools-enabled Agent
+      YAML; choose the simplest and state alternatives.
+  (c) Live verification MUST prove a real tool call happened — not just a
+      Ready agent or a plausible answer. Ask something only the tool can
+      answer and evidence the invocation (tool-server logs, kagent
+      events/usage). P1 delta rule applies with force: qwen2.5:3b must be
+      invocation-tested calling YOUR tool; if it misfires, test candidate
+      models (make model MODEL=...) and document the working pin. CI stays
+      keyless and within the 2-CPU runner budget (P2 delta). The Copilot
+      preset may serve extra local evidence but never CI.
+  (d) docs/P3-RUNBOOK.md following the P1/P2 pattern, including an
+      explicit warning that P3 tools are ungoverned — egress enforcement
+      and tool permits arrive in P4.
+  (e) CI: extend the keyless e2e with the tool path, fail-closed (reuse
+      scripts/verify-chat.py where it fits); existing P1/P2 e2e steps stay
+      green at every commit.
+- Security guidance binds: no secrets in YAML/argv/env/logs anywhere; the
+  demo tool should need no auth at all — if auth is unavoidable, use
+  headersFrom + a Secret captured stdin-only via a pipefail script (never
+  a make recipe).
+- Branch from current main; PR targets main; no stacked bases. Lane ends
+  at PR-open-with-checks-green — do not merge.
 - Report deviations and surprises in the PR's "Deviations & decisions"
   section (delta sheet).
 ```
