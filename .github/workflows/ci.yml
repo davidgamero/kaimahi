@@ -43,6 +43,12 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    defaults:
+      run:
+        # An explicit bash shell turns on `-o pipefail`, so the
+        # `make chat | tee` pipelines fail on make's own exit code instead
+        # of relying solely on the content check in verify-chat.py.
+        shell: bash
     steps:
       - uses: actions/checkout@v4
         with:
@@ -75,6 +81,26 @@ jobs:
       # function_call + successful function_response for k8s_get_resources
       # in the A2A history AND the random name in the reply — data the
       # model can only have via the live tool round-trip. Fail-closed.
+      # Helm never validates values keys against the subchart, so a typo'd
+      # or renamed lockdown knob would silently deploy the tool server wide
+      # open while everything still reads Ready. Assert the posture instead
+      # of trusting the values: read-only mode logged, and the tool server's
+      # ServiceAccount can neither read Secrets nor write anything.
+      - name: Assert tool-server lockdown posture
+        run: |
+          kubectl --context kind-tomte-p1 -n kagent logs deploy/kagent-tools \
+            > tools.log
+          grep -q 'Running in read-only mode' tools.log
+          # `! cmd` is exempt from errexit, so compare can-i's answer
+          # explicitly — each check aborts the step on the wrong answer.
+          secrets=$(kubectl --context kind-tomte-p1 auth can-i get secrets \
+            --as=system:serviceaccount:kagent:kagent-tools || true)
+          test "$secrets" = no
+          writes=$(kubectl --context kind-tomte-p1 auth can-i create pods \
+            --as=system:serviceaccount:kagent:kagent-tools || true)
+          test "$writes" = no
+          kubectl --context kind-tomte-p1 auth can-i list pods \
+            --as=system:serviceaccount:kagent:kagent-tools
       - name: Tool call through MCP (keyless)
         run: |
           probe="probe-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"

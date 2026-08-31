@@ -19,6 +19,10 @@ import sys
 raw = open(sys.argv[1]).read()
 tool = sys.argv[2] if len(sys.argv) > 2 else None
 needle = sys.argv[3] if len(sys.argv) > 3 else None
+# An empty arg (e.g. a $var that failed to expand) must not silently skip
+# the check it was meant to enable.
+if tool == "" or needle == "":
+    sys.exit("empty TOOL/SUBSTRING argument — refusing to skip a check")
 
 m = re.search(r"^\{.*\}$", raw, re.M | re.S)
 if not m:
