@@ -55,6 +55,10 @@ before writing anything new.
    gateway; permits/approvals compile down to kagent resources. Evaluate
    porting the archived old repo's `server/` first.
 
+Target environments (D6): kind is the local/demo path; **AKS** is the named
+managed-Kubernetes target. kagent runs on any conformant cluster — don't
+build anything AKS-specific without a survey-backed justification.
+
 ## State of the world
 
 | Lane | Owner | Status | Notes |
@@ -72,6 +76,7 @@ before writing anything new.
 | D3 | 2026-08-31 | New repo is public | "Public" |
 | D4 | 2026-08-31 | Coordinator may push board-doc-only commits direct to main | "Yes, board doc only (Recommended)" |
 | D5 | 2026-08-31 | Old repo renamed to gambtho/tomte-old and archived; fresh gambtho/tomte created for the redux | "i changed my mind, i moved the existing tomte repo to gambtho/tomte-old and archived it. i'll create a new tomte repo for this" |
+| D6 | 2026-08-31 | AKS is the named managed-Kubernetes target for the arc (kind stays the local/demo path); README gains a value-prop-over-kagent section and an Azure-path paragraph (GitHub Models phrasing per the P2 guardrail) | "i am wondering if we need to add more to our value proposition over kagent -- maybe also mention that we're ensuring smooth integration with AKS / github copilot models/ Azure AI foundry" — ruled via options: "Both (Recommended)", "Yes, record as D6 (Recommended)" |
 
 Old-repo history is preserved at https://github.com/gambtho/tomte-old
 (archived, read-only). No local checkout of it exists (deleted 2026-08-31);
