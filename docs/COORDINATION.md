@@ -77,6 +77,7 @@ build anything AKS-specific without a survey-backed justification.
 | README value-prop + Azure path (D6) | coordinator | PR #1 MERGED (verified on main, 94bbaef) | docs-only |
 | P2: LLM-enhanced via ModelConfig | W2 worker | PR #3 MERGED (d1a584d, tree-identical to checks-green branch); coordinator verified (delta sheet below) | lane closed |
 | P3: connectors/tools via MCP | unassigned | GO — blindspot pass done, W3 prompt ready (below) | contended: k8s/ + Makefile + CI; live tomte-p1 cluster available |
+| Rename lane: in-repo tomte → kaimahi (D9/D10) | unassigned | queued behind P3 merge | repo already renamed on GitHub; redirects active |
 | P4 | — | blocked on P3 merge | no pre-stacked PR bases |
 
 ## Decisions (user rulings, verbatim)
@@ -92,6 +93,7 @@ build anything AKS-specific without a survey-backed justification.
 | D7 | 2026-08-31 | ~~P2 keyed live verification uses GitHub Models only; auth must flow through the GitHub CLI (`gh auth token` → K8s Secret, stdin-only)~~ SUPERSEDED by D8: GitHub Models is retired and gh tokens are not Copilot-entitled | "github models, but we need to support login via github cli for it" |
 | D8 | 2026-08-31 | P2's keyed path is the Copilot subscription's model API directly (api.githubcopilot.com, no local proxy), superseding D7. Forced by two verified facts: GitHub Models retired 2026-07-30 (endpoint returns 410) and gh CLI tokens fail the Copilot token exchange (403) — device flow required. The endpoint's undocumented-surface caveat must stay documented wherever the preset appears | ruled mid-lane in the P2 worker session (not captured verbatim); recorded per PR #3 "Deviations & decisions" item 2 and the user-relayed close-out; ratified by the user's merge of PR #3 |
 | D9 | 2026-08-31 | TENTATIVE rename: tomte → **kaimahi** (te reo Māori: worker). No changes yet — no repo/README/board/package renames until the user says go. Still owed before final: the NZ developer's read + Māori cultural appropriateness, and trademark counsel. Availability as checked 2026-08-31 (decays — nothing claimed): npm kaimahi + create-kaimahi, PyPI, crates, kaimahi.dev/.io all free; claiming any of them is outward-facing and needs explicit user approval naming the artifact | "lets tentatively go with a rename to kaimahi, but lets not make the changes yet" |
+| D10 | 2026-08-31 | Repo rename executed ahead of D9's freeze: user renamed the GitHub repo (initially to "kaiwahi" — a typo; coordinator caught the m/w mismatch vs D9 and, with user approval, corrected it to **gambtho/kaimahi**). The in-repo rename (README, board, Makefile names, docs) is a lane queued to run AFTER P3 merges. D9's remaining gates (cultural read, counsel) still stand for the name going truly final | "i changed the repo name to kaiwahi -- whenever p3 finishes we should do the rename change" — then ruled via option: "kaimahi — fix repo (Recommended)" |
 
 Old-repo history is preserved at https://github.com/gambtho/tomte-old
 (archived, read-only). No local checkout of it exists (deleted 2026-08-31);
