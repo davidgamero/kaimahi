@@ -34,8 +34,8 @@ agent), egress enforcement, and audit.
 Before ANY component is built, the owning session must survey what exists and
 justify net-new **in writing** (in its PR). Same directive both directions:
 when governance mounts, evaluate porting the old repo's verified working Go
-stack (`../tomte/server/` — enforcement proxy, vault, spend metering, permit
-model, priced-pair gate) before writing anything new.
+stack (`../tomte-old/server/` — enforcement proxy, vault, spend metering,
+permit model, priced-pair gate) before writing anything new.
 
 ## The arc
 
@@ -52,7 +52,7 @@ model, priced-pair gate) before writing anything new.
 4. **P4 — governance** mounts at kagent's seams: ModelConfig BYO base_url →
    Tomte metering/enforcing proxy; kagent MCP tool server → Tomte enforcing
    gateway; permits/approvals compile down to kagent resources. Evaluate
-   porting `../tomte/server/` first.
+   porting `../tomte-old/server/` first.
 
 ## State of the world
 
@@ -73,7 +73,9 @@ model, priced-pair gate) before writing anything new.
 | D5 | 2026-08-31 | Old repo renamed to gambtho/tomte-old and archived; fresh gambtho/tomte created for the redux | "i changed my mind, i moved the existing tomte repo to gambtho/tomte-old and archived it. i'll create a new tomte repo for this" |
 
 Old-repo history is preserved at https://github.com/gambtho/tomte-old
-(archived, read-only) and locally at `../tomte`.
+(archived, read-only) and locally at `../tomte-old`. (The redux checkout now
+lives at `../tomte`; the old local checkout's `origin` URL still says
+`gambtho/tomte` from before the rename — trust its contents, not its remote.)
 
 ## Considered and rejected (do not relitigate)
 
