@@ -67,9 +67,24 @@ before writing anything new.
    gateway; permits/approvals compile down to kagent resources. Evaluate
    porting the archived old repo's `server/` first.
 
+5. **P5 — the undeniable demo** (D14). The P1–P4 arc is COMPLETE and
+   CI-asserted, but it governs an agent that lists ConfigMaps — nothing
+   in the demo needs governance. P5 is not new capability; it makes the
+   built capability legible and credible: **P5a** a governed Slack
+   outbound path where posting requires a P4c approval (the first
+   consequential action in the repo), **P5b** cluster portability plus a
+   real AKS deployment (the README has claimed AKS since D6; the
+   Makefile's `KUBE_CTX := kind-$(KIND_CLUSTER)` means it cannot even
+   target one). Demos run on Copilot; CI stays keyless on ollama.
+
 Target environments (D6): kind is the local/demo path; **AKS** is the named
 managed-Kubernetes target. kagent runs on any conformant cluster — don't
-build anything AKS-specific without a survey-backed justification.
+build anything AKS-specific without a survey-backed justification. Note
+(2026-09-01): AKS has never been exercised — P5b closes that gap. Known
+kind-specific obstacles for that lane: `imagePullPolicy: Never` plus
+`kind load docker-image` (deliberate for kind, unusable on AKS — needs a
+registry story), the Postgres PVC's storage class, and the `kind-` context
+prefix.
 
 ## State of the world
 
@@ -84,6 +99,9 @@ build anything AKS-specific without a survey-backed justification.
 | P4a: metering/enforcing LLM proxy (D11) | W4 worker | PR #12 MERGED; coordinator verified live incl. budget denial + custody (delta sheet below) | lane closed |
 | P4b: enforcing MCP gateway | W5 worker | PR #15 MERGED (97c2b5f, payload identical to verified 06873d2; post-merge main CI green); delta sheet below | lane closed |
 | P4c: approvals/permits (D13) | W7 worker | PR #17 MERGED (dd08f00); coordinator verified both approval cycles independently pre-merge (delta sheet below) | lane closed — ARC COMPLETE |
+| P5a: governed Slack connector (D14) | unassigned | GO — W8 prompt ready (below) | needs from user: a bot token and a NAMED private test channel; contended: k8s/ + Makefile + docs + CI |
+| P5b: cluster portability + real AKS run (D14) | — | queued behind P5a merge | no pre-stacked bases; needs Azure creds + spend; see arc note for the kind-specific obstacles |
+| P6: inbound connectors (webhooks/user APIs) | — | parked candidate; own blindspot pass when reached | genuine net-new surface: ingress auth, replay, rate limits, every event causes spend |
 | CLI prototype (Tatsinnit, PR #16) | teammate | OPEN, unreviewed — a working `kaimahi agent create` prototype; board holds the CLI as under-consideration/not-GO with five open decisions reserved for the user (docs/CLI-PROPOSAL.md) | awaiting user ruling before coordinator review |
 | Docs: CLI-first framing + naming record | teammate (Tatsinnit) | PR #10 MERGED (ratifies D12) | staleness fixes folded into reconciliation lane |
 | Docs: agent-first scenarios | teammate (Tatsinnit) | PR #11 MERGED (authors' public credit ratified by user merge) | lane closed |
@@ -106,6 +124,7 @@ build anything AKS-specific without a survey-backed justification.
 | D10 | 2026-08-31 | Repo rename executed ahead of D9's freeze: user renamed the GitHub repo (initially to "kaiwahi" — a typo; coordinator caught the m/w mismatch vs D9 and, with user approval, corrected it to **gambtho/kaimahi**). The in-repo rename (README, board, Makefile names, docs) is a lane queued to run AFTER P3 merges. D9's remaining gates (cultural read, counsel) still stand for the name going truly final | "i changed the repo name to kaiwahi -- whenever p3 finishes we should do the rename change" — then ruled via option: "kaimahi — fix repo (Recommended)" |
 | D11 | 2026-08-31 | P4 shaping: (1) the metering/enforcing LLM proxy leads (P4a); MCP gateway (P4b) and approvals (P4c) follow as separate lanes. (2) The durable store is in-cluster Postgres. (3) The P4 demo is CLI-only | ruled via options: "LLM proxy first (Recommended)", "In-cluster Postgres (Recommended)", "Yes, CLI only (Recommended)" |
 | D12 | 2026-09-01 | README positioning: CLI-first/incubation framing leads; the governance plane is presented as the incubated thesis. Supersedes D6's framing (D6's substance — the five governance controls and the AKS/Foundry paragraph — is retained). The agent-first scenario doc with four named authors is published under MIT. Both ratified by the user merging PRs #10/#11 after coordinator review | "sure, go ahead" (post the reviews) → "ok, that merged as well" — ratified by merge |
+| D14 | 2026-09-01 | P5 direction: the **undeniable demo** — not a new capability arc but making the built one legible and credible. Rulings: (1) outbound connector platform is **Slack** (via existing MCP servers, no connector code); (2) AKS work goes all the way — cluster portability AND a real AKS deployment with evidence (accepts Azure spend + credentials in a worker session); (3) demos run on the **Copilot** preset while **CI stays keyless on ollama** (public fork-exposed repo — no repo secrets in CI, ever). Rationale on the board: everything governed so far protects an agent that lists ConfigMaps; posting to a channel humans read is the first consequential action, and it makes the approval gate the point rather than the plumbing | "sure, that's undeniable demo makes sense" — then ruled via options: "Slack (Recommended)", "Portability + real AKS run (Recommended)", "Copilot for demo, ollama for CI (Recommended)" |
 | D13 | 2026-09-01 | P4c approval model: TIME-BOXED PERMITS — a denied action files a pending request; approval grants it bounded (expiry by duration and/or use count) and compiles into the existing allowlist/budget rows; deny-and-retry mechanics, no held-open calls. Demo scenarios: tool-access widening (k8s_get_events, read-only) AND budget overage; the P3 tool-server read-only posture stays untouched (write-tool demo deferred) | ruled via options: "Time-boxed permits (Recommended)"; "Widen tool access (Recommended), Budget overage (Recommended)" |
 
 Old-repo history is preserved at https://github.com/gambtho/tomte-old
@@ -138,6 +157,8 @@ clone from the archive when P4 port evaluation needs the source.
   modelConfig and warn or re-govern) is a small, well-scoped fix — fold
   into the P4b lane's close-out or a follow-up micro-lane.
 
+- ~~Connectors outbound~~ → **GO as P5a** (D14, Slack). Inbound remains
+  parked below as P6.
 - **Connectors: outbound (Slack/Discord) + inbound (user APIs, webhooks,
   common sources)** — user feedback 2026-09-01: "i think a piece of
   functionality we should consider adding is the creation of connectors --
@@ -706,6 +727,94 @@ PR (your own probe names and timestamps), plus proof expiry re-denies.
 Suite green at every commit. Branch from current main; PR targets main;
 no stacked bases. Lane ends at PR-open-with-checks-green — do not
 merge. Report deviations in the PR's "Deviations & decisions" section.
+```
+
+### W8 — P5a: governed Slack connector, the demo that makes governance legible (UNASSIGNED — paste into a fresh CLI session in this repo)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout). Read docs/COORDINATION.md first — prime directive, process
+rules, security standing guidance, decisions D1–D14, and ALL delta
+sheets bind you (P3, P4b and P4c especially). Your lane: P5a — a
+governed Slack outbound path, and the demo that makes the whole
+governance arc legible.
+
+WHY THIS LANE EXISTS, keep it in view: every control built so far
+protects an agent that lists ConfigMaps — nothing in the current demo
+needs governance. Posting to a channel humans read is the first
+genuinely consequential action in this repo. Your deliverable is NOT
+"Slack works". It is: an agent tries to post, is DENIED, a request is
+filed, a human grants a bounded approval, the message lands, the use is
+burned, the next attempt is denied again — and the audit trail shows
+every step. The connector is the payload; the approval gate is the
+point.
+
+SURVEY FIRST (prime directive): Slack MCP servers already exist. Deploy
+one through kagent's own CRDs (MCPServer for a stdio/npx server, or
+RemoteMCPServer) — write NO connector code. Record in the PR: what you
+surveyed, which server you chose, and its provenance and pinning. You
+are introducing third-party code that will hold a workspace token —
+pin it by version or digest, say why you trust it, and treat that
+judgement as part of the deliverable.
+
+Architecture:
+- The Slack MCP server runs in-cluster, deployed by kagent, with the
+  bot token mounted to IT as a Secret — never to the agent, never in
+  YAML, argv, env listings, or logs. Capture it stdin-only via a
+  pipefail script (scripts/plane-secrets.sh and copilot-secret.sh are
+  the precedent). Evaluate whether custody instead belongs with the
+  plane (gateway-injected, P4a-style) and state your choice: pick the
+  simplest option that keeps the token off the agent, and justify it.
+- The agent reaches Slack THROUGH the P4b gateway; the gateway's
+  upstream table gains the in-cluster Slack MCP server as a second
+  entry. Document plainly: the gateway's upstreams remain in-cluster
+  (so the P4b ruling deferring the SSRF/hardened-dialer set still
+  holds), but the Slack server pod is the FIRST component in this repo
+  with deliberate INTERNET egress. That makes it the strongest argument
+  yet for the still-unbuilt NetworkPolicy work — which stays out of
+  scope here but must be named honestly in the runbook.
+- Posting is NOT allowlisted by default; it is the approved action.
+  Read-only Slack tools (channel list, history) may be allowlisted from
+  the start if the survey shows it helps the story.
+- The demo agent runs the GOVERNED Copilot preset (D14) so one demo
+  exercises spend governance and tool governance together, and so the
+  model can actually compose a message and call a tool — qwen2.5:3b is
+  documented doing neither reliably. CI stays KEYLESS on ollama: no
+  Slack token and no Copilot token in CI, ever (public, fork-exposed).
+
+OUTWARD-FACING CONSTRAINT (board rule): posting to Slack sends messages
+real people can read. Post ONLY to a private test channel the user has
+named for this purpose. Never a shared, public, or team channel. If no
+channel has been designated when you reach that step, STOP and ask —
+do not choose one yourself.
+
+Deliverables:
+(a) Manifests: the Slack MCP server, its gateway upstream entry, the
+    governed wiring — following existing k8s/ patterns.
+(b) Make targets in the established style (stdin-only token capture,
+    govern the Slack path, run the demo) and a documented end-to-end
+    demo sequence someone can follow live.
+(c) docs/P5A-RUNBOOK.md, with the governed-vs-ungoverned table updated
+    and an honest statement of what the internet-egress pod means.
+(d) CI, keyless: assert everything that does NOT need a Slack token —
+    manifests valid against live CRDs, gateway upstream table and tool
+    projection, and the deny → file → approve → allow → exhaust cycle
+    against a stubbed or in-cluster stand-in. State explicitly in the
+    PR which parts of the Slack path CI can and cannot cover; do not
+    let a stand-in imply the real path is CI-verified.
+(e) README status touch only if needed; keep the incubation framing.
+
+Out of scope: inbound/webhooks (P6), NetworkPolicy egress, AKS (P5b, a
+separate lane), any UI, npm/domain/external claims.
+
+Verification is real: the PR must show the full demo — the denial, the
+filed request, the bounded approval, the message actually landing (a
+screenshot or permalink is fine; redact anything workspace-identifying
+you would not want in a public repo), the burned use, the re-denial,
+and the plane's audit trail for all of it. Suite green at every commit.
+Branch from current main; PR targets main; no stacked bases. Lane ends
+at PR-open-with-checks-green — do not merge. Report deviations in the
+PR's "Deviations & decisions" section.
 ```
 
 ## Delta sheets from finished lanes
