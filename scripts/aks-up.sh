@@ -176,7 +176,9 @@ aks-up: ready.
 
   context:   $CLUSTER   (NOT a kind context — targets will ask to confirm)
   registry:  $ACR.azurecr.io
-  teardown:  AKS_RESOURCE_GROUP=$RG make aks-down     <- do not skip this
+  teardown:  AKS_RESOURCE_GROUP=$RG KAIMAHI_CONFIRM=$RG make aks-down
+             ^ do not skip this. The confirmation names the RESOURCE
+               GROUP, not the cluster — see docs/P5B-RUNBOOK.md step 7.
 
 Next (see docs/P5B-RUNBOOK.md):
   export TARGET=aks AKS_CLUSTER=$CLUSTER ACR_NAME=$ACR
