@@ -1,0 +1,92 @@
+# Fixtures for the billing-dispute scenario (docs/SCENARIOS.md, scenario 1).
+#
+# Synthetic account data, expressed as ConfigMaps so the agent can reach it
+# with the READ-ONLY tool server kagent already ships. Kaimahi deliberately
+# builds no MCP server for this: inventing a runtime to demo a scaffolder
+# would be exactly the rebuild-what-exists mistake the project restarted over.
+#
+# The numbers follow the scenario: five steady months, then a bill $126 higher
+# than expected, of which $96 is roaming that should have been impossible
+# because a roaming block has been on the account since 2025-11.
+#
+# Facts are encoded in the resource NAMES as well as the data, because
+# k8s_get_resources returns a NAME column — the agent can reach the finding
+# with the one tool it is allowed to call.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: billing-demo
+  labels:
+    kaimahi.dev/fixture: billing-dispute
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: statement-2026-03-total-96-usd
+  namespace: billing-demo
+data:
+  period: "2026-03"
+  total_usd: "96.00"
+  roaming_usd: "0.00"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: statement-2026-04-total-96-usd
+  namespace: billing-demo
+data:
+  period: "2026-04"
+  total_usd: "96.00"
+  roaming_usd: "0.00"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: statement-2026-05-total-96-usd
+  namespace: billing-demo
+data:
+  period: "2026-05"
+  total_usd: "96.00"
+  roaming_usd: "0.00"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: statement-2026-06-total-96-usd
+  namespace: billing-demo
+data:
+  period: "2026-06"
+  total_usd: "96.00"
+  roaming_usd: "0.00"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: statement-2026-07-total-96-usd
+  namespace: billing-demo
+data:
+  period: "2026-07"
+  total_usd: "96.00"
+  roaming_usd: "0.00"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: statement-2026-08-total-222-usd-roaming-96-usd
+  namespace: billing-demo
+data:
+  period: "2026-08"
+  total_usd: "222.00"
+  roaming_usd: "96.00"
+  datapack_usd: "30.00"
+  note: "roaming charges present despite an active roaming block"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: control-roaming-block-active-since-2025-11
+  namespace: billing-demo
+data:
+  control: "roaming-block"
+  state: "active"
+  active_since: "2025-11-01"

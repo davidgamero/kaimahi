@@ -1,0 +1,22 @@
+{
+  "name": "kaimahi",
+  "version": "0.0.0-prototype",
+  "description": "Scaffold governed agent-as-code onto Kubernetes from the command line.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "kaimahi": "./bin/kaimahi.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "scenarios"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "private": true
+}

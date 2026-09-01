@@ -73,6 +73,7 @@ PLANE_PULL_POLICY ?= IfNotPresent
 KUBECTL        := kubectl --context $(KUBE_CTX)
 CRED           ?= hello-world
 CRED_TOOLS     ?= hello-tools
+SCENARIO_MODEL ?= governed-ollama
 TOOLS          ?= k8s_get_resources
 # P5a: the Slack seam has its own credential, agent and allowlist. The
 # read-only tool is allowlisted from the start; POSTING is not — it is
@@ -101,7 +102,8 @@ SLACK_TOOLNAMES_JSON = $(if $(filter -,$(SLACK_AGENT_TOOLS)),,"$(subst $(comma),
 	slack-secret slack-mcp govern-slack slack-allow slack-audit \
 	slack-post slack-down aks-cluster aks-creds aks-down \
 	netpol-verify egress-copilot egress-copilot-off \
-	inbound-credential inbound-secret inbound-fire inbound-audit
+	inbound-credential inbound-secret inbound-fire inbound-audit \
+	scenario-billing cli-test
 
 # guard: the context-safety net every MUTATING target depends on. Prints
 # the target context/namespaces; demands explicit confirmation for
@@ -632,6 +634,26 @@ plane-copilot-secret: guard
 	@# this also works in the AKS ordering, where the token is minted
 	@# before the plane is deployed.)
 	$(KUBECTL) apply -f k8s/egress-copilot.yaml
+
+## ---- CLI prototype: kaimahi agent create (docs/CLI-PROTOTYPE.md) ----
+
+## scenario-billing: stand up the SCENARIOS.md billing journey — fixtures as
+## ConfigMaps, then scaffold the agent with the CLI and apply it.
+## Governed by default; SCENARIO_MODEL=ollama for the ungoverned path.
+# Guarded: it applies fixtures and an Agent, so it must not inherit a
+# context the caller did not mean to aim at.
+scenario-billing: guard
+	$(KUBECTL) apply -f k8s/scenarios/billing-demo.yaml
+	node cli/bin/kaimahi.js agent create --scenario billing \
+		--model $(SCENARIO_MODEL) --apply --context $(KUBE_CTX)
+	$(KUBECTL) -n kagent wait \
+		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
+		agent/billing-investigator --timeout=300s
+	@echo 'now: make chat AGENT=billing-investigator TASK="Why did my bill increase?"'
+
+## cli-test: unit tests for the generator (no cluster needed)
+cli-test:
+	cd cli && npm test
 
 status:
 	$(KUBECTL) -n kagent get agents,modelconfigs
