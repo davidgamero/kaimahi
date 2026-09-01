@@ -66,9 +66,9 @@ def verify(d, tool=None, needle=None):
     return ok, lines
 
 
-# Minimal task in the exact shape kagent returned for PR #24 attempt 2
-# (run 33562345538): the tool payload carries the real probe name, the
-# prose relays a garbled one.
+# The fields the verifier reads, in the shape kagent returned for PR #24
+# attempt 2 (run 33562345538): the tool payload carries the real probe
+# name, the prose relays a garbled one.
 _PROBE = "probe-46649d55"
 _FIXTURE = {
     "status": {"state": "completed"},

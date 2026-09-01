@@ -176,22 +176,30 @@ jobs:
 
       # CI flake class 2: the chat verifier's verdicts on the PR #24 task
       # shape must not drift — probe in the tool payload passes; a missing,
-      # errored or probe-less function_response fails.
+      # errored or probe-less function_response fails, as does an empty
+      # reply.
       - name: Chat verifier self-test (tool-path verdicts)
         run: python3 scripts/verify-chat.py --selftest
       # The e2e job short-circuits docs-only changes at STEP level (the job
       # must run and report — it is a required check). A step appended
       # without the guard would run against no cluster on the next
-      # docs-only PR, so refuse it here, on the PR that adds it.
+      # docs-only PR, so refuse it here, on the PR that adds it. Only the
+      # checkout, the classify step and the docs-only summary step are
+      # exempt; every other step must skip when docs_only is 'true'.
       - name: Every e2e step carries the docs-only guard
         run: |
           python3 - <<'EOF'
           import sys, yaml
           wf = yaml.safe_load(open(".github/workflows/ci.yml"))
           steps = wf["jobs"]["e2e-hello-world"]["steps"]
-          exempt = lambda s: s.get("id") == "changes" or str(s.get("uses", "")).startswith("actions/checkout")
+          exempt = lambda s: (s.get("id") in ("changes", "docs-only-summary")
+                              or str(s.get("uses", "")).startswith("actions/checkout"))
+          # Exact match, not substring: `always() || …` or `!= 'false'`
+          # would mention the output and still run without a cluster.
+          guards = {"steps.changes.outputs.docs_only != 'true'",
+                    "failure() && steps.changes.outputs.docs_only != 'true'"}
           bad = [s.get("name") or s.get("uses") for s in steps
-                 if not exempt(s) and "steps.changes.outputs.docs_only" not in str(s.get("if", ""))]
+                 if not exempt(s) and str(s.get("if", "")).strip() not in guards]
           if bad:
               print("e2e steps missing the docs-only guard:", *bad, sep="\n  ")
               sys.exit(1)
@@ -227,8 +235,9 @@ jobs:
   # kagent via helm, apply k8s/hello-world.yaml, converse via the kagent CLI.
   # Docs-only short-circuit (D17 follow-up): board updates are PRs and the
   # ruleset requires this check, so a doc-only PR used to wait ~11 min for
-  # a cluster it cannot affect. The first step classifies the change with
-  # plain git; when EVERY changed file is documentation (docs/**, *.md)
+  # a cluster it cannot affect. The step after checkout classifies the
+  # change with plain git; when EVERY changed file is documentation
+  # (docs/**, *.md)
   # the cluster steps are skipped via a per-step guard and the job still
   # reports success. Anything else — code, an undeterminable file set
   # (missing/unfetchable base, empty diff), any error — runs the full job.
@@ -256,8 +265,9 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.sha }}
         run: |
-          # No `set -e`: every failure path must land on docs_only=false,
-          # never on a red step.
+          # The job's `shell: bash` runs with -e; turn it off here — every
+          # failure path must land on docs_only=false, never on a red step.
+          set +e
           docs_only=false
           reason=""
           files=""
@@ -268,7 +278,9 @@ jobs:
             reason="cannot fetch base $BASE"
           fi
           if [ -z "$reason" ]; then
-            if files=$(git diff --name-only "$BASE" "$HEAD") && [ -n "$files" ]; then
+            # --no-renames: a pure rename lists only its destination, so a
+            # file moved INTO docs/ would otherwise read as documentation.
+            if files=$(git diff --name-only --no-renames "$BASE" "$HEAD") && [ -n "$files" ]; then
               docs_only=true
               while IFS= read -r f; do
                 case "$f" in
@@ -816,5 +828,6 @@ jobs:
           kubectl --context kind-kaimahi-p1 -n kaimahi get networkpolicy || true
           kubectl --context kind-kaimahi-p1 -n kube-system logs ds/kindnet --tail=30 || true
       - name: Docs-only change — cluster steps skipped, job reports success
+        id: docs-only-summary
         if: steps.changes.outputs.docs_only == 'true'
         run: echo "every changed file is documentation; no cluster booted"
