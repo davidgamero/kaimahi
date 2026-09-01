@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# Prove the plane's network boundary is ENFORCED, not merely present.
+#
+# A NetworkPolicy the CNI ignores looks identical to one it enforces:
+# the objects exist, kubectl shows them, nothing is blocked. So this
+# script does not check that policies exist. It asserts NEGATIVES —
+# connections that must time out — against a CONTROL that must succeed,
+# so a "blocked" result can only mean policy (not a dead target, a
+# runner without internet, or a typo'd address).
+#
+# The matrix (see k8s/plane/network-policy.yaml for the rules):
+#
+#   who                               dns  ollama  postgres  net:443  net:80
+#   control (default ns, unpoliced)    ok    ok     BLOCKED    ok       ok
+#   proxy-shaped (kaimahi)             ok    ok       ok     BLOCKED  BLOCKED
+#   slack-shaped (kaimahi)             ok  BLOCKED  BLOCKED    ok     BLOCKED
+#   unlabeled (kaimahi)             BLOCKED BLOCKED  BLOCKED  BLOCKED  BLOCKED
+#   kaimahi-postgres (the real pod) BLOCKED BLOCKED    -     BLOCKED  BLOCKED
+#
+# The control reaching everything except postgres proves the targets
+# are live AND that postgres's ingress rule holds from outside the
+# namespace. The unlabeled pod reaching nothing proves default-deny is
+# enforced at all — if the CNI ignored policy, that row would read
+# "ok" across and this script fails with a message saying exactly that.
+# The shaped pods carry the same labels the real proxy and Slack MCP
+# pods carry, so they are evaluated by the same rules; the real proxy
+# is distroless (nothing to exec), and CI deploys no Slack pod (no
+# token, no CPU). The real Postgres pod IS exec'd: it is the negative on
+# a live workload, not a stand-in. Every probe pod is BestEffort (no
+# requests) so it schedules on the full CI node, runs as non-root, and
+# is deleted on exit.
+#
+# With Copilot enabled (`make plane-copilot-secret` applies
+# k8s/egress-copilot.yaml) the proxy row legitimately reaches net:443;
+# set COPILOT_EGRESS=1 to expect that instead of failing on it.
+#
+# Env:
+#   KUBECTL          kubectl invocation incl. --context
+#   PROBE_IMAGE      default busybox:1.36
+#   INTERNET_TARGET  a public IP answering on 443 and 80 (default 1.1.1.1)
+#   COPILOT_EGRESS   1 if k8s/egress-copilot.yaml is applied
+set -euo pipefail
+
+KUBECTL="${KUBECTL:-kubectl}"
+NAMESPACE=kaimahi
+PROBE_IMAGE="${PROBE_IMAGE:-busybox:1.36}"
+INTERNET_TARGET="${INTERNET_TARGET:-1.1.1.1}"
+COPILOT_EGRESS="${COPILOT_EGRESS:-0}"
+SETTLE_SECONDS="${SETTLE_SECONDS:-5}"
+
+# Context safety (P5b): run directly, so nothing has resolved a context
+# for us — derive it from $KUBECTL, never from an inherited KUBE_CTX
+# (see scripts/tool-denial-probe.sh for why).
+# shellcheck disable=SC2086 # KUBECTL deliberately carries --context args
+probe_ctx=$($KUBECTL config view --minify -o jsonpath='{.contexts[0].name}')
+KUBE_NS="$NAMESPACE, default" KUBE_CTX="$probe_ctx" \
+  bash "$(dirname "$0")/kube-guard.sh" "$(basename "$0")"
+
+suffix=$(od -An -N3 -tx1 /dev/urandom | tr -d ' ')
+pods=()
+cleanup() {
+  for p in "${pods[@]:-}"; do
+    if [ -n "$p" ]; then
+      $KUBECTL delete pod --ignore-not-found --wait=false "${p#*/}" -n "${p%%/*}" >/dev/null 2>&1 || true
+    fi
+  done
+}
+trap cleanup EXIT
+
+ollama_ip=$($KUBECTL -n ollama get svc ollama -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+pg_ip=$($KUBECTL -n "$NAMESPACE" get svc kaimahi-postgres -o jsonpath='{.spec.clusterIP}')
+test -n "$pg_ip" || { echo "kaimahi-postgres Service not found — deploy the plane first (make plane)" >&2; exit 1; }
+if [ -z "$ollama_ip" ]; then
+  # No ollama (a Copilot-only managed cluster): the ollama column is
+  # skipped rather than faked.
+  echo "note: no ollama Service — skipping the ollama column" >&2
+fi
+
+# The check program every probe runs. Prints one RESULT line per target
+# and always exits 0, so a pod's phase never hides its findings.
+# Targets are IPs on purpose: name resolution is its own column.
+#
+# The settle sleep is a MEASURED number, not a guess: on kind
+# (kube-network-policies) a brand-new pod's first packets leave before
+# the enforcer's pod informer has seen it, so its first ~1-2s of egress
+# are unpoliced (three runs, 2026-09-01: reachable at t+0s, blocked
+# from t+1s or t+2s onward). Without the settle, this probe's first two
+# checks in the unlabeled pod read "reachable" and the run failed —
+# correctly, since that IS a gap; docs/egress.md records it. 5s is the
+# measured window with margin for a slower CI node. It affects only
+# pods that dial out in their first moments; the real workloads here
+# are long-lived and the exec'd Postgres pod needs no settle at all.
+checks="
+sleep $SETTLE_SECONDS
+r() { n=\$1; shift; if \"\$@\" >/dev/null 2>&1; then echo \"RESULT \$n reachable\"; else echo \"RESULT \$n blocked\"; fi; }
+r dns timeout 6 nslookup kubernetes.default.svc.cluster.local
+${ollama_ip:+r ollama nc -z -w 3 $ollama_ip 11434}
+r postgres nc -z -w 3 $pg_ip 5432
+r net443 nc -z -w 5 $INTERNET_TARGET 443
+r net80 nc -z -w 5 $INTERNET_TARGET 80
+"
+
+# run_probe <ns> <name> <labels-json> — a throwaway pod that runs the
+# checks and exits; its log is the result.
+run_probe() {
+  local ns=$1 name=$2 labels=$3
+  pods+=("$ns/$name")
+  $KUBECTL -n "$ns" apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $name
+  namespace: $ns
+  labels: $labels
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: $PROBE_IMAGE
+      command: ["sh", "-c", $(printf '%s' "$checks" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+EOF
+  # Bounded wait for the pod to finish (image pull + up to ~25s of
+  # timeouts). Phase Failed would mean the shell itself died — the
+  # checks never exit nonzero — so require Succeeded specifically.
+  for _ in $(seq 1 120); do
+    phase=$($KUBECTL -n "$ns" get pod "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    case "$phase" in Succeeded) break ;; Failed) break ;; esac
+    sleep 1
+  done
+  if [ "$phase" != Succeeded ]; then
+    echo "probe pod $ns/$name did not complete (phase '$phase'):" >&2
+    $KUBECTL -n "$ns" describe pod "$name" 2>&1 | tail -15 >&2
+    exit 1
+  fi
+  $KUBECTL -n "$ns" logs "$name"
+}
+
+# exec_probe <ns> <deploy> — the same checks inside a REAL pod.
+exec_probe() {
+  $KUBECTL -n "$1" exec "deploy/$2" -- sh -c "$checks"
+}
+
+failures=0
+# expect <who> <results-file> <target>=<reachable|blocked|skip> ...
+expect() {
+  local who=$1 file=$2; shift 2
+  local spec target want got
+  for spec in "$@"; do
+    target=${spec%%=*}; want=${spec#*=}
+    [ "$want" = skip ] && continue
+    got=$(awk -v t="$target" '$1=="RESULT" && $2==t {print $3}' "$file")
+    if [ -z "$got" ]; then
+      # Only the ollama column may be absent, and only when there is no
+      # ollama Service; anything else missing means the checks did not
+      # run, which must not pass as "blocked".
+      if [ "$target" = ollama ] && [ -z "$ollama_ip" ]; then continue; fi
+      echo "  $who: $target — NO RESULT (probe did not run)"; failures=$((failures + 1)); continue
+    fi
+    if [ "$got" = "$want" ]; then
+      echo "  $who: $target $got (expected)"
+    else
+      echo "  $who: $target $got — EXPECTED $want"; failures=$((failures + 1))
+    fi
+  done
+}
+
+work=$(mktemp -d)
+trap 'cleanup; rm -rf "$work"' EXIT
+
+echo "== control: unpoliced pod in namespace default"
+run_probe default "netpol-control-$suffix" '{}' > "$work/control"
+expect control "$work/control" dns=reachable ollama=reachable postgres=blocked net443=reachable net80=reachable
+if grep -q 'blocked' <(awk '$2!="postgres"' "$work/control"); then
+  echo "  the control cannot reach a target — nothing below can be attributed to policy" >&2
+  echo "  (no internet from this cluster? ollama not running?)" >&2
+  exit 1
+fi
+
+echo "== unlabeled pod in namespace $NAMESPACE (default-deny, no allowance)"
+run_probe "$NAMESPACE" "netpol-unlabeled-$suffix" '{}' > "$work/unlabeled"
+if ! grep -q blocked "$work/unlabeled"; then
+  echo "  NetworkPolicy is NOT ENFORCED on this cluster: a pod with no allowance reached everything." >&2
+  echo "  The policies exist and protect nothing. See docs/egress.md (CNI enforcement)." >&2
+  exit 1
+fi
+expect unlabeled "$work/unlabeled" dns=blocked ollama=blocked postgres=blocked net443=blocked net80=blocked
+
+echo "== proxy-shaped pod (labels of kaimahi-proxy)"
+run_probe "$NAMESPACE" "netpol-proxy-$suffix" '{"app": "kaimahi-proxy"}' > "$work/proxy"
+if [ "$COPILOT_EGRESS" = 1 ]; then proxy_net=reachable; else proxy_net=blocked; fi
+expect proxy "$work/proxy" dns=reachable ollama=reachable postgres=reachable net443=$proxy_net net80=blocked
+
+echo "== slack-shaped pod (labels of the Slack MCP server)"
+run_probe "$NAMESPACE" "netpol-slack-$suffix" '{"app.kubernetes.io/name": "kaimahi-slack-mcp"}' > "$work/slack"
+expect slack "$work/slack" dns=reachable ollama=blocked postgres=blocked net443=reachable net80=blocked
+
+echo "== kaimahi-postgres (exec into the real pod)"
+exec_probe "$NAMESPACE" kaimahi-postgres > "$work/postgres"
+# The postgres column is the pod dialing its own Service IP; not a
+# boundary statement either way, so it is not asserted.
+expect postgres "$work/postgres" dns=blocked ollama=blocked postgres=skip net443=blocked net80=blocked
+
+if [ "$failures" -ne 0 ]; then
+  echo "netpol-probe: $failures expectation(s) failed" >&2
+  exit 1
+fi
+echo "netpol-probe: boundary enforced as written"
