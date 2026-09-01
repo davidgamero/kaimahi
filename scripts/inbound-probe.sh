@@ -16,6 +16,8 @@
 #           $INBOUND_TOKEN_SECRET (default kaimahi-inbound-token)
 #   none    send NO proof at all (the unauthenticated-event assertion)
 #   forged  sign with a WRONG key (the forged-signature assertion)
+#   stale   sign correctly with a timestamp ten minutes old (the
+#           replay-window assertion)
 #
 # Custody rules (docs/COORDINATION.md): the signing key and any token
 # travel only through pipes and 0600 files (python reads the key from a
@@ -47,7 +49,7 @@ esac
 case "$EXPECT" in
   (*[!0-9]*|'') echo "invalid EXPECT '$EXPECT' (want an HTTP status)" >&2; exit 2 ;;
 esac
-case "$AUTH" in (hmac|bearer|none|forged) ;; (*) echo "invalid AUTH '$AUTH'" >&2; exit 2 ;; esac
+case "$AUTH" in (hmac|bearer|none|forged|stale) ;; (*) echo "invalid AUTH '$AUTH'" >&2; exit 2 ;; esac
 delivery="${DELIVERY:-probe-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')}"
 case "$delivery" in
   (*[!A-Za-z0-9._:-]*|'') echo "invalid DELIVERY '$delivery'" >&2; exit 2 ;;
@@ -77,7 +79,7 @@ python3 -c 'import json,sys; sys.stdout.write(json.dumps({"text": sys.argv[1]}))
 : > "$workdir/headers"
 printf 'X-Kaimahi-Delivery: %s\n' "$delivery" >> "$workdir/headers"
 case "$AUTH" in
-  hmac|forged)
+  hmac|forged|stale)
     if [ "$AUTH" = forged ]; then
       printf 'not-the-real-key' > "$workdir/key"
     else
@@ -85,6 +87,7 @@ case "$AUTH" in
       test -s "$workdir/key" || { echo "no signing key for hook '$hook' in $SIGNING_SECRET (run make inbound-secret HOOK=$hook)" >&2; exit 1; }
     fi
     ts=$(date +%s)
+    [ "$AUTH" = stale ] && ts=$((ts - 600))
     python3 - "$workdir/key" "$ts" "$delivery" "$workdir/body" >> "$workdir/headers" <<'EOF'
 import hashlib, hmac, sys
 key = open(sys.argv[1], "rb").read().strip()

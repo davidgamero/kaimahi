@@ -60,7 +60,7 @@ func main() {
 	adminAddr := env("ADMIN_ADDR", ":9091")
 	// The kagent controller's origin: the ONLY place the inbound bridge
 	// dials (per-agent A2A endpoints live under it).
-	a2aBase := env("A2A_BASE", "http://kagent-controller.kagent:8083")
+	a2aBase := env("A2A_BASE", inbound.DefaultA2ABase)
 	configFile := env("CONFIG_FILE", "/etc/kaimahi/upstreams.json")
 	adminTokenFile := env("ADMIN_TOKEN_FILE", "/etc/kaimahi/admin/token")
 	pgPasswordFile := env("PGPASSWORD_FILE", "/etc/kaimahi/pg/password")
@@ -183,7 +183,7 @@ func main() {
 			slog.Warn("inbound workers did not drain before shutdown; queued events are lost (their admitted rows stand without an outcome)")
 		}
 	case err := <-errCh:
-		// Either listener stopping before a shutdown signal is abnormal —
+		// Any listener stopping before a shutdown signal is abnormal —
 		// even ErrServerClosed — so exit nonzero and let Kubernetes
 		// restart the pod rather than report a clean exit.
 		slog.Error("server stopped unexpectedly", "err", err)

@@ -91,10 +91,17 @@ func (m *Meter) Preview(ctx context.Context, cred store.Credential) error {
 	if err != nil || len(needs) == 0 {
 		return err
 	}
+	// The store satisfies both Grants and Headroom; a Meter wired with
+	// only Grants (the pre-P7b shape) previews with the same grants it
+	// consumes, rather than silently stricter than Check.
+	headroom := m.Headroom
+	if headroom == nil {
+		headroom, _ = m.Grants.(Headroom)
+	}
 	for _, n := range needs {
 		var extra int64
-		if m.Headroom != nil {
-			extra, err = m.Headroom.LiveBudgetGrantSum(ctx, cred.Name, n.Subject)
+		if headroom != nil {
+			extra, err = headroom.LiveBudgetGrantSum(ctx, cred.Name, n.Subject)
 			if err != nil {
 				slog.Error("meter: budget headroom check failed, denying", "credential", cred.Name, "err", err)
 				return capDenial(n.Subject)

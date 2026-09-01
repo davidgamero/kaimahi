@@ -851,10 +851,15 @@ inbound-secret: guard
 ## inbound-fire: deliver one event to a hook and report the plane's
 ## decision. Unguarded for the same reason `chat` is (it runs through
 ## the guarded probe script, which resolves and vets its own context).
-##   make inbound-fire [HOOK=demo] [EVENT='...'] [AUTH=hmac|bearer|none] [EXPECT=202]
+##   make inbound-fire [HOOK=demo] [EVENT='...'] [AUTH=hmac|bearer|none|forged|stale]
+##                     [EXPECT=202] [DELIVERY=<id to resend>]
 inbound-fire:
 	@KUBECTL="$(KUBECTL)" bash scripts/inbound-probe.sh $(HOOK) "$(EVENT)"
 
-## inbound-audit: the inbound event trail (decisions and outcomes, newest first)
+## inbound-audit: the inbound event trail (decisions and outcomes, newest
+## first) — every hook, unless HOOK=<name> is given on the command line.
+## (HOOK's default serves inbound-fire/inbound-secret; an audit that
+## silently narrowed to it would hide the other hooks' events.)
 inbound-audit:
-	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh inbound-audit $(if $(filter -,$(HOOK)),,$(HOOK))
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh inbound-audit \
+		$(if $(filter command line,$(origin HOOK)),$(HOOK),)

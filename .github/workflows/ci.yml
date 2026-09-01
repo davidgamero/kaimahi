@@ -626,12 +626,13 @@ jobs:
           done
           AUTH=none EXPECT=401 bash scripts/inbound-probe.sh demo 'unauthenticated event'
           AUTH=forged EXPECT=401 bash scripts/inbound-probe.sh demo 'forged signature'
+          AUTH=stale EXPECT=401 bash scripts/inbound-probe.sh demo 'correctly signed, ten minutes ago'
           # Signed correctly, but no human has granted the hook: denied,
           # and the approval request is filed.
           EXPECT=403 bash scripts/inbound-probe.sh demo 'no grant yet'
           make inbound-audit | tee inbound-audit-denied.out
           grep -E 'demo +inbound-demo +probe-[0-9a-f]+ +denied +403 ' inbound-audit-denied.out
-          test "$(grep -cE 'demo +inbound-demo +  +denied +401 ' inbound-audit-denied.out)" = 2
+          test "$(grep -cE 'demo +inbound-demo +  +denied +401 ' inbound-audit-denied.out)" = 3
       - name: "Inbound: exhausted target budget refused at the door"
         run: |
           # hello-world's cap is 1 token and its budget grant is spent
@@ -647,7 +648,10 @@ jobs:
           id=$(awk '$3=="inbound-demo" && $4=="inbound" && $5=="demo" {print $1}' approvals-inbound.out)
           test -n "$id"
           make approve ID="$id" USES=2 TTL=10m
-          before=$(make ledger | grep -cE 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' || true)
+          # Count governed rows into a file first, so a `make ledger`
+          # failure fails the step instead of being read as zero rows.
+          make ledger > ledger-before.out
+          before=$(grep -cE 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' ledger-before.out || [ $? = 1 ])
           d="ci-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
           DELIVERY="$d" bash scripts/inbound-probe.sh demo 'Reply with exactly the word PONG.'
           # The SAME delivery again is a replay: refused, no use burned.
@@ -665,7 +669,8 @@ jobs:
           grep -E "demo +inbound-demo +$d +denied +409 " inbound-audit.out
           # The event's spend was governed and ledgered by the proxy
           # under the agent's credential: one more governed row.
-          after=$(make ledger | grep -cE 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' || true)
+          make ledger > ledger-after.out
+          after=$(grep -cE 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' ledger-after.out || [ $? = 1 ])
           test "$after" -gt "$before"
           # Second use admitted; the grant is then spent: refused again
           # and a fresh request filed.

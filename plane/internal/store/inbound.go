@@ -53,8 +53,9 @@ func (s *Store) CredentialByName(ctx context.Context, name string) (Credential, 
 	return c, err
 }
 
-// RecordInboundAudit appends one inbound row. Append-only by
-// construction, like the spend ledger and tool_audit.
+// RecordInboundAudit appends one inbound row. Committed rows are never
+// modified (AdmitInboundEvent's one UPDATE happens inside its own
+// transaction, before commit), like the spend ledger and tool_audit.
 func (s *Store) RecordInboundAudit(ctx context.Context, e InboundAuditEntry) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO inbound_audit (hook, credential_name, delivery_id, decision, status, detail, agent, input_tokens, output_tokens)

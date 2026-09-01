@@ -89,12 +89,14 @@ gets 403, not 401.
 
 The event text is the JSON body's `text` field if there is one,
 otherwise the body itself (for Slack, `event.text`). It becomes the
-agent's prompt as-is. Anything that is not UTF-8 text is a 400.
+agent's prompt as-is. On the generic hooks, a body that is not UTF-8
+text, or has no text, is a 400; on the Slack hook, anything but the two
+envelope shapes above is.
 
 ## Approval: a hook is granted, bounded, or it does not run
 
 Triggering an agent from outside is consequential, so it is an
-approvable action in the [approvals](P4C-RUNBOOK.md) sense, not something
+approvable action in the [approvals](approvals.md) sense, not something
 a credential alone opens. An event on a hook with no live grant is
 denied with 403 and files a pending request (kind `inbound`, subject the
 hook name, deduped while pending). A human approves it with bounds:
@@ -129,9 +131,10 @@ previews the target's budget: the credential named in `budget_credential`,
 its month-to-date usage, its caps, and the headroom any live budget grant
 adds. If the proxy would deny the agent's next call, the door denies the
 event instead, with 429, and files the agent's budget request (the same
-one the proxy would file; they dedupe). The preview consumes nothing. The
-proxy stays the place that consumes a budget grant use, so one event
-never burns two.
+one the proxy would file; they dedupe). If the plane cannot read spend at
+all, that is a 503, not a refusal: an ingress caller has to be able to
+tell "no" from "try later". The preview consumes nothing. The proxy stays
+the place that consumes a budget grant use, so one event never burns two.
 
 A target whose credential does not exist is not governed, and an
 ungoverned agent cannot be triggered from outside (403). The plane cannot
@@ -145,8 +148,8 @@ Every decision about an attributable event is a row in `inbound_audit`,
 append-only like the ledger and the tool audit:
 
 ```
-make inbound-audit            # the demo hook
-make inbound-audit HOOK=-     # every hook
+make inbound-audit            # every hook
+make inbound-audit HOOK=demo  # one hook
 ```
 
 ```
@@ -172,9 +175,11 @@ second row lands: `completed` (HTTP 200, the task id, and the token counts
 the agent runtime reported for that invocation) or `failed` (why). The
 token counts are attribution, not billing: the proxy priced and ledgered
 the same call under the agent's credential, and the two agree (that row
-above and the ledger row for it both say 368 in, 3 out). An `admitted`
-row with no outcome after a few minutes means the plane restarted
-mid-invocation; the queue is not durable.
+above and the ledger row for it both say 368 in, 3 out). An agent turn
+is bounded at five minutes and the queue holds sixteen events for two
+workers, so an `admitted` row can legitimately wait a while; one that
+never gets an outcome means the plane restarted with it queued or in
+flight. The queue is not durable, and a restart says so this way.
 
 If the audit trail cannot be written, every event is refused with 503
 until a write succeeds. The refusal's own record attempt is the recovery

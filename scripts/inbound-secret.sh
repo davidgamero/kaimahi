@@ -58,9 +58,20 @@ else
 fi
 
 # Preserve the other hooks' keys: decode each existing key into its own
-# 0600 file, then re-create the Secret from files.
-if $KUBECTL -n "$NAMESPACE" get secret "$SECRET" >/dev/null 2>&1; then
-  $KUBECTL -n "$NAMESPACE" get secret "$SECRET" -o json > "$workdir/existing.json"
+# 0600 file, then re-create the Secret from files. Only a genuine
+# NotFound may skip this: an unreachable API server, an expired
+# credential or an RBAC denial on `get` would otherwise read as "absent"
+# and the apply below would silently drop every other hook's key.
+set +e
+$KUBECTL -n "$NAMESPACE" get secret "$SECRET" -o json > "$workdir/existing.json" 2> "$workdir/get.err"
+get_rc=$?
+set -e
+if [ "$get_rc" -ne 0 ] && ! grep -q NotFound "$workdir/get.err"; then
+  echo "cannot read Secret $NAMESPACE/$SECRET (refusing to overwrite other hooks' keys blind):" >&2
+  cat "$workdir/get.err" >&2
+  exit 1
+fi
+if [ "$get_rc" -eq 0 ]; then
   python3 - "$workdir/existing.json" "$workdir/keys" "$hook" <<'EOF'
 import base64, json, os, sys
 d = json.load(open(sys.argv[1]))

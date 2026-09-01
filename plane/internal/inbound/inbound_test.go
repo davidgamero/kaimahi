@@ -236,19 +236,21 @@ func hooks(t *testing.T) map[string]config.InboundHook {
 
 func newFixture(t *testing.T, fs *fakeStore, m Meter, opts ...func(*Deps)) *fixture {
 	t.Helper()
-	a2a := newA2A(t)
-	now := time.Date(2026, 9, 1, 21, 0, 0, 0, time.UTC)
-	d := Deps{Store: fs, Meter: m, Hooks: hooks(t), A2ABase: a2a.URL, QueueSize: 4, Workers: 1,
-		InvokeTimeout: 5 * time.Second, Now: func() time.Time { return now }}
+	// The fixture owns the clock: tests advance f.now and the bridge (and
+	// its limiter) read it through one closure.
+	f := &fixture{fs: fs, a2a: newA2A(t), now: time.Date(2026, 9, 1, 21, 0, 0, 0, time.UTC)}
+	d := Deps{Store: fs, Meter: m, Hooks: hooks(t), A2ABase: f.a2a.URL, QueueSize: 4, Workers: 1,
+		InvokeTimeout: 5 * time.Second, Now: func() time.Time { return f.now }}
 	for _, o := range opts {
 		o(&d)
 	}
-	b := New(d)
+	f.bridge = New(d)
+	f.mux = f.bridge.Mux()
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { b.Run(ctx); close(done) }()
-	t.Cleanup(func() { cancel(); <-done })
-	return &fixture{fs: fs, a2a: a2a, bridge: b, mux: b.Mux(), now: now, cancel: cancel, done: done}
+	f.done = make(chan struct{})
+	go func() { f.bridge.Run(ctx); close(f.done) }()
+	t.Cleanup(func() { cancel(); <-f.done })
+	return f
 }
 
 func (f *fixture) post(hook string, body string, headers map[string]string) *httptest.ResponseRecorder {
@@ -439,9 +441,14 @@ func TestTargetBudgetPreviewDeniesAndFilesUnderAgentCredential(t *testing.T) {
 	require.Zero(t, f.a2a.count())
 }
 
-func TestMeteringFailureClosed(t *testing.T) {
+func TestMeteringFailureClosedAs503(t *testing.T) {
+	// Not a cap denial: the plane is degraded, and an ingress caller must
+	// be able to tell "refused" (429/403) from "try later" (503).
 	f := newFixture(t, newFakeStore(), &fakeMeter{err: meter.Denial{Status: http.StatusForbidden, Msg: "metering unavailable"}})
-	require.Equal(t, http.StatusForbidden, f.post("demo", `{"text":"hi"}`, bearer("d1")).Code)
+	rec := f.post("demo", `{"text":"hi"}`, bearer("d1"))
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Empty(t, f.fs.filed, "a metering outage files no budget request")
+	require.Zero(t, f.a2a.count())
 }
 
 func TestUngovernedTargetNotTriggerable(t *testing.T) {
@@ -471,8 +478,6 @@ func TestRateLimitRejectsBeforeAuth(t *testing.T) {
 	require.Len(t, fs.decisions("tiny"), 2)
 	// Refill at 1/min: a minute later one token is back.
 	f.now = f.now.Add(time.Minute)
-	f.bridge.d.Now = func() time.Time { return f.now }
-	f.bridge.limiter.now = f.bridge.d.Now
 	require.Equal(t, http.StatusAccepted, f.post("tiny", "short", bearer("d10")).Code)
 }
 
@@ -494,18 +499,28 @@ func TestQueueFullDeniesWithoutBurningAUse(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond)
 }
 
+func (f *fakeStore) setAuditErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.auditErr = err
+}
+
 func TestAuditDegradationFailsClosedAndRecovers(t *testing.T) {
 	fs := newFakeStore()
 	f := newFixture(t, fs, &fakeMeter{})
-	fs.auditErr = errors.New("pg down")
+	fs.setAuditErr(errors.New("pg down"))
 	// The first refusal's audit write fails and trips the breaker...
 	f.post("demo", "x", nil)
-	// ...so an otherwise-admissible event is refused.
+	// ...so an otherwise-admissible event is refused — and so is a
+	// Slack handshake: nothing is honoured while decisions cannot be
+	// recorded.
 	rec := f.post("demo", `{"text":"hi"}`, bearer("d1"))
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	challenge := `{"type":"url_verification","challenge":"abc"}`
+	require.Equal(t, http.StatusServiceUnavailable, f.post("slack", challenge, f.slackSigned(challenge)).Code)
 	require.Zero(t, f.a2a.count())
 	// A successful write (the denial's own record) heals it.
-	fs.auditErr = nil
+	fs.setAuditErr(nil)
 	rec = f.post("demo", `{"text":"hi"}`, bearer("d1"))
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code, "the healing request itself is still denied")
 	rec = f.post("demo", `{"text":"hi"}`, bearer("d2"))

@@ -21,7 +21,9 @@ ALTER TABLE permit_grant ADD CONSTRAINT permit_grant_kind_check
     CHECK (kind IN ('tool', 'budget', 'inbound'));
 
 -- 2. The inbound audit trail. Append-only like ledger_entry and
---    tool_audit (no update or delete path in code); every decision about
+--    tool_audit: no delete path, and the only UPDATE is inside the
+--    admitting transaction (the grant id is written onto the row before
+--    it commits; nothing touches a committed row). Every decision about
 --    an attributable event is a row, and an admitted event gets a SECOND
 --    row when its invocation finishes ('completed' or 'failed') — the
 --    outcome is appended, never patched onto the admission.
@@ -58,7 +60,8 @@ CREATE TABLE inbound_audit (
     -- The agent the hook targets, as "namespace/name".
     agent           text NOT NULL DEFAULT '',
     -- Token usage the agent runtime REPORTED for this invocation
-    -- (kagent_usage_metadata), on 'completed' rows. Spend attribution
+    -- (kagent_usage_metadata), on outcome rows — a 'failed' task can
+    -- have spent tokens too, and says so. Spend attribution
     -- only: the spend itself is ledgered by the proxy under the agent's
     -- governed credential; these counts are never priced here.
     input_tokens    bigint NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),

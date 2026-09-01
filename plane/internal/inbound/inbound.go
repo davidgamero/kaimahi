@@ -74,7 +74,9 @@ type Deps struct {
 	Hooks map[string]config.InboundHook
 	// A2ABase is the kagent controller's origin; an agent is invoked at
 	// {A2ABase}/api/a2a/{namespace}/{agent}/ — the one place the bridge
-	// ever dials (the egress rule at this layer).
+	// ever dials (the egress rule at this layer). Empty takes
+	// DefaultA2ABase rather than a dial of "" that would fail only after
+	// an event was admitted and its grant use burned.
 	A2ABase string
 	// Client makes the A2A call. Nil gets a default that never follows a
 	// redirect (standing guidance) and bounds a call at InvokeTimeout.
@@ -89,6 +91,9 @@ type Deps struct {
 }
 
 const (
+	// DefaultA2ABase is the kagent controller Service as the chart
+	// installs it.
+	DefaultA2ABase       = "http://kagent-controller.kagent:8083"
 	defaultQueueSize     = 16
 	defaultWorkers       = 2
 	defaultInvokeTimeout = 5 * time.Minute
@@ -117,11 +122,15 @@ type Bridge struct {
 	// that cannot be recorded must not be honoured (the ledger/tool
 	// audit contract, applied to ingress).
 	auditDegraded atomic.Bool
-	client        *http.Client
 	wg            sync.WaitGroup
 }
 
+// New applies the defaults (recorded on the bridge's copy of Deps, so
+// what it runs with is what it reports) and wires the bounded queue.
 func New(d Deps) *Bridge {
+	if d.A2ABase == "" {
+		d.A2ABase = DefaultA2ABase
+	}
 	if d.QueueSize <= 0 {
 		d.QueueSize = defaultQueueSize
 	}
@@ -134,26 +143,28 @@ func New(d Deps) *Bridge {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
-	c := d.Client
-	if c == nil {
-		c = &http.Client{
+	if d.Client == nil {
+		d.Client = &http.Client{
 			Timeout: d.InvokeTimeout,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
 		}
 	}
-	return &Bridge{
-		d:       d,
-		limiter: newLimiter(d.Now),
-		jobs:    make(chan job, d.QueueSize),
-		slots:   make(chan struct{}, d.QueueSize),
-		client:  c,
+	b := &Bridge{
+		d:     d,
+		jobs:  make(chan job, d.QueueSize),
+		slots: make(chan struct{}, d.QueueSize),
 	}
+	// One clock: the limiter borrows the bridge's, so a test (or a
+	// future injected clock) has a single thing to set.
+	b.limiter = newLimiter(func() time.Time { return b.d.Now() })
+	return b
 }
 
 // Mux serves the inbound surface: POST /hook/{name} and a health probe.
-// Everything else 404s having done nothing.
+// Everything else is refused by the mux (404, or 405 for another method
+// on the hook route) having done nothing.
 func (b *Bridge) Mux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /hook/{name}", b.receive)
@@ -215,9 +226,10 @@ func (b *Bridge) receive(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	h, ok := b.d.Hooks[name]
 	if !ok {
-		// Unknown hooks are indistinguishable from unauthenticated calls
-		// on purpose (no enumeration), and unaudited: nothing to
-		// attribute them to.
+		// A hook the config does not name gets the same answer as a
+		// missing credential, and is unaudited: nothing to attribute it
+		// to. (Named hooks do answer differently to oversize or flooded
+		// calls, so names are not a secret; the credential is.)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -233,6 +245,15 @@ func (b *Bridge) receive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A tripped audit trail fails the bridge closed for everything past
+	// the bucket — nothing is honoured, not even a handshake, while
+	// decisions cannot be recorded. The denial's own record attempt is
+	// the recovery probe.
+	if b.auditDegraded.Load() {
+		b.deny(w, r, name, h, "", http.StatusServiceUnavailable, "inbound audit unavailable")
+		return
+	}
+
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, h.MaxBodyBytes))
 	if err != nil {
 		b.deny(w, r, name, h, "", http.StatusRequestEntityTooLarge, "request body unreadable or too large")
@@ -240,8 +261,9 @@ func (b *Bridge) receive(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Authenticate: the caller must prove it is the hook's bound
-	// credential. Every failure here is a 401 (a 403 for a real
-	// credential bound elsewhere), audited under the hook's credential.
+	// credential. A failed proof is a 401 (a 403 for a real credential
+	// bound elsewhere); a malformed event is a 400; an unreadable
+	// secret or store is a 503. All audited under the hook's credential.
 	cred, delivery, ev, ok := b.authenticate(w, r, name, h, body)
 	if !ok {
 		return
@@ -253,13 +275,6 @@ func (b *Bridge) receive(w http.ResponseWriter, r *http.Request) {
 			Decision: "challenge", Status: http.StatusOK, Agent: agentRef(h)})
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"challenge": ev.challenge})
-		return
-	}
-
-	// A tripped audit trail fails the bridge closed; the denial's own
-	// record attempt is the recovery probe.
-	if b.auditDegraded.Load() {
-		b.deny(w, r, name, h, delivery, http.StatusServiceUnavailable, "inbound audit unavailable")
 		return
 	}
 
@@ -278,11 +293,15 @@ func (b *Bridge) receive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := b.d.Meter.Preview(r.Context(), target); err != nil {
-		status := http.StatusForbidden
+		// A cap denial keeps the meter's 429; anything else (metering
+		// unavailable) is the plane degraded, which on an ingress is a
+		// 503 like every other outage here — a caller must be able to
+		// tell "refused" from "try later".
+		status := http.StatusServiceUnavailable
 		msg := err.Error()
 		var d meter.Denial
-		if errors.As(err, &d) && (d.Status == http.StatusForbidden || d.Status == http.StatusTooManyRequests) {
-			status = d.Status
+		if errors.As(err, &d) && d.BudgetSubject != "" {
+			status = http.StatusTooManyRequests
 		}
 		// Deny-and-pend (D13) under the AGENT's credential: the same
 		// request the proxy would file when the agent is denied there,
@@ -305,8 +324,14 @@ func (b *Bridge) receive(w http.ResponseWriter, r *http.Request) {
 	}
 	release := func() { <-b.slots }
 
-	// Admit: the audit row (replay guard) and the grant use, atomically.
-	eventID, grantID, err := b.d.Store.AdmitInboundEvent(r.Context(), name, cred.Name, delivery, agentRef(h))
+	// Admit: the audit row (replay guard) and the grant use, atomically —
+	// on a cancel-free context: webhook sources hang up fast, and a
+	// disconnect mid-commit must not leave a committed admission (use
+	// burned, replay slot taken) that this side treats as a failure and
+	// never queues.
+	admitCtx, cancelAdmit := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	eventID, grantID, err := b.d.Store.AdmitInboundEvent(admitCtx, name, cred.Name, delivery, agentRef(h))
+	cancelAdmit()
 	switch {
 	case errors.Is(err, store.ErrReplay):
 		release()
@@ -509,7 +534,7 @@ func (b *Bridge) invoke(ctx context.Context, j job) outcome {
 	// kagent attributes the session to this id; the hook, not the
 	// external sender, is the actor the plane vouches for.
 	req.Header.Set("x-user-id", userIDPrefix+j.hook)
-	resp, err := b.client.Do(req)
+	resp, err := b.d.Client.Do(req)
 	if err != nil {
 		return outcome{err: fmt.Errorf("agent unreachable: %w", err)}
 	}
