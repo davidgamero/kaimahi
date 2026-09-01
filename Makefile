@@ -109,7 +109,15 @@ GUARD_NS ?= kagent, kaimahi, ollama
 ifeq ($(TARGET),kind)
 UP_STEPS := cluster ollama model kagent agent tools-agent status
 else
-UP_STEPS := cluster kagent plane plane-copilot-secret govern agent \
+# The Copilot credential is minted BEFORE the plane is deployed, not
+# after. The proxy mounts kaimahi-copilot-token as an OPTIONAL secret
+# volume, so a pod that starts before the Secret exists comes up with an
+# empty mount and every governed Copilot call fails closed with "upstream
+# credential unavailable" until kubelet gets round to projecting it.
+# Minting first makes the first chat on a fresh cluster work. (kind never
+# hit this: its governed demo path is ollama, which needs no upstream
+# credential.)
+UP_STEPS := cluster kagent plane-copilot-secret plane govern agent \
 	tools-agent govern-tools status
 endif
 
