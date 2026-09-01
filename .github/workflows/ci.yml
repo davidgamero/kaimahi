@@ -98,7 +98,20 @@ jobs:
           set -e
           test "$rc" -ne 0 || { echo 'registry target deployed with no PLANE_IMAGE'; exit 1; }
           # The committed manifest itself must still be the kind one.
-          grep -q 'imagePullPolicy: Never' k8s/plane/proxy.yaml
+          # Parsed, not grepped: the string "imagePullPolicy: Never" also
+          # appears in that file's own comments, so a grep would keep
+          # passing after the real field was deleted.
+          python3 - <<'EOF'
+          import sys, yaml
+          policies = [
+              c["imagePullPolicy"]
+              for d in yaml.safe_load_all(open("k8s/plane/proxy.yaml"))
+              if d and d.get("kind") == "Deployment"
+              for c in d["spec"]["template"]["spec"]["containers"]
+              if c["name"] == "proxy"
+          ]
+          assert policies == ["Never"], f"committed proxy pull policy: {policies}"
+          EOF
 
   # P4a: the governance plane's Go module — build, vet, gofmt, tests.
   # A separate quick job so proxy logic failures surface in seconds, not
