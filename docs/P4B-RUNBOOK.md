@@ -88,7 +88,10 @@ at boot (the ConfigMap mounts via subPath, which never live-updates).
   `tools/list` — kagent's controller discovers through the gateway, so
   `status.discoveredTools` on `kaimahi-tools` shows exactly what the
   credential may call; the agent never sees the rest. **Empty or missing
-  allowlist = nothing callable.** Allowlist edits enforce immediately on
+  allowlist = nothing callable** — the one governed exception is a live
+  P4c time-boxed grant ([P4C-RUNBOOK.md](P4C-RUNBOOK.md)), which admits
+  calls and joins the projection while it lasts. Allowlist edits enforce
+  immediately on
   calls; the projection an agent *sees* refreshes on kagent's next
   RemoteMCPServer reconcile.
 - **Audit**: every `tools/call` outcome and every attributable denial is
@@ -135,7 +138,7 @@ offers.
 | LLM calls via P2 presets (`openai`, `anthropic`, …) | Ungoverned (by choice — switch presets to govern) |
 | Tool calls via `kaimahi-tools` (after `make govern-tools`) | **Governed** (P4b): authn, upstream table, tools-only scope, allowlist, audit |
 | Tool calls via `kagent-tool-server` directly (P3 wiring) | Ungoverned (by choice — `make govern-tools` to govern) |
-| Approvals / permits / human-in-the-loop | Absent until **P4c** — the allowlist is static policy, not consent |
+| Approvals / permits / human-in-the-loop | **Built in P4c** — denials file approval requests; time-boxed grants admit past the static allowlist ([P4C-RUNBOOK.md](P4C-RUNBOOK.md)) |
 | Pod-level network egress | **Not enforced**: the gateway governs the MCP seam only; cluster NetworkPolicy is a known limitation, not yet built |
 
 ## Operational notes

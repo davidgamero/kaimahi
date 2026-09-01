@@ -242,6 +242,43 @@ jobs:
           discovered=$(kubectl --context kind-kaimahi-p1 -n kagent get remotemcpserver kaimahi-tools \
             -o jsonpath='{.status.discoveredTools[*].name}')
           test "$discovered" = k8s_get_resources
+      # P4c, keyless: both approval cycles asserted fail-closed in the
+      # same cluster/job (zero CPU delta — approvals extend the existing
+      # process). USES=1 bounds keep CI sleep-free: exhaustion, not
+      # wall-clock expiry, proves grants end (TTL expiry is live-verified
+      # in the PR).
+      - name: "Approvals tool cycle: denied files request, bounded approval admits, exhaustion re-denies"
+        run: |
+          bash scripts/tool-denial-probe.sh k8s_get_events
+          make approvals | tee approvals-tool.out
+          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_events" {print $1}' approvals-tool.out)
+          test -n "$id"
+          make approve ID="$id" USES=1 TTL=10m
+          bash scripts/tool-call-probe.sh k8s_get_events '{"namespace": "default"}'
+          # The single use is consumed: the same call is denied again,
+          # fail closed, and a fresh request is filed.
+          bash scripts/tool-denial-probe.sh k8s_get_events
+          make tool-audit | tee tool-audit-p4c.out
+          grep -E 'hello-tools +kagent-tools +tools/call +k8s_get_events +allowed +200 +granted' tool-audit-p4c.out
+      - name: "Approvals budget cycle: cap denial filed a request, bounded raise admits, exhaustion re-denies"
+        run: |
+          # The budget-exhaustion step above (CAP_TOKENS=1) already
+          # denied a governed chat, which auto-filed this request:
+          make approvals | tee approvals-budget.out
+          id=$(awk '$3=="hello-world" && $4=="budget" && $5=="tokens" {print $1}' approvals-budget.out)
+          test -n "$id"
+          make approve ID="$id" USES=1 TTL=10m AMOUNT=1000000
+          make chat | tee granted-chat.out
+          python3 scripts/verify-chat.py granted-chat.out
+          # Grant exhausted (USES=1): the next chat is denied again.
+          make chat > overage-denied.out 2>&1 || true
+          grep -q 'monthly token budget reached' overage-denied.out
+          if grep -q '"state":"completed"' overage-denied.out; then
+            echo 'chat completed despite exhausted grant' >&2; exit 1
+          fi
+          make approval-audit | tee approval-audit.out
+          grep -E 'hello-world +budget +tokens +approved' approval-audit.out
+          grep -E 'hello-tools +tool +k8s_get_events +approved' approval-audit.out
       - name: Cluster state on failure
         if: failure()
         run: |

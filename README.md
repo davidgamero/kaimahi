@@ -1,11 +1,14 @@
 # kaimahi
 
 > **Incubation project.** An idea being worked out in the open. Phases 1–3
-> run and are verified on every commit, and the governance plane's first
-> two slices — budgets, spend metering, and credential custody for LLM
-> calls; an enforcing gateway with allowlists and audit for tool calls —
-> now run too. The CLI front door and the rest of the plane are proposals,
-> not products. The name is provisional — see [docs/NAMING.md](docs/NAMING.md).
+> run and are verified on every commit, and the governance plane's thesis
+> is now delivered in its first full pass — budgets, spend metering, and
+> credential custody for LLM calls; an enforcing gateway with allowlists
+> and audit for tool calls; and human approvals minting time-boxed
+> permits. Incubation continues honestly: NetworkPolicy egress,
+> internet-facing tool upstreams, and richer approval routing remain
+> unbuilt, and the CLI front door is still a proposal. The name is
+> provisional — see [docs/NAMING.md](docs/NAMING.md).
 
 **Scaffold an agent onto Kubernetes from your terminal.** The agent is a YAML
 file. The interface is a command. No dashboard, no SaaS account, no runtime
@@ -170,7 +173,7 @@ get/list/watch ClusterRole that **cannot read Secrets**, with a single-tool
 allowlist on top.
 Details: [docs/P3-RUNBOOK.md](docs/P3-RUNBOOK.md).
 
-> **Spend and tool calls can now be governed.** `make govern` routes the
+> **Spend, tool calls, and exceptions can now be governed.** `make govern` routes the
 > agent's LLM calls through the in-cluster kaimahi proxy — monthly budgets
 > that fail closed, every call ledgered, and the real upstream credential
 > held only by the proxy ([docs/P4A-RUNBOOK.md](docs/P4A-RUNBOOK.md)).
@@ -178,9 +181,12 @@ Details: [docs/P3-RUNBOOK.md](docs/P3-RUNBOOK.md).
 > gateway — a committed upstream table as the egress rule at that seam,
 > a per-credential tool allowlist projected into what the agent can even
 > see, and every call audited ([docs/P4B-RUNBOOK.md](docs/P4B-RUNBOOK.md)).
+> A denial is no longer a dead end: it files an approval request, and
+> `make approve` mints a time-boxed permit that widens exactly what was
+> denied, then lapses ([docs/P4C-RUNBOOK.md](docs/P4C-RUNBOOK.md)).
 > Governance stays opt-in per agent: an *ungoverned* preset still bills
 > with no ledger, an ungoverned tools wiring still acts with no audit —
-> and approvals plus cluster-level egress policy wait for later slices.
+> and cluster-level egress policy (NetworkPolicy) is still unbuilt.
 
 ## The thesis: a governance plane
 
@@ -195,7 +201,10 @@ idea being incubated — phase 4, arriving in slices:
   kaimahi token; real provider keys live only with the proxy and never
   reach agent pods, YAML, or logs.
 - **Approvals and blast-radius permits** — consequential actions wait for a
-  human yes, scoped to what was approved. *Proposed (P4c).*
+  human yes, scoped to what was approved. *Built (P4c)*: a denied action
+  files an approval request; approving mints a time-boxed grant (expiry
+  and/or use count — unbounded grants are refused) that widens exactly
+  the denied surface, then lapses.
 - **Egress enforcement** — agents reach only permitted endpoints.
   *Built at the MCP seam (P4b)*: the gateway relays only to a committed
   upstream table, with per-credential tool allowlists; cluster-level
@@ -218,7 +227,7 @@ journeys that argue for these five specifically are collected in
 | 3 | Connectors/tools via MCP | **runs** — `hello-tools`, real tool call asserted in CI |
 | 4a | Governed LLM spend (proxy, budgets, ledger, custody) | **runs** — `make govern`, denial + ledger asserted in CI |
 | 4b | Governed tool calls (MCP gateway, allowlists, audit) | **runs** — `make govern-tools`, denial + audit asserted in CI |
-| 4c | Approvals / blast-radius permits | thesis, not built |
+| 4c | Approvals / time-boxed permits (deny-and-pend, bounded grants) | **runs** — `make approvals`, both cycles asserted in CI |
 | — | `kaimahi create` CLI | proposed — [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) |
 
 Cloud-agnostic — it runs on any conformant Kubernetes — with first-class
