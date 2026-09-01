@@ -146,7 +146,8 @@ CHAT_PORT ?= 8083
 # it can never fall back to someone else's.
 KAGENT_INVOKE = $(KAGENT) --kagent-url http://127.0.0.1:$(CHAT_PORT) invoke
 
-# $(1) is the agent whose Service must be servable; $(2) is the command.
+# $(1) is the agent whose Service must be servable; $(2) is the command;
+# $(3) optionally narrows which transport failures are retried (see below).
 #
 # Before invoking, prove the agent is actually SERVABLE — do not infer it.
 #
@@ -190,12 +191,30 @@ KAGENT_INVOKE = $(KAGENT) --kagent-url http://127.0.0.1:$(CHAT_PORT) invoke
 # That is the same race one moment later, and it reddened main after P5b
 # merged. Retry both.
 #
-# The predicate stays deliberately narrow. The output being matched
-# CONTAINS THE MODEL'S OWN REPLY, so a bare `EOF` (or `connection reset`)
-# would let an agent that merely talks about them trigger a retry. Both
-# are therefore only retryable when they terminate kagent's own transport
-# error; `connection refused` is specific enough to stand alone.
-CHAT_RETRYABLE = 'connection refused|failed to send HTTP request:.*(EOF|connection reset)'
+# The predicate is anchored to the controller's WHOLE error line, not to
+# transport text anywhere in the output. The output being matched is the
+# combined stdout+stderr, and stdout carries the A2A task JSON — including
+# the model's own reply. An agent asked to explain one of these errors
+# (the FAQ documents them) would echo the words and, with a loose match,
+# trigger a second invoke: duplicate spend, and for tool calls a burned
+# grant. kagent prints the failure as one line, "Error invoking session:
+# <wrapped error>", ending in Go's net error; anchor both ends so a line
+# that starts with `{` can never match.
+#
+# Two classes, because they are not equally safe to retry:
+#   REFUSED  — kube-proxy REJECTed; nothing reached the agent. Always safe.
+#   AMBIGUOUS — EOF / connection reset: the request may have reached the
+#              agent and been acted on before the connection dropped.
+# `chat` retries both (re-asking a question is acceptable). Anything whose
+# task performs a non-idempotent action — slack-post, which POSTS to a
+# channel under a USES-bounded grant — retries only the refused class:
+# a retry after an ambiguous failure could post twice. Pass the class as
+# $(3); it defaults to both.
+CHAT_ERROR_LINE  = ^Error invoking session: .*failed to send HTTP request: Post "[^"]*": 
+CHAT_REFUSED     = dial tcp [^ ]*: connect: connection refused
+CHAT_AMBIGUOUS   = EOF|(read|write) tcp [^ ]*: (read|write): connection reset by peer
+CHAT_RETRYABLE      = '$(CHAT_ERROR_LINE)($(CHAT_REFUSED)|$(CHAT_AMBIGUOUS))$$'
+CHAT_RETRYABLE_SAFE = '$(CHAT_ERROR_LINE)($(CHAT_REFUSED))$$'
 define kagent_forward
 agent_ok=; \
 for _ in $$(seq 1 120); do \
@@ -229,7 +248,7 @@ fi; \
 out=$$(mktemp); rc=0; \
 for attempt in 1 2 3 4; do \
 	rc=0; $(2) >"$$out" 2>&1 || rc=$$?; \
-	grep -Eq $(CHAT_RETRYABLE) "$$out" || break; \
+	grep -Eq $(if $(3),$(3),$(CHAT_RETRYABLE)) "$$out" || break; \
 	if [ "$$attempt" != 4 ]; then \
 		echo "kagent could not reach agent '$(1)' yet (transport error); retry $$attempt/3 in 5s" >&2; \
 		sleep 5; \
@@ -744,7 +763,7 @@ slack-post: $(KAGENT)
 	@case "$(SLACK_CHANNEL)" in \
 		*[!A-Z0-9]*) echo 'invalid SLACK_CHANNEL (want a channel ID like C0XXXXXXXXX, not a #name)' >&2; exit 1 ;; \
 	esac
-	@$(call kagent_forward,hello-slack,$(KAGENT_INVOKE) --agent hello-slack --task "$$KAIMAHI_SLACK_TASK")
+	@$(call kagent_forward,hello-slack,$(KAGENT_INVOKE) --agent hello-slack --task "$$KAIMAHI_SLACK_TASK",$(CHAT_RETRYABLE_SAFE))
 
 ## slack-down: remove the P5a demo (agent, gateway seam, MCP server).
 ## The Secrets are left alone — delete them explicitly to revoke.
