@@ -39,8 +39,18 @@ image — not from documentation alone):
 
 | Candidate | Verdict |
 |---|---|
-| [`@modelcontextprotocol/server-slack`](https://www.npmjs.com/package/@modelcontextprotocol/server-slack) (the reference server) | **Rejected.** npm marks it *"Package no longer supported"*; latest `2025.4.25`, no publish since 2025-04-25. A deprecated package is not something to hand a workspace token. |
-| [`korotovsky/slack-mcp-server`](https://github.com/korotovsky/slack-mcp-server) | **Chosen.** MIT, ~1.8k stars, actively maintained (npm `1.3.0`, 2026-05-14; repo pushed 2026-07-16). Supports stdio/SSE/**streamable HTTP**, so it runs as a long-lived container the gateway can relay to — no `npx` fetch at pod start. Ships a multi-arch image on GHCR. |
+| Slack's own hosted MCP server (`https://mcp.slack.com/mcp`, [docs](https://docs.slack.dev/ai/slack-mcp-server/)) | **Rejected for this lane.** Not self-hostable, and it authenticates with confidential OAuth 2.0 **user** tokens from a registered, published-or-internal Slack app. A headless agent posting as a bot is not the shape it serves — and a hosted endpoint would make the *gateway's* upstream internet-facing, which is exactly what P4b deferred. Revisit if the approval-routing lane ever needs to act as a person. |
+| [`@modelcontextprotocol/server-slack`](https://www.npmjs.com/package/@modelcontextprotocol/server-slack) (the reference server) | **Rejected.** Repo archived 2025-05-29 ([servers-archived](https://github.com/modelcontextprotocol/servers-archived/tree/main/src/slack)); npm marks it *"Package no longer supported"*, latest `2025.4.25` with no publish since 2025-04-25. A deprecated package is not something to hand a workspace token. Its tool vocabulary (`slack_post_message`, `slack_list_channels`, …) survives in forks. |
+| `@zencoderai/slack-mcp-server`, `ubie-oss/slack-mcp-server`, and assorted `@mseep/*` forks | **Rejected.** Forks of the archived reference lineage. zencoderai has a single `0.0.1` publish (2025-07-16); ubie-oss publishes only to the GitHub npm registry (needs a PAT). None is maintained enough to hold a workspace token. |
+| [`korotovsky/slack-mcp-server`](https://github.com/korotovsky/slack-mcp-server) | **Chosen.** MIT, ~1.8k stars, actively maintained (npm `1.3.0`, 2026-05-14; repo pushed 2026-07-16). Runs as a long-lived container serving **streamable HTTP** — verified in-cluster, not just documented — so the gateway relays to it with no `npx` fetch at pod start. Ships a multi-arch image on GHCR. |
+
+A note on method, since a survey is only as good as its sourcing: the
+maintenance status, versions and digest above were read from the npm
+registry API, the GHCR registry API and the running image itself, and
+were cross-checked against an independent web survey run in parallel.
+Where the two disagreed, the measurement won — see the
+`SLACK_MCP_API_KEY` finding below, which documentation and the parallel
+survey both got wrong.
 
 Provenance and pinning, because this is third-party code that holds a
 Slack workspace token:
