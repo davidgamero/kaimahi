@@ -40,10 +40,14 @@ if [ -z "$channel" ]; then
   echo 'The channel must be a PRIVATE test channel you have designated and invited the bot to.' >&2
   exit 2
 fi
-case "$channel" in
-  (C[A-Z0-9]*) ;;
-  (*) echo "invalid channel id '$channel' (want a Slack channel ID like C0XXXXXXXXX, not a #name)" >&2; exit 2 ;;
-esac
+# Anchored and exact: a `case` glob like C[A-Z0-9]* would accept
+# "CA&pretty=1", which is then interpolated into the conversations.info
+# query AND written verbatim into the server's channel restriction —
+# turning one of the three posting guards into a non-channel-ID.
+if ! [[ "$channel" =~ ^C[A-Z0-9]{7,}$ ]]; then
+  echo "invalid channel id '$channel' (want a Slack channel ID like C0XXXXXXXXX, not a #name)" >&2
+  exit 2
+fi
 
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT
@@ -100,8 +104,13 @@ if not c.get("is_private"):
     sys.exit(f"REFUSING: {chan} (#{c.get('name')}) is not a private channel.\n"
              "P5a posts only to a private test channel (board rule): a demo must not\n"
              "put messages in front of people who did not agree to be an audience.")
-if c.get("is_member") is False:
-    sys.exit(f"the bot is not a member of #{c.get('name')} — invite it and re-run.")
+# A well-formed positive only (standing guidance): an ABSENT is_member
+# must not pass as membership. `is False` would let a response shape that
+# omits the field through, and the first approved post would then fail at
+# Slack with not_in_channel after a human had already burned a grant.
+if c.get("is_member") is not True:
+    sys.exit(f"cannot confirm the bot is a member of #{c.get('name')} "
+             f"(is_member={c.get('is_member')!r}) — invite it (/invite @your-bot) and re-run.")
 print(f"channel vetted: #{c.get('name')} is private, bot is a member", file=sys.stderr)
 EOF
 
