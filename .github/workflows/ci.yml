@@ -174,6 +174,30 @@ jobs:
           print(f"{len(pols)} plane policies; internet allowances are 443-only with private ranges excluded")
           EOF
 
+      # CI flake class 2: the chat verifier's verdicts on the PR #24 task
+      # shape must not drift — probe in the tool payload passes; a missing,
+      # errored or probe-less function_response fails.
+      - name: Chat verifier self-test (tool-path verdicts)
+        run: python3 scripts/verify-chat.py --selftest
+      # The e2e job short-circuits docs-only changes at STEP level (the job
+      # must run and report — it is a required check). A step appended
+      # without the guard would run against no cluster on the next
+      # docs-only PR, so refuse it here, on the PR that adds it.
+      - name: Every e2e step carries the docs-only guard
+        run: |
+          python3 - <<'EOF'
+          import sys, yaml
+          wf = yaml.safe_load(open(".github/workflows/ci.yml"))
+          steps = wf["jobs"]["e2e-hello-world"]["steps"]
+          exempt = lambda s: s.get("id") == "changes" or str(s.get("uses", "")).startswith("actions/checkout")
+          bad = [s.get("name") or s.get("uses") for s in steps
+                 if not exempt(s) and "steps.changes.outputs.docs_only" not in str(s.get("if", ""))]
+          if bad:
+              print("e2e steps missing the docs-only guard:", *bad, sep="\n  ")
+              sys.exit(1)
+          print(f"{len(steps)} e2e steps: all guarded")
+          EOF
+
   # P4a: the governance plane's Go module — build, vet, gofmt, tests.
   # A separate quick job so proxy logic failures surface in seconds, not
   # after a 6-minute cluster bring-up.
@@ -201,6 +225,14 @@ jobs:
 
   # The P1 deliverable, verified for real: kind cluster, in-cluster Ollama,
   # kagent via helm, apply k8s/hello-world.yaml, converse via the kagent CLI.
+  # Docs-only short-circuit (D17 follow-up): board updates are PRs and the
+  # ruleset requires this check, so a doc-only PR used to wait ~11 min for
+  # a cluster it cannot affect. The first step classifies the change with
+  # plain git; when EVERY changed file is documentation (docs/**, *.md)
+  # the cluster steps are skipped via a per-step guard and the job still
+  # reports success. Anything else — code, an undeterminable file set
+  # (missing/unfetchable base, empty diff), any error — runs the full job.
+  # The hygiene job refuses an e2e step that lacks the guard.
   e2e-hello-world:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -214,13 +246,58 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Classify the change (docs-only short-circuit, fail closed)
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          # pull_request: the base branch tip; push: the previous tip
+          # (all zeros on a new branch). HEAD is the PR merge commit or
+          # the pushed commit — what checkout checked out.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.sha }}
+        run: |
+          # No `set -e`: every failure path must land on docs_only=false,
+          # never on a red step.
+          docs_only=false
+          reason=""
+          files=""
+          case "$BASE" in
+            ""|0000000000000000000000000000000000000000) reason="no base commit for $EVENT" ;;
+          esac
+          if [ -z "$reason" ] && ! git fetch --no-tags --depth=1 origin "$BASE"; then
+            reason="cannot fetch base $BASE"
+          fi
+          if [ -z "$reason" ]; then
+            if files=$(git diff --name-only "$BASE" "$HEAD") && [ -n "$files" ]; then
+              docs_only=true
+              while IFS= read -r f; do
+                case "$f" in
+                  docs/*|*.md) ;;
+                  *) docs_only=false; reason="non-doc change: $f"; break ;;
+                esac
+              done <<<"$files"
+              if [ "$docs_only" = true ]; then
+                reason="every changed file is documentation"
+              fi
+            else
+              reason="cannot diff $BASE..$HEAD, or the diff is empty"
+            fi
+          fi
+          echo "event=$EVENT base=$BASE head=$HEAD"
+          echo "changed files:"
+          echo "${files:-(undetermined)}" | sed 's/^/  /'
+          echo "docs_only=$docs_only ($reason)"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
       - name: Install kind
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           curl -sSfLo kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
           chmod +x kind && sudo mv kind /usr/local/bin/kind
       - name: Cluster + Ollama + model + kagent + agent
+        if: steps.changes.outputs.docs_only != 'true'
         run: make up
       - name: Converse with the agent
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           make chat | tee chat.out
           # Fail closed: require a completed A2A task with non-empty reply text.
@@ -230,8 +307,10 @@ jobs:
       # keys in CI (public repo, fork-exposed PR CI) — the switch is exercised
       # with the keyless in-cluster Ollama preset.
       - name: Validate model presets against live CRDs (server dry-run)
+        if: steps.changes.outputs.docs_only != 'true'
         run: kubectl --context kind-kaimahi-p1 apply --dry-run=server -f k8s/models/
       - name: Switch preset and converse again (keyless)
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           make use PRESET=ollama
           make chat | tee chat-preset.out
@@ -240,14 +319,17 @@ jobs:
       # ConfigMap with an unguessable random name is created, the tools
       # agent is asked to list configmaps, and the verifier requires a
       # function_call + successful function_response for k8s_get_resources
-      # in the A2A history AND the random name in the reply — data the
-      # model can only have via the live tool round-trip. Fail-closed.
+      # in the A2A history AND the random name in that function_response's
+      # payload — data that can only come from the live tool round-trip.
+      # The model's prose is printed, not asserted on (CI flake class 2: a
+      # 3B model garbles unguessable strings when relaying). Fail-closed.
       # Helm never validates values keys against the subchart, so a typo'd
       # or renamed lockdown knob would silently deploy the tool server wide
       # open while everything still reads Ready. Assert the posture instead
       # of trusting the values: read-only mode logged, and the tool server's
       # ServiceAccount can neither read Secrets nor write anything.
       - name: Assert tool-server lockdown posture
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/kagent-tools \
             > tools.log
@@ -263,6 +345,7 @@ jobs:
           kubectl --context kind-kaimahi-p1 auth can-i list pods \
             --as=system:serviceaccount:kagent:kagent-tools
       - name: Tool call through MCP (keyless)
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           probe="probe-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
           kubectl --context kind-kaimahi-p1 -n default create configmap "$probe" \
@@ -284,19 +367,24 @@ jobs:
       # artifact k8s/hello-world.yaml stays untouched; this is a CI
       # sizing patch, not a topology change.
       - name: Shrink hello-world requests so preset switches can surge
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           kubectl --context kind-kaimahi-p1 -n kagent patch agent hello-world \
             --type merge -p '{"spec":{"declarative":{"deployment":{"resources":{"requests":{"cpu":"50m","memory":"320Mi"},"limits":{"memory":"1Gi"}}}}}}'
           kubectl --context kind-kaimahi-p1 -n kagent rollout status deploy/hello-world --timeout=300s
       - name: Deploy the governance plane
+        if: steps.changes.outputs.docs_only != 'true'
         run: make plane
       - name: Issue governed credential and switch agent through the proxy
+        if: steps.changes.outputs.docs_only != 'true'
         run: make govern
       - name: Governed chat via the proxy
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           make chat | tee governed-chat.out
           python3 scripts/verify-chat.py governed-chat.out
       - name: Assert the ledger recorded the governed chat
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           make ledger | tee ledger.out
           # Fail closed: a free-tier row for the governed chat with real
@@ -308,6 +396,7 @@ jobs:
           sys.exit(0 if m and int(m.group(2)) > 0 else 1)
           EOF
       - name: Budget exhaustion fails closed
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           make budget CAP_TOKENS=1
           # The same chat must now fail with the meter's clear error; the
@@ -331,8 +420,10 @@ jobs:
       # with the P3 probe-ConfigMap pattern, the audit row is asserted,
       # and a NOT-allowlisted call is denied fail-closed and audited.
       - name: Govern the tools agent through the MCP gateway
+        if: steps.changes.outputs.docs_only != 'true'
         run: make govern-tools
       - name: Governed tool call rides the gateway (P3 probe proof)
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           probe="probe-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
           kubectl --context kind-kaimahi-p1 -n default create configmap "$probe" \
@@ -341,15 +432,18 @@ jobs:
             TASK='List the configmaps in the default namespace.' | tee gw-chat.out
           python3 scripts/verify-chat.py gw-chat.out k8s_get_resources "$probe"
       - name: Assert the audit recorded the governed tool call
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           make tool-audit | tee tool-audit.out
           grep -E 'hello-tools +kagent-tools +tools/call +k8s_get_resources +allowed +200' tool-audit.out
       - name: Non-allowlisted tool call denied fail-closed and audited
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           bash scripts/tool-denial-probe.sh k8s_describe_resource
           make tool-audit | tee tool-audit-denied.out
           grep -E 'hello-tools +kagent-tools +tools/call +k8s_describe_resource +denied +403' tool-audit-denied.out
       - name: Agent-side tool wiring carries only the kmh_ token
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           # The Secret value never leaves the pipe; grep -c prints only a
           # count. The RemoteMCPServer must reference the Secret (no
@@ -371,6 +465,7 @@ jobs:
       # wall-clock expiry, proves grants end (TTL expiry is live-verified
       # in the PR).
       - name: "Approvals tool cycle: denied files request, bounded approval admits, exhaustion re-denies"
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           bash scripts/tool-denial-probe.sh k8s_get_events
           make approvals | tee approvals-tool.out
@@ -384,6 +479,7 @@ jobs:
           make tool-audit | tee tool-audit-p4c.out
           grep -E 'hello-tools +kagent-tools +tools/call +k8s_get_events +allowed +200 +granted' tool-audit-p4c.out
       - name: "Approvals budget cycle: cap denial filed a request, bounded raise admits, exhaustion re-denies"
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           # The budget-exhaustion step above (CAP_TOKENS=1) already
           # denied a governed chat, which auto-filed this request:
@@ -420,10 +516,12 @@ jobs:
       # real Slack response, or Slack accepting the message. Those are
       # live-verified in the PR and nowhere else.
       - name: Slack manifests valid against the live CRDs (server dry-run)
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           kubectl --context kind-kaimahi-p1 apply --dry-run=server \
             -f k8s/slack-mcp.yaml -f k8s/kaimahi-slack.yaml -f k8s/slack-agent.yaml
       - name: Committed Slack wiring carries no credential
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           python3 - <<'EOF'
           import pathlib, sys, yaml
@@ -470,6 +568,7 @@ jobs:
           set -e
           test "$rc" -eq 1 || { echo "possible Slack token committed (or scanner failed: exit $rc)"; exit 1; }
       - name: Gateway upstream table gained Slack, still entirely in-cluster
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           kubectl --context kind-kaimahi-p1 -n kaimahi get configmap kaimahi-upstreams \
             -o jsonpath='{.data.upstreams\.json}' > upstreams.json
@@ -492,6 +591,7 @@ jobs:
           print("tool upstreams:", {k: urlparse(v["url"]).hostname for k, v in t.items()})
           EOF
       - name: Issue the Slack credential with a READ-ONLY allowlist
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           # No agent and no MCP server pod are created here: the node is
           # at ~92% of its CPU requests (P4a delta) and neither is needed
@@ -521,12 +621,14 @@ jobs:
           kubectl --context kind-kaimahi-p1 -n kaimahi rollout restart deploy/kaimahi-proxy
           kubectl --context kind-kaimahi-p1 -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
       - name: "Slack post DENIED fail-closed and files an approval request"
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
             bash scripts/tool-denial-probe.sh conversations_add_message
           make slack-audit | tee slack-audit-denied.out
           grep -E 'hello-slack +slack +tools/call +conversations_add_message +denied +403' slack-audit-denied.out
       - name: "Bounded approval admits the post, exhaustion re-denies"
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           make approvals | tee approvals-slack.out
           id=$(awk '$3=="hello-slack" && $4=="tool" && $5=="conversations_add_message" {print $1}' approvals-slack.out)
@@ -560,6 +662,7 @@ jobs:
       # fails this step with a message saying so — that is the whole
       # point (docs/egress.md).
       - name: Network boundary is enforced (policed pods cannot reach what they must not)
+        if: steps.changes.outputs.docs_only != 'true'
         run: make netpol-verify
       # P7b, keyless: the inbound bridge — the plane's one INGRESS — in
       # the same cluster/job (a fourth listener in the existing proxy
@@ -581,6 +684,7 @@ jobs:
       # docs/inbound.md. The rate limiter and the bounded queue are
       # unit-tested (a port-forwarded probe cannot outrun a 60/min bucket).
       - name: Inbound hook table is in-cluster and carries no secret
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           kubectl --context kind-kaimahi-p1 -n kaimahi get configmap kaimahi-upstreams \
             -o jsonpath='{.data.upstreams\.json}' > upstreams-inbound.json
@@ -609,6 +713,7 @@ jobs:
             *9091*) echo 'admin port exposed by a Service' >&2; exit 1 ;;
           esac
       - name: "Inbound: unauthenticated, forged and ungranted events refused fail-closed"
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           # The signed hook's credential is an IDENTITY: no bearer token
           # is stored anywhere for it.
@@ -636,17 +741,20 @@ jobs:
       # state. Assert that first, clear the cap, and only then assert
       # the grant gate — the order the product enforces.
       - name: "Inbound: exhausted target budget refused at the door"
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           EXPECT=429 bash scripts/inbound-probe.sh demo 'budget exhausted'
           make inbound-audit | tee inbound-audit-budget.out
           grep -E 'demo +inbound-demo +probe-[0-9a-f]+ +denied +429 +.*target budget' inbound-audit-budget.out
           make budget   # clear both caps for the steps below
       - name: "Inbound: signed but ungranted event refused and files its approval request"
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           EXPECT=403 bash scripts/inbound-probe.sh demo 'no grant yet'
           make inbound-audit | tee inbound-audit-ungranted.out
           grep -E 'demo +inbound-demo +probe-[0-9a-f]+ +denied +403 +.*no live grant' inbound-audit-ungranted.out
       - name: "Inbound: bounded approval admits, the agent runs, replay and exhaustion refused"
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           make approvals | tee approvals-inbound.out
           id=$(awk '$3=="inbound-demo" && $4=="inbound" && $5=="demo" {print $1}' approvals-inbound.out)
@@ -683,6 +791,7 @@ jobs:
           make approval-audit | tee approval-audit-inbound.out
           grep -E 'inbound-demo +inbound +demo +approved +expires=.* uses=2' approval-audit-inbound.out
       - name: "Inbound: bearer hook authenticates the same way and is gated the same way"
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           make inbound-credential CRED_INBOUND=inbound-bearer INBOUND_SECRET=kaimahi-inbound-token
           n=$(kubectl --context kind-kaimahi-p1 -n kaimahi get secret kaimahi-inbound-token \
@@ -691,7 +800,7 @@ jobs:
           AUTH=none EXPECT=401 bash scripts/inbound-probe.sh demo-bearer 'no token'
           AUTH=bearer EXPECT=403 bash scripts/inbound-probe.sh demo-bearer 'authenticated, no grant'
       - name: Cluster state on failure
-        if: failure()
+        if: failure() && steps.changes.outputs.docs_only != 'true'
         run: |
           kubectl --context kind-kaimahi-p1 get pods -A || true
           kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-world || true
@@ -706,3 +815,6 @@ jobs:
           kubectl --context kind-kaimahi-p1 -n kaimahi get mcpserver -o wide || true
           kubectl --context kind-kaimahi-p1 -n kaimahi get networkpolicy || true
           kubectl --context kind-kaimahi-p1 -n kube-system logs ds/kindnet --tail=30 || true
+      - name: Docs-only change — cluster steps skipped, job reports success
+        if: steps.changes.outputs.docs_only == 'true'
+        run: echo "every changed file is documentation; no cluster booted"
