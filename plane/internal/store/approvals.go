@@ -241,15 +241,28 @@ func (s *Store) DenyApprovalRequest(ctx context.Context, id string) error {
 // predicate is evaluated on the locked row). ok=false means no
 // consumable grant — the caller denies.
 func (s *Store) ConsumeToolGrant(ctx context.Context, credential, tool string) (grantID string, ok bool, err error) {
-	err = s.pool.QueryRow(ctx,
+	return consumeGrant(ctx, s.pool, credential, "tool", tool)
+}
+
+// rowQuerier is the one method consumeGrant needs, satisfied by both the
+// pool and a transaction (P7b admits inbound events inside one).
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// consumeGrant is the shared use-consuming consume for amount-less grant
+// kinds ('tool', 'inbound'): one use from the oldest live grant matching
+// (credential, kind, subject), or ok=false when none is consumable.
+func consumeGrant(ctx context.Context, q rowQuerier, credential, kind, subject string) (grantID string, ok bool, err error) {
+	err = q.QueryRow(ctx,
 		`UPDATE permit_grant SET uses = uses + 1
 		 WHERE id = (
 		   SELECT id FROM permit_grant
-		   WHERE credential_name = $1 AND kind = 'tool' AND subject = $2 AND `+grantLive+`
+		   WHERE credential_name = $1 AND kind = $2 AND subject = $3 AND `+grantLive+`
 		   ORDER BY created_at LIMIT 1
 		   FOR UPDATE SKIP LOCKED
 		 ) RETURNING id`,
-		credential, tool).Scan(&grantID)
+		credential, kind, subject).Scan(&grantID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}

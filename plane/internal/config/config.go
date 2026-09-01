@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/gambtho/kaimahi/plane/internal/pricing"
@@ -68,11 +69,72 @@ type ToolUpstream struct {
 	CredentialHeader string `json:"credential_header,omitempty"`
 }
 
+// Inbound authentication modes. Every mode binds the caller to the hook's
+// configured credential; they differ in how the caller PROVES it.
+const (
+	// AuthBearer: the caller presents the credential's own kmh_ token as
+	// a bearer (for sources that can set a header but cannot sign).
+	AuthBearer = "bearer"
+	// AuthKaimahiHMAC: Kaimahi's generic signed-webhook scheme — HMAC-SHA256
+	// over "v1:<timestamp>:<delivery-id>:<body>" with a shared signing
+	// secret (Secret-mounted, plane-side only). Preferred over a bearer:
+	// the secret never travels, the body is bound, and the timestamp plus
+	// signed delivery id give replay protection.
+	AuthKaimahiHMAC = "kaimahi-hmac"
+	// AuthSlack: Slack's request signing for the Events API —
+	// "v0:<timestamp>:<body>" under the app's signing secret.
+	AuthSlack = "slack"
+)
+
+// InboundHook is one webhook the plane accepts: who may fire it (a
+// credential and a proof mode), what it triggers (a kagent agent, invoked
+// through the controller's A2A endpoint), whose budget the resulting
+// spend lands in, and its ingress bounds. The committed table is the
+// whole inbound surface: the plane accepts nothing it does not name.
+type InboundHook struct {
+	// Credential is the plane credential this hook is bound to: the
+	// identity that is granted (P4c 'inbound' grants, subject = hook
+	// name) and audited. A bearer caller must present THIS credential's
+	// token; an HMAC caller proves it via the signing secret.
+	Credential string `json:"credential"`
+	// Auth is one of the Auth* modes above.
+	Auth string `json:"auth"`
+	// SigningSecretFile, required for the HMAC modes, is a Secret-mounted
+	// file holding the shared signing secret; read per request so
+	// rotation needs no restart. Unreadable at request time fails the
+	// hook closed (503) — never open.
+	SigningSecretFile string `json:"signing_secret_file,omitempty"`
+	// AgentNamespace/Agent name the kagent Agent the event triggers.
+	AgentNamespace string `json:"agent_namespace"`
+	Agent          string `json:"agent"`
+	// BudgetCredential is the governed credential the triggered agent
+	// spends under (its governed preset's credential). An event is
+	// refused at the door when that budget is already exhausted, so the
+	// agent is not invoked only to be denied at the proxy.
+	BudgetCredential string `json:"budget_credential"`
+	// MaxBodyBytes bounds the event payload (default 64 KiB).
+	MaxBodyBytes int64 `json:"max_body_bytes,omitempty"`
+	// RatePerMinute/Burst size the per-hook token bucket (defaults 60/10).
+	RatePerMinute int `json:"rate_per_minute,omitempty"`
+	Burst         int `json:"burst,omitempty"`
+}
+
+const (
+	DefaultInboundMaxBody = 64 << 10
+	DefaultInboundRate    = 60
+	DefaultInboundBurst   = 10
+	maxInboundBody        = 4 << 20
+	maxInboundRate        = 100_000
+)
+
 type Config struct {
 	Upstreams map[string]Upstream `json:"upstreams"`
 	// ToolUpstreams is the MCP gateway's table (P4b). Optional: a
 	// P4a-only config still parses; an absent table relays nothing.
 	ToolUpstreams map[string]ToolUpstream `json:"tool_upstreams,omitempty"`
+	// InboundHooks is the inbound bridge's table (P7b). Optional: absent
+	// means the inbound listener accepts nothing.
+	InboundHooks map[string]InboundHook `json:"inbound_hooks,omitempty"`
 }
 
 func Load(path string) (Config, error) {
@@ -136,7 +198,58 @@ func Parse(raw []byte) (Config, error) {
 			return Config{}, fmt.Errorf("config: tool upstream %q: invalid credential_header %q", name, t.CredentialHeader)
 		}
 	}
+	for name, h := range c.InboundHooks {
+		if !dnsLabel.MatchString(name) {
+			return Config{}, fmt.Errorf("config: inbound hook %q: name must be a lowercase DNS label", name)
+		}
+		if !dnsLabel.MatchString(h.Credential) || !dnsLabel.MatchString(h.BudgetCredential) {
+			return Config{}, fmt.Errorf("config: inbound hook %q: credential and budget_credential must be lowercase DNS labels", name)
+		}
+		if !dnsLabel.MatchString(h.Agent) || !dnsLabel.MatchString(h.AgentNamespace) {
+			return Config{}, fmt.Errorf("config: inbound hook %q: agent and agent_namespace must be lowercase DNS labels", name)
+		}
+		switch h.Auth {
+		case AuthBearer:
+			if h.SigningSecretFile != "" {
+				return Config{}, fmt.Errorf("config: inbound hook %q: signing_secret_file is meaningless with bearer auth", name)
+			}
+		case AuthKaimahiHMAC, AuthSlack:
+			// A signed hook with nothing to sign against would have to
+			// fail closed on every request; refuse the config instead so
+			// the mistake is loud at rollout, not silent at first event.
+			if h.SigningSecretFile == "" {
+				return Config{}, fmt.Errorf("config: inbound hook %q: %s auth requires signing_secret_file", name, h.Auth)
+			}
+		default:
+			return Config{}, fmt.Errorf("config: inbound hook %q: auth must be %q, %q or %q", name, AuthBearer, AuthKaimahiHMAC, AuthSlack)
+		}
+		if h.MaxBodyBytes < 0 || h.MaxBodyBytes > maxInboundBody {
+			return Config{}, fmt.Errorf("config: inbound hook %q: max_body_bytes out of range [0, %d]", name, maxInboundBody)
+		}
+		if h.RatePerMinute < 0 || h.RatePerMinute > maxInboundRate || h.Burst < 0 || h.Burst > maxInboundRate {
+			return Config{}, fmt.Errorf("config: inbound hook %q: rate_per_minute/burst out of range [0, %d]", name, maxInboundRate)
+		}
+	}
 	return c, nil
+}
+
+// dnsLabel is the shape shared by credential names (the admin surface's
+// rule), Kubernetes object names, and hook names: interpolated into
+// URLs, audit rows and grant subjects, so keep it to a plain identifier.
+var dnsLabel = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
+// Bounded returns the hook with its defaults applied.
+func (h InboundHook) Bounded() InboundHook {
+	if h.MaxBodyBytes == 0 {
+		h.MaxBodyBytes = DefaultInboundMaxBody
+	}
+	if h.RatePerMinute == 0 {
+		h.RatePerMinute = DefaultInboundRate
+	}
+	if h.Burst == 0 {
+		h.Burst = DefaultInboundBurst
+	}
+	return h
 }
 
 // validHeaderName accepts an empty name (the Authorization default) or a

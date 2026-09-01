@@ -95,3 +95,49 @@ func TestParseKeyedToolUpstreams(t *testing.T) {
 		require.Error(t, err, name)
 	}
 }
+
+const inboundBase = `"upstreams": {"ollama": {"base_url": "http://x", "path": "p", "classification": "free"}}`
+
+func TestParseInboundHooks(t *testing.T) {
+	c, err := config.Parse([]byte(`{` + inboundBase + `, "inbound_hooks": {
+	  "demo": {"credential": "inbound-demo", "auth": "kaimahi-hmac", "signing_secret_file": "/etc/kaimahi/inbound/demo",
+	           "agent_namespace": "kagent", "agent": "hello-world", "budget_credential": "hello-world"},
+	  "plain": {"credential": "inbound-plain", "auth": "bearer",
+	            "agent_namespace": "kagent", "agent": "hello-world", "budget_credential": "hello-world",
+	            "max_body_bytes": 1024, "rate_per_minute": 5, "burst": 2}
+	}}`))
+	require.NoError(t, err)
+	require.Len(t, c.InboundHooks, 2)
+	demo := c.InboundHooks["demo"].Bounded()
+	require.Equal(t, int64(config.DefaultInboundMaxBody), demo.MaxBodyBytes)
+	require.Equal(t, config.DefaultInboundRate, demo.RatePerMinute)
+	require.Equal(t, config.DefaultInboundBurst, demo.Burst)
+	plain := c.InboundHooks["plain"].Bounded()
+	require.Equal(t, int64(1024), plain.MaxBodyBytes)
+	require.Equal(t, 5, plain.RatePerMinute)
+	require.Equal(t, 2, plain.Burst)
+}
+
+func TestParseInboundHooksRejects(t *testing.T) {
+	hook := func(fields string) string {
+		return `{` + inboundBase + `, "inbound_hooks": {"demo": {` + fields + `}}}`
+	}
+	good := `"credential": "c", "auth": "bearer", "agent_namespace": "kagent", "agent": "a", "budget_credential": "b"`
+	cases := map[string]string{
+		"unknown auth":              hook(`"credential": "c", "auth": "basic", "agent_namespace": "kagent", "agent": "a", "budget_credential": "b"`),
+		"hmac without secret file":  hook(`"credential": "c", "auth": "kaimahi-hmac", "agent_namespace": "kagent", "agent": "a", "budget_credential": "b"`),
+		"slack without secret file": hook(`"credential": "c", "auth": "slack", "agent_namespace": "kagent", "agent": "a", "budget_credential": "b"`),
+		"bearer with secret file":   hook(good + `, "signing_secret_file": "/x"`),
+		"missing credential":        hook(`"auth": "bearer", "agent_namespace": "kagent", "agent": "a", "budget_credential": "b"`),
+		"missing agent":             hook(`"credential": "c", "auth": "bearer", "agent_namespace": "kagent", "budget_credential": "b"`),
+		"uppercase agent":           hook(`"credential": "c", "auth": "bearer", "agent_namespace": "kagent", "agent": "Hello", "budget_credential": "b"`),
+		"body bound too large":      hook(good + `, "max_body_bytes": 99999999`),
+		"negative rate":             hook(good + `, "rate_per_minute": -1`),
+		"unknown field (typo)":      hook(good + `, "signing_secret": "x"`),
+		"bad hook name":             `{` + inboundBase + `, "inbound_hooks": {"Demo Hook": {` + good + `}}}`,
+	}
+	for name, raw := range cases {
+		_, err := config.Parse([]byte(raw))
+		require.Error(t, err, name)
+	}
+}

@@ -40,10 +40,18 @@ type Grants interface {
 	ConsumeBudgetGrants(ctx context.Context, credential string, needs []store.BudgetNeed) (failedSubject string, err error)
 }
 
+// Headroom is the read-only view of live budget grants (P7b): how much a
+// cap is currently raised by, consuming nothing. *store.Store satisfies
+// it; nil disables previews' grant credit (caps preview exactly).
+type Headroom interface {
+	LiveBudgetGrantSum(ctx context.Context, credential, subject string) (int64, error)
+}
+
 type Meter struct {
-	Usage  UsageSource
-	Grants Grants
-	Now    func() time.Time // nil = time.Now
+	Usage    UsageSource
+	Grants   Grants
+	Headroom Headroom
+	Now      func() time.Time // nil = time.Now
 }
 
 func (m *Meter) now() time.Time {
@@ -63,17 +71,55 @@ func MonthStartUTC(now time.Time) time.Time {
 // if spend cannot be read, the request is denied — and logged, so
 // operators can tell "store down" from "cap reached".
 func (m *Meter) Check(ctx context.Context, cred store.Credential) error {
+	needs, err := m.exceeded(ctx, cred)
+	if err != nil || len(needs) == 0 {
+		return err
+	}
+	if failed := m.grantsFail(ctx, cred.Name, needs); failed != "" {
+		return capDenial(failed)
+	}
+	return nil
+}
+
+// Preview answers "would Check admit a call right now?" WITHOUT
+// consuming a grant use (P7b: the inbound door refuses an event whose
+// spend the proxy could not admit, and leaves the actual consumption to
+// the proxy — one use per admitted call, never two per event). Same
+// fail-closed contract as Check; a missing Headroom credits nothing.
+func (m *Meter) Preview(ctx context.Context, cred store.Credential) error {
+	needs, err := m.exceeded(ctx, cred)
+	if err != nil || len(needs) == 0 {
+		return err
+	}
+	for _, n := range needs {
+		var extra int64
+		if m.Headroom != nil {
+			extra, err = m.Headroom.LiveBudgetGrantSum(ctx, cred.Name, n.Subject)
+			if err != nil {
+				slog.Error("meter: budget headroom check failed, denying", "credential", cred.Name, "err", err)
+				return capDenial(n.Subject)
+			}
+		}
+		if extra <= 0 || n.Used >= n.Cap+extra {
+			return capDenial(n.Subject)
+		}
+	}
+	return nil
+}
+
+// exceeded reads month-to-date usage and collects EVERY exceeded cap:
+// grants must cover all of them in one transaction, or none is consumed
+// (a denial burns no uses).
+func (m *Meter) exceeded(ctx context.Context, cred store.Credential) ([]store.BudgetNeed, error) {
 	if cred.CapCents == nil && cred.CapTokens == nil {
-		return nil
+		return nil, nil
 	}
 	cents, tokens, err := m.Usage.MonthUsage(ctx, cred.Name, MonthStartUTC(m.now()))
 	if err != nil {
 		slog.Error("meter: spend check failed, denying request",
 			"credential", cred.Name, "err", err)
-		return Denial{Status: http.StatusForbidden, Msg: "metering unavailable"}
+		return nil, Denial{Status: http.StatusForbidden, Msg: "metering unavailable"}
 	}
-	// Collect every exceeded cap first: grants must cover ALL of them in
-	// one transaction, or none is consumed (a denial burns no uses).
 	var needs []store.BudgetNeed
 	if cred.CapCents != nil && cents >= *cred.CapCents {
 		needs = append(needs, store.BudgetNeed{Subject: "cents", Used: cents, Cap: *cred.CapCents})
@@ -81,17 +127,15 @@ func (m *Meter) Check(ctx context.Context, cred store.Credential) error {
 	if cred.CapTokens != nil && tokens >= *cred.CapTokens {
 		needs = append(needs, store.BudgetNeed{Subject: "tokens", Used: tokens, Cap: *cred.CapTokens})
 	}
-	if len(needs) == 0 {
-		return nil
+	return needs, nil
+}
+
+func capDenial(subject string) Denial {
+	msg := "monthly budget reached"
+	if subject == "tokens" {
+		msg = "monthly token budget reached"
 	}
-	if failed := m.grantsFail(ctx, cred.Name, needs); failed != "" {
-		msg := "monthly budget reached"
-		if failed == "tokens" {
-			msg = "monthly token budget reached"
-		}
-		return Denial{Status: http.StatusTooManyRequests, Msg: msg, BudgetSubject: failed}
-	}
-	return nil
+	return Denial{Status: http.StatusTooManyRequests, Msg: msg, BudgetSubject: subject}
 }
 
 // grantsFail asks the grant store to admit one over-cap request,

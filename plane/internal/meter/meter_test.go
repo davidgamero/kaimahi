@@ -132,3 +132,49 @@ func TestAllowsUnderBothCaps(t *testing.T) {
 	require.NoError(t, m.Check(context.Background(), cred))
 	require.Equal(t, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), f.gotMonth)
 }
+
+type fakeHeadroom struct {
+	extra int64
+	err   error
+}
+
+func (f *fakeHeadroom) LiveBudgetGrantSum(_ context.Context, _, _ string) (int64, error) {
+	return f.extra, f.err
+}
+
+func TestPreviewNeverConsumes(t *testing.T) {
+	// Grants would admit (consuming), but Preview must not touch them:
+	// with no headroom credited, an exceeded cap previews as a denial.
+	g := &fakeGrants{admit: true}
+	m := &meter.Meter{Usage: &fakeUsage{tokens: 5}, Grants: g}
+	err := m.Preview(context.Background(), store.Credential{Name: "a", CapTokens: i64(5)})
+	var d meter.Denial
+	require.ErrorAs(t, err, &d)
+	require.Equal(t, http.StatusTooManyRequests, d.Status)
+	require.Equal(t, "tokens", d.BudgetSubject)
+	require.Zero(t, g.calls, "preview must not consume a grant use")
+}
+
+func TestPreviewAdmitsUnderLiveHeadroomWithoutConsuming(t *testing.T) {
+	g := &fakeGrants{admit: false}
+	m := &meter.Meter{Usage: &fakeUsage{tokens: 5}, Grants: g, Headroom: &fakeHeadroom{extra: 100}}
+	require.NoError(t, m.Preview(context.Background(), store.Credential{Name: "a", CapTokens: i64(5)}))
+	require.Zero(t, g.calls)
+	// Headroom exactly consumed: denied again.
+	m.Headroom = &fakeHeadroom{extra: 1}
+	m.Usage = &fakeUsage{tokens: 6}
+	require.Error(t, m.Preview(context.Background(), store.Credential{Name: "a", CapTokens: i64(5)}))
+}
+
+func TestPreviewFailsClosedOnHeadroomError(t *testing.T) {
+	m := &meter.Meter{Usage: &fakeUsage{tokens: 5}, Headroom: &fakeHeadroom{err: errors.New("db down")}}
+	err := m.Preview(context.Background(), store.Credential{Name: "a", CapTokens: i64(5)})
+	var d meter.Denial
+	require.ErrorAs(t, err, &d)
+	require.Equal(t, http.StatusTooManyRequests, d.Status)
+}
+
+func TestPreviewNoCapsAllows(t *testing.T) {
+	m := &meter.Meter{Usage: &fakeUsage{err: errors.New("must not be called")}}
+	require.NoError(t, m.Preview(context.Background(), store.Credential{Name: "a"}))
+}
