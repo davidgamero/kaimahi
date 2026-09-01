@@ -16,10 +16,12 @@ guard="$here/kube-guard.sh"
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT
 
-# Three contexts, chosen to separate NAME from ADDRESS:
+# Three contexts in the kubeconfig, chosen to separate NAME from ADDRESS:
 #   kind-real    kind-named  + loopback   -> local, no confirmation
 #   kind-sneaky  kind-named  + remote     -> remote (a name proves nothing)
 #   aks-remote   other name  + remote     -> remote
+# A fourth name, kind-not-created-yet, is tested precisely by being ABSENT
+# from this file — that is `make up` on an empty machine.
 cat > "$workdir/kubeconfig" <<'YAML'
 apiVersion: v1
 kind: Config
