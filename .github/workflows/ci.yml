@@ -36,6 +36,31 @@ jobs:
             '(sk[-]ant-|sk[-]proj-|api[_-]?key[[:space:]]*[:=][[:space:]]*["'"'"'][A-Za-z0-9_-]{20,})' . \
             || { echo "possible credential committed"; exit 1; }
 
+  # P4a: the governance plane's Go module — build, vet, gofmt, tests.
+  # A separate quick job so proxy logic failures surface in seconds, not
+  # after a 6-minute cluster bring-up.
+  go-plane:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plane
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: plane/go.mod
+          cache-dependency-path: plane/go.sum
+      - name: gofmt clean
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Build
+        run: go build ./...
+      - name: Test
+        run: go test ./...
+
   # The P1 deliverable, verified for real: kind cluster, in-cluster Ollama,
   # kagent via helm, apply k8s/hello-world.yaml, converse via the kagent CLI.
   e2e-hello-world:
@@ -109,6 +134,44 @@ jobs:
           make chat AGENT=hello-tools \
             TASK='List the configmaps in the default namespace.' | tee tool-chat.out
           python3 scripts/verify-chat.py tool-chat.out k8s_get_resources "$probe"
+      # P4a, keyless: the governance plane in the SAME cluster/job — a
+      # separate e2e job would repeat the whole bring-up for no coverage
+      # gain; instead the plane's requests are trimmed (postgres 50m,
+      # proxy 25m) to fit the 2-CPU runner's request ceiling (P3 delta).
+      # Chat rides the governed ollama path via the proxy; the ledger row
+      # and the budget denial are asserted fail-closed.
+      - name: Deploy the governance plane
+        run: make plane
+      - name: Issue governed credential and switch agent through the proxy
+        run: make govern
+      - name: Governed chat via the proxy
+        run: |
+          make chat | tee governed-chat.out
+          python3 scripts/verify-chat.py governed-chat.out
+      - name: Assert the ledger recorded the governed chat
+        run: |
+          make ledger | tee ledger.out
+          # Fail closed: a free-tier row for the governed chat with real
+          # token counts, and a non-zero month-to-date token total.
+          grep -E 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' ledger.out
+          python3 - <<'EOF'
+          import re, sys
+          m = re.search(r"month to date: (\d+) cents, (\d+) tokens", open("ledger.out").read())
+          sys.exit(0 if m and int(m.group(2)) > 0 else 1)
+          EOF
+      - name: Budget exhaustion fails closed
+        run: |
+          make budget CAP_TOKENS=1
+          # The same chat must now fail with the meter's clear error; the
+          # task must NOT complete. kagent may exit nonzero on a failed
+          # task, so capture output regardless and assert on content.
+          make chat > denied-chat.out 2>&1 || true
+          cat denied-chat.out
+          grep -q 'monthly token budget reached' denied-chat.out
+          grep -q '"state":"failed"' denied-chat.out
+          ! grep -q '"state":"completed"' denied-chat.out
+          make ledger | tee ledger-denied.out
+          grep -E 'denied +429' ledger-denied.out
       - name: Cluster state on failure
         if: failure()
         run: |
@@ -119,3 +182,6 @@ jobs:
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-tools --tail=100 || true
           kubectl --context kind-kaimahi-p1 -n kagent describe remotemcpserver kagent-tool-server || true
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/kagent-tools --tail=50 || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get pods || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi logs deploy/kaimahi-proxy --tail=100 || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi logs deploy/kaimahi-postgres --tail=50 || true
