@@ -15,7 +15,20 @@
 # tool_upstreams is the P4b MCP gateway's table: the ONLY tool servers
 # the gateway will relay to — it forwards nowhere else, which is the
 # egress rule at this layer (cluster-level NetworkPolicy is a documented
-# P4b limitation). Exactly one entry: kagent's chart-managed tool server.
+# P4b limitation). Two entries, BOTH in-cluster:
+#   - kagent-tools: kagent's chart-managed tool server (P4b).
+#   - slack:        the Slack MCP server this repo deploys (P5a,
+#                   k8s/slack-mcp.yaml). The gateway's own reach stays
+#                   in-cluster — so P4b's ruling deferring the hardened
+#                   dialer/SSRF set still holds — but that POD talks to
+#                   api.slack.com, the first deliberate internet egress
+#                   in this repo. See docs/P5A-RUNBOOK.md.
+#
+# credential_file names (never carries) a Secret-mounted file holding the
+# Slack MCP server's OWN bearer credential, injected by the gateway from
+# plane custody. Measured limitation: slack-mcp-server v1.3.0 does not
+# enforce it on its http transport, so it does not currently close the
+# direct-access bypass — NetworkPolicy does, and is unbuilt.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -44,6 +57,10 @@ data:
       "tool_upstreams": {
         "kagent-tools": {
           "url": "http://kagent-tools.kagent:8084/mcp"
+        },
+        "slack": {
+          "url": "http://kaimahi-slack-mcp.kaimahi:13080/mcp",
+          "credential_file": "/etc/kaimahi/upstream-creds/slack/SLACK_MCP_API_KEY"
         }
       }
     }

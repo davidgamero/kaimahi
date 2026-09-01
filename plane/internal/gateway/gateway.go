@@ -35,6 +35,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -389,6 +390,10 @@ func (h *handler) fileRequest(r *http.Request, credential, kind, subject, detail
 func (h *handler) forward(w http.ResponseWriter, r *http.Request, name string,
 	up config.ToolUpstream, body []byte) int {
 	resp, err := h.do(r, up, body)
+	if errors.Is(err, errCredentialUnavailable) {
+		http.Error(w, "tool upstream credential unavailable", http.StatusServiceUnavailable)
+		return http.StatusServiceUnavailable
+	}
 	if err != nil {
 		slog.Error("gateway: tool upstream call failed", "upstream", name, "err", err)
 		http.Error(w, "tool upstream unreachable", http.StatusBadGateway)
@@ -426,6 +431,10 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request, name string,
 func (h *handler) forwardProjected(w http.ResponseWriter, r *http.Request, cred store.Credential,
 	name string, up config.ToolUpstream, body []byte, allowed []string) {
 	resp, err := h.do(r, up, body)
+	if errors.Is(err, errCredentialUnavailable) {
+		http.Error(w, "tool upstream credential unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	if err != nil {
 		slog.Error("gateway: tool upstream call failed", "upstream", name, "err", err)
 		http.Error(w, "tool upstream unreachable", http.StatusBadGateway)
@@ -528,6 +537,10 @@ func (h *handler) terminate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	copyRequestHeaders(outReq.Header, r.Header)
+	if err := injectCredential(outReq, up); err != nil {
+		http.Error(w, "tool upstream credential unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	resp, err := h.d.client().Do(outReq)
 	if err != nil {
 		http.Error(w, "tool upstream unreachable", http.StatusBadGateway)
@@ -550,8 +563,45 @@ func (h *handler) do(r *http.Request, up config.ToolUpstream, body []byte) (*htt
 		return nil, err
 	}
 	copyRequestHeaders(outReq.Header, r.Header)
+	if err := injectCredential(outReq, up); err != nil {
+		return nil, err
+	}
 	outReq.ContentLength = int64(len(body))
 	return h.d.client().Do(outReq)
+}
+
+// errCredentialUnavailable marks a tool upstream whose own credential
+// could not be read. It is NOT an unreachable upstream: the request is
+// failed closed as 503 (the P4a proxy's contract for the same case), so
+// a missing or unreadable Secret can never downgrade to an unauthenticated
+// call that a permissive tool server might still honour.
+var errCredentialUnavailable = errors.New("upstream credential unavailable")
+
+// injectCredential puts the tool server's OWN credential in its native
+// header slot, read per request from proxy-side custody. The client's
+// kmh_ token was already stripped by copyRequestHeaders, so this is the
+// only credential the upstream ever sees, and it exists only in the
+// proxy pod.
+func injectCredential(outReq *http.Request, up config.ToolUpstream) error {
+	if up.CredentialFile == "" {
+		return nil
+	}
+	raw, err := os.ReadFile(up.CredentialFile)
+	if err != nil {
+		slog.Error("gateway: tool upstream credential unavailable", "url", up.URL, "err", err)
+		return errCredentialUnavailable
+	}
+	secret := strings.TrimSpace(string(raw))
+	if secret == "" {
+		slog.Error("gateway: tool upstream credential is empty", "url", up.URL)
+		return errCredentialUnavailable
+	}
+	if up.CredentialHeader == "" || strings.EqualFold(up.CredentialHeader, "authorization") {
+		outReq.Header.Set("Authorization", "Bearer "+secret)
+		return nil
+	}
+	outReq.Header.Set(up.CredentialHeader, secret)
+	return nil
 }
 
 // relayStream forwards SSE lines as they arrive, flushing each so a
@@ -613,11 +663,11 @@ var hopByHop = map[string]bool{
 }
 
 // copyRequestHeaders forwards client headers minus hop-by-hop, every
-// credential slot (the kmh_ token must never reach the tool server —
-// this lane's only upstream is unauthenticated, and a future keyed one
-// gets its credential injected from proxy-side custody, never passed
-// through), and Accept-Encoding (the gateway must read plaintext bodies
-// to project listings).
+// credential slot (the kmh_ token must never reach the tool server — a
+// keyed upstream gets its own credential injected from proxy-side
+// custody by injectCredential, never passed through), and
+// Accept-Encoding (the gateway must read plaintext bodies to project
+// listings).
 func copyRequestHeaders(dst, src http.Header) {
 	for k, vs := range src {
 		ck := http.CanonicalHeaderKey(k)

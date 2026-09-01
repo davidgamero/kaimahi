@@ -65,3 +65,33 @@ func TestParseToolUpstreams(t *testing.T) {
 		require.Error(t, err, name)
 	}
 }
+
+// P5a: a tool upstream may carry its OWN credential (the Slack MCP
+// server's SLACK_MCP_API_KEY), named — never valued — in the committed
+// table, exactly like the LLM upstreams' credential_file.
+func TestParseKeyedToolUpstreams(t *testing.T) {
+	c, err := config.Parse([]byte(`{
+	  "upstreams": {"o": {"base_url": "http://o", "path": "v1/chat/completions", "classification": "free"}},
+	  "tool_upstreams": {"slack": {
+	    "url": "http://kaimahi-slack-mcp.kaimahi:13080/mcp",
+	    "credential_file": "/etc/kaimahi/upstream-creds/slack/mcp-api-key",
+	    "credential_header": "Authorization"
+	  }}
+	}`))
+	require.NoError(t, err)
+	require.Equal(t, "/etc/kaimahi/upstream-creds/slack/mcp-api-key", c.ToolUpstreams["slack"].CredentialFile)
+	require.Equal(t, "Authorization", c.ToolUpstreams["slack"].CredentialHeader)
+
+	base := `{"upstreams": {"o": {"base_url": "http://o", "path": "p", "classification": "free"}}, "tool_upstreams": `
+	for name, bad := range map[string]string{
+		// A header with no file would silently forward bare — the
+		// confusing direction of fail-open. Reject at load.
+		"header without file": `{"t": {"url": "http://x/mcp", "credential_header": "Authorization"}}`,
+		"malformed header":    `{"t": {"url": "http://x/mcp", "credential_file": "/f", "credential_header": "X Api Key"}}`,
+		// Key material never belongs in the committed table.
+		"inline credential": `{"t": {"url": "http://x/mcp", "credential": "xoxb-secret"}}`,
+	} {
+		_, err := config.Parse([]byte(base + bad + `}`))
+		require.Error(t, err, name)
+	}
+}

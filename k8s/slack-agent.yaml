@@ -1,0 +1,64 @@
+# The P5a demo agent: the first agent in this repo that can do something
+# a human would mind.
+#
+# Everything before this governed an agent that lists ConfigMaps. This
+# one posts into a Slack channel people read — so posting is NOT in its
+# allowlist. `make govern-slack` gives its credential the read-only
+# Slack tool only; the post is the APPROVED action (P4c): denied, filed,
+# granted with bounds, spent, denied again.
+#
+# It runs the GOVERNED Copilot preset (D14) so one demo exercises spend
+# governance and tool governance together — and because composing a
+# message and calling a tool in the same turn is beyond qwen2.5:3b (P1
+# and P3 deltas). CI never runs this agent: CI is keyless on ollama and
+# holds no Slack or Copilot token, ever.
+#
+# The channel ID is never committed. It is supplied per task (and the
+# MCP server independently restricts posting to it via
+# SLACK_MCP_ADD_MESSAGE_TOOL, held in a Secret).
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: hello-slack
+  namespace: kagent
+spec:
+  description: Kaimahi's Slack demo agent — composes a message and asks to post it.
+  type: Declarative
+  declarative:
+    # Governed Copilot (P4a): the agent holds a kaimahi token; the real
+    # Copilot token lives only with the proxy. `make govern` /
+    # `make plane-copilot-secret` set this up.
+    modelConfig: governed-copilot
+    deployment:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 320Mi
+        limits:
+          memory: 1Gi
+    systemMessage: |
+      You are Kaimahi's Slack demo agent, running on Kubernetes via kagent.
+      Your Slack tools reach Slack through Kaimahi's governance gateway.
+
+      When the user asks you to post a message, call
+      conversations_add_message with the channel_id the user gives you and
+      a payload you compose. Do not ask the user to confirm; do not
+      rewrite the channel_id.
+
+      If a tool call is DENIED, say so plainly, quote the denial message
+      verbatim, and stop. A denial is the system working: a human has to
+      approve the action. Never try a different tool to get around it,
+      and never claim you posted something you did not post.
+
+      Answer briefly in plain text. Never ask the user questions.
+    tools:
+      - type: McpServer
+        mcpServer:
+          apiGroup: kagent.dev
+          kind: RemoteMCPServer
+          name: kaimahi-slack
+          # Read-only to start. `make govern-slack` keeps this aligned
+          # with the gateway allowlist; posting is added only by an
+          # approval, and only for as long as the grant lives.
+          toolNames:
+            - conversations_history

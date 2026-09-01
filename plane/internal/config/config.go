@@ -55,6 +55,17 @@ type ToolUpstream struct {
 	// URL is the full MCP endpoint (e.g. the in-cluster
 	// http://kagent-tools.kagent:8084/mcp).
 	URL string `json:"url"`
+	// CredentialFile, when set, is a Secret-mounted file holding the
+	// tool server's OWN bearer credential — the same proxy-side custody
+	// the LLM upstreams use (Upstream.CredentialFile), applied to the
+	// tool seam: the gateway injects it, so a tool server can refuse
+	// every caller that did not come through the gateway. Read per
+	// request, so rotation needs no restart. Empty means the upstream
+	// is unauthenticated and requests are forwarded bare.
+	CredentialFile string `json:"credential_file,omitempty"`
+	// CredentialHeader is the header the credential is injected into.
+	// "authorization" (the default) sends "Authorization: Bearer <v>".
+	CredentialHeader string `json:"credential_header,omitempty"`
 }
 
 type Config struct {
@@ -115,6 +126,32 @@ func Parse(raw []byte) (Config, error) {
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 			return Config{}, fmt.Errorf("config: tool upstream %q: invalid url %q (want absolute http(s))", name, t.URL)
 		}
+		// A credential header without a credential file (or the reverse
+		// via a bare header name) is a misconfiguration that would fail
+		// open in the confusing direction — reject it at load.
+		if t.CredentialHeader != "" && t.CredentialFile == "" {
+			return Config{}, fmt.Errorf("config: tool upstream %q: credential_header set without credential_file", name)
+		}
+		if !validHeaderName(t.CredentialHeader) {
+			return Config{}, fmt.Errorf("config: tool upstream %q: invalid credential_header %q", name, t.CredentialHeader)
+		}
 	}
 	return c, nil
+}
+
+// validHeaderName accepts an empty name (the Authorization default) or a
+// well-formed RFC 7230 token — the value is operator-committed, but a
+// malformed name would be silently dropped by net/http rather than
+// enforced, so reject it at load.
+func validHeaderName(name string) bool {
+	if name == "" {
+		return true
+	}
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }

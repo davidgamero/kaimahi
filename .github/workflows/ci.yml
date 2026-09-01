@@ -279,6 +279,122 @@ jobs:
           make approval-audit | tee approval-audit.out
           grep -E 'hello-world +budget +tokens +approved' approval-audit.out
           grep -E 'hello-tools +tool +k8s_get_events +approved' approval-audit.out
+      # P5a, keyless: the governed Slack path. CI holds NO Slack token and
+      # NO Copilot token (public, fork-exposed repo), so the Slack MCP
+      # server is deliberately NOT deployed here. What that buys is an
+      # honest boundary rather than a stand-in pretending to be Slack:
+      # the gateway decides BEFORE it forwards, so the entire approval
+      # cycle over the REAL committed `slack` upstream is exercised, and
+      # the admitted call then answers 502 because the upstream is
+      # absent. A 200 on that call would mean CI reached a tool server —
+      # tool-admit-probe.sh fails on it. What CI therefore does NOT
+      # cover: the Slack MCP server pod, its bot-token custody at
+      # runtime, and Slack accepting the message. Those are live-verified
+      # in the PR.
+      - name: Slack manifests valid against the live CRDs (server dry-run)
+        run: |
+          kubectl --context kind-kaimahi-p1 apply --dry-run=server \
+            -f k8s/slack-mcp.yaml -f k8s/kaimahi-slack.yaml -f k8s/slack-agent.yaml
+      - name: Committed Slack wiring carries no credential
+        run: |
+          python3 - <<'EOF'
+          import pathlib, sys, yaml
+          fail = []
+          mcp = yaml.safe_load(pathlib.Path("k8s/slack-mcp.yaml").read_text())
+          dep = mcp["spec"]["deployment"]
+          # Every secret-shaped value must arrive by secretRef; the
+          # plaintext env map may hold only these non-secret knobs.
+          allowed_env = {"SLACK_MCP_HOST", "SLACK_MCP_PORT", "SLACK_MCP_LOG_LEVEL"}
+          extra = set(dep.get("env", {})) - allowed_env
+          if extra:
+              fail.append(f"secret-capable env in plaintext YAML: {sorted(extra)}")
+          refs = {r["name"] for r in dep.get("secretRefs", [])}
+          if refs != {"kaimahi-slack-bot", "kaimahi-slack-mcp-key"}:
+              fail.append(f"unexpected secretRefs: {sorted(refs)}")
+          # The image is pinned by digest: the bytes holding a workspace
+          # token must be the bytes that were reviewed.
+          if "@sha256:" not in dep["image"]:
+              fail.append(f"Slack MCP image is not digest-pinned: {dep['image']}")
+          # The agent-side seam sends only a Secret-resolved header.
+          rms = yaml.safe_load(pathlib.Path("k8s/kaimahi-slack.yaml").read_text())
+          h = rms["spec"]["headersFrom"]
+          if len(h) != 1 or "value" in h[0] or h[0]["valueFrom"] != {
+                  "type": "Secret", "name": "kaimahi-slack-token", "key": "api-key"}:
+              fail.append(f"unexpected headersFrom: {h}")
+          # Posting is never allowlisted in committed YAML.
+          agent = yaml.safe_load(pathlib.Path("k8s/slack-agent.yaml").read_text())
+          names = agent["spec"]["declarative"]["tools"][0]["mcpServer"]["toolNames"]
+          if "conversations_add_message" in names:
+              fail.append("posting is allowlisted in committed YAML; it must be approved, not configured")
+          for line in fail:
+              print(line)
+          sys.exit(1 if fail else 0)
+          EOF
+          # No Slack token shape anywhere in the tree.
+          set +e
+          grep -rIn --exclude-dir=.git -E 'xox[bpca]-[A-Za-z0-9-]{10,}' .
+          rc=$?
+          set -e
+          test "$rc" -eq 1 || { echo "possible Slack token committed (or scanner failed: exit $rc)"; exit 1; }
+      - name: Gateway upstream table gained Slack, still entirely in-cluster
+        run: |
+          kubectl --context kind-kaimahi-p1 -n kaimahi get configmap kaimahi-upstreams \
+            -o jsonpath='{.data.upstreams\.json}' > upstreams.json
+          python3 - <<'EOF'
+          import json, sys
+          from urllib.parse import urlparse
+          t = json.load(open("upstreams.json"))["tool_upstreams"]
+          assert set(t) == {"kagent-tools", "slack"}, t
+          # P4b's deferral of the hardened dialer / SSRF set holds only
+          # while every tool upstream is in-cluster. Assert it, so an
+          # internet-facing entry cannot be added without this failing.
+          for name, up in t.items():
+              host = urlparse(up["url"]).hostname
+              assert host.endswith((".kaimahi", ".kagent", ".svc.cluster.local")), (name, host)
+          # The Slack upstream is keyed from plane custody, and the table
+          # names the file without ever carrying a value.
+          slack = t["slack"]
+          assert slack["credential_file"].startswith("/etc/kaimahi/upstream-creds/"), slack
+          assert not any(k for k in slack if k in ("credential", "token", "api_key")), slack
+          print("tool upstreams:", {k: urlparse(v["url"]).hostname for k, v in t.items()})
+          EOF
+      - name: Issue the Slack credential with a READ-ONLY allowlist
+        run: |
+          # No agent and no MCP server pod are created here: the node is
+          # at ~92% of its CPU requests (P4a delta) and neither is needed
+          # to exercise the gateway's decisions.
+          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-slack-token \
+            bash scripts/plane-admin.sh issue hello-slack
+          make slack-allow SLACK_TOOLS=conversations_history
+          make tool-allowlist CRED_TOOLS=hello-slack | tee slack-allowlist.out
+          grep -q conversations_history slack-allowlist.out
+          # Custody: the agent-side Secret holds ONLY an opaque kmh_ token.
+          n=$(kubectl --context kind-kaimahi-p1 -n kagent get secret kaimahi-slack-token \
+            -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
+          test "$n" = 1
+      - name: "Slack post DENIED fail-closed and files an approval request"
+        run: |
+          UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
+            bash scripts/tool-denial-probe.sh conversations_add_message
+          make slack-audit | tee slack-audit-denied.out
+          grep -E 'hello-slack +slack +tools/call +conversations_add_message +denied +403' slack-audit-denied.out
+      - name: "Bounded approval admits the post, exhaustion re-denies"
+        run: |
+          make approvals | tee approvals-slack.out
+          id=$(awk '$3=="hello-slack" && $4=="tool" && $5=="conversations_add_message" {print $1}' approvals-slack.out)
+          test -n "$id"
+          make approve ID="$id" USES=1 TTL=10m
+          # Admitted by the grant; the upstream is absent, so nothing is
+          # sent — the probe FAILS if the call ever reaches a tool server.
+          UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
+            bash scripts/tool-admit-probe.sh conversations_add_message '{"channel_id": "C0CIONLY", "payload": "ci"}'
+          make slack-audit | tee slack-audit-granted.out
+          grep -E 'hello-slack +slack +tools/call +conversations_add_message +allowed +50[23] +granted' slack-audit-granted.out
+          # The single use is consumed: denied again, and a fresh request filed.
+          UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
+            bash scripts/tool-denial-probe.sh conversations_add_message
+          make approval-audit | tee approval-audit-slack.out
+          grep -E 'hello-slack +tool +conversations_add_message +approved' approval-audit-slack.out
       - name: Cluster state on failure
         if: failure()
         run: |
@@ -292,3 +408,4 @@ jobs:
           kubectl --context kind-kaimahi-p1 -n kaimahi get pods || true
           kubectl --context kind-kaimahi-p1 -n kaimahi logs deploy/kaimahi-proxy --tail=100 || true
           kubectl --context kind-kaimahi-p1 -n kaimahi logs deploy/kaimahi-postgres --tail=50 || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get mcpserver -o wide || true

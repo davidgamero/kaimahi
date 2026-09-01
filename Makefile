@@ -13,20 +13,29 @@ KUBECTL        := kubectl --context $(KUBE_CTX)
 OS   := $(shell uname -s | tr A-Z a-z)
 ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
 
-PLANE_IMAGE    ?= kaimahi-proxy:p4c
+PLANE_IMAGE    ?= kaimahi-proxy:p5a
 CRED           ?= hello-world
 CRED_TOOLS     ?= hello-tools
 TOOLS          ?= k8s_get_resources
+# P5a: the Slack seam has its own credential, agent and allowlist. The
+# read-only tool is allowlisted from the start; POSTING is not — it is
+# the action a human approves (make approvals / make approve).
+CRED_SLACK     ?= hello-slack
+SLACK_TOOLS    ?= conversations_history
+SLACK_POST_TOOL := conversations_add_message
 # TOOLS as a JSON string array for the Agent patch, so the agent's
 # toolNames stay aligned with the gateway allowlist ("-" -> empty).
 comma          := ,
 TOOLNAMES_JSON  = $(if $(filter -,$(TOOLS)),,"$(subst $(comma),"$(comma)",$(TOOLS))")
+SLACK_TOOLNAMES_JSON = $(if $(filter -,$(SLACK_TOOLS)),,"$(subst $(comma),"$(comma)",$(SLACK_TOOLS))")
 
 .PHONY: up cluster ollama model kagent agent tools-agent chat down status \
 	model-secret copilot-secret use use-ollama \
 	plane plane-image plane-secrets govern budget ledger plane-copilot-secret \
 	govern-tools ungovern-tools tool-allow tool-allowlist tool-audit \
-	approvals approve deny request grants approval-audit
+	approvals approve deny request grants approval-audit \
+	slack-secret slack-mcp govern-slack slack-allow slack-audit \
+	slack-post slack-down
 
 ## up: everything from an empty machine to ready agents (hello-world + tools)
 up: cluster ollama model kagent agent tools-agent status
@@ -283,3 +292,72 @@ $(KAGENT):
 	test "$$sum" = "$$(cut -d' ' -f1 $(KAGENT).sha256)" || \
 		{ echo 'kagent CLI checksum mismatch' >&2; rm -f $(KAGENT); exit 1; }
 	chmod +x $(KAGENT)
+
+## ---- P5a: the governed Slack path (docs/P5A-RUNBOOK.md) ----
+
+## slack-secret: capture the Slack BOT token stdin-only and store the
+## plane-side Secrets. REFUSES unless Slack confirms the channel is
+## private and the bot is a member (board rule: never a shared channel).
+##   make slack-secret SLACK_CHANNEL=C0XXXXXXXXX
+slack-secret:
+	@test -n "$(SLACK_CHANNEL)" || \
+		{ echo 'usage: make slack-secret SLACK_CHANNEL=C0XXXXXXXXX (a PRIVATE test channel)' >&2; exit 1; }
+	@KUBECTL="$(KUBECTL)" SLACK_CHANNEL="$(SLACK_CHANNEL)" bash scripts/slack-secret.sh
+
+## slack-mcp: deploy the third-party Slack MCP server in-cluster, in the
+## PLANE's namespace, via kagent's MCPServer CRD (digest-pinned). This is
+## the first pod here with deliberate internet egress — see the runbook.
+slack-mcp:
+	@$(KUBECTL) -n kaimahi get secret kaimahi-slack-bot >/dev/null 2>&1 || \
+		{ echo 'kaimahi-slack-bot missing — run: make slack-secret SLACK_CHANNEL=C0XXXXXXXXX' >&2; exit 1; }
+	$(KUBECTL) apply -f k8s/slack-mcp.yaml
+	$(KUBECTL) -n kaimahi wait \
+		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
+		mcpserver/kaimahi-slack-mcp --timeout=300s
+
+## govern-slack: put the Slack demo agent behind the MCP gateway — issue
+## its kmh_ credential (agent-side Secret kaimahi-slack-token), set the
+## READ-ONLY allowlist, apply the Kaimahi RemoteMCPServer and the agent.
+## Posting is deliberately absent from the allowlist.
+govern-slack:
+	@KUBECTL="$(KUBECTL)" GOVERNED_SECRET=kaimahi-slack-token \
+		bash scripts/plane-admin.sh issue $(CRED_SLACK)
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-allow $(CRED_SLACK) "$(SLACK_TOOLS)"
+	$(KUBECTL) apply -f k8s/kaimahi-slack.yaml
+	$(KUBECTL) -n kagent wait \
+		--for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True \
+		remotemcpserver/kaimahi-slack --timeout=300s
+	$(KUBECTL) apply -f k8s/slack-agent.yaml
+	$(KUBECTL) -n kagent patch agent hello-slack --type merge \
+		-p '{"spec":{"declarative":{"tools":[{"type":"McpServer","mcpServer":{"apiGroup":"kagent.dev","kind":"RemoteMCPServer","name":"kaimahi-slack","toolNames":[$(SLACK_TOOLNAMES_JSON)]}}]}}}'
+	$(KUBECTL) -n kagent wait \
+		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
+		agent/hello-slack --timeout=300s
+
+## slack-allow: replace the Slack credential's allowlist, e.g.
+##   make slack-allow SLACK_TOOLS=conversations_history
+##   make slack-allow SLACK_TOOLS=-        (empty: nothing callable)
+## Widening this is a CONFIG change; the demo widens by APPROVAL instead.
+slack-allow:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-allow $(CRED_SLACK) "$(SLACK_TOOLS)"
+
+## slack-audit: the Slack credential's tool-call audit trail
+slack-audit:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-audit $(CRED_SLACK)
+
+## slack-post: ask the demo agent to post to the channel. Denied until a
+## human approves it; that denial is the point.
+##   make slack-post SLACK_CHANNEL=C0XXXXXXXXX [MESSAGE='...']
+MESSAGE ?= Kaimahi governance demo: this message required a human approval.
+slack-post:
+	@test -n "$(SLACK_CHANNEL)" || \
+		{ echo 'usage: make slack-post SLACK_CHANNEL=C0XXXXXXXXX [MESSAGE=...]' >&2; exit 1; }
+	$(MAKE) chat AGENT=hello-slack \
+		TASK='Post this to Slack channel $(SLACK_CHANNEL): $(MESSAGE)'
+
+## slack-down: remove the P5a demo (agent, gateway seam, MCP server).
+## The Secrets are left alone — delete them explicitly to revoke.
+slack-down:
+	-$(KUBECTL) -n kagent delete agent hello-slack
+	-$(KUBECTL) -n kagent delete remotemcpserver kaimahi-slack
+	-$(KUBECTL) -n kaimahi delete mcpserver kaimahi-slack-mcp
