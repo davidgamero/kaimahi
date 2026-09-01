@@ -8,21 +8,33 @@ genuinely consequential action in this repo.
 The deliverable is not "Slack works". It is this cycle:
 
 ```text
-  agent                         plane                          human
+  agent / MCP client            plane                          human
+    │ "post this to Slack"        │                              │
+    │ ─── no posting tool ──────▶ │ the agent's credential        │
+    │ ◀── "I can't do that" ───── │ projects 1 of the 14 tools    │
+    │                             │ the server offers             │
     │ conversations_add_message   │                              │
     │ ──────────────────────────▶ │ DENIED (not allowlisted)     │
-    │ ◀──── JSON-RPC -32001 ───── │ + approval request filed     │
+    │ ◀──── JSON-RPC -32001 ───── │ + approval request FILED     │
     │       "request filed"       │                              │ make approvals
-    │                             │ ◀─── make approve ID=… ───── │ TTL=5m USES=1
-    │ conversations_add_message   │                              │
+    │                             │ ◀─── make approve ID=… ───── │ TTL=15m USES=1
+    │                             │ the grant enters the          │
+    │ ◀── tool now discoverable ─ │ projection: the capability    │
+    │ conversations_add_message   │ APPEARS for the agent         │
     │ ──────────────────────────▶ │ ADMITTED via grant ──────────┼──▶ Slack
-    │ ◀──── message posted ────── │ (use consumed, audited)      │   (a human
-    │ conversations_add_message   │                              │    reads it)
-    │ ──────────────────────────▶ │ DENIED again — the grant is  │
-    │                             │ spent; a fresh request filed │
+    │ ◀──── "Posted." ─────────── │ (use consumed, audited)      │   (a human
+    │ "post another one"          │                              │    reads it)
+    │ ──────────────────────────▶ │ grant spent → not live →     │
+    │ ◀── "I can't do that" ───── │ the capability DISAPPEARS    │
 ```
 
 The connector is the payload. The approval gate is the point.
+
+Note the shape, because it is stronger than "the call is refused": under
+P4b's *visible = callable* rule, an approval does not merely permit an
+action the agent was already reaching for — it **materialises the
+capability**, and its expiry takes the capability away again. See
+[Why the agent is never the one denied](#why-the-agent-is-never-the-one-denied).
 
 > **⚠️ This is the first component in the repo with deliberate INTERNET
 > egress.** See [What the internet-egress pod
@@ -163,29 +175,80 @@ a posting tool.
 ### The demo
 
 ```sh
-# 1. The agent tries to post. It is DENIED, and a request is filed.
+# 0. What the agent can even see: the server offers 14 tools; the
+#    credential projects one. Posting is not among them.
+kubectl -n kagent get remotemcpserver kaimahi-slack \
+  -o jsonpath='{.status.discoveredTools[*].name}'      # conversations_history
+
+# 1. Ask the agent to post. It cannot: there is no posting tool in its
+#    hands to call.
 make slack-post SLACK_CHANNEL=C0XXXXXXXXX MESSAGE='Kaimahi governance demo.'
+
+# 2. The gateway's enforcement point, exercised directly — this is the
+#    DENIAL that files the request (and what any MCP client that tries
+#    the call gets).
+UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
+  bash scripts/tool-denial-probe.sh conversations_add_message
 make slack-audit          # denied 403, "approval request filed"
 
-# 2. A human looks at the queue and grants a BOUNDED permit.
+# 3. A human looks at the queue and grants a BOUNDED permit.
 make approvals            # copy the id (kind=tool, subject=conversations_add_message)
-make approve ID=<uuid> TTL=5m USES=1
+make approve ID=<uuid> TTL=15m USES=1
 
-# 3. The same attempt now lands in Slack.
+# 4. The grant is now in the projection, so the capability appears.
+#    kagent re-discovers on reconcile; nudge it and roll the agent.
+kubectl -n kagent annotate remotemcpserver kaimahi-slack \
+  kaimahi.dev/rediscover="$(date +%s)" --overwrite
+kubectl -n kagent get remotemcpserver kaimahi-slack \
+  -o jsonpath='{.status.discoveredTools[*].name}'      # now includes the post tool
+kubectl -n kagent rollout restart deploy/hello-slack
+
+# 5. The agent posts. For real, into a channel a human reads.
 make slack-post SLACK_CHANNEL=C0XXXXXXXXX MESSAGE='Kaimahi governance demo.'
 make slack-audit          # allowed 200, detail: granted <grant-id>
 
-# 4. The use is spent. The next attempt is denied again, and files afresh.
+# 6. The use is spent. Ask again — nothing is posted.
 make slack-post SLACK_CHANNEL=C0XXXXXXXXX MESSAGE='And again?'
-make slack-audit
+make grants               # the grant, live=no, uses 1/1
 make approval-audit       # requested / approved / denied, with the bounds
-make grants               # the grant, now live=no
 ```
 
-Nothing about step 3 widens the *configuration*: the static allowlist
-still holds one read-only tool. `make slack-allow SLACK_TOOLS=…` is the
-config lever, and it is deliberately not what the demo uses — the point
-is that a human said yes to one post, for five minutes, once.
+Nothing in step 5 widens the *configuration*: the static allowlist still
+holds one read-only tool throughout. `make slack-allow SLACK_TOOLS=…` is
+the config lever, and it is deliberately not what the demo uses — the
+point is that a human said yes to one post, for fifteen minutes, once.
+
+## Why the agent is never the one denied
+
+Measured, not assumed: kagent wires an agent only to tools it
+**discovered**. Naming an undiscovered tool in `spec.declarative.tools[].toolNames`
+does nothing — verified by patching `conversations_add_message` into the
+agent's `toolNames` while the allowlist excluded it, and watching the
+agent report it had no such tool rather than attempt a call.
+
+Because P4b projects `tools/list` down to what the credential may call
+right now, a non-allowlisted tool is invisible, so a kagent agent can
+never *produce* the JSON-RPC denial for it. That has three consequences
+worth stating plainly:
+
+- **The denial + auto-filing is exercised at the gateway**, by a client
+  that attempts the call directly (`tool-denial-probe.sh`, and any
+  non-kagent MCP client). This is the real enforcement point, and the
+  one CI asserts.
+- **For an agent, the guarantee is stronger than refusal**: the
+  capability is not in its hands at all. There is no call to smuggle, no
+  retry loop, no prompt injection that reaches a tool the credential
+  cannot call — a denied tool is not a locked door, it is a door that
+  is not in the room.
+- **An approval is therefore constructive**: minting a bounded grant puts
+  the tool into the projection, kagent re-discovers it, and the agent
+  gains the capability for exactly the grant's life. Exhaustion removes
+  it again on the next reconcile.
+
+The cost is a discovery lag: enforcement is immediate, but what an agent
+*sees* changes only on kagent's next RemoteMCPServer reconcile, which is
+why step 4 nudges it. That lag was already recorded as a P4b/P4c known
+limitation; P5a is where it becomes visible in the demo path.
 
 `make slack-down` removes the agent, the seam and the server. The
 Secrets survive; delete them to revoke.
@@ -241,6 +304,7 @@ network boundary.
 | The Slack MCP server's own endpoint auth | **Not effective** — the plane injects a credential the server (v1.3.0) does not enforce on its http transport |
 | Internet-facing *gateway* upstreams | **Still not built** — both tool upstreams remain in-cluster; going internet-facing needs the deferred hardened dialer/SSRF set |
 | Approval routing (who approved, notified where) | **Not built** — the queue is CLI-only; the approver identity is the admin bearer, not a person |
+| What an agent *sees* after a grant | **Lagging, not wrong** — enforcement is immediate; kagent's discovered tool list updates on its next RemoteMCPServer reconcile (P4b limitation, now on the demo path) |
 
 ## What CI covers — and what it cannot
 
