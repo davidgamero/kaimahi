@@ -185,9 +185,18 @@ Details: [docs/P3-RUNBOOK.md](docs/P3-RUNBOOK.md).
 > `make approve` mints a bounded permit (expiry and/or use count) that
 > widens exactly what was denied, then lapses
 > ([docs/P4C-RUNBOOK.md](docs/P4C-RUNBOOK.md)).
+> And it now guards something worth guarding: `make govern-slack` puts a
+> demo agent behind an in-cluster Slack MCP server (third-party,
+> digest-pinned, deployed by kagent — no connector code), where **posting
+> is not allowlisted**. The agent is denied, a request is filed, a human
+> grants one bounded use, the message lands, the grant burns, the next
+> attempt is denied again — all of it audited
+> ([docs/P5A-RUNBOOK.md](docs/P5A-RUNBOOK.md)).
+>
 > Governance stays opt-in per agent: an *ungoverned* preset still bills
 > with no ledger, an ungoverned tools wiring still acts with no audit —
-> and cluster-level egress policy (NetworkPolicy) is still unbuilt.
+> and cluster-level egress policy (NetworkPolicy) is still unbuilt, which
+> matters more now that a pod here talks to the internet.
 
 ## The thesis: a governance plane
 
@@ -214,8 +223,8 @@ idea being incubated — phase 4, arriving in slices:
   (P4a+P4b)*: the spend ledger and the tool-call audit trail, denials
   included.
 
-It mounts at seams that already exist — the model `baseUrl` today, the MCP
-tool server next — rather than forking or wrapping the runtime. The delegation
+It mounts at seams that already exist — the model `baseUrl` and the MCP
+tool server — rather than forking or wrapping the runtime. The delegation
 journeys that argue for these five specifically are collected in
 `docs/SCENARIOS.md` (proposed separately).
 
@@ -229,6 +238,7 @@ journeys that argue for these five specifically are collected in
 | 4a | Governed LLM spend (proxy, budgets, ledger, custody) | **runs** — `make govern`, denial + ledger asserted in CI |
 | 4b | Governed tool calls (MCP gateway, allowlists, audit) | **runs** — `make govern-tools`, denial + audit asserted in CI |
 | 4c | Approvals / time-boxed permits (deny-and-pend, bounded grants) | **runs** — `make approvals`, both cycles asserted in CI |
+| 5a | Governed Slack outbound — posting is an approved action | **runs** — `make govern-slack`; the deny → approve → post → burn cycle asserted keyless in CI ([P5A-RUNBOOK](docs/P5A-RUNBOOK.md)) |
 | — | `kaimahi create` CLI | proposed — [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) |
 
 Cloud-agnostic — it runs on any conformant Kubernetes — with first-class

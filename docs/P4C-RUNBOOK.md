@@ -112,8 +112,8 @@ make budget CAP_TOKENS=100      # restore whatever cap you actually want
 | Approvals / time-boxed permits | **Governed** (P4c): deny-and-pend, bounded grants, approval audit |
 | LLM calls via ungoverned presets; tool calls via direct `kagent-tool-server` wiring | Ungoverned, by explicit choice — `make govern` / `make govern-tools` opt in |
 | Pod-level network egress (NetworkPolicy) | **Not built** — the plane governs its seams; a pod that bypasses them can still egress |
-| Internet-facing tool upstreams | **Not built** — the committed table is single-entry, in-cluster; going internet-facing needs the blueprint's hardened dialer/SSRF set |
-| Approval routing (Slack/Discord/email, per-approver identity) | **Not built** — the queue is CLI-only; "who approved" is the admin bearer, not a person identity (P5 candidate) |
+| Internet-facing tool upstreams | **Not built** — every committed entry is in-cluster (two of them since P5a); going internet-facing needs the blueprint's hardened dialer/SSRF set |
+| Approval routing (Slack/Discord/email, per-approver identity) | **Not built** — the queue is CLI-only; "who approved" is the admin bearer, not a person identity. (P5a governs an agent *posting* to Slack; it does not route approvals there) |
 
 ## Operational notes
 
