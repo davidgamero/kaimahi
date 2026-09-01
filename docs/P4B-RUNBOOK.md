@@ -110,10 +110,11 @@ bash scripts/tool-denial-probe.sh k8s_describe_resource  # watch a denial
 
 The denial probe calls a non-allowlisted tool with the governed token and
 requires the JSON-RPC `-32001` "not permitted" error; the attempt lands
-in `make tool-audit` as a `denied 403` row. Note: after `make tool-allow`
-widens the list, the agent's own `toolNames` in the govern-tools patch
-still names only `k8s_get_resources` — widen both if you want the agent
-to *use* more tools; the allowlist alone is the governance boundary.
+in `make tool-audit` as a `denied 403` row. Note: `make govern-tools
+TOOLS=...` keeps the agent's `toolNames` aligned with the allowlist it
+sets; `make tool-allow` alone changes only the gateway policy — re-run
+`govern-tools` (or widen `toolNames` yourself) if the agent should *use*
+newly allowed tools. The allowlist is the governance boundary either way.
 
 ## Verification status
 

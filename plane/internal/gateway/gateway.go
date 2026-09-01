@@ -468,6 +468,11 @@ func (h *handler) terminate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		slog.Error("gateway: tool upstream answered a redirect; refusing", "upstream", name, "status", resp.StatusCode)
+		http.Error(w, "tool upstream redirected (refused)", http.StatusBadGateway)
+		return
+	}
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
@@ -500,18 +505,37 @@ func relayStream(w http.ResponseWriter, body io.Reader) {
 	}
 }
 
-// lastSSEData extracts the final data payload from an SSE-framed body —
-// for a buffered tools/list response, that is the JSON-RPC response
-// message (a data: event per the streamable HTTP transport).
+// lastSSEData extracts the final event's data payload from an SSE-framed
+// body — for a buffered tools/list response, that is the JSON-RPC
+// response message. Per the SSE format the space after "data:" is
+// optional, and an event's data may span multiple data lines (joined
+// with newlines); a blank line ends an event.
 func lastSSEData(raw []byte) []byte {
-	var last []byte
+	var last, current []byte
+	flush := func() {
+		if len(current) > 0 {
+			last, current = current, nil
+		}
+	}
 	sc := bufio.NewScanner(bytes.NewReader(raw))
 	sc.Buffer(make([]byte, 0, 64*1024), maxBufferedResp)
 	for sc.Scan() {
-		if payload, ok := strings.CutPrefix(sc.Text(), "data: "); ok {
-			last = []byte(payload)
+		line := sc.Text()
+		if line == "" {
+			flush()
+			continue
 		}
+		payload, ok := strings.CutPrefix(line, "data:")
+		if !ok {
+			continue
+		}
+		payload = strings.TrimPrefix(payload, " ")
+		if current != nil {
+			current = append(current, '\n')
+		}
+		current = append(current, payload...)
 	}
+	flush()
 	return last
 }
 

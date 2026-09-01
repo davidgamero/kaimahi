@@ -17,6 +17,10 @@ PLANE_IMAGE    ?= kaimahi-proxy:p4b
 CRED           ?= hello-world
 CRED_TOOLS     ?= hello-tools
 TOOLS          ?= k8s_get_resources
+# TOOLS as a JSON string array for the Agent patch, so the agent's
+# toolNames stay aligned with the gateway allowlist ("-" -> empty).
+comma          := ,
+TOOLNAMES_JSON  = $(if $(filter -,$(TOOLS)),,"$(subst $(comma),"$(comma)",$(TOOLS))")
 
 .PHONY: up cluster ollama model kagent agent tools-agent chat down status \
 	model-secret copilot-secret use use-ollama \
@@ -153,7 +157,7 @@ govern-tools:
 		--for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True \
 		remotemcpserver/kaimahi-tools --timeout=300s
 	$(KUBECTL) -n kagent patch agent hello-tools --type merge \
-		-p '{"spec":{"declarative":{"tools":[{"type":"McpServer","mcpServer":{"apiGroup":"kagent.dev","kind":"RemoteMCPServer","name":"kaimahi-tools","toolNames":["k8s_get_resources"]}}]}}}'
+		-p '{"spec":{"declarative":{"tools":[{"type":"McpServer","mcpServer":{"apiGroup":"kagent.dev","kind":"RemoteMCPServer","name":"kaimahi-tools","toolNames":[$(TOOLNAMES_JSON)]}}]}}}'
 	$(KUBECTL) -n kagent rollout status deploy/hello-tools --timeout=180s
 	$(KUBECTL) -n kagent wait \
 		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \

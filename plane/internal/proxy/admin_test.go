@@ -115,6 +115,11 @@ func TestToolAllowlistRoundTrip(t *testing.T) {
 		`{"credential": "UPPER", "tools": []}`).Code)
 	require.Equal(t, 400, adminDo(mux, "PUT", "/admin/tool-allowlist", tok,
 		`{"credential": "hello-tools", "tools": ["bad tool name"]}`).Code)
+	// An ABSENT tools field must be a 400, never a silent clear.
+	require.Equal(t, 400, adminDo(mux, "PUT", "/admin/tool-allowlist", tok,
+		`{"credential": "hello-tools"}`).Code)
+	require.Equal(t, 400, adminDo(mux, "PUT", "/admin/tool-allowlist", tok,
+		`{"credential": "hello-tools", "tools": null}`).Code)
 
 	require.Equal(t, 204, adminDo(mux, "PUT", "/admin/tool-allowlist", tok,
 		`{"credential": "hello-tools", "tools": ["k8s_get_resources", "k8s_get_events"]}`).Code)
