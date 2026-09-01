@@ -317,6 +317,12 @@ slack-secret:
 slack-mcp:
 	@$(KUBECTL) -n kaimahi get secret kaimahi-slack-bot >/dev/null 2>&1 || \
 		{ echo 'kaimahi-slack-bot missing — run: make slack-secret SLACK_CHANNEL=C0XXXXXXXXX' >&2; exit 1; }
+	@# Without the gateway's upstream credential the server still starts,
+	@# but every relayed call fails closed at 503 — and a tool-grant use is
+	@# consumed BEFORE the forward, so a human approval would be spent on a
+	@# message that was never sent. Check it here, not after the fact.
+	@$(KUBECTL) -n kaimahi get secret kaimahi-slack-mcp-key >/dev/null 2>&1 || \
+		{ echo 'kaimahi-slack-mcp-key missing — re-run: make slack-secret SLACK_CHANNEL=C0XXXXXXXXX' >&2; exit 1; }
 	$(KUBECTL) apply -f k8s/slack-mcp.yaml
 	$(KUBECTL) -n kaimahi wait \
 		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
@@ -356,11 +362,25 @@ slack-audit:
 ## human approves it; that denial is the point.
 ##   make slack-post SLACK_CHANNEL=C0XXXXXXXXX [MESSAGE='...']
 MESSAGE ?= Kaimahi governance demo: this message required a human approval.
-slack-post:
+# The task text reaches the recipe through the ENVIRONMENT, not through a
+# re-quoted make/shell string: a MESSAGE containing an apostrophe would
+# otherwise break out of the single quotes and mangle the task (or the
+# recipe). The channel gets the same anchored shape check
+# scripts/slack-secret.sh applies, so nothing odd reaches the agent.
+slack-post: export KAIMAHI_SLACK_TASK = Post this to Slack channel $(SLACK_CHANNEL): $(MESSAGE)
+slack-post: $(KAGENT)
 	@test -n "$(SLACK_CHANNEL)" || \
 		{ echo 'usage: make slack-post SLACK_CHANNEL=C0XXXXXXXXX [MESSAGE=...]' >&2; exit 1; }
-	$(MAKE) chat AGENT=hello-slack \
-		TASK='Post this to Slack channel $(SLACK_CHANNEL): $(MESSAGE)'
+	@case "$(SLACK_CHANNEL)" in \
+		[CG][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]*) ;; \
+		*) echo 'invalid SLACK_CHANNEL (want a channel ID like C0XXXXXXXXX, not a #name)' >&2; exit 1 ;; \
+	esac
+	@case "$(SLACK_CHANNEL)" in \
+		*[!A-Z0-9]*) echo 'invalid SLACK_CHANNEL (want a channel ID like C0XXXXXXXXX, not a #name)' >&2; exit 1 ;; \
+	esac
+	@$(KUBECTL) -n kagent port-forward svc/kagent-controller 8083:8083 >/dev/null 2>&1 & \
+	pf=$$!; trap 'kill $$pf 2>/dev/null' EXIT; sleep 3; \
+	$(KAGENT) invoke --agent hello-slack --task "$$KAIMAHI_SLACK_TASK"
 
 ## slack-down: remove the P5a demo (agent, gateway seam, MCP server).
 ## The Secrets are left alone — delete them explicitly to revoke.

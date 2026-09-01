@@ -44,8 +44,12 @@ fi
 # "CA&pretty=1", which is then interpolated into the conversations.info
 # query AND written verbatim into the server's channel restriction —
 # turning one of the three posting guards into a non-channel-ID.
-if ! [[ "$channel" =~ ^C[A-Z0-9]{7,}$ ]]; then
-  echo "invalid channel id '$channel' (want a Slack channel ID like C0XXXXXXXXX, not a #name)" >&2
+# G... is Slack's legacy private-channel (private group) prefix; modern
+# private channels are C.... Accepting both costs nothing: this is only a
+# shape check, and conversations.info's is_private remains the authority
+# on whether the channel is actually private.
+if ! [[ "$channel" =~ ^[CG][A-Z0-9]{7,}$ ]]; then
+  echo "invalid channel id '$channel' (want a Slack channel ID like C0XXXXXXXXX or G0XXXXXXXXX, not a #name)" >&2
   exit 2
 fi
 

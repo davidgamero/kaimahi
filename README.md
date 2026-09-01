@@ -185,10 +185,10 @@ Details: [docs/P3-RUNBOOK.md](docs/P3-RUNBOOK.md).
 > `make approve` mints a bounded permit (expiry and/or use count) that
 > widens exactly what was denied, then lapses
 > ([docs/P4C-RUNBOOK.md](docs/P4C-RUNBOOK.md)).
-> And it now guards something worth guarding: `make govern-slack` puts a
-> demo agent behind an in-cluster Slack MCP server (third-party,
-> digest-pinned, deployed by kagent — no connector code), where **posting
-> is not allowlisted**. The agent is denied, a request is filed, a human
+> And it now guards something worth guarding: `make slack-secret` →
+> `make slack-mcp` → `make govern-slack` puts a demo agent behind an
+> in-cluster Slack MCP server (third-party, digest-pinned, deployed by
+> kagent — no connector code), where **posting is not allowlisted**. The agent is denied, a request is filed, a human
 > grants one bounded use, the message lands, the grant burns, the next
 > attempt is denied again — all of it audited
 > ([docs/P5A-RUNBOOK.md](docs/P5A-RUNBOOK.md)).

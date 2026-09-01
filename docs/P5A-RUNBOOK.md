@@ -123,9 +123,13 @@ namespace kagent                          namespace kaimahi
   `tool_upstreams` entry, `slack`. CI asserts both entries resolve to
   in-cluster hostnames — an internet-facing *gateway upstream* would
   require the deferred SSRF set and must not slip in silently.
-- **No ungoverned Slack path exists.** P3/P4b keep an ungoverned tools
-  wiring for contrast; this lane ships none. The only route to the Slack
-  server is through the gateway.
+- **No ungoverned Slack path is *shipped*.** P3/P4b keep an ungoverned
+  tools wiring for contrast; this lane ships none, so the only route this
+  repo wires is through the gateway. That is a statement about the
+  committed configuration, **not** a containment claim: with no
+  NetworkPolicy, any pod in the cluster can still open a connection to
+  the Slack MCP server's Service and bypass the gateway entirely. See
+  [What the internet-egress pod means](#what-the-internet-egress-pod-means).
 
 ## Credential custody
 
@@ -282,6 +286,14 @@ first for this repo, and it is worth stating plainly rather than burying:
   lane and remains unbuilt. Until it lands, treat the application-layer
   governance here as *enforcement for agents that use the seam*, not as
   containment of a hostile pod.
+- **And it cannot be closed on the demo cluster as configured.** kind's
+  default CNI is `kindnet`, which does not implement NetworkPolicy: a
+  policy applied here would be accepted by the API server and enforce
+  nothing. Shipping one would read as protection while providing none —
+  worse than the documented gap. Doing this properly means a
+  policy-enforcing CNI (Calico/Cilium on kind, or Azure NPM / Cilium on
+  AKS) chosen alongside the P5b cluster-portability work, which is where
+  it belongs.
 
 Blast radius today is bounded by the credential rather than the network:
 the bot token carries `chat:write` for one workspace, and the MCP server
