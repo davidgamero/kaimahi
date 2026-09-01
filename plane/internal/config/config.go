@@ -87,8 +87,13 @@ func Parse(raw []byte) (Config, error) {
 			return Config{}, fmt.Errorf("config: upstream %q: classification must be %q or %q (explicit — never inferred)", name, ClassFree, ClassMetered)
 		}
 		for model, p := range u.Prices {
-			if p.InCentsPer1M < 0 || p.OutCentsPer1M < 0 {
-				return Config{}, fmt.Errorf("config: upstream %q model %q: negative price", name, model)
+			// The $10k/1M-token ceiling is far beyond any real price and
+			// keeps pricing.CostCents' int64 math overflow-free for any
+			// token count an HTTP response can carry.
+			const maxCentsPer1M = 1_000_000
+			if p.InCentsPer1M < 0 || p.OutCentsPer1M < 0 ||
+				p.InCentsPer1M > maxCentsPer1M || p.OutCentsPer1M > maxCentsPer1M {
+				return Config{}, fmt.Errorf("config: upstream %q model %q: price out of range [0, %d]", name, model, maxCentsPer1M)
 			}
 		}
 	}

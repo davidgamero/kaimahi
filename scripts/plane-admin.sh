@@ -71,18 +71,39 @@ v = d.get(sys.argv[2], "")
 sys.stdout.write(v if isinstance(v, str) else "")' "$1" "$2"
 }
 
+# Credential names and caps are interpolated into JSON/query strings;
+# validate their shape here (the server validates again).
+check_name() {
+  case "$1" in
+    (*[!a-z0-9-]*|'') echo "invalid credential name '$1' (want [a-z0-9-]+)" >&2; exit 2 ;;
+  esac
+}
+check_cap() {
+  case "$1" in
+    (null) ;;
+    (*[!0-9]*|'') echo "invalid cap '$1' (want a non-negative integer or -)" >&2; exit 2 ;;
+  esac
+}
+
 cmd="${1:-}"
 case "$cmd" in
   issue)
     name="${2:?usage: plane-admin.sh issue <name>}"
+    check_name "$name"
     printf '{"name": "%s"}\n' "$name" > "$workdir/req"
     admin_curl POST /admin/credentials "$workdir/req"
     if [ "$status" = 409 ]; then
-      if $KUBECTL -n "$AGENT_NAMESPACE" get secret "$GOVERNED_SECRET" >/dev/null 2>&1; then
-        echo "Credential '$name' already issued and $GOVERNED_SECRET exists; keeping both." >&2
+      bound=$($KUBECTL -n "$AGENT_NAMESPACE" get secret "$GOVERNED_SECRET" \
+        -o jsonpath='{.metadata.annotations.kaimahi\.dev/credential}' 2>/dev/null || true)
+      if [ "$bound" = "$name" ]; then
+        echo "Credential '$name' already issued and $GOVERNED_SECRET is bound to it; keeping both." >&2
         exit 0
       fi
-      echo "Credential '$name' exists in the plane but Secret $GOVERNED_SECRET is missing." >&2
+      if [ -n "$bound" ]; then
+        echo "Secret $GOVERNED_SECRET holds the token for credential '$bound', not '$name' — refusing." >&2
+        exit 1
+      fi
+      echo "Credential '$name' exists in the plane but Secret $GOVERNED_SECRET is missing (or unlabeled)." >&2
       echo "The token is shown exactly once at issue time and cannot be recovered;" >&2
       echo "delete the row (kubectl -n $NAMESPACE exec deploy/kaimahi-postgres -- \\" >&2
       echo "  psql -U kaimahi -c \"DELETE FROM credential WHERE name='$name'\") and re-run." >&2
@@ -94,6 +115,10 @@ case "$cmd" in
     $KUBECTL -n "$AGENT_NAMESPACE" create secret generic "$GOVERNED_SECRET" \
       --from-file=api-key="$workdir/governed-token" \
       --dry-run=client -o yaml | $KUBECTL -n "$AGENT_NAMESPACE" apply -f -
+    # Bind the Secret to its credential so a later issue of a DIFFERENT
+    # name can detect the mismatch instead of silently reusing this token.
+    $KUBECTL -n "$AGENT_NAMESPACE" annotate --overwrite secret "$GOVERNED_SECRET" \
+      "kaimahi.dev/credential=$name" >/dev/null
     echo "Governed credential '$name' issued; agent-side Secret $GOVERNED_SECRET created." >&2
     echo "The plane stores only its hash — the real upstream keys stay with the proxy." >&2
     ;;
@@ -101,8 +126,10 @@ case "$cmd" in
     name="${2:?usage: plane-admin.sh budget <name> <cents|-> <tokens|->}"
     cents="${3:?cents cap (or - for none)}"
     tokens="${4:?token cap (or - for none)}"
+    check_name "$name"
     [ "$cents" = - ] && cents=null
     [ "$tokens" = - ] && tokens=null
+    check_cap "$cents"; check_cap "$tokens"
     printf '{"credential": "%s", "cap_cents": %s, "cap_tokens": %s}\n' \
       "$name" "$cents" "$tokens" > "$workdir/req"
     admin_curl PUT /admin/budgets "$workdir/req"
@@ -111,6 +138,7 @@ case "$cmd" in
     ;;
   ledger)
     name="${2:-}"
+    [ -z "$name" ] || check_name "$name"
     admin_curl GET "/admin/ledger?credential=$name&limit=50"
     [ "$status" = 200 ] || { echo "ledger read failed (HTTP $status):" >&2; cat "$workdir/resp" >&2; exit 1; }
     python3 - "$workdir/resp" <<'EOF'

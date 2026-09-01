@@ -39,6 +39,9 @@ func (h Handler) redactAttrs(attrs []slog.Attr) []slog.Attr {
 }
 
 func (h Handler) redactAttr(a slog.Attr) slog.Attr {
+	// Handlers must resolve LogValuer values themselves; unresolved they
+	// would slip past the kind switch unredacted.
+	a.Value = a.Value.Resolve()
 	switch a.Value.Kind() {
 	case slog.KindString:
 		return slog.String(a.Key, h.R.Redact(a.Value.String()))

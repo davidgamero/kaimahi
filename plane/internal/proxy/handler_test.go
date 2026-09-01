@@ -110,7 +110,7 @@ func newUpstream(t *testing.T) (*httptest.Server, *http.Request, *[]byte) {
 		gotReq = *r.Clone(context.Background())
 		gotBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"choices": [{"message": {"content": "hello"}}], "usage": {"prompt_tokens": 7, "completion_tokens": 11}}`)
+		_, _ = fmt.Fprint(w, `{"choices": [{"message": {"content": "hello"}}], "usage": {"prompt_tokens": 7, "completion_tokens": 11}}`)
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &gotReq, &gotBody
@@ -126,7 +126,7 @@ func testDeps(f *fakeStore, upstreams map[string]config.Upstream) proxy.Deps {
 
 func doChat(t *testing.T, mux http.Handler, token, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest("POST", path, strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), "POST", path, strings.NewReader(body))
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -317,9 +317,9 @@ func TestStreamingInjectsIncludeUsageAndCapturesUsage(t *testing.T) {
 		opts, _ := m["stream_options"].(map[string]any)
 		require.Equal(t, true, opts["include_usage"], "proxy must request the usage chunk")
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
-		fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}\n\n")
-		fmt.Fprint(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":5}}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	t.Cleanup(srv.Close)
 	mux := proxy.NewDataMux(testDeps(f, map[string]config.Upstream{
@@ -358,7 +358,7 @@ func TestOnlyPostChatRouteExists(t *testing.T) {
 	f := newFakeStore()
 	f.addToken("tok", store.Credential{Name: "hello"})
 	mux := proxy.NewDataMux(testDeps(f, map[string]config.Upstream{}))
-	req := httptest.NewRequest("GET", "/upstream/ollama/v1/models", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/upstream/ollama/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)

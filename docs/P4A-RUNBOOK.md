@@ -16,7 +16,7 @@ only with the proxy. **Keys never reach the agent.**
 
 ## Architecture
 
-```
+```text
 Agent pod (kagent)                         namespace kaimahi
 ┌─────────────────────┐   opaque token   ┌──────────────────┐    real creds
 │ governed-ollama      │ ───────────────▶ │  kaimahi-proxy   │ ──────────────▶ upstream

@@ -12,7 +12,7 @@ CREATE TABLE credential (
     name        text NOT NULL UNIQUE,
     token_hash  bytea NOT NULL UNIQUE, -- sha256 of the issued token; plaintext never stored
     -- Monthly caps (calendar month, UTC). NULL = no cap of that kind.
-    cap_cents   integer CHECK (cap_cents >= 0),
+    cap_cents   bigint CHECK (cap_cents >= 0),
     cap_tokens  bigint CHECK (cap_tokens >= 0),
     created_at  timestamptz NOT NULL DEFAULT now()
 );
