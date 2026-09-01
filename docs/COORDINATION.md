@@ -129,6 +129,26 @@ clone from the archive when P4 port evaluation needs the source.
 
 ## Under consideration (not GO — do not build yet)
 
+- **Connectors: outbound (Slack/Discord) + inbound (user APIs, webhooks,
+  common sources)** — user feedback 2026-09-01: "i think a piece of
+  functionality we should consider adding is the creation of connectors --
+  output to discord/slack -- but also inbound from user provided api, or
+  other common sources." Coordinator assessment: OUTBOUND is configuration,
+  not construction — Slack/Discord MCP servers exist in the ecosystem and
+  kagent's MCPServer/RemoteMCPServer deploys them; the real work is
+  governance (tokens in plane custody, calls through the P4b gateway
+  allowlist + audit, channel-posting as the natural P4c approvals demo).
+  Prime directive: no connector code without a survey showing the gap.
+  INBOUND is the genuine net-new surface: an event→A2A bridge (webhook →
+  agent invoke) IF the survey finds nothing upstream; must reuse the
+  plane's kmh_ credential model for inbound auth and sit behind P4a
+  budgets (inbound events cause spend), with ingress security (auth,
+  replay, rate limits) as first-class requirements. Sequencing: outbound
+  folds into the P4c demo; inbound is a P5 lane after P4 completes, with
+  its own blindspot pass and shaping questions. Cross-links: SCENARIOS.md
+  billing journey argues for exactly this; CLI-PROPOSAL --tools flag
+  would scaffold the outbound wiring.
+
 - **`npx tomte create agent`** — user feedback 2026-08-31: "one other good
   piece of feedback we should consider -- an npx tomte create agent command."
   Coordinator assessment: fits the leadership "simple cli" quote; fills the
