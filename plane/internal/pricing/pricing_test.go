@@ -24,3 +24,20 @@ func TestCostCentsLargeCounts(t *testing.T) {
 	p := pricing.Price{InCentsPer1M: 300, OutCentsPer1M: 1500}
 	require.Equal(t, int64(90_000), pricing.CostCents(p, 300_000_000, 0))
 }
+
+func TestCostCentsExactAtClampBoundaryAndMaxPrice(t *testing.T) {
+	// The largest accepted price (config's 1e6 cents/1M) at the clamp
+	// boundary stays exact and positive: 1e12 * 1e6 / 1e6 per side.
+	p := pricing.Price{InCentsPer1M: 1_000_000, OutCentsPer1M: 1_000_000}
+	got := pricing.CostCents(p, pricing.MaxTokens, pricing.MaxTokens)
+	require.Equal(t, int64(2_000_000_000_000), got)
+}
+
+func TestCostCentsClampsHostileUsage(t *testing.T) {
+	// Usage comes from an upstream response body; absurd or negative
+	// counts must never overflow into a negative cost.
+	p := pricing.Price{InCentsPer1M: 1_000_000, OutCentsPer1M: 1_000_000}
+	got := pricing.CostCents(p, int64(1)<<62, int64(1)<<62)
+	require.Equal(t, int64(2_000_000_000_000), got, "clamped, not wrapped")
+	require.Equal(t, int64(0), pricing.CostCents(p, -5, -5))
+}

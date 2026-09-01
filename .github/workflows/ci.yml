@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege for every job: checkout needs repository read, nothing
+# needs more.
+permissions:
+  contents: read
+
 jobs:
   hygiene:
     runs-on: ubuntu-latest
@@ -41,8 +46,6 @@ jobs:
   # after a 6-minute cluster bring-up.
   go-plane:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     defaults:
       run:
         working-directory: plane
@@ -68,8 +71,6 @@ jobs:
   e2e-hello-world:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
     defaults:
       run:
         # An explicit bash shell turns on `-o pipefail`, so the
