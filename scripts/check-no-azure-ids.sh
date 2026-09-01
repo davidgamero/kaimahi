@@ -2,12 +2,17 @@
 # Refuse to carry Azure identifiers in the tree (P5b guardrail).
 #
 # This repo is public. A committed subscription or tenant GUID
-# fingerprints the owner; a committed resource-group name, registry login
-# server or cluster FQDN names live infrastructure and invites squatting
-# on the registry name. The managed-cluster path is therefore entirely
-# parameterised, and this check is what keeps it that way — including
-# while the AKS run is being written up, which is exactly when a pasted
-# terminal transcript is most likely to carry one.
+# fingerprints the owner; a committed registry login server or cluster
+# FQDN names live infrastructure and invites squatting on the registry
+# name. The managed-cluster path is therefore entirely parameterised, and
+# this check is what keeps it that way — including while the AKS run is
+# being written up, which is exactly when a pasted terminal transcript is
+# most likely to carry one.
+#
+# Scope honestly: these are SHAPE rules. A bare resource-group or cluster
+# NAME is just a string and cannot be detected this way — keeping those
+# out is the author's job, helped by the fact that every one of them is a
+# parameter with no committed default.
 #
 # What is refused:
 #   - GUIDs (subscription and tenant ids are the usual leak)
@@ -34,6 +39,15 @@ elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   git ls-files -z --cached --others --exclude-standard > "$workdir/files"
 else
   find . -type f -print0 > "$workdir/files"
+fi
+
+# A scanner that examined nothing must not report "clean". An empty list
+# means the enumeration failed (or matched nothing), which is a broken
+# gate, not a passing one — the same fail-open shape as a grep whose error
+# is read as "no match".
+if [ ! -s "$workdir/files" ]; then
+  echo "check-no-azure-ids: no files to scan — refusing to report a clean tree." >&2
+  exit 1
 fi
 
 python3 - "$workdir/files" <<'PY'
@@ -67,7 +81,12 @@ for raw in open(sys.argv[1], "rb").read().split(b"\0"):
         continue
     try:
         text = p.read_text()
-    except (UnicodeDecodeError, OSError):
+    except UnicodeDecodeError:
+        continue  # binary; nothing text-shaped to leak
+    except OSError as e:
+        # Unreadable is not clean. Report it rather than skipping, so a
+        # permissions problem cannot quietly shrink the scanned set.
+        findings.append((p, 0, "could not be read (not scanned)", str(e)))
         continue
     for n, line in enumerate(text.splitlines(), 1):
         for m in GUID.finditer(line):

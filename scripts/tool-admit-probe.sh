@@ -42,11 +42,19 @@ esac
 
 # Context safety (P5b): unlike a make target, this script is run directly,
 # so nothing has resolved a context for it — see the "run directly" note in
-# scripts/kube-guard.sh. Resolve the EFFECTIVE one (honouring a --context
-# inside $KUBECTL) and let the guard decide.
+# scripts/kube-guard.sh.
+#
+# The context is derived from $KUBECTL and NOT from an inherited KUBE_CTX,
+# so that the cluster the guard vouches for is the cluster this script
+# actually acts on. Honouring an ambient KUBE_CTX here would re-open the
+# very hole the guard was added to close: KUBE_CTX is a documented knob,
+# and someone who exported KUBE_CTX=kind-... and then ran `make aks-cluster`
+# (whose `az aks get-credentials --overwrite-existing` flips
+# current-context to AKS) would get a silent kind-shaped pass while every
+# call below went to the managed cluster.
 # shellcheck disable=SC2086 # KUBECTL deliberately carries --context args
-KUBE_CTX="${KUBE_CTX:-$($KUBECTL config view --minify -o jsonpath='{.contexts[0].name}')}"
-KUBE_NS="$NAMESPACE, $AGENT_NAMESPACE" KUBE_CTX="$KUBE_CTX" \
+probe_ctx=$($KUBECTL config view --minify -o jsonpath='{.contexts[0].name}')
+KUBE_NS="$NAMESPACE, $AGENT_NAMESPACE" KUBE_CTX="$probe_ctx" \
   bash "$(dirname "$0")/kube-guard.sh" "$(basename "$0") $tool"
 
 workdir=$(mktemp -d)
