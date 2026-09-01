@@ -255,6 +255,10 @@ is the natural follow-up and was left out here deliberately.
 - The rate limiter is per replica, in memory.
 - Sessions on the kagent side are attributed to the hook
   (`x-user-id: kaimahi-inbound/<hook>`), not to whoever sent the event.
-- The plane's new egress to the kagent controller on 8083 is a path the
-  NetworkPolicy work has to allow explicitly.
-- No TLS termination, no public exposure: that is the operator's layer.
+- The plane's egress to the kagent controller on 8083 is allowed
+  explicitly in `k8s/plane/network-policy.yaml` (the [egress](egress.md)
+  boundary); nothing else in the kagent namespace is reachable from the
+  plane.
+- No TLS termination, no public exposure: that is the operator's layer,
+  and it needs its own ingress allowance to port 8082 in the policy when
+  you add it. On kind the port-forward path is not subject to the policy.

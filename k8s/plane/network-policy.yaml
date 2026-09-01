@@ -67,11 +67,19 @@ spec:
 # live".
 #
 # Out: the ledger, the three in-cluster upstreams the committed table
-# names (ollama, kagent's tool server, the Slack MCP server), and DNS.
-# Each upstream is pinned to its POD by label, in its namespace, on its
-# port — not to the Service, because policy is evaluated on the
-# post-NAT pod address. A new entry in k8s/plane/upstreams.yaml needs a
-# matching rule here, or the gateway's 502 will say so.
+# names (ollama, kagent's tool server, the Slack MCP server), the kagent
+# controller on 8083 (P7b: the inbound bridge invokes agents through its
+# A2A endpoint), and DNS. Each upstream is pinned to its POD by label, in
+# its namespace, on its port — not to the Service, because policy is
+# evaluated on the post-NAT pod address. A new entry in
+# k8s/plane/upstreams.yaml needs a matching rule here, or the gateway's
+# 502 (or an inbound event's 'failed … agent unreachable' outcome row)
+# will say so.
+#
+# Not opened here: the inbound port (8082) from outside the cluster. On
+# kind the demo reaches it by port-forward (kubelet traffic, which this
+# policy does not see); exposing it publicly is the operator's Ingress or
+# LoadBalancer step and needs its own ingress allowance, stated then.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -127,6 +135,23 @@ spec:
       ports:
         - protocol: TCP
           port: 13080
+    # P7b: the inbound bridge invokes agents through the kagent
+    # controller's A2A endpoint (the one origin it dials, docs/inbound.md).
+    # The controller only, on 8083 — not the agent pods, not the rest of
+    # the kagent namespace. The controller's selector is the chart's
+    # (component=controller of the kagent instance).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kagent
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kagent
+              app.kubernetes.io/instance: kagent
+              app.kubernetes.io/component: controller
+      ports:
+        - protocol: TCP
+          port: 8083
     - to:
         - namespaceSelector:
             matchLabels:
