@@ -31,7 +31,7 @@ spec:
           # phase so a stale side-loaded image can never satisfy a newer
           # manifest silently (imagePullPolicy: Never reuses same-tag
           # images without complaint).
-          image: kaimahi-proxy:p4c
+          image: kaimahi-proxy:p5a
           imagePullPolicy: Never
           env:
             - name: PGHOST
@@ -62,6 +62,9 @@ spec:
               readOnly: true
             - name: copilot-cred
               mountPath: /etc/kaimahi/upstream-creds/copilot
+              readOnly: true
+            - name: slack-mcp-cred
+              mountPath: /etc/kaimahi/upstream-creds/slack
               readOnly: true
           readinessProbe:
             httpGet:
@@ -99,6 +102,16 @@ spec:
             # The Copilot upstream is optional: without this Secret the
             # governed ollama path still works and copilot requests fail
             # closed (503 upstream credential unavailable).
+            optional: true
+        # P5a: the Slack MCP server's OWN bearer credential — the gateway
+        # injects it upstream (plane custody, like the Copilot key). This
+        # pod deliberately does NOT mount kaimahi-slack-bot: the Slack
+        # workspace token belongs to the MCP server pod alone.
+        - name: slack-mcp-cred
+          secret:
+            secretName: kaimahi-slack-mcp-key
+            # Optional, same contract: with no Secret the slack upstream
+            # fails closed (503) and every other path is unaffected.
             optional: true
 ---
 apiVersion: v1

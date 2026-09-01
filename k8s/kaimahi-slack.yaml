@@ -1,0 +1,33 @@
+# The P5a seam: a Kaimahi-owned RemoteMCPServer whose URL is the
+# enforcing MCP gateway's SECOND upstream — the in-cluster Slack MCP
+# server. Same shape as k8s/kaimahi-tools.yaml (P4b), one upstream over.
+#
+# Custody: headersFrom resolves the agent's credential from a Secret
+# holding ONLY the Kaimahi-issued kmh_ opaque token (`make govern-slack`
+# mints it; the plane stores its sha256). The Slack bot token exists
+# only in the plane namespace, on the MCP server pod — never here, never
+# on the agent.
+#
+# Because kagent's controller discovers tools THROUGH the gateway with
+# this credential, status.discoveredTools is the allowlist projection:
+# the upstream offers 14 Slack tools; the agent sees only what its
+# credential may call right now. Posting is deliberately not among them
+# until a human approves it.
+apiVersion: kagent.dev/v1alpha2
+kind: RemoteMCPServer
+metadata:
+  name: kaimahi-slack
+  namespace: kagent
+spec:
+  description: Kaimahi-governed Slack — the in-cluster Slack MCP server behind the enforcing MCP gateway
+  protocol: STREAMABLE_HTTP
+  url: http://kaimahi-mcp-gateway.kaimahi:8081/upstream/slack/mcp
+  timeout: 30s
+  sseReadTimeout: 5m0s
+  terminateOnClose: true
+  headersFrom:
+    - name: Authorization
+      valueFrom:
+        type: Secret
+        name: kaimahi-slack-token
+        key: api-key

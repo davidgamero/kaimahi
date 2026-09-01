@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -537,4 +539,140 @@ func TestDeleteRelaysSessionTermination(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.True(t, sawDelete)
+}
+
+// ---- P5a: keyed tool upstreams (credential injection from proxy-side custody) ----
+
+// newKeyedGateway wires one upstream that carries its own credential,
+// mirroring the Slack MCP server's SLACK_MCP_API_KEY: the gateway holds
+// the key, the agent never does.
+func newKeyedGateway(t *testing.T, fs *fakeStore, upstream *httptest.Server, secret, header string) (http.Handler, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "api-key")
+	// A trailing newline is what `kubectl create secret --from-file` of a
+	// pasted value routinely produces; it must not reach the header.
+	require.NoError(t, os.WriteFile(path, []byte(secret+"\n"), 0o600))
+	ups := map[string]config.ToolUpstream{
+		"kagent-tools": {URL: upstream.URL + "/mcp", CredentialFile: path, CredentialHeader: header},
+	}
+	return NewMux(Deps{Store: fs, Upstreams: ups}), path
+}
+
+func TestKeyedUpstreamGetsInjectedCredentialAndNeverTheAgentToken(t *testing.T) {
+	var gotAuth, gotXAPIKey string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotXAPIKey = r.Header.Get("X-Api-Key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"posted"}]}}`))
+	}))
+	defer up.Close()
+	fs := &fakeStore{credential: store.Credential{Name: "hello-slack"},
+		allow: []string{"conversations_add_message"}}
+	h, _ := newKeyedGateway(t, fs, up, "upstream-secret", "")
+	rec := post(h, goodToken, rpc(t, "tools/call",
+		map[string]any{"name": "conversations_add_message", "arguments": map[string]any{}}))
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "Bearer upstream-secret", gotAuth,
+		"the upstream sees its OWN credential, trimmed, in the Authorization slot")
+	assert.NotContains(t, gotAuth, "kmh_", "the agent's kaimahi token must never reach a tool server")
+	assert.Empty(t, gotXAPIKey)
+	require.Len(t, fs.audits, 1)
+	assert.Equal(t, "allowed", fs.audits[0].Decision)
+}
+
+func TestKeyedUpstreamCustomHeaderSlot(t *testing.T) {
+	var gotAuth, gotCustom string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotCustom = r.Header.Get("X-Api-Key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer up.Close()
+	fs := &fakeStore{credential: store.Credential{Name: "hello-slack"},
+		allow: []string{"channels_list"}}
+	h, _ := newKeyedGateway(t, fs, up, "upstream-secret", "X-Api-Key")
+	rec := post(h, goodToken, rpc(t, "tools/call",
+		map[string]any{"name": "channels_list", "arguments": map[string]any{}}))
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "upstream-secret", gotCustom, "a non-Authorization slot carries the raw value")
+	assert.Empty(t, gotAuth, "the stripped agent token leaves the Authorization slot untouched")
+}
+
+func TestKeyedUpstreamMissingCredentialFailsClosed(t *testing.T) {
+	upstreamHit := false
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+	}))
+	defer up.Close()
+	fs := &fakeStore{credential: store.Credential{Name: "hello-slack"},
+		allow: []string{"conversations_add_message"}}
+	h, path := newKeyedGateway(t, fs, up, "upstream-secret", "")
+	require.NoError(t, os.Remove(path))
+	rec := post(h, goodToken, rpc(t, "tools/call",
+		map[string]any{"name": "conversations_add_message", "arguments": map[string]any{}}))
+	// 503, not 502 and never a bare forward: an unreadable credential
+	// must not downgrade to an unauthenticated call.
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.False(t, upstreamHit, "no request reaches a keyed upstream without its credential")
+	require.Len(t, fs.audits, 1)
+	assert.Equal(t, "allowed", fs.audits[0].Decision,
+		"the allowlist decision stands; the audit row carries the 503 outcome")
+	assert.Equal(t, http.StatusServiceUnavailable, fs.audits[0].Status)
+}
+
+func TestKeyedUpstreamEmptyCredentialFailsClosed(t *testing.T) {
+	upstreamHit := false
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+	}))
+	defer up.Close()
+	fs := &fakeStore{credential: store.Credential{Name: "hello-slack"},
+		allow: []string{"conversations_add_message"}}
+	h, path := newKeyedGateway(t, fs, up, "upstream-secret", "")
+	require.NoError(t, os.WriteFile(path, []byte("   \n"), 0o600))
+	rec := post(h, goodToken, rpc(t, "tools/call",
+		map[string]any{"name": "conversations_add_message", "arguments": map[string]any{}}))
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.False(t, upstreamHit, "a whitespace-only Secret is not a credential")
+}
+
+func TestKeyedUpstreamProjectionAlsoInjects(t *testing.T) {
+	var gotAuth string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"channels_list"},{"name":"conversations_add_message"}]}}`))
+	}))
+	defer up.Close()
+	fs := &fakeStore{credential: store.Credential{Name: "hello-slack"},
+		allow: []string{"channels_list"}}
+	h, _ := newKeyedGateway(t, fs, up, "upstream-secret", "")
+	rec := post(h, goodToken, rpc(t, "tools/list", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "Bearer upstream-secret", gotAuth,
+		"discovery rides the same custody as tool calls")
+	assert.Contains(t, rec.Body.String(), "channels_list")
+	assert.NotContains(t, rec.Body.String(), "conversations_add_message",
+		"posting is not allowlisted: an agent never even sees it until it is approved")
+}
+
+func TestKeyedUpstreamCredentialRotatesWithoutRestart(t *testing.T) {
+	var seen []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer up.Close()
+	fs := &fakeStore{credential: store.Credential{Name: "hello-slack"},
+		allow: []string{"channels_list"}}
+	h, path := newKeyedGateway(t, fs, up, "first", "")
+	call := func() { post(h, goodToken, rpc(t, "tools/call", map[string]any{"name": "channels_list"})) }
+	call()
+	require.NoError(t, os.WriteFile(path, []byte("second\n"), 0o600))
+	call()
+	assert.Equal(t, []string{"Bearer first", "Bearer second"}, seen,
+		"the credential is read per request, so a Secret update needs no restart")
 }
