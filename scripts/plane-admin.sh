@@ -103,10 +103,10 @@ check_cap() {
   esac
 }
 check_uuid() {
-  case "$1" in
-    ([0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f]*-[0-9a-f]*-[0-9a-f]*-[0-9a-f]*) ;;
-    (*) echo "invalid request id '$1' (want a UUID from 'make approvals')" >&2; exit 2 ;;
-  esac
+  if ! [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    echo "invalid request id '$1' (want a UUID from 'make approvals')" >&2
+    exit 2
+  fi
 }
 
 cmd="${1:-}"

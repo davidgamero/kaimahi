@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ErrNotPending marks a decision attempted on a request that is no
@@ -86,6 +87,10 @@ func (s *Store) FileApprovalRequest(ctx context.Context, credential, kind, subje
 		credential, kind, subject, detail).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil // already pending — deduped
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign_key_violation
+		return false, fmt.Errorf("%w: no such credential", ErrNotFound)
 	}
 	if err != nil {
 		return false, err

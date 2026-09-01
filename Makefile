@@ -144,6 +144,10 @@ use-ollama:
 plane: plane-image plane-secrets
 	$(KUBECTL) apply -f k8s/plane/
 	$(KUBECTL) -n kaimahi rollout status deploy/kaimahi-postgres --timeout=300s
+	@# Always restart: a rebuilt image under the SAME side-loaded tag
+	@# leaves the spec unchanged, so apply alone would keep the old
+	@# binary running (imagePullPolicy: Never reuses same-tag images).
+	$(KUBECTL) -n kaimahi rollout restart deploy/kaimahi-proxy
 	$(KUBECTL) -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
 
 plane-image:
