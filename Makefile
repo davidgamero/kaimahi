@@ -97,11 +97,20 @@ SLACK_TOOLNAMES_JSON = $(if $(filter -,$(SLACK_AGENT_TOOLS)),,"$(subst $(comma),
 
 # guard: the context-safety net every MUTATING target depends on. Prints
 # the target context/namespaces; demands explicit confirmation for
-# anything that is not a local kind cluster; fails closed. Read-only
-# targets (chat, status, ledger, audits, approvals lists) deliberately do
-# NOT depend on it — they cannot change a cluster, and adding a prompt to
-# them would be noise. Make runs it once per invocation, so a single
-# `make up` asks at most once.
+# anything that is not a local kind cluster; fails closed. Make runs it
+# once per invocation, so a single `make up` asks at most once.
+#
+# Unguarded: status, ledger, audits and the approvals lists (they read),
+# and `chat`. Calling chat "read-only" would be wrong — it spends budget,
+# writes a ledger row, and can burn a grant. It is unguarded because the
+# line being drawn is not "mutates" but "can be aimed somewhere
+# unintended": chat runs through $(KUBECTL), which carries an explicit
+# --context, so it lands wherever the rest of the invocation was already
+# going to land. The scripts/tool-*-probe.sh scripts mutate the same
+# governance state and ARE guarded, because they run outside make and
+# would otherwise follow whatever `kubectl config current-context` says —
+# which `az aks get-credentials` rewrites. Mutation is why anyone cares;
+# an inherited context is what makes it a surprise.
 # MAKECMDGOALS is empty for a bare `make`, which would print an action-less
 # banner; name the default goal instead.
 guard:
