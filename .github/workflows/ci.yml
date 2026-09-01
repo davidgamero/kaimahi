@@ -284,13 +284,18 @@ jobs:
       # server is deliberately NOT deployed here. What that buys is an
       # honest boundary rather than a stand-in pretending to be Slack:
       # the gateway decides BEFORE it forwards, so the entire approval
-      # cycle over the REAL committed `slack` upstream is exercised, and
-      # the admitted call then answers 502 because the upstream is
-      # absent. A 200 on that call would mean CI reached a tool server —
-      # tool-admit-probe.sh fails on it. What CI therefore does NOT
-      # cover: the Slack MCP server pod, its bot-token custody at
-      # runtime, and Slack accepting the message. Those are live-verified
-      # in the PR.
+      # cycle is exercised, the gateway then DIALS the committed slack
+      # upstream, and the call answers 502 because no such Service
+      # exists. A 200 would mean CI reached a tool server —
+      # tool-admit-probe.sh fails on it.
+      #
+      # Be precise about what that does and does not prove. It proves the
+      # allowlist/grant decisions and that an admitted call is forwarded.
+      # It does NOT validate the upstream URL itself: any unreachable URL
+      # answers 502 alike. And it does not cover the Slack MCP server
+      # pod, its bot-token custody at runtime, the gateway relaying a
+      # real Slack response, or Slack accepting the message. Those are
+      # live-verified in the PR and nowhere else.
       - name: Slack manifests valid against the live CRDs (server dry-run)
         run: |
           kubectl --context kind-kaimahi-p1 apply --dry-run=server \
@@ -382,6 +387,16 @@ jobs:
           n=$(kubectl --context kind-kaimahi-p1 -n kagent get secret kaimahi-slack-token \
             -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
           test "$n" = 1
+          # Give the gateway a throwaway upstream credential so it
+          # actually DIALS the slack upstream instead of failing closed on
+          # a missing Secret — that is what makes the admitted call's 502
+          # mean "forwarded and unreachable" rather than "never sent".
+          # This is NOT a Slack credential: no Slack token exists in CI.
+          kubectl --context kind-kaimahi-p1 -n kaimahi create secret generic kaimahi-slack-mcp-key \
+            --from-literal=SLACK_MCP_API_KEY=ci-not-a-real-credential \
+            --dry-run=client -o yaml | kubectl --context kind-kaimahi-p1 apply -f -
+          kubectl --context kind-kaimahi-p1 -n kaimahi rollout restart deploy/kaimahi-proxy
+          kubectl --context kind-kaimahi-p1 -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
       - name: "Slack post DENIED fail-closed and files an approval request"
         run: |
           UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
@@ -394,12 +409,15 @@ jobs:
           id=$(awk '$3=="hello-slack" && $4=="tool" && $5=="conversations_add_message" {print $1}' approvals-slack.out)
           test -n "$id"
           make approve ID="$id" USES=1 TTL=10m
-          # Admitted by the grant; the upstream is absent, so nothing is
-          # sent — the probe FAILS if the call ever reaches a tool server.
+          # Admitted by the grant, then forwarded to an upstream that does
+          # not exist. The probe FAILS on a 200 (it reached a tool server)
+          # and on any 503 that is a pre-forward denial wearing a 503.
           UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
             bash scripts/tool-admit-probe.sh conversations_add_message '{"channel_id": "C0CIONLY", "payload": "ci"}'
           make slack-audit | tee slack-audit-granted.out
-          grep -E 'hello-slack +slack +tools/call +conversations_add_message +allowed +50[23] +granted' slack-audit-granted.out
+          # Exactly 502: an admitted call that was dialed and unreachable.
+          # 503 here would mean the gateway never forwarded at all.
+          grep -E 'hello-slack +slack +tools/call +conversations_add_message +allowed +502 +granted' slack-audit-granted.out
           # The single use is consumed: denied again, and a fresh request filed.
           UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
             bash scripts/tool-denial-probe.sh conversations_add_message

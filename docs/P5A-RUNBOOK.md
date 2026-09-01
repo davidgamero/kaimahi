@@ -312,10 +312,19 @@ CI is **keyless** and stays that way (public, fork-exposed repo): no
 Slack token, no Copilot token, ever. The Slack MCP server is therefore
 **not deployed in CI**. Rather than stand up a fake Slack to paper over
 that, the boundary is made structural: the gateway decides *before* it
-forwards, so the whole approval cycle runs against the **real committed
-`slack` upstream**, and the admitted call then answers 502/503 because
-the upstream is absent. `scripts/tool-admit-probe.sh` **fails on a 200** —
-CI cannot silently start reaching a tool server.
+forwards, so the whole approval cycle runs, the gateway then **dials**
+the committed `slack` upstream, and the call answers **502** because no
+such Service exists. `scripts/tool-admit-probe.sh` **fails on a 200** —
+CI cannot silently start reaching a tool server — and it fails on any
+503 that is a pre-forward denial wearing a 503 (a Postgres blip must
+never read as "admitted").
+
+Be precise about what that proves. It proves the allowlist and grant
+decisions, and that an admitted call is actually forwarded. It does
+**not** validate the upstream URL itself: any unreachable URL answers
+502 alike. CI needs a throwaway upstream credential in the plane for the
+dial to happen at all — it is not a Slack credential, and no Slack token
+exists in CI.
 
 CI asserts:
 
@@ -349,6 +358,13 @@ with a real bot token, and nowhere else.
   user/channel caches would pull a directory of the whole workspace into
   the pod. Tools are addressed by channel ID. `channels_list` is
   consequently not useful and is not allowlisted.
+- **A burned grant does not guarantee a delivered message.** A tool-grant
+  use is consumed *before* the forward (P4c's accepted conservative
+  direction), so if the plane cannot read the Slack server's upstream
+  credential — the Secret deleted, or the proxy rolled before it existed
+  — the call is refused 503 and the audit row reads `allowed 503 granted
+  <id>`: the human's approval is spent and nothing was sent. The audit
+  trail says so plainly; re-approve after fixing the Secret.
 - Rotating the bot token: re-run `make slack-secret`, then
   `kubectl -n kaimahi rollout restart deploy/kaimahi-slack-mcp` (the
   server reads its env at start). The gateway key is generated once and
