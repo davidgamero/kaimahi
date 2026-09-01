@@ -57,8 +57,15 @@ spec:
           apiGroup: kagent.dev
           kind: RemoteMCPServer
           name: kaimahi-slack
-          # Read-only to start. `make govern-slack` keeps this aligned
-          # with the gateway allowlist; posting is added only by an
-          # approval, and only for as long as the grant lives.
+          # toolNames is the agent's SELECTION, not a grant. kagent wires
+          # an agent to (discovered ∩ toolNames), and discovery runs
+          # through the gateway — so this list can name the posting tool
+          # without conferring anything: while the credential cannot call
+          # it, the gateway does not project it, kagent does not discover
+          # it, and the agent has no such tool. Naming it here is what
+          # lets an APPROVAL take effect without editing the agent.
+          # The authority is the plane's allowlist (make tool-allowlist
+          # CRED_TOOLS=hello-slack), never this file.
           toolNames:
             - conversations_history
+            - conversations_add_message
