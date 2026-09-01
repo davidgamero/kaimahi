@@ -31,7 +31,7 @@ spec:
           # phase so a stale side-loaded image can never satisfy a newer
           # manifest silently (imagePullPolicy: Never reuses same-tag
           # images without complaint).
-          image: kaimahi-proxy:p4b
+          image: kaimahi-proxy:p4c
           imagePullPolicy: Never
           env:
             - name: PGHOST

@@ -13,7 +13,7 @@ KUBECTL        := kubectl --context $(KUBE_CTX)
 OS   := $(shell uname -s | tr A-Z a-z)
 ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
 
-PLANE_IMAGE    ?= kaimahi-proxy:p4b
+PLANE_IMAGE    ?= kaimahi-proxy:p4c
 CRED           ?= hello-world
 CRED_TOOLS     ?= hello-tools
 TOOLS          ?= k8s_get_resources
@@ -25,7 +25,8 @@ TOOLNAMES_JSON  = $(if $(filter -,$(TOOLS)),,"$(subst $(comma),"$(comma)",$(TOOL
 .PHONY: up cluster ollama model kagent agent tools-agent chat down status \
 	model-secret copilot-secret use use-ollama \
 	plane plane-image plane-secrets govern budget ledger plane-copilot-secret \
-	govern-tools ungovern-tools tool-allow tool-allowlist tool-audit
+	govern-tools ungovern-tools tool-allow tool-allowlist tool-audit \
+	approvals approve deny request grants approval-audit
 
 ## up: everything from an empty machine to ready agents (hello-world + tools)
 up: cluster ollama model kagent agent tools-agent status
@@ -182,6 +183,47 @@ tool-allowlist:
 ## tool-audit: show the tool-call audit trail (newest first)
 tool-audit:
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-audit $(CRED_TOOLS)
+
+## ---- P4c: approvals and time-boxed permits (docs/P4C-RUNBOOK.md) ----
+
+## approvals: list pending approval requests (denied actions file them
+## automatically; `make request` files one explicitly)
+approvals:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh approvals
+
+## approve: approve a pending request with BOUNDS (at least one of TTL/
+## USES required; AMOUNT tokens-or-cents only for budget requests), e.g.
+##   make approve ID=<uuid> TTL=60s USES=1
+##   make approve ID=<uuid> TTL=5m AMOUNT=100000
+approve:
+	@test -n "$(ID)" || { echo 'usage: make approve ID=<uuid> [TTL=60s] [USES=1] [AMOUNT=n]' >&2; exit 1; }
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh approve "$(ID)" \
+		"$(if $(TTL),$(TTL),-)" "$(if $(USES),$(USES),-)" "$(if $(AMOUNT),$(AMOUNT),-)"
+
+## deny: deny a pending request
+deny:
+	@test -n "$(ID)" || { echo 'usage: make deny ID=<uuid>' >&2; exit 1; }
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh deny "$(ID)"
+
+## request: file an approval request explicitly, e.g.
+##   make request KIND=tool SUBJECT=k8s_get_events
+##   make request KIND=budget SUBJECT=tokens CRED=hello-world
+request:
+	@test -n "$(KIND)" && test -n "$(SUBJECT)" || \
+		{ echo 'usage: make request KIND=tool|budget SUBJECT=<tool|tokens|cents> [CRED=...]' >&2; exit 1; }
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh request "$(REQ_CRED)" "$(KIND)" "$(SUBJECT)"
+
+# The filing credential: an explicit CRED= wins; otherwise tool requests
+# default to the tools credential and budget requests to the chat one.
+REQ_CRED = $(if $(filter command line,$(origin CRED)),$(CRED),$(if $(filter tool,$(KIND)),$(CRED_TOOLS),$(CRED)))
+
+## grants: list grants with liveness (an expired grant is not a grant)
+grants:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh grants
+
+## approval-audit: the approvals' own audit trail (filed/approved/denied)
+approval-audit:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh approval-audit
 
 ## plane-copilot-secret: mint the Copilot token into the PROXY's
 ## namespace (real-key custody: the agent-side governed preset never

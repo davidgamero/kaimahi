@@ -26,6 +26,17 @@
 #                                          (- = empty: nothing callable)
 #   plane-admin.sh tool-allowlist <name>   show the tool allowlist
 #   plane-admin.sh tool-audit [name]       show the tool-call audit trail
+#   plane-admin.sh approvals               list pending approval requests
+#   plane-admin.sh approve <id> <ttl|-> <uses|-> <amount|->
+#                                          approve with bounds (>=1 of
+#                                          ttl/uses required; ttl takes
+#                                          s/m/h/d suffixes; amount only
+#                                          for budget requests)
+#   plane-admin.sh deny <id>               deny a pending request
+#   plane-admin.sh request <name> <tool|budget> <subject>
+#                                          file a request explicitly
+#   plane-admin.sh grants [name]           list grants (with liveness)
+#   plane-admin.sh approval-audit [name]   show the approvals audit trail
 set -euo pipefail
 umask 077
 
@@ -89,6 +100,12 @@ check_cap() {
   case "$1" in
     (null) ;;
     (*[!0-9]*|'') echo "invalid cap '$1' (want a non-negative integer or -)" >&2; exit 2 ;;
+  esac
+}
+check_uuid() {
+  case "$1" in
+    ([0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f]*-[0-9a-f]*-[0-9a-f]*-[0-9a-f]*) ;;
+    (*) echo "invalid request id '$1' (want a UUID from 'make approvals')" >&2; exit 2 ;;
   esac
 }
 
@@ -206,8 +223,127 @@ for e in rows:
                  e["tool"], e["decision"], e["status"], e["detail"]))
 EOF
     ;;
+  approvals)
+    admin_curl GET /admin/approvals
+    [ "$status" = 200 ] || { echo "approvals read failed (HTTP $status):" >&2; cat "$workdir/resp" >&2; exit 1; }
+    python3 - "$workdir/resp" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+rows = d.get("pending") or []
+if not rows:
+    print("no pending approval requests")
+fmt = "%-36s %-19s %-12s %-8s %-18s %s"
+if rows:
+    print(fmt % ("id", "created (UTC)", "credential", "kind", "subject", "detail"))
+for r in rows:
+    print(fmt % (r["id"], r["created_at"][:19], r["credential"], r["kind"], r["subject"], r["detail"]))
+EOF
+    ;;
+  approve)
+    id="${2:?usage: plane-admin.sh approve <id> <ttl|-> <uses|-> <amount|->}"
+    ttl="${3:--}"; uses="${4:--}"; amount="${5:--}"
+    check_uuid "$id"
+    body='{'
+    if [ "$ttl" != - ]; then
+      case "$ttl" in
+        (*[!0-9smhd]*|'') echo "invalid TTL '$ttl' (want e.g. 90, 90s, 5m, 2h, 1d)" >&2; exit 2 ;;
+      esac
+      n="${ttl%[smhd]}"; unit="${ttl#"$n"}"
+      case "$n" in
+        (*[!0-9]*|'') echo "invalid TTL '$ttl' (want e.g. 90, 90s, 5m, 2h, 1d)" >&2; exit 2 ;;
+      esac
+      case "$unit" in
+        (s|'') secs=$n ;;
+        (m) secs=$((n * 60)) ;;
+        (h) secs=$((n * 3600)) ;;
+        (d) secs=$((n * 86400)) ;;
+      esac
+      body="$body\"ttl_seconds\": $secs, "
+    fi
+    if [ "$uses" != - ]; then
+      check_cap "$uses"
+      body="$body\"max_uses\": $uses, "
+    fi
+    if [ "$amount" != - ]; then
+      check_cap "$amount"
+      body="$body\"amount\": $amount, "
+    fi
+    printf '%s}\n' "${body%, }" > "$workdir/req"
+    admin_curl POST "/admin/approvals/$id/approve" "$workdir/req"
+    [ "$status" = 201 ] || { echo "approve failed (HTTP $status):" >&2; cat "$workdir/resp" >&2; exit 1; }
+    python3 -c 'import json,sys
+g = json.load(open(sys.argv[1]))
+bounds = []
+if g.get("expires_at"): bounds.append("expires " + g["expires_at"])
+if g.get("max_uses") is not None: bounds.append(f'"'"'{g["max_uses"]} use(s)'"'"')
+if g.get("amount") is not None: bounds.append(f'"'"'amount {g["amount"]}'"'"')
+print(f'"'"'Granted: {g["credential"]} {g["kind"]}/{g["subject"]} — {", ".join(bounds)} (grant {g["id"]})'"'"')' "$workdir/resp"
+    ;;
+  deny)
+    id="${2:?usage: plane-admin.sh deny <id>}"
+    check_uuid "$id"
+    admin_curl POST "/admin/approvals/$id/deny"
+    [ "$status" = 204 ] || { echo "deny failed (HTTP $status):" >&2; cat "$workdir/resp" >&2; exit 1; }
+    echo "Request $id denied." >&2
+    ;;
+  request)
+    name="${2:?usage: plane-admin.sh request <name> <tool|budget> <subject>}"
+    kind="${3:?kind (tool|budget)}"
+    subject="${4:?subject (tool name, or tokens|cents)}"
+    check_name "$name"
+    case "$kind" in (tool|budget) ;; (*) echo "kind must be tool or budget" >&2; exit 2 ;; esac
+    case "$subject" in
+      (*[!A-Za-z0-9._-]*|'') echo "invalid subject '$subject'" >&2; exit 2 ;;
+    esac
+    printf '{"credential": "%s", "kind": "%s", "subject": "%s"}\n' "$name" "$kind" "$subject" > "$workdir/req"
+    admin_curl POST /admin/requests "$workdir/req"
+    [ "$status" = 201 ] || { echo "request failed (HTTP $status):" >&2; cat "$workdir/resp" >&2; exit 1; }
+    if grep -q '"deduped":true' "$workdir/resp"; then
+      echo "Already pending — deduped (run 'make approvals')." >&2
+    else
+      echo "Approval request filed (run 'make approvals')." >&2
+    fi
+    ;;
+  grants)
+    name="${2:-}"
+    [ -z "$name" ] || check_name "$name"
+    admin_curl GET "/admin/grants?credential=$name&limit=50"
+    [ "$status" = 200 ] || { echo "grants read failed (HTTP $status):" >&2; cat "$workdir/resp" >&2; exit 1; }
+    python3 - "$workdir/resp" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+rows = d.get("grants") or []
+if not rows:
+    print("no grants")
+fmt = "%-36s %-12s %-8s %-18s %-6s %-22s %-9s %-8s %s"
+if rows:
+    print(fmt % ("id", "credential", "kind", "subject", "live", "expires (UTC)", "uses", "amount", "created (UTC)"))
+for g in rows:
+    uses = str(g["uses"]) + ("/" + str(g["max_uses"]) if g.get("max_uses") is not None else "")
+    print(fmt % (g["id"], g["credential"], g["kind"], g["subject"],
+                 "yes" if g["live"] else "no",
+                 (g.get("expires_at") or "-")[:19], uses,
+                 g.get("amount") if g.get("amount") is not None else "-",
+                 g["created_at"][:19]))
+EOF
+    ;;
+  approval-audit)
+    name="${2:-}"
+    [ -z "$name" ] || check_name "$name"
+    admin_curl GET "/admin/approval-audit?credential=$name&limit=50"
+    [ "$status" = 200 ] || { echo "approval-audit read failed (HTTP $status):" >&2; cat "$workdir/resp" >&2; exit 1; }
+    python3 - "$workdir/resp" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+rows = d.get("entries") or []
+fmt = "%-19s %-12s %-8s %-18s %-10s %s"
+print(fmt % ("created (UTC)", "credential", "kind", "subject", "action", "bounds"))
+for e in rows:
+    print(fmt % (e["created_at"][:19], e["credential"], e["kind"], e["subject"], e["action"], e["bounds"]))
+EOF
+    ;;
   *)
-    echo "usage: plane-admin.sh issue|budget|ledger|tool-allow|tool-allowlist|tool-audit ..." >&2
+    echo "usage: plane-admin.sh issue|budget|ledger|tool-allow|tool-allowlist|tool-audit|approvals|approve|deny|request|grants|approval-audit ..." >&2
     exit 2
     ;;
 esac
