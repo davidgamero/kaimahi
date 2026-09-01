@@ -1,9 +1,11 @@
 // kaimahi-proxy is the Kaimahi governance plane: the P4a metering and
-// enforcing LLM proxy mounted at kagent's ModelConfig baseUrl seam, and
-// the P4b enforcing MCP gateway mounted at the tool-server seam. Three
-// listeners: the LLM data plane, the MCP gateway (own Service), and the
-// admin plane (credentials, budgets, allowlists, ledger, audit) on a
-// port no data Service exposes.
+// enforcing LLM proxy mounted at kagent's ModelConfig baseUrl seam, the
+// P4b enforcing MCP gateway mounted at the tool-server seam, and the P7b
+// inbound bridge (the plane's one ingress: webhook → governed A2A
+// invoke). Four listeners: the LLM data plane, the MCP gateway (own
+// Service), the inbound bridge (own Service), and the admin plane
+// (credentials, budgets, allowlists, ledger, audits) on a port no data
+// Service exposes.
 //
 // Secrets reach the process only as mounted files (never argv or env
 // values); non-secret wiring is env. Migrations run at startup —
@@ -27,6 +29,7 @@ import (
 	"github.com/gambtho/kaimahi/plane/internal/config"
 	"github.com/gambtho/kaimahi/plane/internal/db"
 	"github.com/gambtho/kaimahi/plane/internal/gateway"
+	"github.com/gambtho/kaimahi/plane/internal/inbound"
 	"github.com/gambtho/kaimahi/plane/internal/meter"
 	"github.com/gambtho/kaimahi/plane/internal/proxy"
 	"github.com/gambtho/kaimahi/plane/internal/redact"
@@ -53,7 +56,11 @@ func mustReadSecretFile(path, what string) string {
 func main() {
 	dataAddr := env("DATA_ADDR", ":8080")
 	mcpAddr := env("MCP_ADDR", ":8081")
+	inboundAddr := env("INBOUND_ADDR", ":8082")
 	adminAddr := env("ADMIN_ADDR", ":9091")
+	// The kagent controller's origin: the ONLY place the inbound bridge
+	// dials (per-agent A2A endpoints live under it).
+	a2aBase := env("A2A_BASE", "http://kagent-controller.kagent:8083")
 	configFile := env("CONFIG_FILE", "/etc/kaimahi/upstreams.json")
 	adminTokenFile := env("ADMIN_TOKEN_FILE", "/etc/kaimahi/admin/token")
 	pgPasswordFile := env("PGPASSWORD_FILE", "/etc/kaimahi/pg/password")
@@ -85,6 +92,17 @@ func main() {
 				"file", u.CredentialFile, "err", err)
 		}
 	}
+	for name, h := range cfg.InboundHooks {
+		if h.SigningSecretFile == "" {
+			continue
+		}
+		if raw, err := os.ReadFile(h.SigningSecretFile); err == nil {
+			secrets = append(secrets, strings.TrimSpace(string(raw)))
+		} else {
+			slog.Warn("inbound signing secret unreadable at boot; value not redacted in logs",
+				"hook", name, "file", h.SigningSecretFile, "err", err)
+		}
+	}
 	slog.SetDefault(slog.New(redact.Handler{
 		Inner: slog.NewTextHandler(os.Stderr, nil),
 		R:     redact.New(secrets),
@@ -107,9 +125,10 @@ func main() {
 	defer pool.Close()
 
 	st := store.New(pool)
+	mtr := &meter.Meter{Usage: st, Grants: st, Headroom: st}
 	deps := proxy.Deps{
 		Store:  st,
-		Meter:  &meter.Meter{Usage: st, Grants: st},
+		Meter:  mtr,
 		Config: cfg,
 	}
 
@@ -120,28 +139,49 @@ func main() {
 	// and fail-closed machinery); its listener gets its own Service so
 	// the tool seam has its own address.
 	gwDeps := gateway.Deps{Store: st, Upstreams: cfg.ToolUpstreams}
+	// The P7b inbound bridge: same process, same pool and fail-closed
+	// machinery, its own Service. Its workers invoke agents asynchronously
+	// and run until shutdown.
+	bridge := inbound.New(inbound.Deps{Store: st, Meter: mtr, Hooks: cfg.InboundHooks, A2ABase: a2aBase})
+	bridgeCtx, stopBridge := context.WithCancel(context.Background())
+	bridgeDone := make(chan struct{})
+	go func() { bridge.Run(bridgeCtx); close(bridgeDone) }()
 
 	dataSrv := &http.Server{Addr: dataAddr, Handler: proxy.NewDataMux(deps),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}
 	mcpSrv := &http.Server{Addr: mcpAddr, Handler: gateway.NewMux(gwDeps),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}
+	// Webhook payloads are small and bounded per hook; a slow writer gets
+	// 30 seconds, not two minutes.
+	inboundSrv := &http.Server{Addr: inboundAddr, Handler: bridge.Mux(),
+		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
 	adminSrv := &http.Server{Addr: adminAddr, Handler: proxy.NewAdminMux(deps, adminTokenFile),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
 
-	errCh := make(chan error, 3)
+	errCh := make(chan error, 4)
 	go func() { errCh <- dataSrv.ListenAndServe() }()
 	go func() { errCh <- mcpSrv.ListenAndServe() }()
+	go func() { errCh <- inboundSrv.ListenAndServe() }()
 	go func() { errCh <- adminSrv.ListenAndServe() }()
-	slog.Info("kaimahi-proxy up", "data", dataAddr, "mcp", mcpAddr, "admin", adminAddr,
-		"upstreams", len(cfg.Upstreams), "tool_upstreams", len(cfg.ToolUpstreams))
+	slog.Info("kaimahi-proxy up", "data", dataAddr, "mcp", mcpAddr, "inbound", inboundAddr, "admin", adminAddr,
+		"upstreams", len(cfg.Upstreams), "tool_upstreams", len(cfg.ToolUpstreams), "inbound_hooks", len(cfg.InboundHooks))
 
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
+		// Stop accepting events first, then let workers finish the
+		// event they are on (bounded by the shutdown budget).
+		_ = inboundSrv.Shutdown(shutdownCtx)
+		stopBridge()
 		_ = dataSrv.Shutdown(shutdownCtx)
 		_ = mcpSrv.Shutdown(shutdownCtx)
 		_ = adminSrv.Shutdown(shutdownCtx)
+		select {
+		case <-bridgeDone:
+		case <-shutdownCtx.Done():
+			slog.Warn("inbound workers did not drain before shutdown; queued events are lost (their admitted rows stand without an outcome)")
+		}
 	case err := <-errCh:
 		// Either listener stopping before a shutdown signal is abnormal —
 		// even ErrServerClosed — so exit nonzero and let Kubernetes

@@ -40,6 +40,8 @@ type fakeStore struct {
 	grants         []store.Grant
 	approvalAudits []store.ApprovalAuditEntry
 	fileErr        error
+	// P7b inbound audit trail (admin read only in this package).
+	inboundAudits []store.InboundAuditEntry
 }
 
 func newFakeStore() *fakeStore {
@@ -222,6 +224,16 @@ func (f *fakeStore) Grants(_ context.Context, name string, _ int) ([]store.Grant
 		}
 	}
 	return out, live, nil
+}
+
+func (f *fakeStore) InboundAudit(_ context.Context, hook string, _ int) ([]store.InboundAuditEntry, error) {
+	var out []store.InboundAuditEntry
+	for _, e := range f.inboundAudits {
+		if hook == "" || e.Hook == hook {
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeStore) ApprovalAudit(_ context.Context, name string, _ int) ([]store.ApprovalAuditEntry, error) {

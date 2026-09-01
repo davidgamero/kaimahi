@@ -42,6 +42,9 @@ type Store interface {
 	DenyApprovalRequest(ctx context.Context, id string) error
 	Grants(ctx context.Context, credential string, limit int) ([]store.Grant, []bool, error)
 	ApprovalAudit(ctx context.Context, credential string, limit int) ([]store.ApprovalAuditEntry, error)
+	// P7b inbound: the audit trail read (admin); the bridge's own data
+	// path uses the narrower inbound.Store.
+	InboundAudit(ctx context.Context, hook string, limit int) ([]store.InboundAuditEntry, error)
 }
 
 // Meter admits or denies a request under the credential's budget caps.

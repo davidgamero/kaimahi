@@ -63,11 +63,14 @@ func (h *handler) fileRequest(w http.ResponseWriter, r *http.Request) {
 	if !decodeStrict(w, r, &req) {
 		return
 	}
+	// P7b: 'inbound' requests name a hook (a lowercase DNS label, like a
+	// credential) — the grant a human approves admits events on it.
 	if !credentialName.MatchString(req.Credential) ||
-		(req.Kind != "tool" && req.Kind != "budget") ||
+		(req.Kind != "tool" && req.Kind != "budget" && req.Kind != "inbound") ||
 		!subjectRe.MatchString(req.Subject) ||
-		(req.Kind == "budget" && req.Subject != "tokens" && req.Subject != "cents") {
-		http.Error(w, "body must be {\"credential\": ..., \"kind\": \"tool\"|\"budget\", \"subject\": ...} (budget subjects: tokens|cents)", http.StatusBadRequest)
+		(req.Kind == "budget" && req.Subject != "tokens" && req.Subject != "cents") ||
+		(req.Kind == "inbound" && !credentialName.MatchString(req.Subject)) {
+		http.Error(w, "body must be {\"credential\": ..., \"kind\": \"tool\"|\"budget\"|\"inbound\", \"subject\": ...} (budget subjects: tokens|cents; inbound subject: hook name)", http.StatusBadRequest)
 		return
 	}
 	filed, err := h.d.Store.FileApprovalRequest(r.Context(), req.Credential, req.Kind, req.Subject, "filed explicitly via admin")
