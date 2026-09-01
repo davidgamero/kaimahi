@@ -16,16 +16,23 @@
 # Usage:
 #   plane-admin.sh issue <name>            mint a governed credential and
 #                                          store it as the agent-side
-#                                          Secret kaimahi-governed-token
+#                                          Secret $GOVERNED_SECRET
+#                                          (default kaimahi-governed-token;
+#                                          the P4b tools credential uses
+#                                          GOVERNED_SECRET=kaimahi-tools-token)
 #   plane-admin.sh budget <name> <cents|-> <tokens|->   set caps (- = none)
 #   plane-admin.sh ledger [name]           show ledger (+ month totals)
+#   plane-admin.sh tool-allow <name> <tool,tool|->      replace tool allowlist
+#                                          (- = empty: nothing callable)
+#   plane-admin.sh tool-allowlist <name>   show the tool allowlist
+#   plane-admin.sh tool-audit [name]       show the tool-call audit trail
 set -euo pipefail
 umask 077
 
 KUBECTL="${KUBECTL:-kubectl}"
 NAMESPACE=kaimahi
 AGENT_NAMESPACE=kagent
-GOVERNED_SECRET=kaimahi-governed-token
+GOVERNED_SECRET="${GOVERNED_SECRET:-kaimahi-governed-token}"
 ADMIN_PORT="${ADMIN_PORT:-19091}"
 
 workdir=$(mktemp -d)
@@ -154,8 +161,53 @@ if "month_cents" in d:
     print(f'-- month to date: {d["month_cents"]} cents, {d["month_tokens"]} tokens')
 EOF
     ;;
+  tool-allow)
+    name="${2:?usage: plane-admin.sh tool-allow <name> <tool,tool|->}"
+    tools="${3:?tool list (comma-separated, or - for empty = nothing callable)}"
+    check_name "$name"
+    json_tools=""
+    if [ "$tools" != - ]; then
+      IFS=, read -ra parts <<< "$tools"
+      for t in "${parts[@]}"; do
+        case "$t" in
+          (*[!A-Za-z0-9._-]*|'') echo "invalid tool name '$t' (want [A-Za-z0-9._-]+)" >&2; exit 2 ;;
+        esac
+        json_tools="$json_tools${json_tools:+, }\"$t\""
+      done
+    fi
+    printf '{"credential": "%s", "tools": [%s]}\n' "$name" "$json_tools" > "$workdir/req"
+    admin_curl PUT /admin/tool-allowlist "$workdir/req"
+    [ "$status" = 204 ] || { echo "tool-allow failed (HTTP $status):" >&2; cat "$workdir/resp" >&2; exit 1; }
+    echo "Tool allowlist for '$name': [${json_tools:-}] (enforced on tools/call, projected on tools/list)." >&2
+    echo "kagent re-discovers the projection on its next RemoteMCPServer reconcile; enforcement is immediate." >&2
+    ;;
+  tool-allowlist)
+    name="${2:?usage: plane-admin.sh tool-allowlist <name>}"
+    check_name "$name"
+    admin_curl GET "/admin/tool-allowlist?credential=$name"
+    [ "$status" = 200 ] || { echo "tool-allowlist read failed (HTTP $status):" >&2; cat "$workdir/resp" >&2; exit 1; }
+    python3 -c 'import json,sys
+d = json.load(open(sys.argv[1]))
+print(f'"'"'{d["credential"]}: {", ".join(d["tools"]) or "(empty — nothing callable)"}'"'"')' "$workdir/resp"
+    ;;
+  tool-audit)
+    name="${2:-}"
+    [ -z "$name" ] || check_name "$name"
+    admin_curl GET "/admin/tool-audit?credential=$name&limit=50"
+    [ "$status" = 200 ] || { echo "tool-audit read failed (HTTP $status):" >&2; cat "$workdir/resp" >&2; exit 1; }
+    python3 - "$workdir/resp" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+rows = d.get("entries") or []
+fmt = "%-19s %-12s %-12s %-12s %-24s %-8s %6s %s"
+print(fmt % ("created (UTC)", "credential", "upstream", "method", "tool", "decision", "status", "detail"))
+for e in rows:
+    print(fmt % (e["created_at"][:19], e["credential"], e["upstream"], e["method"],
+                 e["tool"], e["decision"], e["status"], e["detail"]))
+EOF
+    ;;
   *)
-    echo "usage: plane-admin.sh issue|budget|ledger ..." >&2
+    echo "usage: plane-admin.sh issue|budget|ledger|tool-allow|tool-allowlist|tool-audit ..." >&2
     exit 2
     ;;
 esac
