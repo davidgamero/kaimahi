@@ -91,11 +91,13 @@ at boot (the ConfigMap mounts via subPath, which never live-updates).
   allowlist = nothing callable.** Allowlist edits enforce immediately on
   calls; the projection an agent *sees* refreshes on kagent's next
   RemoteMCPServer reconcile.
-- **Audit**: every `tools/call` (allowed or denied) and every denial of
-  any kind is appended to `tool_audit` (credential, upstream, method,
-  tool, decision, status). **A failed audit write trips the gateway to
-  503** until a write succeeds — an action that cannot be recorded must
-  not happen (P4a's ledger-degradation rule, applied to actions).
+- **Audit**: every `tools/call` outcome and every attributable denial is
+  appended to `tool_audit` (credential, upstream, method, tool,
+  decision, status) — pre-auth 401/503 refusals have no credential to
+  attribute, like P4a. Allowed rows are written after the response they
+  describe (P4a's ledger contract); **a failed audit write trips the
+  gateway to 503 for all subsequent traffic** until a write succeeds —
+  unrecordable actions must not continue happening.
 - **Auth**: same as P4a — unknown token 401, credential store unreadable
   503, no upstream contact either way.
 
@@ -115,13 +117,14 @@ to *use* more tools; the allowlist alone is the governance boundary.
 
 ## Verification status
 
-Live-verified end to end (and asserted keylessly in CI on every PR):
-governed tool call through the gateway with the P3 probe-ConfigMap proof,
-the `allowed 200` audit row, a non-allowlisted call denied `-32001` and
-audited `denied 403`, an empty allowlist denying even the default tool,
-discovery projection (8 tools offered upstream, 1 discovered), and
-custody (agent-side Secret matches `^kmh_[0-9a-f]{64}$`; the DB holds a
-32-byte hash).
+Asserted keylessly in CI on every PR: the governed tool call through the
+gateway with the P3 probe-ConfigMap proof, the `allowed 200` audit row,
+a non-allowlisted call denied `-32001` and audited `denied 403`, and
+custody (agent-side Secret matches `^kmh_[0-9a-f]{64}$`, Secret-referencing
+`headersFrom`, discovery projecting exactly the allowlist). Additionally
+live-verified (and unit-tested): an empty allowlist denying even the
+default tool, and the projection hiding 7 of the 8 tools the upstream
+offers.
 
 ## Governed vs still ungoverned
 
@@ -146,5 +149,9 @@ custody (agent-side Secret matches `^kmh_[0-9a-f]{64}$`; the DB holds a
 - If the RemoteMCPServer sits at `Accepted=False` just after `make
   plane`, the first reconcile raced the proxy rollout; it self-heals
   within a minute (same behavior P3 recorded for the chart's own server).
+- The allowlist is per-credential, not per-(credential, upstream): with
+  one committed tool upstream that distinction is empty, but adding a
+  second upstream widens every existing allowlist across both — scope
+  the allowlist per upstream before growing the table (P4c territory).
 - The audit trail is demo-durable like the ledger: it survives pod
   restarts via the Postgres PVC, and `make down` destroys it.

@@ -22,7 +22,9 @@ CREATE TABLE tool_audit (
     -- The tool named by a tools/call; empty for other audited methods.
     tool            text NOT NULL DEFAULT '',
     -- allowed: relayed upstream (status = upstream HTTP status);
-    -- denied: refused by the gateway (status = the gateway's own status).
+    -- denied: refused by the gateway (status = the refusal's semantic
+    -- status: 403 for policy denials — including those answered on the
+    -- wire as JSON-RPC errors over HTTP 200 — 503/400 for the rest).
     decision        text NOT NULL CHECK (decision IN ('allowed', 'denied')),
     status          integer NOT NULL,
     -- Human-readable refusal reason on denials; empty otherwise.
