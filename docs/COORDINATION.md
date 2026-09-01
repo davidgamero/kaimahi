@@ -101,7 +101,11 @@ prefix.
 | P4c: approvals/permits (D13) | W7 worker | PR #17 MERGED (dd08f00); coordinator verified both approval cycles independently pre-merge (delta sheet below) | lane closed — ARC COMPLETE |
 | P5a: governed Slack connector (D14) | W8 worker | PR #18 MERGED; coordinator verified (custody, and the discovery finding reproduced independently); delta sheet below | lane closed |
 | P5b: cluster portability + real AKS run (D14/D15) | W9 worker | PR #19 MERGED; coordinator verified (leak scan, teardown, guard, kind regression) — delta sheet below | lane closed |
-| CI flake: agent-readiness race (P5b finding) | rides the next lane | User ruling 2026-09-01: fold into the next phase rather than a standalone micro-lane — as its **FIRST commit, before feature work**, so the lane's own CI is not reddened by someone else's race | retry predicate covers `connection refused` but not `EOF`; main went red once then green on re-run. Widen narrowly (EOF, connection-reset) so it cannot mask a real outage — see P5b delta sheet |
+| P7a: NetworkPolicy egress | unassigned | GO — W10 prompt below | PARALLEL SET (see rules below); own cluster `netpol-verify` |
+| P7b: P6 inbound connectors | unassigned | GO — W11 prompt below | PARALLEL SET; own cluster `inbound-verify`; the big one |
+| P7c: docs restructure (capability, not chronology) | unassigned | GO — W12 prompt below | PARALLEL SET; owns `docs/` structure; no cluster needed |
+| CLI decisions + PR #16 review | user + coordinator | awaiting the user's five CLI-PROPOSAL rulings | not a build lane; parallelises with everything |
+| CI flake: agent-readiness race (P5b finding) | coordinator — PR #20 open | User ruling 2026-09-01: fold into the next phase rather than a standalone micro-lane — as its **FIRST commit, before feature work**, so the lane's own CI is not reddened by someone else's race | retry predicate covers `connection refused` but not `EOF`; main went red once then green on re-run. Widen narrowly (EOF, connection-reset) so it cannot mask a real outage — see P5b delta sheet |
 | NetworkPolicy egress (promoted 2026-09-01) | — | candidate, not GO | P5a put a deliberate internet-egress pod in the cluster; three non-network layers bound blast radius today. Strongest-argument-yet per P5a's own accounting |
 | P6: inbound connectors (webhooks/user APIs) | — | parked candidate; own blindspot pass when reached | genuine net-new surface: ingress auth, replay, rate limits, every event causes spend |
 | CLI prototype (Tatsinnit, PR #16) | teammate | OPEN, unreviewed — a working `kaimahi agent create` prototype; board holds the CLI as under-consideration/not-GO with five open decisions reserved for the user (docs/CLI-PROPOSAL.md) | awaiting user ruling before coordinator review |
@@ -908,6 +912,207 @@ identifiers redacted, PLUS proof the kind path still works end to end.
 Suite green at every commit. Branch from current main; PR targets main;
 no stacked bases. Lane ends at PR-open-with-checks-green — do not merge.
 Report deviations in the PR's "Deviations & decisions" section.
+```
+
+## Parallel set rules (P7a / P7b / P7c, 2026-09-01)
+
+Three lanes run at once by user ruling. The board's "one session owns a
+contended directory" rule is relaxed deliberately, so the boundaries are
+explicit instead:
+
+1. **Branch from a main that contains PR #20** (the CI flake fix). It
+   landed standalone precisely so no lane inherits another's red CI.
+2. **Own your own cluster.** `KIND_CLUSTER=netpol-verify` (P7a),
+   `KIND_CLUSTER=inbound-verify` (P7b). NEVER touch `kaimahi-p1` — it is
+   the demo cluster. P7c needs no cluster. This rule already cost us once
+   (W6↔P4b) and nearly again (P5b's probe aimed at AKS).
+3. **`docs/` structure belongs to P7c.** P7a and P7b each write ONE
+   user-facing file named for its CAPABILITY, not its phase — e.g.
+   `docs/egress.md`, `docs/inbound.md` — and change no other doc. P7c
+   owns the index, the naming scheme, and every existing file.
+4. **Expect textual conflicts in `Makefile` and `ci.yml`** between P7a and
+   P7b; both append. They are cheap. Whoever merges second rebases —
+   check the PR state before every push (standing rule, earned three
+   times).
+5. Everything else unchanged: survey first, verification is real, suite
+   green at every commit, lane ends at PR-open-with-checks-green.
+
+### W10 — P7a: NetworkPolicy egress (UNASSIGNED — paste into a fresh CLI session)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout). Read docs/COORDINATION.md first — prime directive, process
+rules, security standing guidance, decisions D1–D15, ALL delta sheets,
+and the PARALLEL SET RULES bind you. Your lane: P7a — NetworkPolicy
+egress.
+
+WHY THIS LANE MATTERS: the board defines this product as "budgets and
+spend metering, approval workflows and blast-radius permits, credential
+custody, EGRESS ENFORCEMENT, and audit". Every clause now runs and is
+CI-asserted except egress enforcement. P5a made the gap concrete by
+putting a deliberately internet-reaching pod (the Slack MCP server) in
+the cluster; today's blast radius is bounded by the gateway allowlist,
+the server's channel-ID restriction and Slack's own scopes — three real
+layers, none of them a network boundary. You are building the boundary.
+
+SURVEY FIRST: NetworkPolicy is a Kubernetes primitive and kind's default
+CNI (kindnet) supports it — VERIFY that on your cluster before relying
+on it, because a NetworkPolicy that is silently unenforced is worse than
+none (it reads as protection). Check what kagent's chart already ships.
+Build no policy engine; write policy.
+
+Shape:
+- Default-deny egress and ingress in the `kaimahi` namespace, then
+  allow exactly what the delta sheets say must work: the proxy to its
+  Postgres, the gateway to the in-cluster tool servers, the proxy to its
+  configured LLM upstreams (note: on kind the governed path is in-cluster
+  ollama; the Copilot path is internet-bound — handle both honestly),
+  kagent's controller to the gateway, and DNS. Deny everything else.
+- The Slack MCP server pod is the one component that legitimately needs
+  the internet. Allow it deliberately and narrowly, and say in the doc
+  what that allowance does and does not constrain (egress IP/port policy
+  is not a URL allowlist — be precise about the residual gap).
+- FAIL CLOSED and PROVE IT: the deliverable is not "policies exist", it
+  is "a pod that should not reach X demonstrably cannot". Assert a
+  NEGATIVE — exec into a pod and show a blocked connection timing out /
+  refused — alongside the positive that everything still works.
+- Do not break P1–P5: `make up`, chat, tools, governance, approvals must
+  all still pass on your own cluster and in CI.
+
+Deliverables: policy manifests in k8s/; make/CI wiring; ONE doc file
+`docs/egress.md` (capability-named — P7c owns docs structure, see the
+parallel rules); CI assertions in the existing keyless job, including
+the negative test. Mind the CPU/CI budget (P4a/P4b deltas).
+
+Out of scope: P6 inbound (a parallel lane), docs restructure (parallel
+lane), AKS-specific policy beyond noting portability, any UI.
+
+Verification is real: your own probe names and timestamps, positives AND
+the blocked negative, on KIND_CLUSTER=netpol-verify. Branch from a main
+containing PR #20; PR targets main; no stacked bases; lane ends at
+PR-open-with-checks-green — do not merge. Report deviations in the PR.
+```
+
+### W11 — P7b: inbound connectors (UNASSIGNED — paste into a fresh CLI session)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout). Read docs/COORDINATION.md first — prime directive, process
+rules, security standing guidance, decisions D1–D15, ALL delta sheets,
+and the PARALLEL SET RULES bind you. Your lane: P7b — inbound
+connectors: letting the outside world TRIGGER an agent, governed.
+
+This is the larger lane and the one genuine net-new surface left. P5a
+gave agents a governed way to ACT on the world; this gives the world a
+governed way to act on agents.
+
+SURVEY FIRST (prime directive, and be rigorous — this is where net-new
+code is most tempting): kagent agents already expose A2A endpoints, and
+the kagent CLI already invokes them. Establish and record whether
+anything upstream already bridges an external event to an A2A invoke
+(kagent itself, its CRDs, any MCP or A2A tooling). Only build the
+bridge the survey proves is missing, and justify every file.
+
+Shape:
+- The bridge extends the `plane/` module (P4a deviation-1 precedent) and
+  reuses what already exists — do NOT grow a second auth system: inbound
+  callers authenticate with the plane's `kmh_` opaque credentials,
+  sha256-only storage, exactly as the proxy and gateway do.
+- Every inbound event CAUSES SPEND, so it must sit behind P4a budgets
+  and be ledgered/audited like any other governed action. An event that
+  cannot be recorded must not be honoured (the fail-closed-degradation
+  rule).
+- It is an INGRESS surface — the first in this repo — so treat these as
+  first-class requirements, not polish: authentication before any work,
+  replay protection, request size limits, rate limiting, and a bounded
+  queue. Reject rather than buffer without bound. Signature verification
+  where a source offers it (e.g. HMAC) beats a bearer token; support it
+  where it exists.
+- Scope the sources deliberately: a generic authenticated webhook is the
+  primitive. Do at most ONE named real source end to end and say why.
+  Slack Events (closing the P5a loop) is the obvious candidate but needs
+  a public URL — if that is not reachable from a kind cluster, say so and
+  demonstrate the generic path rather than faking it.
+- Approvals: an inbound trigger is consequential. State clearly whether
+  triggering is itself an approvable action (P4c) or gated only by
+  credential + budget, and justify it.
+
+Deliverables: plane/ code + migrations (go test/gofmt/vet green at every
+commit); manifests; make targets in the established style; ONE doc file
+`docs/inbound.md` (capability-named — P7c owns docs structure); keyless
+CI asserting the full path fail-closed, including a rejected
+unauthenticated event and a rejected replay.
+
+Out of scope: NetworkPolicy (parallel lane), docs restructure (parallel
+lane), any UI, npm/domain claims, outbound connectors beyond what a
+demo needs.
+
+Verification is real: your own probes and timestamps on
+KIND_CLUSTER=inbound-verify. Branch from a main containing PR #20; PR
+targets main; no stacked bases; lane ends at PR-open-with-checks-green
+— do not merge. Report deviations in the PR.
+```
+
+### W12 — P7c: docs restructure (UNASSIGNED — paste into a fresh CLI session)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout). Read docs/COORDINATION.md first — process rules and the
+PARALLEL SET RULES bind you. Your lane: P7c — restructure the
+documentation around what a reader wants to DO, not the order we
+happened to build it.
+
+THE PROBLEM, stated by the user: "i don't think having a series of
+sequential runbooks makes sense." There are eight phase-named runbooks
+(P1, P2, P3, P4A, P4B, P4C, P5A, P5B ≈ 1,700 lines) plus GUIDE.md and
+FAQ.md. `P4B-RUNBOOK.md` is a coordination artifact leaking into user
+documentation: a reader cannot tell what it contains, and the only way
+to find "how do I govern tool calls" is to read all eight. Measured:
+setup instructions barely repeat across them, so this is a NAVIGATION
+and NAMING problem, not a duplication problem — do not "solve" it by
+mass-deleting content.
+
+Your thesis: reorganise by CAPABILITY, with one obvious entry point and
+names that say what they are about. Propose the structure IN THE PR and
+justify it. A likely shape (yours to argue with): a single entry doc
+that routes; capability docs (getting started, models and endpoints,
+tools, governing spend, governing tool calls, approvals, connectors,
+running on a managed cluster); FAQ kept as-is (it works); the phase
+runbooks' content redistributed.
+
+The editorial call that matters most: each runbook mixes HOW TO USE a
+capability with WHY IT IS THIS WAY and WHAT WE VERIFIED. The board's
+delta sheets already hold the verification record. Decide deliberately
+what stays user-facing (caveats, gotchas, limitations — these are the
+best writing in the repo and must NOT be lost) versus what is
+historical, and state your rule. Losing the honest caveats would make
+these docs worse while making them prettier.
+
+Constraints:
+- docs/COORDINATION.md is coordinator-owned — DO NOT TOUCH IT.
+- Two build lanes run in parallel and will each add ONE capability-named
+  file (`docs/egress.md`, `docs/inbound.md`). Leave room for them in your
+  structure; do not depend on their content.
+- Preserve every honest limitation and "not live-verified" marker. The
+  repo's credibility rests on them.
+- Keep the voice: informal, direct, concrete, no marketing register. The
+  banned-phrase list from the W6 lane still applies ("delve", "seamless",
+  "robust", "leverage", "In this guide we'll", "simply", rhetorical
+  headers, closing pep-talks).
+- Update README links and any cross-references you break. A broken link
+  is a failed lane.
+- Redirects//tombstones: decide whether removed filenames need a stub
+  pointing at the new location (external links may exist) and say why.
+
+Verification: every internal link resolves (check them mechanically);
+every command you carry forward is still accurate against the current
+tree — if you cannot verify a command, mark it rather than deleting it.
+No cluster needed; if you want to verify commands live, use your OWN
+cluster, never kaimahi-p1.
+
+Branch from a main containing PR #20; PR targets main; no stacked bases;
+lane ends at PR-open-with-checks-green — do not merge. Report deviations
+in the PR.
 ```
 
 ## Delta sheets from finished lanes
