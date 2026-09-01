@@ -122,7 +122,17 @@ UP_STEPS := cluster kagent plane-copilot-secret plane govern agent \
 endif
 
 ## up: everything from an empty machine to ready agents (hello-world + tools)
-up: guard $(UP_STEPS)
+#
+# `up` deliberately does NOT list `guard` itself — each step below does,
+# and make runs it once per invocation, so the prompt still happens
+# exactly once. Guarding here too would break the headline case: on a
+# genuinely empty Azure subscription the AKS context does not exist yet,
+# and an absent NON-kind context is precisely what the guard refuses as a
+# typo. The first step (`cluster`) is what brings that context into
+# existence; every step after it is guarded, by which time there is a real
+# context to check. (`kind` is unaffected either way: its first step is
+# `cluster: guard`, so the guard still runs before anything is touched.)
+up: $(UP_STEPS)
 
 ifeq ($(TARGET),kind)
 cluster: guard
