@@ -1,0 +1,110 @@
+# The Kaimahi proxy: kagent's governed ModelConfigs point their
+# openAI.baseUrl at THIS Service. Real upstream credentials exist only as
+# Secrets mounted into this pod; agents carry Kaimahi-issued opaque
+# tokens. The admin port (9091) is deliberately NOT exposed by the
+# Service — reaching it takes kubectl port-forward to the pod, i.e.
+# cluster credentials, and then the admin bearer token.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kaimahi-proxy
+  namespace: kaimahi
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kaimahi-proxy
+  template:
+    metadata:
+      labels:
+        app: kaimahi-proxy
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: proxy
+          # Built from plane/Dockerfile and side-loaded into kind by
+          # `make plane-image` (never pulled); on a real cluster,
+          # override with your registry's image.
+          image: kaimahi-proxy:p4a
+          imagePullPolicy: Never
+          env:
+            - name: PGHOST
+              value: kaimahi-postgres
+            - name: PGDATABASE
+              value: kaimahi
+            - name: PGUSER
+              value: kaimahi
+            # Secrets arrive as mounted files only (PGPASSWORD_FILE,
+            # ADMIN_TOKEN_FILE defaults) — no secret-valued env vars.
+          ports:
+            - name: data
+              containerPort: 8080
+            - name: admin
+              containerPort: 9091
+          volumeMounts:
+            - name: upstreams
+              mountPath: /etc/kaimahi/upstreams.json
+              subPath: upstreams.json
+              readOnly: true
+            - name: pg-secret
+              mountPath: /etc/kaimahi/pg
+              readOnly: true
+            - name: admin-secret
+              mountPath: /etc/kaimahi/admin
+              readOnly: true
+            - name: copilot-cred
+              mountPath: /etc/kaimahi/upstream-creds/copilot
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: data
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+      volumes:
+        - name: upstreams
+          configMap:
+            name: kaimahi-upstreams
+        - name: pg-secret
+          secret:
+            secretName: kaimahi-pg
+        - name: admin-secret
+          secret:
+            secretName: kaimahi-admin
+            items:
+              - key: token
+                path: token
+        - name: copilot-cred
+          secret:
+            secretName: kaimahi-copilot-token
+            # The Copilot upstream is optional: without this Secret the
+            # governed ollama path still works and copilot requests fail
+            # closed (503 upstream credential unavailable).
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kaimahi-proxy
+  namespace: kaimahi
+spec:
+  selector:
+    app: kaimahi-proxy
+  ports:
+    - name: data
+      port: 8080
+      targetPort: data
