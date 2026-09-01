@@ -52,7 +52,15 @@ run() {
   local want=$1 label=$2
   shift 2
   local rc=0
-  env "$@" bash "$guard" "$label" </dev/null >"$workdir/out" 2>&1 || rc=$?
+  # `env -u` the guard's own inputs before setting the ones this case
+  # wants. Without it the tests are not actually hermetic: the runbook
+  # tells operators to `export KAIMAHI_CONFIRM=$AKS_CLUSTER` for a
+  # session, and that is precisely the variable the refusal cases assume
+  # is absent — so running these tests mid-AKS-session could turn a
+  # "refused" case green. CI never had it set, which is exactly why this
+  # would have gone unnoticed.
+  env -u KAIMAHI_CONFIRM -u KUBE_CTX -u KUBE_NS \
+    "$@" bash "$guard" "$label" </dev/null >"$workdir/out" 2>&1 || rc=$?
   if [ "$rc" != "$want" ]; then
     fails=$((fails + 1))
     echo "FAIL [$label]: exit $rc, want $want"
@@ -94,14 +102,24 @@ run 1 "empty KUBE_CTX is refused" KUBE_CTX=
 
 # The banner is the other half of the contract: even when it proceeds
 # without asking, the guard must say where the action is going.
-env KUBE_CTX=kind-real bash "$guard" "banner check" </dev/null >/dev/null 2>"$workdir/banner"
-for needle in 'kind-real' '127.0.0.1' 'about to:'; do
+env -u KAIMAHI_CONFIRM -u KUBE_NS KUBE_CTX=kind-real \
+  bash "$guard" "banner check" </dev/null >/dev/null 2>"$workdir/banner"
+banner_fails=0
+# namespace(s) is part of the contract, not decoration: the guard's whole
+# claim is that it says WHERE the action lands.
+for needle in 'kind-real' '127.0.0.1' 'about to:' 'namespace(s):'; do
   if ! grep -q "$needle" "$workdir/banner"; then
-    fails=$((fails + 1))
+    banner_fails=$((banner_fails + 1))
     echo "FAIL [banner]: missing '$needle'"
   fi
 done
-[ "$fails" -eq 0 ] && echo "ok   [banner] prints context and server"
+fails=$((fails + banner_fails))
+# `[ ... ] && echo` is a top-level AND list: under `set -e` a false test
+# would end the script right here, so the failure summary below would
+# never print. Exit status stayed correct, but the reason vanished.
+if [ "$banner_fails" -eq 0 ]; then
+  echo "ok   [banner] prints context, server and namespaces"
+fi
 
 if [ "$fails" -ne 0 ]; then
   echo "kube-guard: $fails check(s) failed" >&2

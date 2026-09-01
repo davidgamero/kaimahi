@@ -24,6 +24,24 @@
 # substantive check is the API server address: kind publishes its API
 # server on loopback. Both must agree.
 #
+# Callers run directly, not through make (scripts/tool-*-probe.sh):
+# those bypass the Makefile's `guard` prerequisite because CI and humans
+# invoke them as scripts. They matter because, left alone, they inherit
+# whatever `kubectl config current-context` happens to be — and
+# `az aks get-credentials` rewrites that silently, so after provisioning
+# an AKS cluster a probe meant for kind quietly aims at the managed one.
+# (Observed while verifying P5b.) They resolve the effective context with
+# `kubectl config view --minify`, which honours a --context carried inside
+# $KUBECTL; `config current-context` ignores that flag and would guard a
+# different cluster than the one acted on.
+#
+# `make chat` is deliberately NOT guarded, though it does spend budget and
+# write a ledger row. The distinction is not "mutates" but "can be aimed
+# somewhere unintended": chat always runs through $(KUBECTL), which
+# carries an explicit --context from KUBE_CTX, so it cannot silently
+# retarget the way a bare-kubectl probe can. Prompting on the most-used
+# command would buy nothing and teach people to type past confirmations.
+#
 # Usage:  KUBE_CTX=... [KUBE_NS=...] kube-guard.sh "<what is about to happen>"
 # Confirm non-interactively with:  KAIMAHI_CONFIRM=$KUBE_CTX make <target>
 set -euo pipefail

@@ -116,10 +116,18 @@ echo "plane-deploy: proxy image=$PLANE_IMAGE pullPolicy=$PLANE_PULL_POLICY" >&2
 
 # Everything except proxy.yaml is environment-independent and applied as
 # committed; the rendered proxy replaces only that one file.
-for f in "$manifests"/*.yaml; do
+#
+# Match every extension `kubectl apply -f <dir>` itself accepts, not just
+# *.yaml: the kind path applies the whole directory, so globbing more
+# narrowly here would silently skip a future .yml or .json on the registry
+# path ONLY — a divergence that would show up as a missing resource on
+# AKS and nowhere else.
+shopt -s nullglob
+for f in "$manifests"/*.yaml "$manifests"/*.yml "$manifests"/*.json; do
   [ "$(basename "$f")" = proxy.yaml ] && continue
-  # shellcheck disable=SC2086
+  # shellcheck disable=SC2086 # KUBECTL deliberately carries --context args
   $KUBECTL apply -f "$f"
 done
+shopt -u nullglob
 # shellcheck disable=SC2086
 $KUBECTL apply -f "$workdir/proxy.yaml"
