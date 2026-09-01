@@ -33,10 +33,11 @@ type UsageSource interface {
 }
 
 // Grants admits one over-cap request under live budget grants (P4c),
-// consuming a use. *store.Store satisfies it; nil disables grants
-// (caps enforce exactly as before).
+// consuming one use per exceeded cap — all caps in one transaction, so
+// a denial burns no uses. *store.Store satisfies it; nil disables
+// grants (caps enforce exactly as before).
 type Grants interface {
-	ConsumeBudgetGrant(ctx context.Context, credential, subject string, used, cap int64) (bool, error)
+	ConsumeBudgetGrants(ctx context.Context, credential string, needs []store.BudgetNeed) (failedSubject string, err error)
 }
 
 type Meter struct {
@@ -71,32 +72,44 @@ func (m *Meter) Check(ctx context.Context, cred store.Credential) error {
 			"credential", cred.Name, "err", err)
 		return Denial{Status: http.StatusForbidden, Msg: "metering unavailable"}
 	}
+	// Collect every exceeded cap first: grants must cover ALL of them in
+	// one transaction, or none is consumed (a denial burns no uses).
+	var needs []store.BudgetNeed
 	if cred.CapCents != nil && cents >= *cred.CapCents {
-		if !m.grantAdmits(ctx, cred.Name, "cents", cents, *cred.CapCents) {
-			return Denial{Status: http.StatusTooManyRequests, Msg: "monthly budget reached", BudgetSubject: "cents"}
-		}
+		needs = append(needs, store.BudgetNeed{Subject: "cents", Used: cents, Cap: *cred.CapCents})
 	}
 	if cred.CapTokens != nil && tokens >= *cred.CapTokens {
-		if !m.grantAdmits(ctx, cred.Name, "tokens", tokens, *cred.CapTokens) {
-			return Denial{Status: http.StatusTooManyRequests, Msg: "monthly token budget reached", BudgetSubject: "tokens"}
+		needs = append(needs, store.BudgetNeed{Subject: "tokens", Used: tokens, Cap: *cred.CapTokens})
+	}
+	if len(needs) == 0 {
+		return nil
+	}
+	if failed := m.grantsFail(ctx, cred.Name, needs); failed != "" {
+		msg := "monthly budget reached"
+		if failed == "tokens" {
+			msg = "monthly token budget reached"
 		}
+		return Denial{Status: http.StatusTooManyRequests, Msg: msg, BudgetSubject: failed}
 	}
 	return nil
 }
 
-// grantAdmits asks the grant store to admit one over-cap request,
-// consuming a use. Fail closed: no grant machinery, a read error, or an
-// insufficient raise all report false — the cap denial stands. The
-// grant is evaluated in the store at call time (expiry and use count
-// in SQL), never from a cached copy.
-func (m *Meter) grantAdmits(ctx context.Context, credential, subject string, used, cap int64) bool {
+// grantsFail asks the grant store to admit one over-cap request,
+// consuming one use per exceeded cap atomically; it returns the first
+// uncovered subject ("" = admitted). Fail closed: no grant machinery or
+// a store error denies on the first exceeded cap. Grants are evaluated
+// in the store at call time (expiry and use count in SQL), never from a
+// cached copy.
+func (m *Meter) grantsFail(ctx context.Context, credential string, needs []store.BudgetNeed) string {
 	if m.Grants == nil {
-		return false
+		return needs[0].Subject
 	}
-	ok, err := m.Grants.ConsumeBudgetGrant(ctx, credential, subject, used, cap)
+	failed, err := m.Grants.ConsumeBudgetGrants(ctx, credential, needs)
 	if err != nil {
-		slog.Error("meter: budget grant check failed, denying", "credential", credential, "subject", subject, "err", err)
-		return false
+		slog.Error("meter: budget grant check failed, denying", "credential", credential, "err", err)
+		if failed == "" {
+			failed = needs[0].Subject
+		}
 	}
-	return ok
+	return failed
 }

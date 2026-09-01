@@ -83,16 +83,26 @@ mcp_post "$workdir/req" "$session_header"
 python3 - "$workdir/resp" "$tool" <<'EOF'
 import json, sys
 raw = open(sys.argv[1]).read()
-# The response may be SSE-framed: take the last data event's payload.
-if "data:" in raw and not raw.lstrip().startswith("{"):
-    payload = ""
+# The response may be SSE-framed: find the data event that IS the
+# JSON-RPC response to our id (other frames — server log notifications
+# and the like — must not satisfy the probe).
+d = None
+if raw.lstrip().startswith("{"):
+    d = json.loads(raw)
+else:
     for line in raw.splitlines():
-        if line.startswith("data:"):
-            payload = line[5:].lstrip(" ")
-    raw = payload
-d = json.loads(raw)
+        if not line.startswith("data:"):
+            continue
+        try:
+            m = json.loads(line[5:].lstrip(" "))
+        except ValueError:
+            continue
+        if isinstance(m, dict) and m.get("id") == 2:
+            d = m
+assert isinstance(d, dict) and d.get("id") == 2, f"no JSON-RPC response with id=2 in: {raw[:500]}"
 assert "error" not in d, f"tools/call for {sys.argv[2]} returned an error: {d['error']}"
-result = d.get("result") or {}
+assert "result" in d, f"response carries no result: {d}"
+result = d["result"]
 assert not result.get("isError"), f"tool execution failed: {result}"
 text = "".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
 print(f"tools/call {sys.argv[2]} succeeded through the gateway")

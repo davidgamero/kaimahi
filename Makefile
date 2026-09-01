@@ -56,9 +56,16 @@ kagent:
 # Re-applying the committed YAML must not silently drop governance (or
 # any preset switch) from a live agent: capture the current modelConfig
 # first and restore a non-default one after the apply, with a warning.
+# Only a NotFound (fresh cluster) may skip the capture — any other read
+# failure aborts rather than risk silently un-governing.
 agent:
-	@current=$$($(KUBECTL) -n kagent get agent hello-world \
-		-o jsonpath='{.spec.declarative.modelConfig}' 2>/dev/null || true); \
+	@current=""; \
+	if out=$$($(KUBECTL) -n kagent get agent hello-world \
+		-o jsonpath='{.spec.declarative.modelConfig}' 2>&1); then \
+		current=$$out; \
+	elif ! printf '%s' "$$out" | grep -q 'NotFound'; then \
+		echo "cannot read hello-world's live modelConfig (refusing to risk un-governing it): $$out" >&2; exit 1; \
+	fi; \
 	$(KUBECTL) apply -f k8s/hello-world.yaml && \
 	if [ -n "$$current" ] && [ "$$current" != hello-world-model ]; then \
 		echo "NOTE: hello-world was on modelConfig '$$current' — preserving it ('make use PRESET=ollama' resets)" >&2; \
@@ -75,11 +82,13 @@ tools-agent:
 	$(KUBECTL) -n kagent wait \
 		--for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True \
 		remotemcpserver/kagent-tool-server --timeout=300s
-	@server=$$($(KUBECTL) -n kagent get agent hello-tools \
-		-o jsonpath='{.spec.declarative.tools[0].mcpServer.name}' 2>/dev/null || true); \
-	tools=$$($(KUBECTL) -n kagent get agent hello-tools -o json 2>/dev/null \
-		| python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["spec"]["declarative"]["tools"]))' \
-		2>/dev/null || true); \
+	@server=""; tools=""; \
+	if out=$$($(KUBECTL) -n kagent get agent hello-tools -o json 2>&1); then \
+		server=$$(printf '%s' "$$out" | python3 -c 'import json,sys; t=(json.load(sys.stdin)["spec"].get("declarative") or {}).get("tools") or []; print((t[0].get("mcpServer") or {}).get("name","") if t else "")') || exit 1; \
+		tools=$$(printf '%s' "$$out" | python3 -c 'import json,sys; print(json.dumps((json.load(sys.stdin)["spec"].get("declarative") or {}).get("tools") or []))') || exit 1; \
+	elif ! printf '%s' "$$out" | grep -q 'NotFound'; then \
+		echo "cannot read hello-tools' live tool wiring (refusing to risk un-governing it): $$out" >&2; exit 1; \
+	fi; \
 	$(KUBECTL) apply -f k8s/tools-agent.yaml && \
 	if [ "$$server" = kaimahi-tools ] && [ -n "$$tools" ]; then \
 		echo "NOTE: hello-tools was governed via kaimahi-tools — restoring gateway wiring ('make ungovern-tools' opts out)" >&2; \

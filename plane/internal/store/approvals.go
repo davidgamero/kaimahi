@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -183,6 +184,7 @@ func (s *Store) ApproveRequest(ctx context.Context, id string,
 	if amount != nil {
 		bounds += fmt.Sprintf("amount=%d ", *amount)
 	}
+	bounds = strings.TrimSpace(bounds)
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO approval_audit (request_id, credential_name, kind, subject, action, bounds)
 		 VALUES ($1, $2, $3, $4, 'approved', $5)`,
@@ -228,9 +230,11 @@ func (s *Store) DenyApprovalRequest(ctx context.Context, id string) error {
 }
 
 // ConsumeToolGrant admits one tool call under a live grant, consuming
-// one use atomically (FOR UPDATE SKIP LOCKED serializes concurrent
-// consumers; the liveness predicate is re-evaluated under the lock).
-// ok=false means no live grant — the caller denies.
+// one use atomically. FOR UPDATE SKIP LOCKED makes concurrent consumers
+// skip a row another transaction holds — the loser denies (a spurious
+// denial under contention, never a double-spent use; the liveness
+// predicate is evaluated on the locked row). ok=false means no
+// consumable grant — the caller denies.
 func (s *Store) ConsumeToolGrant(ctx context.Context, credential, tool string) (grantID string, ok bool, err error) {
 	err = s.pool.QueryRow(ctx,
 		`UPDATE permit_grant SET uses = uses + 1
@@ -273,44 +277,57 @@ func (s *Store) LiveToolGrantSubjects(ctx context.Context, credential string) ([
 	return out, rows.Err()
 }
 
-// ConsumeBudgetGrant admits one over-cap request when live budget
-// grants raise the effective cap far enough: admitted iff
+// BudgetNeed is one exceeded cap a request must cover via grants.
+type BudgetNeed struct {
+	Subject string // "tokens" or "cents"
+	Used    int64
+	Cap     int64
+}
+
+// ConsumeBudgetGrants admits one over-cap request when live budget
+// grants cover EVERY exceeded cap: per need, admitted iff
 // used < cap + SUM(live amounts), consuming one use from the oldest
-// live grant in the same transaction. ok=false means the raise (if
-// any) is insufficient — the caller denies.
-func (s *Store) ConsumeBudgetGrant(ctx context.Context, credential, subject string, used, cap int64) (ok bool, err error) {
+// live grant — all needs in ONE transaction, so a request denied on any
+// cap burns no uses on the others. failedSubject names the first
+// uncovered cap ("" = admitted).
+func (s *Store) ConsumeBudgetGrants(ctx context.Context, credential string, needs []BudgetNeed) (failedSubject string, err error) {
+	if len(needs) == 0 {
+		return "", nil
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, err
+		return needs[0].Subject, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var extra int64
-	if err := tx.QueryRow(ctx,
-		`SELECT COALESCE(SUM(amount), 0) FROM permit_grant
-		 WHERE credential_name = $1 AND kind = 'budget' AND subject = $2 AND `+grantLive,
-		credential, subject).Scan(&extra); err != nil {
-		return false, err
+	for _, n := range needs {
+		var extra int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(SUM(amount), 0) FROM permit_grant
+			 WHERE credential_name = $1 AND kind = 'budget' AND subject = $2 AND `+grantLive,
+			credential, n.Subject).Scan(&extra); err != nil {
+			return n.Subject, err
+		}
+		if extra <= 0 || n.Used >= n.Cap+extra {
+			return n.Subject, nil
+		}
+		var grantID string
+		err = tx.QueryRow(ctx,
+			`UPDATE permit_grant SET uses = uses + 1
+			 WHERE id = (
+			   SELECT id FROM permit_grant
+			   WHERE credential_name = $1 AND kind = 'budget' AND subject = $2 AND `+grantLive+`
+			   ORDER BY created_at LIMIT 1
+			   FOR UPDATE SKIP LOCKED
+			 ) RETURNING id`,
+			credential, n.Subject).Scan(&grantID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return n.Subject, nil // raced away between SUM and consume — deny
+		}
+		if err != nil {
+			return n.Subject, err
+		}
 	}
-	if extra <= 0 || used >= cap+extra {
-		return false, nil
-	}
-	var grantID string
-	err = tx.QueryRow(ctx,
-		`UPDATE permit_grant SET uses = uses + 1
-		 WHERE id = (
-		   SELECT id FROM permit_grant
-		   WHERE credential_name = $1 AND kind = 'budget' AND subject = $2 AND `+grantLive+`
-		   ORDER BY created_at LIMIT 1
-		   FOR UPDATE SKIP LOCKED
-		 ) RETURNING id`,
-		credential, subject).Scan(&grantID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil // raced away between SUM and consume — deny
-	}
-	if err != nil {
-		return false, err
-	}
-	return true, tx.Commit(ctx)
+	return "", tx.Commit(ctx)
 }
 
 // Grants lists a credential's grants (all credentials when empty),

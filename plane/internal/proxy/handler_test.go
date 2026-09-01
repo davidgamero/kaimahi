@@ -225,23 +225,33 @@ func (f *fakeStore) ApprovalAudit(_ context.Context, name string, _ int) ([]stor
 	return out, nil
 }
 
-// ConsumeBudgetGrant satisfies meter.Grants for handler tests that wire
-// the fake as the grant source; admits when a live budget grant covers
-// the overage.
-func (f *fakeStore) ConsumeBudgetGrant(_ context.Context, credential, subject string, used, cap int64) (bool, error) {
-	for i, g := range f.grants {
-		if g.CredentialName != credential || g.Kind != "budget" || g.Subject != subject || g.Amount == nil {
-			continue
+// ConsumeBudgetGrants satisfies meter.Grants for handler tests that
+// wire the fake as the grant source; all-or-nothing like the store.
+func (f *fakeStore) ConsumeBudgetGrants(_ context.Context, credential string, needs []store.BudgetNeed) (string, error) {
+	var picked []int
+	for _, n := range needs {
+		found := -1
+		for i, g := range f.grants {
+			if g.CredentialName != credential || g.Kind != "budget" || g.Subject != n.Subject || g.Amount == nil {
+				continue
+			}
+			if g.MaxUses != nil && g.Uses >= *g.MaxUses {
+				continue
+			}
+			if n.Used < n.Cap+*g.Amount {
+				found = i
+				break
+			}
 		}
-		if g.MaxUses != nil && g.Uses >= *g.MaxUses {
-			continue
+		if found < 0 {
+			return n.Subject, nil
 		}
-		if used < cap+*g.Amount {
-			f.grants[i].Uses++
-			return true, nil
-		}
+		picked = append(picked, found)
 	}
-	return false, nil
+	for _, i := range picked {
+		f.grants[i].Uses++
+	}
+	return "", nil
 }
 
 func i64(v int64) *int64 { return &v }

@@ -60,8 +60,8 @@ CREATE TABLE approval_audit (
     kind            text NOT NULL,
     subject         text NOT NULL,
     action          text NOT NULL CHECK (action IN ('requested', 'approved', 'denied')),
-    -- Human-readable bounds on 'approved' ("ttl=60s uses=1 amount=500");
-    -- empty otherwise.
+    -- Human-readable bounds on 'approved'
+    -- ("expires=2026-09-01T13:51:08Z uses=1 amount=500"); empty otherwise.
     bounds          text NOT NULL DEFAULT '',
     created_at      timestamptz NOT NULL DEFAULT now()
 );

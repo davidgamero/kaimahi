@@ -3,8 +3,9 @@
 The governance plane's final slice, and the last arc phase. P4a governs
 what an agent spends, P4b what it does — P4c adds the human to the loop:
 **a denied action files a pending approval request, and a CLI approval
-mints a time-boxed grant** that widens enforcement exactly as far as the
-human said, for exactly as long.
+mints a bounded grant** — "time-boxed" in D13's phrase, though the bound
+can be expiry, a use count, or both — that widens enforcement exactly as
+far as the human said, for exactly as long.
 
 The model is **deny-and-retry** (D13): no held-open calls, no approval
 flow inside MCP itself. The agent's denial says a request was filed; the
