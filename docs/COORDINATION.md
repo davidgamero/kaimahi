@@ -100,7 +100,8 @@ prefix.
 | P4b: enforcing MCP gateway | W5 worker | PR #15 MERGED (97c2b5f, payload identical to verified 06873d2; post-merge main CI green); delta sheet below | lane closed |
 | P4c: approvals/permits (D13) | W7 worker | PR #17 MERGED (dd08f00); coordinator verified both approval cycles independently pre-merge (delta sheet below) | lane closed — ARC COMPLETE |
 | P5a: governed Slack connector (D14) | W8 worker | PR #18 MERGED; coordinator verified (custody, and the discovery finding reproduced independently); delta sheet below | lane closed |
-| P5b: cluster portability + real AKS run (D14/D15) | unassigned | GO — W9 prompt ready (below) | contended: Makefile + k8s/ + docs + CI; mandatory AKS teardown; no Azure identifiers in committed files |
+| P5b: cluster portability + real AKS run (D14/D15) | W9 worker | PR #19 MERGED; coordinator verified (leak scan, teardown, guard, kind regression) — delta sheet below | lane closed |
+| CI flake: agent-readiness race (P5b finding) | unassigned | NOT GO — small named follow-up, see delta sheet | retry predicate covers `connection refused` but not `EOF`; main went red once then green on re-run |
 | NetworkPolicy egress (promoted 2026-09-01) | — | candidate, not GO | P5a put a deliberate internet-egress pod in the cluster; three non-network layers bound blast radius today. Strongest-argument-yet per P5a's own accounting |
 | P6: inbound connectors (webhooks/user APIs) | — | parked candidate; own blindspot pass when reached | genuine net-new surface: ingress auth, replay, rate limits, every event causes spend |
 | CLI prototype (Tatsinnit, PR #16) | teammate | OPEN, unreviewed — a working `kaimahi agent create` prototype; board holds the CLI as under-consideration/not-GO with five open decisions reserved for the user (docs/CLI-PROPOSAL.md) | awaiting user ruling before coordinator review |
@@ -910,6 +911,86 @@ Report deviations in the PR's "Deviations & decisions" section.
 ```
 
 ## Delta sheets from finished lanes
+
+### P5b — cluster portability + a real AKS run (PR #19, merged 2026-09-01)
+
+Delivered on main: the portability refactor (no new abstraction layer —
+`KUBE_CTX` became overridable, Kustomize evaluated and REJECTED because
+its `images:` transformer takes only static values, which would have
+forced committing the registry name this lane must not commit);
+`scripts/aks-up.sh` / `aks-down.sh` (parameterised, tagged, AcrPull
+verified rather than blindly re-attached); `scripts/kube-guard.sh` +
+its test suite; `scripts/check-no-azure-ids.sh` run by CI;
+`scripts/plane-deploy.sh` (renders the environment-dependent pull
+policy by parsing, not grepping); `docs/P5B-RUNBOOK.md`. AKS run
+completed and the cluster torn down.
+
+Coordinator verification (independent, 2026-09-01):
+- **Guardrail 1 — no Azure identifiers.** My own scan of the tracked
+  tree AND the lane's commit history for GUIDs, `*.azurecr.io`,
+  `*.azmk8s.io`: every hit is a variable expansion (`$(ACR_NAME)`,
+  `$ACR`) or a comment inside the scanner explaining what it blocks. No
+  subscription, tenant, RG, registry, or FQDN literal reached the public
+  repo or its history.
+- **Teardown actually happened.** `az group list` shows no `kaimahi`
+  resource group; the AKS clusters that do exist in that subscription
+  belong to unrelated projects. No lingering spend.
+- **Context guard genuinely fails closed.** Beyond the worker's own
+  passing test suite, I ran the guard against a REAL remote AKS context
+  on this machine: it printed the banner (context, API host, namespaces,
+  "REMOTE / non-kind") and REFUSED with exit 1, naming the exact
+  `KAIMAHI_CONFIRM` needed. Against local kind it passed silently. The
+  two-independent-checks design (context name AND loopback API server)
+  is right — a context name proves nothing.
+- **Kind unregressed** (the main risk flagged at GO): `make status`
+  healthy and a governed chat completed on the live kind cluster from
+  merged main.
+
+CI FINDING — main went red once, then green on re-run; ruled a real but
+intermittent pre-existing race, NOT a P5b regression. The old `chat`
+recipe's `port-forward & sleep 3` had been incidentally serving as the
+agent's readiness wait. P5b replaced it with a correct port-forward
+readiness poll, removing ~2.5s of padding and EXPOSING a race that was
+always there: kagent's agent pod has `readinessProbe
+initialDelaySeconds: 15`, and during a preset-switch rollout the old pod
+has left the Service before the new one is programmed into kube-proxy.
+RULING: exposing the race rather than restoring the padding was the
+correct call and the worker said so explicitly ("restoring the sleep
+would have made CI green and left the repo relying on padding — which is
+what hid this in the first place"). The MITIGATION is incomplete: the
+bounded retry keys on `connection refused`, but the post-merge failure
+was `Post "http://hello-tools.kagent:8080": EOF` — the same race one
+moment later (connection accepted, then torn down). **Follow-up:** widen
+the retry predicate to cover EOF and connection-reset, keeping it keyed
+narrowly enough that it cannot mask a real outage.
+
+Other rulings — all ACCEPTED: `desired` model-config step and
+`govern`-before-agents ordering (both no-ops on kind); `ollama`/`model`
+refuse on `TARGET=aks` rather than half-deploying; the coordinator's
+storage-class hypothesis CORRECTED (AKS 1.35.7's default StorageClass is
+literally named `default`, not `managed-csi` — the PVC works either way,
+and the runbook records what happened rather than the assumption);
+Copilot-secret-before-plane ordering (an *optional* secret volume comes
+up empty and kubelet projects it minutes later, which looks like a
+broken deploy rather than a race); `up` no longer guards a cluster it is
+about to create.
+
+Carried forward:
+
+- The retry-predicate widening above.
+- **The foot-gun fired in-lane, exactly as predicted.** The `tool-*-probe`
+  scripts bypass the Makefile guard (CI and humans run them directly), so
+  they inherited `kubectl config current-context` — which
+  `az aks get-credentials` silently rewrites. A kind denial probe was
+  aimed at the new AKS cluster and only failed because the Secret happened
+  not to exist there. Now guarded, resolving the effective context with
+  `config view --minify` (which honours a `--context` inside `$KUBECTL`;
+  `config current-context` does not, and would guard a different cluster
+  than the one acted on).
+- Concurrent kind+AKS verification runs collide on fixed local ports
+  (`plane-admin.sh` 19091, probes 18081).
+- A gate that reports noise stops being read: the identifier scanner
+  went from 132 findings to precise once it scanned tracked files only.
 
 ### P5a — governed Slack outbound (PR #18, merged 2026-09-01)
 
