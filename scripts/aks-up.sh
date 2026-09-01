@@ -15,7 +15,7 @@
 #   AKS_NODE_SIZE        optional   default Standard_B4ms
 #   AKS_NODE_COUNT       optional   default 1
 #
-# Cost shape (see docs/P5B-RUNBOOK.md): control plane on the Free tier is
+# Cost shape (see docs/aks.md): control plane on the Free tier is
 # $0; the node and a Standard load balancer are the running cost; ACR
 # Basic is a small daily charge. This is an EPHEMERAL cluster — create it,
 # prove the thing, run scripts/aks-down.sh.
@@ -226,9 +226,9 @@ aks-up: ready.
   registry:  $ACR.azurecr.io
   teardown:  AKS_RESOURCE_GROUP=$RG KAIMAHI_CONFIRM=$RG make aks-down
              ^ do not skip this. The confirmation names the RESOURCE
-               GROUP, not the cluster — see docs/P5B-RUNBOOK.md step 7.
+               GROUP, not the cluster — see docs/aks.md, "Tear it down".
 
-Next (see docs/P5B-RUNBOOK.md):
+Next (see docs/aks.md):
   export TARGET=aks AKS_CLUSTER=$CLUSTER ACR_NAME=$ACR
   export KAIMAHI_CONFIRM=$CLUSTER
   make kagent plane-copilot-secret plane govern agent tools-agent govern-tools

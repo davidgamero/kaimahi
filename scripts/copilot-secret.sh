@@ -102,7 +102,7 @@ json_field "$workdir/exchange.json" token > "$workdir/copilot-token"
 
 # P5b: allow this to run BEFORE the plane is deployed, so the proxy pod
 # mounts the credential at start rather than waiting on kubelet to project
-# a Secret that appeared later (see docs/P5B-RUNBOOK.md — that lag is a
+# a Secret that appeared later (see docs/aks.md — that lag is a
 # real first-run failure on a fresh cluster). Same create-if-missing
 # pattern as scripts/slack-secret.sh.
 # shellcheck disable=SC2086 # KUBECTL deliberately carries --context args

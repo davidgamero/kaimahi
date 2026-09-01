@@ -6,7 +6,7 @@
 #   make copilot-secret        # device login -> exchange -> K8s Secret
 #   make use PRESET=github-copilot
 #
-# Caveats (details in docs/P2-RUNBOOK.md): the endpoint is not part of
+# Caveats (details in docs/models.md): the endpoint is not part of
 # GitHub's documented public API surface; the minted token expires and
 # copilot-secret must be re-run; usage draws on your Copilot plan.
 apiVersion: kagent.dev/v1alpha2
