@@ -104,6 +104,7 @@ prefix.
 | P7a: NetworkPolicy egress | W10 worker | PR #23 OPEN — awaiting coordinator verification (negative test, kindnet enforcement, P1–P5 unregressed) | PARALLEL SET (see rules below); own cluster `netpol-verify` |
 | P7b: P6 inbound connectors | W11 worker | PR #24 OPEN — awaiting coordinator verification (auth-before-work, replay, budgets/ledger, bounded queue) | PARALLEL SET; own cluster `inbound-verify`; the big one |
 | P7c: docs restructure (capability, not chronology) | W12 worker | PRs #21/#22 MERGED (8a3e568, 29e031c); coordinator verified (delta sheet below) | lane closed | PARALLEL SET; owns `docs/` structure; no cluster needed |
+| Post-move: Go module path + owner refs (D16) | unassigned | GO — W13 prompt below; GATED on #24 (and #23) merging first | mechanical; must not branch before #24 lands |
 | CLI decisions + PR #16 review | user + coordinator | awaiting the user's five CLI-PROPOSAL rulings | not a build lane; parallelises with everything |
 | CI flake: agent-readiness race (P5b finding) | coordinator — PR #20 MERGED (73917e9) after a review round: retry anchored to the controller's whole error line; slack-post retries only unambiguous failures | User ruling 2026-09-01: fold into the next phase rather than a standalone micro-lane — as its **FIRST commit, before feature work**, so the lane's own CI is not reddened by someone else's race | retry predicate covers `connection refused` but not `EOF`; main went red once then green on re-run. Widen narrowly (EOF, connection-reset) so it cannot mask a real outage — see P5b delta sheet |
 | NetworkPolicy egress (promoted 2026-09-01) | — | candidate, not GO | P5a put a deliberate internet-egress pod in the cluster; three non-network layers bound blast radius today. Strongest-argument-yet per P5a's own accounting |
@@ -1125,6 +1126,64 @@ cluster, never kaimahi-p1.
 Branch from a main containing PR #20; PR targets main; no stacked bases;
 lane ends at PR-open-with-checks-green — do not merge. Report deviations
 in the PR.
+```
+
+### W13 — post-move: Go module path and owner references (UNASSIGNED — paste into a fresh CLI session ONLY AFTER PRs #23 and #24 have merged)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout). Read docs/COORDINATION.md first — process rules, decision D16,
+and the security standing guidance bind you. Your lane: the mechanical
+follow-up to the repo's move into the kaimahi-agents organization.
+
+SEQUENCING IS THE WHOLE RISK HERE. Before doing anything, confirm with
+`gh pr view 24 -R kaimahi-agents/kaimahi --json state` (and #23) that both
+are MERGED, and branch from a main that contains them. #24 touches
+plane/ everywhere; a module-path rename underneath it would conflict in
+every file. If either is still open, STOP and say so — do not start.
+
+What changes (and nothing else):
+1. `plane/go.mod`: `module github.com/gambtho/kaimahi/plane` becomes
+   `module github.com/kaimahi-agents/kaimahi/plane`, and every import of
+   the old path across plane/ (there were 36 at last count; recount after
+   #24) is rewritten. Nothing fetches this module — it is internal — so
+   this is canonical hygiene, not a build fix. `go.sum` should not change;
+   if it does, explain why.
+2. Owner references in docs that speak in the PRESENT tense:
+   `docs/CLI-PROPOSAL.md` (`npx github:gambtho/kaimahi` → the org) and
+   `docs/NAMING.md` (the "GitHub redirects from the old paths are active"
+   line and the repo-history paragraph gain the org move as D16).
+   Historical mentions — D5/D10 quotes, the gambtho/tomte-old archive
+   links — stay exactly as they are; they are history.
+3. `docs/NAMING.md` says "Nothing here is claimed." That is no longer
+   strictly true: a GitHub organization named for the project now exists.
+   Update it factually, in the doc's own plain voice — an org name is a
+   public claim on the still-provisional name, and D9's two gates
+   (cultural read, trademark counsel) remain open and are now more
+   urgent. Do not editorialise beyond that; the ruling is the user's.
+4. Then a full audit: `git grep -n gambtho` over the tree. Every
+   surviving hit must be historical (tomte-old links, quoted decisions)
+   and listed in the PR with its justification. docs/COORDINATION.md is
+   coordinator-owned — DO NOT TOUCH IT; list its hits as "board, excluded".
+
+Do NOT rename anything else: image names (`kaimahi-proxy`), namespaces,
+Secrets, make targets, cluster names and package names are unchanged.
+This lane renames an import path and fixes owner strings, nothing more.
+
+Verification is real:
+- `cd plane && gofmt -l . && go vet ./... && go build ./... && go test ./...`
+  all clean/green.
+- Build the plane image locally (`make plane-image` or the Dockerfile
+  directly) — the Docker build is the one place a module path can bite
+  that `go build` on the host would not show. No cluster needed.
+- `bash scripts/check-no-azure-ids.sh` and
+  `python3 scripts/check-doc-links.py` clean.
+- CI is expected to pass unchanged; if the go-plane job needs any edit,
+  that is a deviation to report, not a silent fix.
+
+Branch from current main (post-#23/#24); PR targets main; no stacked
+bases; lane ends at PR-open-with-checks-green — do not merge. Report
+deviations and the gambtho audit table in the PR.
 ```
 
 ## Delta sheets from finished lanes
