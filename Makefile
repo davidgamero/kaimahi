@@ -49,6 +49,10 @@ PLANE_TARGET     := kind
 # The keyless in-cluster model is the default everywhere on kind.
 AGENT_MODELCONFIG ?= hello-world-model
 GOVERNED_PRESET  ?= governed-ollama
+# P7a: the proxy leaves the cluster only when Copilot is enabled
+# (k8s/egress-copilot.yaml). Not on kind by default — the probe asserts
+# the proxy is internet-free. Set to 1 after `make plane-copilot-secret`.
+COPILOT_EGRESS   ?= 0
 else ifeq ($(TARGET),aks)
 KUBE_CTX         ?= $(AKS_CLUSTER)
 # Built in Azure by `az acr build` and PULLED — a private ACR (D15), never
@@ -59,6 +63,8 @@ PLANE_TARGET     := registry
 # straight onto the governed Copilot preset rather than the ollama one.
 AGENT_MODELCONFIG ?= governed-copilot
 GOVERNED_PRESET  ?= governed-copilot
+# Copilot-only (D15): the proxy's 443 allowance is always applied here.
+COPILOT_EGRESS   ?= 1
 else
 $(error unknown TARGET '$(TARGET)' — expected 'kind' or 'aks')
 endif
@@ -93,7 +99,8 @@ SLACK_TOOLNAMES_JSON = $(if $(filter -,$(SLACK_AGENT_TOOLS)),,"$(subst $(comma),
 	govern-tools ungovern-tools tool-allow tool-allowlist tool-audit \
 	approvals approve deny request grants approval-audit \
 	slack-secret slack-mcp govern-slack slack-allow slack-audit \
-	slack-post slack-down aks-cluster aks-creds aks-down
+	slack-post slack-down aks-cluster aks-creds aks-down \
+	netpol-verify egress-copilot egress-copilot-off
 
 # guard: the context-safety net every MUTATING target depends on. Prints
 # the target context/namespaces; demands explicit confirmation for
@@ -616,6 +623,14 @@ plane-copilot-secret: guard
 	@KUBECTL="$(KUBECTL)" COPILOT_SECRET_NAMESPACE=kaimahi \
 		COPILOT_SECRET_NAME=kaimahi-copilot-token \
 		bash scripts/copilot-secret.sh
+	@# P7a: enabling Copilot is the moment the proxy needs the internet.
+	@# The plane's own boundary (k8s/plane/network-policy.yaml) lets it
+	@# reach nothing outside the cluster; this opens TCP 443 out, and
+	@# only for the proxy. `make egress-copilot-off` closes it again.
+	@# (The script above created the namespace if it did not exist, so
+	@# this also works in the AKS ordering, where the token is minted
+	@# before the plane is deployed.)
+	$(KUBECTL) apply -f k8s/egress-copilot.yaml
 
 status:
 	$(KUBECTL) -n kagent get agents,modelconfigs
@@ -771,3 +786,32 @@ slack-down: guard
 	-$(KUBECTL) -n kagent delete agent hello-slack
 	-$(KUBECTL) -n kagent delete remotemcpserver kaimahi-slack
 	-$(KUBECTL) -n kaimahi delete mcpserver kaimahi-slack-mcp
+
+## ---- P7a: the network boundary (docs/egress.md) ----
+#
+# The policies themselves need no target: k8s/plane/network-policy.yaml
+# ships with `make plane` on every environment. What needs a target is
+# PROOF — a NetworkPolicy the CNI ignores is indistinguishable from one
+# it enforces until something is shown to be blocked.
+
+## netpol-verify: prove the boundary is ENFORCED, not merely present —
+## policed pods demonstrably cannot reach ollama / the internet, against
+## a control pod that can, plus an exec into the real Postgres pod.
+## Creates and deletes a few BestEffort probe pods (~2 minutes). Runs on
+## every PR in CI. The script guards its own context (like the tool
+## probes), so no `guard` here — one banner, not two.
+netpol-verify:
+	@KUBECTL="$(KUBECTL)" COPILOT_EGRESS=$(COPILOT_EGRESS) bash scripts/netpol-probe.sh
+
+## egress-copilot: let the proxy (and only the proxy) reach TCP 443 on
+## public addresses — the Copilot upstream. `make plane-copilot-secret`
+## applies this for you; it is here for the case where the token was
+## minted before the plane existed and the policy needs re-applying.
+egress-copilot: guard
+	$(KUBECTL) apply -f k8s/egress-copilot.yaml
+
+## egress-copilot-off: close the proxy's internet allowance again. The
+## Copilot Secret is left alone; governed Copilot calls then fail closed
+## (the proxy cannot dial out), which is the point.
+egress-copilot-off: guard
+	$(KUBECTL) -n kaimahi delete networkpolicy kaimahi-proxy-egress-copilot --ignore-not-found

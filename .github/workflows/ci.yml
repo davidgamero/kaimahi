@@ -123,6 +123,44 @@ jobs:
           assert policies == ["Never"], f"committed proxy pull policy: {policies}"
           EOF
 
+      # P7a: the boundary's shape, asserted without a cluster. Parsed,
+      # not grepped (the file's comments name every rule). Three things
+      # must stay true or the enforced-boundary step below would be
+      # testing a different policy than the one that ships: the
+      # namespace has a default-deny covering BOTH directions, every
+      # internet allowance excludes the private ranges (an ipBlock
+      # 0.0.0.0/0 with no exceptions would let "internet" mean "the
+      # cluster"), and the Copilot allowance is NOT in k8s/plane/ — it is
+      # opt-in, so the plane deploys internet-free.
+      - name: Network policy shape (default-deny both ways, private ranges excluded, Copilot opt-in)
+        run: |
+          python3 - <<'EOF'
+          import pathlib, sys, yaml
+          plane = pathlib.Path("k8s/plane")
+          docs = [d for f in sorted(plane.glob("*.y*ml"))
+                  for d in yaml.safe_load_all(f.read_text()) if d]
+          pols = [d for d in docs if d.get("kind") == "NetworkPolicy"]
+          assert pols, "no NetworkPolicy under k8s/plane/"
+          assert all(p["metadata"]["namespace"] == "kaimahi" for p in pols), "policy outside kaimahi"
+          deny = [p for p in pols if p["spec"].get("podSelector") == {}
+                  and sorted(p["spec"].get("policyTypes", [])) == ["Egress", "Ingress"]
+                  and not p["spec"].get("ingress") and not p["spec"].get("egress")]
+          assert len(deny) == 1, f"expected exactly one default-deny(Ingress+Egress), found {len(deny)}"
+          private = {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"}
+          copilot = yaml.safe_load(pathlib.Path("k8s/egress-copilot.yaml").read_text())
+          for p in pols + [copilot]:
+              for rule in p["spec"].get("egress") or []:
+                  for peer in rule.get("to") or []:
+                      ib = peer.get("ipBlock")
+                      if ib and ib["cidr"] == "0.0.0.0/0":
+                          missing = private - set(ib.get("except") or [])
+                          assert not missing, f'{p["metadata"]["name"]}: internet rule does not exclude {missing}'
+                          ports = {(x.get("protocol", "TCP"), x["port"]) for x in rule.get("ports") or []}
+                          assert ports == {("TCP", 443)}, f'{p["metadata"]["name"]}: internet rule ports {ports} != 443 only'
+          assert copilot["metadata"]["name"] not in {p["metadata"]["name"] for p in pols}, "Copilot allowance leaked into k8s/plane/"
+          print(f"{len(pols)} plane policies; internet allowances are 443-only with private ranges excluded")
+          EOF
+
   # P4a: the governance plane's Go module — build, vet, gofmt, tests.
   # A separate quick job so proxy logic failures surface in seconds, not
   # after a 6-minute cluster bring-up.
@@ -495,6 +533,21 @@ jobs:
             bash scripts/tool-denial-probe.sh conversations_add_message
           make approval-audit | tee approval-audit-slack.out
           grep -E 'hello-slack +tool +conversations_add_message +approved' approval-audit-slack.out
+      # P7a, keyless: the plane's NetworkPolicy boundary, proven ENFORCED
+      # rather than present. Every governed step above already ran with
+      # the policies applied (they ship with `make plane`), which is the
+      # positive: chat, tools, approvals and the Slack cycle all still
+      # work behind default-deny. This is the NEGATIVE: pods that must
+      # not reach ollama / the internet / the ledger demonstrably cannot
+      # (their connections time out), against a control pod in an
+      # unpoliced namespace that reaches the same targets — so "blocked"
+      # can only mean policy. Includes an exec into the real Postgres
+      # pod. Probe pods are BestEffort (no CPU requests on the full node)
+      # and deleted afterwards. A cluster whose CNI ignored NetworkPolicy
+      # fails this step with a message saying so — that is the whole
+      # point (docs/egress.md).
+      - name: Network boundary is enforced (policed pods cannot reach what they must not)
+        run: make netpol-verify
       - name: Cluster state on failure
         if: failure()
         run: |
@@ -509,3 +562,5 @@ jobs:
           kubectl --context kind-kaimahi-p1 -n kaimahi logs deploy/kaimahi-proxy --tail=100 || true
           kubectl --context kind-kaimahi-p1 -n kaimahi logs deploy/kaimahi-postgres --tail=50 || true
           kubectl --context kind-kaimahi-p1 -n kaimahi get mcpserver -o wide || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get networkpolicy || true
+          kubectl --context kind-kaimahi-p1 -n kube-system logs ds/kindnet --tail=30 || true
