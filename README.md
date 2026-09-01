@@ -117,11 +117,12 @@ Overridable: `KIND_CLUSTER`, `KAGENT_VERSION`, `MODEL`, `AGENT`, `TASK`,
 and `TARGET` (`kind` by default, or `aks`).
 
 **Targeting a real cluster.** `KUBE_CTX` is overridable, so `make down`
-can now name a cluster somebody cares about. Every *mutating* target
-therefore prints the context, API-server host and namespaces it is about
-to touch, and requires an explicit confirmation naming the context when
-that context is not a local kind cluster — fail closed, no confirmation
-no action. Read-only targets never prompt. See
+can now name a cluster somebody cares about. Every target that *writes to
+a cluster* therefore prints the context, API-server host and namespaces it
+is about to touch, and requires an explicit confirmation naming the
+context when that context is not a local kind cluster — fail closed, no
+confirmation no action. Read-only targets never prompt, and the Azure
+provisioning/teardown targets carry their own gates instead. See
 [docs/P5B-RUNBOOK.md](docs/P5B-RUNBOOK.md).
 
 ## The artifact: agent as code

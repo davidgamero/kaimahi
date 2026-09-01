@@ -183,5 +183,9 @@ aks-up: ready.
 Next (see docs/P5B-RUNBOOK.md):
   export TARGET=aks AKS_CLUSTER=$CLUSTER ACR_NAME=$ACR
   export KAIMAHI_CONFIRM=$CLUSTER
-  make kagent plane plane-copilot-secret govern agent
+  make kagent plane-copilot-secret plane govern agent tools-agent govern-tools
+
+  (plane-copilot-secret comes BEFORE plane: the proxy mounts that Secret
+   optionally, so a pod started without it fails closed for minutes. Or
+   just run 'make up', which is these steps in this order.)
 EOF

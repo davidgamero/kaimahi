@@ -459,6 +459,7 @@ endif
 #   AKS_CLUSTER         optional   cluster + kube-context (default kaimahi)
 #   AKS_LOCATION        optional   default westus3
 #   AKS_NODE_SIZE       optional   default Standard_B4ms
+#   AKS_NODE_COUNT      optional   default 1
 # See docs/P5B-RUNBOOK.md for why those defaults, and what a run costs.
 
 ## aks-cluster: create the resource group, the PRIVATE ACR, and the AKS

@@ -67,7 +67,7 @@ production. Making it overridable removes that, and this repo's own
 (*"--apply on a production context by accident"*). `make down` is now a
 command that can, in principle, delete a real cluster.
 
-So every **mutating** target depends on `guard`
+So every target that **writes to a cluster** depends on `guard`
 (`scripts/kube-guard.sh`), which:
 
 - **always prints** the context, the API-server host, and the namespaces
@@ -77,16 +77,26 @@ So every **mutating** target depends on `guard`
 - **demands explicit confirmation naming the context** for anything else;
 - **fails closed**: no TTY and no `KAIMAHI_CONFIRM` means nothing happens.
 
+Three targets deliberately sit outside it, because the guard checks a
+*kube context* and these do not act through one: `aks-cluster` and
+`aks-down` operate on Azure (and `aks-down` has its own two gates, below),
+and `plane-image` on `TARGET=aks` only runs `az acr build`. `up` does not
+guard either — its first step is what creates the context; every step
+after that is guarded.
+
 "Local kind" is deliberately **two independent checks** — the context
 name *and* a loopback API server — because a name proves nothing. Anyone
 can call an AKS context `kind-prod`; the guard is not fooled:
 
 ```console
 $ KUBE_CTX=kind-sneaky bash scripts/kube-guard.sh 'apply'
+----------------------------------------------------------------
   about to: apply
   context:  kind-sneaky
   server:   example.invalid
+  namespace(s): kagent, kaimahi
   posture:  REMOTE / non-kind
+----------------------------------------------------------------
 kube-guard: 'kind-sneaky' is not a local kind cluster and there is no TTY to ask.
   to proceed:  KAIMAHI_CONFIRM=kind-sneaky make <target>
 ```
@@ -108,6 +118,7 @@ export KAIMAHI_CONFIRM=$AKS_CLUSTER
 | `az` CLI, logged in (`az login`) | provisioning; the lane assumes an already-authenticated CLI, same pattern as `gh` |
 | A subscription that can create resource groups, an ACR, and an AKS cluster | `--attach-acr` also needs permission to create a role assignment |
 | `kubectl`, `helm`, `make`, `python3` | as for kind |
+| `python3` with **PyYAML** | AKS-only, and the one prerequisite kind does not share: `scripts/plane-deploy.sh` parses `proxy.yaml` to render the registry image and pull policy. The kind branch returns before that import, so a kind-only user never needs it. `pip install pyyaml` |
 | A GitHub Copilot subscription | AKS is Copilot-only (D15) |
 
 No Docker is needed for the AKS path: `az acr build` uploads the build
@@ -295,17 +306,25 @@ Two smaller carry-overs, recorded rather than hidden:
   the hardening step; it is not taken here because the cluster is
   short-lived and the flag's availability varies by CLI version. Worth
   taking for anything longer-lived.
-- **Working two clusters at once? Move the local ports.** `plane-admin.sh`
-  port-forwards the admin port to `127.0.0.1:19091` and the probes use
-  `18081`. Running a kind and an AKS verification concurrently makes the
-  second bind lose, and its requests land on the *other* cluster's forward
-  — which shows up as a flat `HTTP 401 unauthorized`, because the admin
-  token does not match. It fails closed, but the message does not point at
-  the cause. Override `ADMIN_PORT` and `GATEWAY_PORT` per cluster:
+- **Working two clusters at once? Move the local ports.** These tools
+  port-forward to fixed loopback ports: `plane-admin.sh` uses `19091`
+  (`ADMIN_PORT`), and each probe has its own `GATEWAY_PORT` default —
+  `tool-denial-probe.sh` `18081`, `tool-call-probe.sh` `18082`,
+  `tool-admit-probe.sh` `18083`. Running a kind and an AKS verification
+  concurrently makes the second bind lose, and its requests land on the
+  *other* cluster's forward — which surfaces as a flat
+  `HTTP 401 unauthorized`, because the admin token does not match. It fails
+  closed, but the message does not point at the cause. Override per
+  cluster:
 
   ```bash
-  ADMIN_PORT=19291 GATEWAY_PORT=18281 make approvals
+  ADMIN_PORT=19291 make approvals                     # make targets
+  GATEWAY_PORT=18281 bash scripts/tool-denial-probe.sh k8s_get_events
   ```
+
+  `ADMIN_PORT` is what the make targets read (they all go through
+  `plane-admin.sh`); `GATEWAY_PORT` is read only by the probe scripts,
+  which are run directly rather than through a target.
 
 ## What was verified, and what was not
 
