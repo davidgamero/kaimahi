@@ -22,7 +22,7 @@
 #                   in-cluster — so P4b's ruling deferring the hardened
 #                   dialer/SSRF set still holds — but that POD talks to
 #                   api.slack.com, the first deliberate internet egress
-#                   in this repo. See docs/P5A-RUNBOOK.md.
+#                   in this repo. See docs/slack.md.
 #
 # credential_file names (never carries) a Secret-mounted file holding the
 # Slack MCP server's OWN bearer credential, injected by the gateway from

@@ -1,12 +1,12 @@
 # Thin glue over kind/AKS + helm + kubectl + the kagent CLI. No Kaimahi CLI
-# here — kagent already ships one (see docs/P1-RUNBOOK.md for the full story).
+# here — kagent already ships one (see docs/getting-started.md for the full story).
 #
 # TARGET selects the environment (P5b). kind is the default and its
 # behaviour is unchanged: every kind command, context, and manifest is
 # exactly what it was before this file learned about anything else.
 #
 #   make up                      # kind, as always
-#   TARGET=aks make ...          # a managed cluster (docs/P5B-RUNBOOK.md)
+#   TARGET=aks make ...          # a managed cluster (docs/aks.md)
 #
 # KUBE_CTX is now overridable, which is the whole point of the lane — and
 # also its one new hazard, since `make down` can suddenly name a cluster
@@ -126,7 +126,7 @@ GUARD_NS ?= kagent, kaimahi, ollama
 # The old form was `port-forward ... >/dev/null 2>&1 & sleep 3` and then
 # an invoke that trusted the CLI's default localhost:8083. Three problems,
 # and P5b makes them reachable: running a kind and a managed verification
-# at once is now a first-class workflow (docs/P5B-RUNBOOK.md), and the
+# at once is now a first-class workflow (docs/aks.md), and the
 # ports collide.
 #   1. If the bind failed because ANOTHER cluster's forward already held
 #      8083, the error went to /dev/null and `kagent invoke` connected to
@@ -318,7 +318,7 @@ model: guard
 else
 ollama:
 	@echo 'ollama is not deployed on TARGET=$(TARGET) — the managed path is' >&2
-	@echo 'Copilot-only (D15). See docs/P5B-RUNBOOK.md.' >&2
+	@echo 'Copilot-only (D15). See docs/aks.md.' >&2
 	@exit 1
 
 model:
@@ -453,7 +453,7 @@ use: guard
 use-ollama: guard
 	$(MAKE) use PRESET=ollama KAIMAHI_CONFIRM='$(KUBE_CTX)'
 
-## ---- P4a: the governance plane (docs/P4A-RUNBOOK.md) ----
+## ---- P4a: the governance plane (docs/spend.md) ----
 
 ## plane: build + deploy the Kaimahi proxy and its Postgres ledger
 plane: guard plane-image plane-secrets
@@ -479,7 +479,7 @@ else
 ## image ever leaves the private ACR.
 plane-image:
 	@test -n "$(ACR_NAME)" || \
-		{ echo 'ACR_NAME is required for TARGET=aks (see docs/P5B-RUNBOOK.md)' >&2; exit 1; }
+		{ echo 'ACR_NAME is required for TARGET=aks (see docs/aks.md)' >&2; exit 1; }
 	az acr build --registry $(ACR_NAME) \
 		--image $(PLANE_IMAGE_REPO):$(PLANE_IMAGE_TAG) plane/
 endif
@@ -526,7 +526,7 @@ budget: guard
 ledger:
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh ledger $(CRED)
 
-## ---- P4b: the enforcing MCP gateway (docs/P4B-RUNBOOK.md) ----
+## ---- P4b: the enforcing MCP gateway (docs/tool-governance.md) ----
 
 ## govern-tools: put the tools agent behind the MCP gateway — issue its
 ## kmh_ credential (agent-side Secret kaimahi-tools-token), set the
@@ -568,7 +568,7 @@ tool-allowlist:
 tool-audit:
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-audit $(CRED_TOOLS)
 
-## ---- P4c: approvals and time-boxed permits (docs/P4C-RUNBOOK.md) ----
+## ---- P4c: approvals and time-boxed permits (docs/approvals.md) ----
 
 ## approvals: list pending approval requests (denied actions file them
 ## automatically; `make request` files one explicitly)
@@ -640,7 +640,7 @@ else
 down: aks-down
 endif
 
-## ---- P5b: the managed-cluster path (docs/P5B-RUNBOOK.md) ----
+## ---- P5b: the managed-cluster path (docs/aks.md) ----
 #
 # Azure identifiers are supplied by the operator and never committed:
 #   AKS_RESOURCE_GROUP  required   the group these scripts create/delete
@@ -649,7 +649,7 @@ endif
 #   AKS_LOCATION        optional   default westus3
 #   AKS_NODE_SIZE       optional   default Standard_B4ms
 #   AKS_NODE_COUNT      optional   default 1
-# See docs/P5B-RUNBOOK.md for why those defaults, and what a run costs.
+# See docs/aks.md for why those defaults, and what a run costs.
 
 ## aks-cluster: create the resource group, the PRIVATE ACR, and the AKS
 ## cluster (with AcrPull for its kubelet identity), then write kubeconfig
@@ -685,7 +685,7 @@ $(KAGENT):
 		{ echo 'kagent CLI checksum mismatch' >&2; rm -f $(KAGENT); exit 1; }
 	chmod +x $(KAGENT)
 
-## ---- P5a: the governed Slack path (docs/P5A-RUNBOOK.md) ----
+## ---- P5a: the governed Slack path (docs/slack.md) ----
 
 ## slack-secret: capture the Slack BOT token stdin-only and store the
 ## plane-side Secrets. REFUSES unless Slack confirms the channel is
