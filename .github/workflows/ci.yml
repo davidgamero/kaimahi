@@ -627,21 +627,25 @@ jobs:
           AUTH=none EXPECT=401 bash scripts/inbound-probe.sh demo 'unauthenticated event'
           AUTH=forged EXPECT=401 bash scripts/inbound-probe.sh demo 'forged signature'
           AUTH=stale EXPECT=401 bash scripts/inbound-probe.sh demo 'correctly signed, ten minutes ago'
-          # Signed correctly, but no human has granted the hook: denied,
-          # and the approval request is filed.
-          EXPECT=403 bash scripts/inbound-probe.sh demo 'no grant yet'
           make inbound-audit | tee inbound-audit-denied.out
-          grep -E 'demo +inbound-demo +probe-[0-9a-f]+ +denied +403 ' inbound-audit-denied.out
           test "$(grep -cE 'demo +inbound-demo +  +denied +401 ' inbound-audit-denied.out)" = 3
+      # The door checks the target's budget BEFORE the hook's grant (a
+      # budget denial must burn no grant use), so with hello-world's cap
+      # at 1 token and its budget grant spent (steps above) a correctly
+      # signed event is refused here as 429, whatever the hook's grant
+      # state. Assert that first, clear the cap, and only then assert
+      # the grant gate — the order the product enforces.
       - name: "Inbound: exhausted target budget refused at the door"
         run: |
-          # hello-world's cap is 1 token and its budget grant is spent
-          # (steps above): the door previews that and refuses before
-          # invoking anything, filing the agent's budget request.
           EXPECT=429 bash scripts/inbound-probe.sh demo 'budget exhausted'
           make inbound-audit | tee inbound-audit-budget.out
-          grep -E 'demo +inbound-demo +probe-[0-9a-f]+ +denied +429 ' inbound-audit-budget.out
-          make budget   # clear both caps for the admitted run below
+          grep -E 'demo +inbound-demo +probe-[0-9a-f]+ +denied +429 +.*target budget' inbound-audit-budget.out
+          make budget   # clear both caps for the steps below
+      - name: "Inbound: signed but ungranted event refused and files its approval request"
+        run: |
+          EXPECT=403 bash scripts/inbound-probe.sh demo 'no grant yet'
+          make inbound-audit | tee inbound-audit-ungranted.out
+          grep -E 'demo +inbound-demo +probe-[0-9a-f]+ +denied +403 +.*no live grant' inbound-audit-ungranted.out
       - name: "Inbound: bounded approval admits, the agent runs, replay and exhaustion refused"
         run: |
           make approvals | tee approvals-inbound.out
