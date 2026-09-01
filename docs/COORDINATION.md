@@ -1,4 +1,7 @@
-# Tomte coordination board
+# Kaimahi coordination board
+
+(Project renamed tomte → kaimahi, D9/D10; historical quotes and delta
+sheets below keep the old name verbatim.)
 
 Single writer: the coordinator session. Worker sessions implement; they report
 deviations and decisions here for ruling, and end their lane at
@@ -6,7 +9,7 @@ PR-open-with-checks-green. The user merges.
 
 ## Mission
 
-Tomte makes agentic workflows accessible and safe to delegate.
+Kaimahi makes agentic workflows accessible and safe to delegate.
 
 Leadership goal, verbatim:
 
@@ -26,7 +29,7 @@ CLI before UI. Simplest possible solution.
 kagent (kagent.dev) already ships (verified 2026-08-31): declarative K8s
 agents (Agent CRD YAML — which IS the agent-as-code topology artifact, A2A
 agent cards included), a CLI + dashboard, a broad model-provider list, and MCP
-tool integration. **kagent is the agent runner.** Tomte's product is the
+tool integration. **kagent is the agent runner.** Kaimahi's product is the
 governance plane kagent verifiably lacks: budgets and spend metering, approval
 workflows and blast-radius permits, credential custody (keys never reach the
 agent), egress enforcement, and audit.
@@ -60,7 +63,7 @@ before writing anything new.
    with the Foundry v1 base URL; do not use provider AzureOpenAI.
 3. **P3 — connectors/tools** via MCP (kagent's native tool mechanism).
 4. **P4 — governance** mounts at kagent's seams: ModelConfig BYO base_url →
-   Tomte metering/enforcing proxy; kagent MCP tool server → Tomte enforcing
+   Kaimahi metering/enforcing proxy; kagent MCP tool server → Kaimahi enforcing
    gateway; permits/approvals compile down to kagent resources. Evaluate
    porting the archived old repo's `server/` first.
 
@@ -77,8 +80,8 @@ build anything AKS-specific without a survey-backed justification.
 | README value-prop + Azure path (D6) | coordinator | PR #1 MERGED (verified on main, 94bbaef) | docs-only |
 | P2: LLM-enhanced via ModelConfig | W2 worker | PR #3 MERGED (d1a584d, tree-identical to checks-green branch); coordinator verified (delta sheet below) | lane closed |
 | P3: connectors/tools via MCP | W3 worker | PR #4 MERGED (99edd8a); coordinator verified incl. live tool call (delta sheet below) | lane closed |
-| Rename lane: in-repo tomte → kaimahi (D9/D10) | unassigned | GO — W-rename prompt ready (below) | board itself excluded (coordinator-owned) |
-| P4 | — | blocked on P3 merge | no pre-stacked PR bases |
+| Rename lane: in-repo tomte → kaimahi (D9/D10) | rename worker | PR #5 MERGED (01f5c3c); coordinator verified (delta sheet below); board renamed by coordinator | lane closed |
+| P4: governance plane | unassigned | UNBLOCKED — awaiting coordinator blindspot pass + user shaping questions + GO | biggest phase; port evaluation of tomte-old server/ first |
 
 ## Decisions (user rulings, verbatim)
 
@@ -467,3 +470,20 @@ Deviations (worker-reported; carried forward):
   was at ~95% requests before the shrink; P4 must budget accordingly.
 - `make up` is cumulative (includes the tools agent), P1/P2 e2e steps
   unchanged.
+
+### Rename lane — tomte → kaimahi in-repo (PR #5, merged 2026-08-31)
+
+Delivered on main (01f5c3c): rename across README, runbooks, Makefile,
+scripts, k8s (incl. agent systemMessages — the authorized one-time
+hello-world.yaml mutation), CI. Delegated choices: `KIND_CLUSTER=kaimahi-p1`
+(old clusters keep working via override; migration note in P1 runbook) and
+`KAIMAHI_COPILOT_TOKEN_FILE` / `~/.config/kaimahi/` (mv note in P2
+runbook). Worker live-verified on a fresh kaimahi-p1 cluster including the
+tool round-trip.
+
+Coordinator verification (independent, 2026-08-31): tracked-tree grep audit
+— only surviving "tomte" hits outside this board are the two justified
+migration notes; delegated choices confirmed in Makefile/script; post-merge
+main CI green (full P1+P2+P3 e2e, 6m13s). Board's own present-tense
+references renamed by the coordinator in this commit (historical
+quotes/delta sheets stay verbatim). No deviations reported; scope held.
