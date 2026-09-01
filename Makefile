@@ -814,4 +814,6 @@ egress-copilot: guard
 ## Copilot Secret is left alone; governed Copilot calls then fail closed
 ## (the proxy cannot dial out), which is the point.
 egress-copilot-off: guard
-	$(KUBECTL) -n kaimahi delete networkpolicy kaimahi-proxy-egress-copilot --ignore-not-found
+	@# Delete by manifest, not by a name typed here: a renamed policy
+	@# would otherwise delete nothing, exit 0, and leave the hole open.
+	$(KUBECTL) delete -f k8s/egress-copilot.yaml --ignore-not-found
