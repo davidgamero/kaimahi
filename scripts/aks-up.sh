@@ -299,8 +299,11 @@ fi
 # CLI a Graph token (AADSTS530084 — observed 2026-09-01) while ARM calls
 # keep working. The assignment is an ARM fact; asking Graph about it made
 # a working cluster fail this gate. The AcrPull role definition is
-# resolved by NAME at runtime rather than pinned as a GUID (this repo
-# refuses committed GUIDs, and the built-in role's id is one).
+# resolved at runtime rather than pinned as a GUID (this repo refuses
+# committed GUIDs, and the built-in role's id is one). Note the ARM
+# naming: a role definition's `roleName` is the display name ("AcrPull")
+# and its `name` IS the GUID — the last segment of every assignment's
+# `roleDefinitionId`, which is what ends_with() below matches against.
 acrpull_role=$(az role definition list --name AcrPull --query '[0].name' -o tsv 2>/dev/null || true)
 if [ -z "$acrpull_role" ]; then
   echo "aks-up: could not resolve the AcrPull role definition — refusing to guess." >&2
