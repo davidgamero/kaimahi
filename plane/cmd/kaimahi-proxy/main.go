@@ -26,14 +26,14 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/gambtho/kaimahi/plane/internal/config"
-	"github.com/gambtho/kaimahi/plane/internal/db"
-	"github.com/gambtho/kaimahi/plane/internal/gateway"
-	"github.com/gambtho/kaimahi/plane/internal/inbound"
-	"github.com/gambtho/kaimahi/plane/internal/meter"
-	"github.com/gambtho/kaimahi/plane/internal/proxy"
-	"github.com/gambtho/kaimahi/plane/internal/redact"
-	"github.com/gambtho/kaimahi/plane/internal/store"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/config"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/db"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/gateway"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/inbound"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/meter"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/proxy"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/redact"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/store"
 )
 
 func env(key, fallback string) string {

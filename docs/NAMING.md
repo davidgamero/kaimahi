@@ -2,12 +2,17 @@
 
 Working notes on the project name: what has been proposed, what is actually
 available, and what is still owed before any name is treated as final. Board
-rulings live in [COORDINATION.md](COORDINATION.md) (D5, D9, D10); this file
-is the detail behind them.
+rulings live in [COORDINATION.md](COORDINATION.md) (D5, D9, D10, D16); this
+file is the detail behind them.
 
-**Nothing here is claimed.** No package, domain, or handle has been
-registered. Claiming any of them is an outward-facing action that needs the
-user's explicit approval naming the exact artifact.
+**One thing here is now claimed.** A GitHub organization named for the
+project, `kaimahi-agents`, exists and hosts the repo (D16, 2026-09-01). No
+package or domain has been registered. An organization name is a public
+claim on a name that is still provisional — a stronger one than the repo
+rename was — and both of D9's open gates (the cultural read and trademark
+counsel) remain open and are more urgent for it. Claiming anything further
+is an outward-facing action that needs the user's explicit approval naming
+the exact artifact.
 
 ## The candidates
 
@@ -73,7 +78,10 @@ FYI, in plain terms:
   2. Trademark counsel. Also **not** cleared.
 - **The repo was renamed ahead of the freeze** (D10). The user renamed it
   to `kaiwahi` — a typo, w/m transposed — which was caught and corrected to
-  **gambtho/kaimahi**. GitHub redirects from the old paths are active.
+  **gambtho/kaimahi**. It has since moved into a GitHub organization
+  named for the project: **kaimahi-agents/kaimahi** (D16). GitHub
+  redirects from the old paths (`gambtho/tomte`, `gambtho/kaimahi`) are
+  active.
 - **The in-repo rename has landed** (commit `01f5c3c`): README, runbooks,
   Makefile, scripts, `k8s/`, and CI. The kind cluster is now `kaimahi-p1`
   (was `tomte-p1`) and the Copilot token cache moved to
@@ -100,7 +108,7 @@ re-verify before acting on it.
 | npm `kaimahi-cli` | **free** (404) | fallback if the bare name is ever contested |
 | PyPI `kaimahi` | **free** (404) | |
 | crates.io `kaimahi` | **free** (404) | |
-| GitHub org/user `kaimahi` | **free** (404) | |
+| GitHub org/user `kaimahi` | **free** (404) | the bare name; the org actually created is `kaimahi-agents` (D16) |
 | `kaimahi.dev` | **free** (RDAP 404) | |
 | `kaimahi.io` | **free** (RDAP 404) | |
 | `kaimahi.ai` | **free** (RDAP 404) | |
@@ -131,7 +139,9 @@ three registries a polyglot project would eventually want.
 
 Repo history: the original `gambtho/tomte` was renamed to
 [`gambtho/tomte-old`](https://github.com/gambtho/tomte-old) and archived
-(D5); the redux was a fresh repo, later renamed to `gambtho/kaimahi` (D10).
+(D5); the redux was a fresh repo, later renamed to `gambtho/kaimahi` (D10),
+then moved into the `kaimahi-agents` organization as
+[`kaimahi-agents/kaimahi`](https://github.com/kaimahi-agents/kaimahi) (D16).
 
 ## Rejected / not pursued
 

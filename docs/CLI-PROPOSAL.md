@@ -193,7 +193,7 @@ whenever a hosted preset is selected.
 1. **Publish or not.** The `npx` case requires npm publication, which is an
    outward-facing name claim needing explicit approval, and D9's cultural
    read and trademark counsel are still open. Without publication, use
-   `npx github:gambtho/kaimahi` for dev and treat the CLI as internal.
+   `npx github:kaimahi-agents/kaimahi` for dev and treat the CLI as internal.
 2. **The CRUD line** (deferred above).
 3. **`up` vs. `install`** — build the cluster-zero command, or leave that to
    the Makefile and ship only `create agent`?

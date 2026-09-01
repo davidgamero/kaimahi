@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gambtho/kaimahi/plane/internal/meter"
-	"github.com/gambtho/kaimahi/plane/internal/store"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/meter"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/store"
 )
 
 // NewAdminMux serves the control surface: issue governed credentials, set

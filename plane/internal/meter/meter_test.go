@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/gambtho/kaimahi/plane/internal/meter"
-	"github.com/gambtho/kaimahi/plane/internal/store"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/meter"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/store"
 )
 
 type fakeUsage struct {

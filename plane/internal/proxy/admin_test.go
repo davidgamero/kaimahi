@@ -12,10 +12,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/gambtho/kaimahi/plane/internal/config"
-	"github.com/gambtho/kaimahi/plane/internal/meter"
-	"github.com/gambtho/kaimahi/plane/internal/proxy"
-	"github.com/gambtho/kaimahi/plane/internal/store"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/config"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/meter"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/proxy"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/store"
 )
 
 func adminMux(t *testing.T, f *fakeStore) (http.Handler, string) {

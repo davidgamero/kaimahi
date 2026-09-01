@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gambtho/kaimahi/plane/internal/store"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/store"
 )
 
 // Denial is a typed refusal the proxy maps onto the HTTP response.

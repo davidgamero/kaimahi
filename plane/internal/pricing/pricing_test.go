@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/gambtho/kaimahi/plane/internal/pricing"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/pricing"
 )
 
 func TestCostCentsFloorsOnceOnCombinedTotal(t *testing.T) {

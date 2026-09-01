@@ -1,4 +1,4 @@
-module github.com/gambtho/kaimahi/plane
+module github.com/kaimahi-agents/kaimahi/plane
 
 go 1.26
 

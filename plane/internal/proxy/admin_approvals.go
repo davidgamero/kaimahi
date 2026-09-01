@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gambtho/kaimahi/plane/internal/store"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/store"
 )
 
 var (

@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/gambtho/kaimahi/plane/internal/redact"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/redact"
 )
 
 func TestHandlerRedactsMessageAndAttrs(t *testing.T) {
