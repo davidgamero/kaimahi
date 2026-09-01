@@ -65,11 +65,12 @@ spec:
             periodSeconds: 5
           resources:
             # Sized for the 2-CPU CI runner (P3 delta: the node sits near
-            # its CPU-request ceiling; with the plane at 100m for postgres
-            # the node totals 1985m of 2000m, so 50m buys back margin —
-            # demo query load is tiny).
+            # its CPU-request ceiling, and agent preset switches surge a
+            # second 50m pod). Requests are scheduling promises, not caps
+            # — with no CPU limit the demo's tiny query load can still
+            # burst.
             requests:
-              cpu: 50m
+              cpu: 25m
               memory: 128Mi
             limits:
               memory: 512Mi
