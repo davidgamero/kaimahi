@@ -82,7 +82,7 @@ build anything AKS-specific without a survey-backed justification.
 | P3: connectors/tools via MCP | W3 worker | PR #4 MERGED (99edd8a); coordinator verified incl. live tool call (delta sheet below) | lane closed |
 | Rename lane: in-repo tomte → kaimahi (D9/D10) | rename worker | PR #5 MERGED (01f5c3c); coordinator verified (delta sheet below); board renamed by coordinator | lane closed |
 | P4a: metering/enforcing LLM proxy (D11) | W4 worker | PR #12 MERGED; coordinator verified live incl. budget denial + custody (delta sheet below) | lane closed |
-| P4b: enforcing MCP gateway | unassigned | GO — blindspot pass done, W5 prompt ready (below) | contended: plane/ + k8s/ + Makefile + CI |
+| P4b: enforcing MCP gateway | W5 worker | PR #15 CHECKS-GREEN at 06873d2; coordinator verified independently (projection, governed round-trip, denial + audit rows, custody, fail-closed code paths); awaiting user merge | delta sheet + deviation rulings recorded at close-out after merge |
 | P4c: approvals/permits | — | blocked on P4b merge | no pre-stacked PR bases |
 | Docs: CLI-first framing + naming record | teammate (Tatsinnit) | PR #10 MERGED (ratifies D12) | staleness fixes folded into reconciliation lane |
 | Docs: agent-first scenarios | teammate (Tatsinnit) | PR #11 MERGED (authors' public credit ratified by user merge) | lane closed |
