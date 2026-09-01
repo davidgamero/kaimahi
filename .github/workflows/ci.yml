@@ -57,6 +57,11 @@ jobs:
       # locally while writing up an AKS run.
       - name: No Azure identifiers in tree
         run: bash scripts/check-no-azure-ids.sh
+      # The docs are organised by capability, with the old phase-named
+      # files kept as forwarding stubs. Every relative Markdown link and
+      # every #anchor must resolve — a broken forward is a broken doc.
+      - name: Doc links resolve
+        run: python3 scripts/check-doc-links.py
       # P5b: the context guard is pure policy — every branch of it decides
       # whether to touch somebody's cluster — but the e2e job below can only
       # ever exercise the one branch it runs on (local kind). These tests
