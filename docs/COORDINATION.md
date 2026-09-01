@@ -83,7 +83,7 @@ build anything AKS-specific without a survey-backed justification.
 | Rename lane: in-repo tomte → kaimahi (D9/D10) | rename worker | PR #5 MERGED (01f5c3c); coordinator verified (delta sheet below); board renamed by coordinator | lane closed |
 | P4a: metering/enforcing LLM proxy (D11) | W4 worker | PR #12 MERGED; coordinator verified live incl. budget denial + custody (delta sheet below) | lane closed |
 | P4b: enforcing MCP gateway | W5 worker | PR #15 MERGED (97c2b5f, payload identical to verified 06873d2; post-merge main CI green); delta sheet below | lane closed |
-| P4c: approvals/permits (D13) | W7 worker | PR #17 CHECKS-GREEN at 630fcea; coordinator verified both approval cycles independently (own probes/timestamps: deny→file→bounded grant→allowed-citing-grant→exhaust→re-deny; unbounded approve refused; denials still enforcement-audited); awaiting user merge | delta sheet + deviation rulings at close-out after merge |
+| P4c: approvals/permits (D13) | W7 worker | PR #17 MERGED (dd08f00); coordinator verified both approval cycles independently pre-merge (delta sheet below) | lane closed — ARC COMPLETE |
 | CLI prototype (Tatsinnit, PR #16) | teammate | OPEN, unreviewed — a working `kaimahi agent create` prototype; board holds the CLI as under-consideration/not-GO with five open decisions reserved for the user (docs/CLI-PROPOSAL.md) | awaiting user ruling before coordinator review |
 | Docs: CLI-first framing + naming record | teammate (Tatsinnit) | PR #10 MERGED (ratifies D12) | staleness fixes folded into reconciliation lane |
 | Docs: agent-first scenarios | teammate (Tatsinnit) | PR #11 MERGED (authors' public credit ratified by user merge) | lane closed |
@@ -931,3 +931,46 @@ Carried forward for P4c:
   pre-commit audit.
 - NetworkPolicy egress and internet-facing tool upstreams (with the
   blueprint's hardened dialer/SSRF set) remain unbuilt and documented.
+
+### P4c — approvals and time-boxed permits (PR #17, merged 2026-09-01) — ARC COMPLETE
+
+Delivered on main (dd08f00): deny-and-pend approvals in plane/ (denied
+tool calls and budget denials auto-file deduped pending requests);
+bounded grants (TTL and/or uses, at least one bound REQUIRED — unbounded
+approve refused) compiling into the P4b allowlist and P4a budget checks,
+liveness evaluated at decision time by the same SQL predicate the CLI
+shows; approval audit trail (requested/approved/denied with bounds);
+make approvals/approve/deny/request/grants/approval-audit +
+plane-admin.sh subcommands; scripts/tool-call-probe.sh (positive half of
+the probe pair); docs/P4C-RUNBOOK.md; README/status updated to
+"governance thesis, first full pass"; CI asserts both full cycles
+keyless. Also in: the board-backlog make-up governance-preservation
+guard (covers modelConfig AND the hello-tools gateway wiring — the W6
+disruption's actual footgun) and the same-tag redeploy trap fix.
+
+Coordinator verification (independent, pre-merge at 630fcea): both
+cycles reproduced with coordinator-minted requests and timestamps —
+tool: 14:31:52 denied+auto-filed → 14:32:05 USES=1 grant → 14:32:08
+allowed-200 audit row CITING the grant id → 14:32:09 exhausted, denied
+again, fresh request filed; budget: 14:32:29 cap denial auto-filed →
+bounded grant (uses=1 amount=5000) → chat completed → next chat denied
+(429s ledgered) → new request filed. Unbounded approve refused. Denials
+remain enforcement-audited throughout (approval state never suppresses
+ledger/tool_audit). Post-merge main is the verified payload.
+
+Coordinator rulings on the eight deviations — all ACCEPTED: transactional
+decision audit vs logged-only auto-filing (correct asymmetry — the
+enforcement trail still records every denial; 503ing over a convenience
+record would be worse); pre-forward tool-use consumption (conservative);
+projection includes live grants while agent toolNames stays static
+(discovery-lag honest); append-only grant history; admin-bearer as the
+approver identity (per-approver identity deferred with approval routing);
+oldest-first summing budget grants; the widened backlog-fix scope; tag
+moves with phase.
+
+Known limitations carried forward (documented): per-approver identity and
+approval routing (the parked connectors candidate is the natural
+delivery); NetworkPolicy egress; internet-facing upstreams + SSRF set;
+live kaimahi-p1 DB carries manual ALTERs matching migration 00003 (fresh
+clusters get them from the migration; rebuild the demo cluster if drift
+ever matters).
