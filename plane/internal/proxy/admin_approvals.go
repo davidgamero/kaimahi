@@ -71,6 +71,10 @@ func (h *handler) fileRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filed, err := h.d.Store.FileApprovalRequest(r.Context(), req.Credential, req.Kind, req.Subject, "filed explicitly via admin")
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "no such credential", http.StatusNotFound)
+		return
+	}
 	if err != nil {
 		slog.Error("admin: file request", "credential", req.Credential, "err", err)
 		http.Error(w, "store error", http.StatusInternalServerError)

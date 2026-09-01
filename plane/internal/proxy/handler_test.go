@@ -133,6 +133,15 @@ func (f *fakeStore) FileApprovalRequest(_ context.Context, credential, kind, sub
 	if f.fileErr != nil {
 		return false, f.fileErr
 	}
+	exists := false
+	for _, c := range f.creds {
+		if c.Name == credential {
+			exists = true
+		}
+	}
+	if !exists { // mirrors the FK: requests bind to real credentials
+		return false, store.ErrNotFound
+	}
 	for _, r := range f.requests {
 		if r.Status == "pending" && r.CredentialName == credential && r.Kind == kind && r.Subject == subject {
 			return false, nil // deduped

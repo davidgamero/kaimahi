@@ -8,11 +8,12 @@ is forwarded, and ledgered (denials immediately; forwarded calls once the
 response reveals their usage) — and the real upstream credential lives
 only with the proxy. **Keys never reach the agent.**
 
-> **⚠️ P4a governs LLM traffic only.** MCP/tool calls are still
-> ungoverned (the enforcing MCP gateway is P4b), and there is no approval
-> workflow yet (P4c). The ungoverned P2 presets (`make use PRESET=openai`
-> etc.) also still exist — governance applies only when the agent is on a
-> `governed-*` preset.
+> **⚠️ P4a governs LLM traffic only.** Tool calls are governed
+> separately by the P4b MCP gateway ([P4B-RUNBOOK.md](P4B-RUNBOOK.md)),
+> and approvals by P4c ([P4C-RUNBOOK.md](P4C-RUNBOOK.md)) — each an
+> opt-in of its own. The ungoverned P2 presets (`make use PRESET=openai`
+> etc.) also still exist — spend governance applies only when the agent
+> is on a `governed-*` preset.
 
 ## Architecture
 

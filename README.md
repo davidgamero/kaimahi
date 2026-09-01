@@ -4,7 +4,7 @@
 > run and are verified on every commit, and the governance plane's thesis
 > is now delivered in its first full pass — budgets, spend metering, and
 > credential custody for LLM calls; an enforcing gateway with allowlists
-> and audit for tool calls; and human approvals minting time-boxed
+> and audit for tool calls; and human approvals minting bounded
 > permits. Incubation continues honestly: NetworkPolicy egress,
 > internet-facing tool upstreams, and richer approval routing remain
 > unbuilt, and the CLI front door is still a proposal. The name is
@@ -203,7 +203,7 @@ idea being incubated — phase 4, arriving in slices:
   reach agent pods, YAML, or logs.
 - **Approvals and blast-radius permits** — consequential actions wait for a
   human yes, scoped to what was approved. *Built (P4c)*: a denied action
-  files an approval request; approving mints a time-boxed grant (expiry
+  files an approval request; approving mints a bounded grant (expiry
   and/or use count — unbounded grants are refused) that widens exactly
   the denied surface, then lapses.
 - **Egress enforcement** — agents reach only permitted endpoints.

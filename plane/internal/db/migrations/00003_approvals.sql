@@ -9,7 +9,11 @@
 
 CREATE TABLE approval_request (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    credential_name text NOT NULL,
+    -- Bound to a REAL credential: a request (and thus a grant) for a
+    -- name that doesn't exist yet would lie dormant and activate the
+    -- moment someone mints that name. CASCADE: a deleted credential's
+    -- requests die with it (audit rows below carry the history).
+    credential_name text NOT NULL REFERENCES credential (name) ON DELETE CASCADE,
     -- tool: subject is the tool name; budget: subject is which cap was
     -- exceeded ('tokens' or 'cents').
     kind            text NOT NULL CHECK (kind IN ('tool', 'budget')),
@@ -31,8 +35,8 @@ CREATE UNIQUE INDEX approval_request_pending_uniq
 -- package's name.
 CREATE TABLE permit_grant (
     id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    request_id      uuid NOT NULL REFERENCES approval_request (id),
-    credential_name text NOT NULL,
+    request_id      uuid NOT NULL REFERENCES approval_request (id) ON DELETE CASCADE,
+    credential_name text NOT NULL REFERENCES credential (name) ON DELETE CASCADE,
     kind            text NOT NULL CHECK (kind IN ('tool', 'budget')),
     subject         text NOT NULL,
     -- Bounds. NULL means unbounded in that dimension, but never in both:

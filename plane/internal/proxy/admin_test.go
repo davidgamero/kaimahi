@@ -140,7 +140,12 @@ func TestToolAllowlistRoundTrip(t *testing.T) {
 
 func TestApprovalLifecycle(t *testing.T) {
 	f := newFakeStore()
+	f.addToken("kmh_a", store.Credential{Name: "hello-tools"})
 	mux, tok := adminMux(t, f)
+
+	// A request must bind to a REAL credential (the FK): unknown 404s.
+	require.Equal(t, 404, adminDo(mux, "POST", "/admin/requests", tok,
+		`{"credential": "ghost", "kind": "tool", "subject": "k8s_get_events"}`).Code)
 
 	// Explicit filing (`make request`), deduped on refile.
 	w := adminDo(mux, "POST", "/admin/requests", tok,
