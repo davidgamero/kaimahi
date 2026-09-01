@@ -561,6 +561,126 @@ jobs:
       # point (docs/egress.md).
       - name: Network boundary is enforced (policed pods cannot reach what they must not)
         run: make netpol-verify
+      # P7b, keyless: the inbound bridge — the plane's one INGRESS — in
+      # the same cluster/job (a fourth listener in the existing proxy
+      # pod: zero added CPU requests). The generic SIGNED webhook (the
+      # committed "demo" hook, Kaimahi's v1 HMAC scheme) is driven end to
+      # end through scripts/inbound-probe.sh, which passes only on the
+      # exact expected status: an unauthenticated event, a forged
+      # signature, an ungranted event, an event against an exhausted
+      # target budget, a REPLAY of an admitted delivery, and a spent
+      # grant are each refused fail-closed and audited; a bounded
+      # approval admits one, the agent actually runs (the outcome row
+      # carries the runtime's token counts, and the proxy ledgers the
+      # same call under hello-world).
+      #
+      # What this does NOT cover: the Slack Events source. Slack must
+      # reach a public HTTPS URL, which CI's kind cluster has no way to
+      # offer; its signature scheme and envelope handling are unit-tested
+      # in plane/internal/inbound and marked not-live-verified in
+      # docs/inbound.md. The rate limiter and the bounded queue are
+      # unit-tested (a port-forwarded probe cannot outrun a 60/min bucket).
+      - name: Inbound hook table is in-cluster and carries no secret
+        run: |
+          kubectl --context kind-kaimahi-p1 -n kaimahi get configmap kaimahi-upstreams \
+            -o jsonpath='{.data.upstreams\.json}' > upstreams-inbound.json
+          python3 - <<'EOF'
+          import json
+          hooks = json.load(open("upstreams-inbound.json"))["inbound_hooks"]
+          assert set(hooks) == {"demo", "demo-bearer", "slack-events"}, sorted(hooks)
+          for name, h in hooks.items():
+              # Every hook triggers an in-cluster kagent agent under a
+              # governed credential; signed hooks name a plane-side FILE.
+              assert h["agent_namespace"] == "kagent", (name, h)
+              assert h["budget_credential"] == "hello-world", (name, h)
+              if h["auth"] != "bearer":
+                  assert h["signing_secret_file"].startswith("/etc/kaimahi/inbound/"), (name, h)
+              assert not any(k in h for k in ("secret", "signing_secret", "token", "api_key")), (name, h)
+          print("inbound hooks:", {k: (v["auth"], v["agent"]) for k, v in hooks.items()})
+          EOF
+          # The ingress Service exposes the bridge only; no Service exposes admin.
+          ports=$(kubectl --context kind-kaimahi-p1 -n kaimahi get svc -o jsonpath='{range .items[*]}{.metadata.name}={.spec.ports[*].port} {end}')
+          echo "$ports"
+          case " $ports " in
+            *" kaimahi-inbound=8082 "*) ;;
+            *) echo 'kaimahi-inbound Service must expose exactly 8082' >&2; exit 1 ;;
+          esac
+          case "$ports" in
+            *9091*) echo 'admin port exposed by a Service' >&2; exit 1 ;;
+          esac
+      - name: "Inbound: unauthenticated, forged and ungranted events refused fail-closed"
+        run: |
+          # The signed hook's credential is an IDENTITY: no bearer token
+          # is stored anywhere for it.
+          make inbound-credential
+          if kubectl --context kind-kaimahi-p1 -n kaimahi get secret kaimahi-inbound-token >/dev/null 2>&1; then
+            echo 'a bearer token was stored for the signed hook' >&2; exit 1
+          fi
+          make inbound-secret HOOK=demo GENERATE=1
+          # kubelet projects a first-time Secret mount with a lag (P5b
+          # delta): wait for the file rather than sleep.
+          for _ in $(seq 1 60); do
+            kubectl --context kind-kaimahi-p1 -n kaimahi exec deploy/kaimahi-proxy -- \
+              cat /etc/kaimahi/inbound/demo >/dev/null 2>&1 && break
+            sleep 3
+          done
+          AUTH=none EXPECT=401 bash scripts/inbound-probe.sh demo 'unauthenticated event'
+          AUTH=forged EXPECT=401 bash scripts/inbound-probe.sh demo 'forged signature'
+          # Signed correctly, but no human has granted the hook: denied,
+          # and the approval request is filed.
+          EXPECT=403 bash scripts/inbound-probe.sh demo 'no grant yet'
+          make inbound-audit | tee inbound-audit-denied.out
+          grep -E 'demo +inbound-demo +probe-[0-9a-f]+ +denied +403 ' inbound-audit-denied.out
+          test "$(grep -cE 'demo +inbound-demo +  +denied +401 ' inbound-audit-denied.out)" = 2
+      - name: "Inbound: exhausted target budget refused at the door"
+        run: |
+          # hello-world's cap is 1 token and its budget grant is spent
+          # (steps above): the door previews that and refuses before
+          # invoking anything, filing the agent's budget request.
+          EXPECT=429 bash scripts/inbound-probe.sh demo 'budget exhausted'
+          make inbound-audit | tee inbound-audit-budget.out
+          grep -E 'demo +inbound-demo +probe-[0-9a-f]+ +denied +429 ' inbound-audit-budget.out
+          make budget   # clear both caps for the admitted run below
+      - name: "Inbound: bounded approval admits, the agent runs, replay and exhaustion refused"
+        run: |
+          make approvals | tee approvals-inbound.out
+          id=$(awk '$3=="inbound-demo" && $4=="inbound" && $5=="demo" {print $1}' approvals-inbound.out)
+          test -n "$id"
+          make approve ID="$id" USES=2 TTL=10m
+          before=$(make ledger | grep -cE 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' || true)
+          d="ci-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+          DELIVERY="$d" bash scripts/inbound-probe.sh demo 'Reply with exactly the word PONG.'
+          # The SAME delivery again is a replay: refused, no use burned.
+          DELIVERY="$d" EXPECT=409 bash scripts/inbound-probe.sh demo 'Reply with exactly the word PONG.'
+          # The invocation is asynchronous: wait for its outcome row.
+          for _ in $(seq 1 60); do
+            make inbound-audit > inbound-audit.out 2>/dev/null
+            grep -qE "demo +inbound-demo +$d +(completed|failed) " inbound-audit.out && break
+            sleep 5
+          done
+          cat inbound-audit.out
+          # A well-formed positive only: completed, HTTP 200, non-zero
+          # runtime-reported input tokens, a task id.
+          grep -E "demo +inbound-demo +$d +completed +200 +[1-9][0-9]* +[0-9]+ +task " inbound-audit.out
+          grep -E "demo +inbound-demo +$d +denied +409 " inbound-audit.out
+          # The event's spend was governed and ledgered by the proxy
+          # under the agent's credential: one more governed row.
+          after=$(make ledger | grep -cE 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' || true)
+          test "$after" -gt "$before"
+          # Second use admitted; the grant is then spent: refused again
+          # and a fresh request filed.
+          bash scripts/inbound-probe.sh demo 'second use'
+          EXPECT=403 bash scripts/inbound-probe.sh demo 'third: grant exhausted'
+          make approval-audit | tee approval-audit-inbound.out
+          grep -E 'inbound-demo +inbound +demo +approved +expires=.* uses=2' approval-audit-inbound.out
+      - name: "Inbound: bearer hook authenticates the same way and is gated the same way"
+        run: |
+          make inbound-credential CRED_INBOUND=inbound-bearer INBOUND_SECRET=kaimahi-inbound-token
+          n=$(kubectl --context kind-kaimahi-p1 -n kaimahi get secret kaimahi-inbound-token \
+            -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
+          test "$n" = 1
+          AUTH=none EXPECT=401 bash scripts/inbound-probe.sh demo-bearer 'no token'
+          AUTH=bearer EXPECT=403 bash scripts/inbound-probe.sh demo-bearer 'authenticated, no grant'
       - name: Cluster state on failure
         if: failure()
         run: |
