@@ -83,7 +83,7 @@ build anything AKS-specific without a survey-backed justification.
 | Rename lane: in-repo tomte → kaimahi (D9/D10) | rename worker | PR #5 MERGED (01f5c3c); coordinator verified (delta sheet below); board renamed by coordinator | lane closed |
 | P4a: metering/enforcing LLM proxy (D11) | W4 worker | PR #12 MERGED; coordinator verified live incl. budget denial + custody (delta sheet below) | lane closed |
 | P4b: enforcing MCP gateway | W5 worker | PR #15 MERGED (97c2b5f, payload identical to verified 06873d2; post-merge main CI green); delta sheet below | lane closed |
-| P4c: approvals/permits | — | UNBLOCKED by P4b merge; awaiting coordinator blindspot pass + shaping questions + GO | last arc phase; connectors candidate is the natural demo |
+| P4c: approvals/permits (D13) | unassigned | GO — blindspot pass + D13 shaping done, W7 prompt ready (below) | last arc phase; contended: plane/ + k8s/ + Makefile + CI + README status |
 | Docs: CLI-first framing + naming record | teammate (Tatsinnit) | PR #10 MERGED (ratifies D12) | staleness fixes folded into reconciliation lane |
 | Docs: agent-first scenarios | teammate (Tatsinnit) | PR #11 MERGED (authors' public credit ratified by user merge) | lane closed |
 | Post-merge reconciliation | coordinator | PR #13 MERGED (0ce72ca, main CI green incl. hardened secret scan) | lane closed |
@@ -105,6 +105,7 @@ build anything AKS-specific without a survey-backed justification.
 | D10 | 2026-08-31 | Repo rename executed ahead of D9's freeze: user renamed the GitHub repo (initially to "kaiwahi" — a typo; coordinator caught the m/w mismatch vs D9 and, with user approval, corrected it to **gambtho/kaimahi**). The in-repo rename (README, board, Makefile names, docs) is a lane queued to run AFTER P3 merges. D9's remaining gates (cultural read, counsel) still stand for the name going truly final | "i changed the repo name to kaiwahi -- whenever p3 finishes we should do the rename change" — then ruled via option: "kaimahi — fix repo (Recommended)" |
 | D11 | 2026-08-31 | P4 shaping: (1) the metering/enforcing LLM proxy leads (P4a); MCP gateway (P4b) and approvals (P4c) follow as separate lanes. (2) The durable store is in-cluster Postgres. (3) The P4 demo is CLI-only | ruled via options: "LLM proxy first (Recommended)", "In-cluster Postgres (Recommended)", "Yes, CLI only (Recommended)" |
 | D12 | 2026-09-01 | README positioning: CLI-first/incubation framing leads; the governance plane is presented as the incubated thesis. Supersedes D6's framing (D6's substance — the five governance controls and the AKS/Foundry paragraph — is retained). The agent-first scenario doc with four named authors is published under MIT. Both ratified by the user merging PRs #10/#11 after coordinator review | "sure, go ahead" (post the reviews) → "ok, that merged as well" — ratified by merge |
+| D13 | 2026-09-01 | P4c approval model: TIME-BOXED PERMITS — a denied action files a pending request; approval grants it bounded (expiry by duration and/or use count) and compiles into the existing allowlist/budget rows; deny-and-retry mechanics, no held-open calls. Demo scenarios: tool-access widening (k8s_get_events, read-only) AND budget overage; the P3 tool-server read-only posture stays untouched (write-tool demo deferred) | ruled via options: "Time-boxed permits (Recommended)"; "Widen tool access (Recommended), Budget overage (Recommended)" |
 
 Old-repo history is preserved at https://github.com/gambtho/tomte-old
 (archived, read-only). No local checkout of it exists (deleted 2026-08-31);
@@ -616,6 +617,94 @@ names, paths. In the PR description, list each command block and confirm
 it was executed.
 
 Report deviations in the PR's "Deviations & decisions" section.
+```
+
+### W7 — P4c: approvals / blast-radius permits (UNASSIGNED — paste into a fresh CLI session in this repo)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout). Read docs/COORDINATION.md first — prime directive, process
+rules, security standing guidance, decisions D1–D13, and ALL delta
+sheets bind you (P4a and P4b especially, including P4b's
+carried-forward items). Your lane: P4c — approvals and blast-radius
+permits, the governance plane's final slice and the last arc phase.
+
+DESIGN SOURCES FIRST (prime directive): the old repo's permit package
+(server/internal/permit/permit.go in archived gambtho/tomte-old, 150
+LOC) is the model to evaluate for porting: a fail-closed permit document
+(DisallowUnknownFields, trailing-data rejection, deny-all is the ABSENCE
+of a grant, an entry allowing nothing is an error not a deny-all) whose
+mcp: connection keys were reserved until "the enforcement path exists" —
+that path is now the P4b gateway. Record port/adapt/reject per pattern
+in the PR. P4b's delta sheet already rules that its static allowlist is
+the placeholder P4c compiles approvals into.
+
+Model (D13 — time-boxed permits, deny-and-pend):
+- A DENIED action files a pending approval request automatically (and
+  `make request` can file one explicitly): a gateway tool denial files
+  (credential, tool); a budget denial files (credential, budget-raise).
+  Dedupe pending requests per (credential, kind, subject) — a retry loop
+  must not spam the queue.
+- The human decides via CLI: `make approvals` (list pending),
+  `make approve ID=… [TTL=…] [USES=…]`, `make deny ID=…`. An approval
+  creates a bounded GRANT — expiry by duration and/or use count, at
+  least one bound REQUIRED (an unbounded grant is a config change, not
+  an approval; refuse it).
+- Grants COMPILE into the existing enforcement rows: a tool grant makes
+  the tool pass the P4b allowlist check while live; a budget grant
+  raises the effective cap while live. Expiry/exhaustion is enforced
+  FAIL-CLOSED at decision time (an expired grant is simply not a grant —
+  no cleanup job required for correctness; enforcement must not depend
+  on a reaper having run).
+- Approvals get their own audit trail (who/when/what bounds/outcome),
+  same append-only + fail-closed-degradation contract as ledger and
+  tool_audit. Denied-then-pended calls still write their P4b denied
+  rows — approval state never suppresses enforcement audit.
+- The agent experience is deny-and-retry: the denial message tells the
+  operator a request was filed (`make approvals`). No held-open calls,
+  no approval flows inside MCP itself.
+
+Demo scenarios (D13, both CLI-only per D11):
+(1) Tool widening: hello-tools call to k8s_get_events → denied, request
+    filed → `make approve` time-boxed → call succeeds → bound expires →
+    denied again. The P3 tool-server read-only posture is NOT touched.
+(2) Budget overage: chat denied at the token cap → request filed →
+    approve a bounded raise → chat succeeds → ledger shows the overage
+    against the grant.
+
+Deliverables:
+(a) plane/ code + migrations; `go test ./...`, gofmt, vet green at every
+    commit. Grant-compilation reads must be race-honest: enforcement
+    evaluates grants at call time, never from a cached copy that can
+    outlive expiry.
+(b) Make targets above + `scripts/plane-admin.sh` subcommands, following
+    the existing patterns (admin port stays off the Service; bearer
+    token; input validation).
+(c) docs/P4C-RUNBOOK.md per the runbook pattern; update the
+    governed-vs-ungoverned tables and the README status section
+    (approvals now run; the arc's governance thesis is delivered in its
+    first full pass — keep the incubation framing honest about what
+    remains: NetworkPolicy egress, internet-facing upstreams, richer
+    approval routing).
+(d) CI, keyless, in the existing cluster job: the full cycle asserted
+    fail-closed for BOTH demos — denied → request filed → approve →
+    allowed → expire/exhaust → denied again (use USES=1 or a short TTL
+    so CI never sleeps long). Zero-ish CPU delta (extend the existing
+    process; state your sizing).
+(e) Small adjacent fix from the board backlog (in scope, one commit):
+    guard `make up` re-pointing a governed agent at the ungoverned
+    model — detect a governed modelConfig and warn + preserve (or
+    re-govern), so governance doesn't silently drop off on re-runs.
+
+Out of scope: any UI; connectors/Slack/Discord (parked candidate — P5);
+approval routing to external systems; write-capable tools or any change
+to the P3 tool-server posture; npm/domain/external claims.
+
+Verification is real: live cluster evidence for both full cycles in the
+PR (your own probe names and timestamps), plus proof expiry re-denies.
+Suite green at every commit. Branch from current main; PR targets main;
+no stacked bases. Lane ends at PR-open-with-checks-green — do not
+merge. Report deviations in the PR's "Deviations & decisions" section.
 ```
 
 ## Delta sheets from finished lanes
