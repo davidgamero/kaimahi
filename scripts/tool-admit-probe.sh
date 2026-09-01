@@ -40,6 +40,22 @@ case "$tool" in
   (*[!A-Za-z0-9._-]*|'') echo "invalid tool name '$tool'" >&2; exit 2 ;;
 esac
 
+# Context safety (P5b). These probes MUTATE governance state — they
+# consume grant uses and write audit rows — and they are the one path
+# that bypasses the Makefile's `guard` prerequisite, because CI and
+# humans run them directly rather than through a target. Left alone they
+# inherit whatever `kubectl config current-context` happens to be, and
+# `az aks get-credentials` changes that silently: after provisioning an
+# AKS cluster, a probe meant for kind quietly aims at the managed one.
+# (Observed while verifying this lane.)
+#
+# `config view --minify` is what resolves the EFFECTIVE context, honouring
+# a --context carried in $KUBECTL; `config current-context` ignores that
+# flag and would guard a different cluster than the one acted on.
+KUBE_CTX="${KUBE_CTX:-$($KUBECTL config view --minify -o jsonpath='{.contexts[0].name}')}"
+KUBE_NS="$NAMESPACE, $AGENT_NAMESPACE" KUBE_CTX="$KUBE_CTX" \
+  bash "$(dirname "$0")/kube-guard.sh" "$(basename "$0") $tool"
+
 workdir=$(mktemp -d)
 pf_pid=""
 cleanup() {

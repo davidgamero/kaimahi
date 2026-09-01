@@ -57,7 +57,7 @@ make chat   # talk to it
 | Consume it as | How |
 |---|---|
 | **Local dev** | `make up` on kind; keyless, free, offline-capable model |
-| **Any conformant cluster** | the manifests are plain CRDs; **AKS** is the named managed target |
+| **Any conformant cluster** | the manifests are plain CRDs; **AKS** is the named managed target, and the governance plane has now been [run there for real](docs/P5B-RUNBOOK.md) |
 | **CI / automation** | the same targets run headless — this repo's [CI](.github/workflows/ci.yml) boots a cluster and asserts a real reply, and a real tool call, on every PR |
 | **Your own repo** | copy `k8s/` + the make targets; each agent is one YAML file |
 | **Existing kagent install** | `kubectl apply -f k8s/hello-world.yaml` — no kaimahi runtime required |
@@ -111,8 +111,18 @@ table — it is a proposal.
 | `make copilot-secret` | GitHub device login → short-lived Copilot token → Secret |
 | `make tools-agent` | apply the MCP tools-enabled agent |
 | `make model MODEL=<tag>` | pull another Ollama model (also edit `model:` in the YAML) |
+| `make aks-cluster` / `make aks-down` | create / **delete** an ephemeral AKS cluster + private ACR |
 
-Overridable: `KIND_CLUSTER`, `KAGENT_VERSION`, `MODEL`, `AGENT`, `TASK`.
+Overridable: `KIND_CLUSTER`, `KAGENT_VERSION`, `MODEL`, `AGENT`, `TASK`,
+and `TARGET` (`kind` by default, or `aks`).
+
+**Targeting a real cluster.** `KUBE_CTX` is overridable, so `make down`
+can now name a cluster somebody cares about. Every *mutating* target
+therefore prints the context, API-server host and namespaces it is about
+to touch, and requires an explicit confirmation naming the context when
+that context is not a local kind cluster — fail closed, no confirmation
+no action. Read-only targets never prompt. See
+[docs/P5B-RUNBOOK.md](docs/P5B-RUNBOOK.md).
 
 ## The artifact: agent as code
 
@@ -239,11 +249,19 @@ journeys that argue for these five specifically are collected in
 | 4b | Governed tool calls (MCP gateway, allowlists, audit) | **runs** — `make govern-tools`, denial + audit asserted in CI |
 | 4c | Approvals / time-boxed permits (deny-and-pend, bounded grants) | **runs** — `make approvals`, both cycles asserted in CI |
 | 5a | Governed Slack outbound — posting is an approved action | **runs** — `make govern-slack`; the deny → approve → post → burn cycle asserted keyless in CI ([P5A-RUNBOOK](docs/P5A-RUNBOOK.md)) |
+| 5b | Cluster portability + a real managed-cluster run | **demonstrated once** — the plane, a governed Copilot chat, a ledger row, a budget denial and a governed tool call, all on a real AKS cluster, which was then deleted ([P5B-RUNBOOK](docs/P5B-RUNBOOK.md)) |
 | — | `kaimahi create` CLI | proposed — [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) |
 
 Cloud-agnostic — it runs on any conformant Kubernetes — with first-class
 attention to the Azure path: **AKS** as the managed target, **Azure AI
 Foundry** among the model endpoints.
+
+On AKS, be precise about what that means. It has been **demonstrated, not
+maintained**: one verified run on 2026-09-01, then torn down. There is no
+standing cluster and no Azure credential in CI — the repo is public and
+fork-exposed, so CI stays on kind and keyless, re-proving the portability
+*logic* (the context guard's decisions, the registry render) on every PR
+rather than the cloud itself.
 
 ## Development
 

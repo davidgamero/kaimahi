@@ -115,13 +115,51 @@ else
     --output none
 fi
 
-# Whether the cluster was just created or already existed, make the ACR
-# attachment explicit and idempotent. Role assignments propagate
-# asynchronously, so this is also the point where a re-run repairs a
-# create that raced.
-echo "aks-up: ensuring AcrPull for the cluster's kubelet identity" >&2
-az aks update --name "$CLUSTER" --resource-group "$RG" \
-  --attach-acr "$ACR" --output none
+# Whether the cluster was just created or already existed, the kubelet
+# identity must actually hold AcrPull on the registry — without it the
+# proxy pod fails with ImagePullBackOff and the cause is two layers away
+# from the symptom.
+#
+# VERIFY, then repair. `az aks update --attach-acr` is idempotent but runs
+# a full cluster update (~2 min) even when nothing needs doing, so a blind
+# re-run taxes every invocation. Reading the role assignment is seconds,
+# and it checks the thing that actually matters rather than assuming a
+# command that returned 0 produced the effect (standing guidance: accept
+# only a well-formed positive).
+echo "aks-up: checking AcrPull for the cluster's kubelet identity" >&2
+acr_id=$(az acr show --name "$ACR" --resource-group "$RG" --query id -o tsv)
+kubelet_oid=$(az aks show --name "$CLUSTER" --resource-group "$RG" \
+  --query identityProfile.kubeletidentity.objectId -o tsv)
+if [ -z "$acr_id" ] || [ -z "$kubelet_oid" ]; then
+  echo "aks-up: could not resolve the registry or kubelet identity — refusing to guess" >&2
+  exit 1
+fi
+
+has_acrpull() {
+  az role assignment list --assignee "$kubelet_oid" --scope "$acr_id" \
+    --query "[?roleDefinitionName=='AcrPull'] | length(@)" -o tsv 2>/dev/null
+}
+
+if [ "$(has_acrpull)" = 0 ]; then
+  echo "aks-up: AcrPull missing — attaching the registry (a few minutes)" >&2
+  az aks update --name "$CLUSTER" --resource-group "$RG" \
+    --attach-acr "$ACR" --output none
+fi
+
+# Fail closed on the claim itself, and give role propagation a moment:
+# the assignment is created asynchronously, so a create that raced would
+# otherwise surface much later as an unexplained ImagePullBackOff.
+for _ in $(seq 1 12); do
+  [ "$(has_acrpull)" != 0 ] && break
+  sleep 5
+done
+if [ "$(has_acrpull)" = 0 ]; then
+  echo "aks-up: the kubelet identity still has no AcrPull on '$ACR'." >&2
+  echo "  The proxy image would fail to pull. Check whether your account can" >&2
+  echo "  create role assignments, then re-run." >&2
+  exit 1
+fi
+echo "aks-up: AcrPull confirmed" >&2
 
 # --- kubeconfig -----------------------------------------------------------
 # The context is named after the cluster. Note this is NOT a kind context,

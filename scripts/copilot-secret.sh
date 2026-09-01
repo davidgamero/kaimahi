@@ -100,6 +100,15 @@ json_field "$workdir/exchange.json" token > "$workdir/copilot-token"
   echo "exchange response contained no token — refusing to store a Secret" >&2
   exit 1; }
 
+# P5b: allow this to run BEFORE the plane is deployed, so the proxy pod
+# mounts the credential at start rather than waiting on kubelet to project
+# a Secret that appeared later (see docs/P5B-RUNBOOK.md — that lag is a
+# real first-run failure on a fresh cluster). Same create-if-missing
+# pattern as scripts/slack-secret.sh.
+# shellcheck disable=SC2086 # KUBECTL deliberately carries --context args
+$KUBECTL get namespace "$NAMESPACE" >/dev/null 2>&1 || \
+  $KUBECTL create namespace "$NAMESPACE"
+
 # Create-or-update in one apply so the existing Secret stays intact if this
 # fails partway (no delete-then-create gap). The manifest carrying the token
 # exists only inside the pipe — never on disk, argv, or in logs.
