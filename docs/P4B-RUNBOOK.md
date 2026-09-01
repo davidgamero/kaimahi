@@ -49,7 +49,8 @@ IS the allowlist projection                │ tool_allowlist,    │   read-onl
 - **Upstreams**: the `tool_upstreams` table in
   [`k8s/plane/upstreams.yaml`](../k8s/plane/upstreams.yaml) — the ONLY
   places the gateway will relay to. One entry in this slice: the
-  in-cluster kagent tool server.
+  in-cluster kagent tool server. (P5a adds a second, also in-cluster —
+  see [P5A-RUNBOOK.md](P5A-RUNBOOK.md).)
 
 ## Credential custody
 
