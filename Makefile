@@ -356,10 +356,18 @@ govern: guard
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh issue $(CRED)
 	$(KUBECTL) apply -f k8s/models/governed-ollama.yaml
 	$(KUBECTL) apply -f k8s/models/governed-copilot.yaml
-	@if $(KUBECTL) -n kagent get agent hello-world >/dev/null 2>&1; then \
+	@# Only a genuine NotFound may skip the switch. `>/dev/null 2>&1` would
+	@# collapse NotFound with an unreachable API server, an expired
+	@# credential, an RBAC denial or a wrong context — every one of which
+	@# would print the reassuring NOTE, exit 0, and leave hello-world on an
+	@# UNGOVERNED preset, spending outside the plane. Same discrimination
+	@# the `agent` target above already applies for the same reason.
+	@if out=$$($(KUBECTL) -n kagent get agent hello-world 2>&1); then \
 		$(MAKE) use PRESET=$(GOVERNED_PRESET) KAIMAHI_CONFIRM='$(KUBE_CTX)'; \
-	else \
+	elif printf '%s' "$$out" | grep -q 'NotFound'; then \
 		echo "NOTE: agent hello-world does not exist yet — it will be created on '$(AGENT_MODELCONFIG)' by 'make agent'" >&2; \
+	else \
+		echo "cannot tell whether hello-world exists (refusing to leave it ungoverned): $$out" >&2; exit 1; \
 	fi
 
 ## budget: set monthly caps for a credential, e.g.
@@ -470,6 +478,16 @@ status:
 ifeq ($(TARGET),kind)
 ## down: delete the local kind cluster
 down: guard
+	@# The guard vouches for $(KUBE_CTX); this recipe deletes
+	@# $(KIND_CLUSTER). They agree by default, but both are overridable, so
+	@# `KUBE_CTX=kind-safe make down KIND_CLUSTER=other` would show a banner
+	@# naming one cluster and destroy another. Refuse when the thing
+	@# confirmed is not the thing deleted.
+	@test '$(KUBE_CTX)' = 'kind-$(KIND_CLUSTER)' || { \
+		echo 'refusing: the guard checked context $(KUBE_CTX), but this would' >&2; \
+		echo 'delete kind cluster "$(KIND_CLUSTER)" (context kind-$(KIND_CLUSTER)).' >&2; \
+		echo 'Set KIND_CLUSTER and KUBE_CTX consistently, or just KIND_CLUSTER.' >&2; \
+		exit 1; }
 	kind delete cluster --name $(KIND_CLUSTER)
 else
 ## down (TARGET=aks): delete the whole ephemeral resource group

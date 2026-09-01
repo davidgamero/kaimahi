@@ -47,6 +47,17 @@ if [ -z "$PLANE_IMAGE" ]; then
   echo "plane-deploy: PLANE_IMAGE is required for a $PLANE_TARGET target" >&2
   exit 1
 fi
+# Non-empty is not the same as well-formed. An unset ACR_NAME makes the
+# Makefile expand PLANE_IMAGE to ".azurecr.io/kaimahi-proxy:p5b" — which
+# sails past a `-z` check and would be rendered into the manifest and
+# applied. Require a registry host before the first slash.
+case "$PLANE_IMAGE" in
+  /* | .* | *' '* | '')
+    echo "plane-deploy: malformed PLANE_IMAGE '$PLANE_IMAGE'" >&2
+    echo "  (an unset ACR_NAME produces exactly this shape)" >&2
+    exit 1
+    ;;
+esac
 case "$PLANE_PULL_POLICY" in
   Always | IfNotPresent) ;;
   *)
