@@ -226,8 +226,16 @@ make up      # cluster -> kagent -> plane -> copilot secret -> govern -> agents
 ### 7. Tear it down — this is not optional
 
 ```bash
-make aks-down
+KAIMAHI_CONFIRM=$AKS_RESOURCE_GROUP make aks-down
 ```
+
+> **Note the confirmation names the RESOURCE GROUP, not the cluster.** The
+> session-wide `export KAIMAHI_CONFIRM=$AKS_CLUSTER` from step 1 satisfies
+> the *context* guard, and teardown deliberately does **not** accept it:
+> deleting a whole resource group is a bigger act than applying to a
+> context, and a standing "yes" to one cluster is not consent to destroy
+> everything around it. If you forget, it refuses and prints the exact line
+> to run — which is what happened on the verified run.
 
 Deletes the resource group and everything in it, then removes the
 kubeconfig entries so a dead context cannot be targeted later. Two gates
@@ -283,6 +291,17 @@ Two smaller carry-overs, recorded rather than hidden:
   the hardening step; it is not taken here because the cluster is
   short-lived and the flag's availability varies by CLI version. Worth
   taking for anything longer-lived.
+- **Working two clusters at once? Move the local ports.** `plane-admin.sh`
+  port-forwards the admin port to `127.0.0.1:19091` and the probes use
+  `18081`. Running a kind and an AKS verification concurrently makes the
+  second bind lose, and its requests land on the *other* cluster's forward
+  — which shows up as a flat `HTTP 401 unauthorized`, because the admin
+  token does not match. It fails closed, but the message does not point at
+  the cause. Override `ADMIN_PORT` and `GATEWAY_PORT` per cluster:
+
+  ```bash
+  ADMIN_PORT=19291 GATEWAY_PORT=18281 make approvals
+  ```
 
 ## What was verified, and what was not
 

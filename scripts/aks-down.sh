@@ -68,6 +68,16 @@ if [ -n "${KAIMAHI_CONFIRM:-}" ]; then
   if [ "$KAIMAHI_CONFIRM" != "$RG" ]; then
     echo "aks-down: KAIMAHI_CONFIRM does not name this resource group — refusing." >&2
     echo "  to proceed:  KAIMAHI_CONFIRM=$RG make aks-down" >&2
+    # The likeliest cause, called out by name: the runbook has you export
+    # KAIMAHI_CONFIRM=<cluster> once for the session, which is what the
+    # context guard wants. Deleting a whole resource group is a bigger act
+    # than applying to a context, so it takes its own confirmation naming
+    # the GROUP — a session-wide "yes" to one cluster is not consent to
+    # destroy everything around it.
+    if [ "$KAIMAHI_CONFIRM" = "$CLUSTER" ]; then
+      echo "  (KAIMAHI_CONFIRM currently names the CLUSTER '$CLUSTER' — probably" >&2
+      echo "   the session-wide export. Teardown needs the RESOURCE GROUP.)" >&2
+    fi
     exit 1
   fi
   echo "aks-down: confirmed via KAIMAHI_CONFIRM." >&2
