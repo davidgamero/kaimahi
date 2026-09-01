@@ -96,9 +96,9 @@ func (h *handler) listApprovals(w http.ResponseWriter, r *http.Request) {
 }
 
 // approve handles POST /admin/approvals/{id}/approve. The grant it
-// mints is BOUNDED by construction: at least one of ttl_seconds and
-// max_uses, and amount exactly on budget kinds (validated here, in the
-// store, and by the schema CHECKs).
+// mints is BOUNDED by construction: at-least-one-bound and value ranges
+// are validated here; the amount↔kind pairing (which needs the
+// request's kind) is enforced by the store and the schema CHECKs.
 func (h *handler) approve(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !uuidRe.MatchString(id) {

@@ -57,24 +57,40 @@ func TestDeniesAtTokenCap(t *testing.T) {
 }
 
 type fakeGrants struct {
-	admit    bool
-	err      error
-	consumed int
-	subject  string
+	admit bool
+	err   error
+	calls int
+	needs []store.BudgetNeed
 }
 
-func (f *fakeGrants) ConsumeBudgetGrant(_ context.Context, _, subject string, _, _ int64) (bool, error) {
-	f.consumed++
-	f.subject = subject
-	return f.admit, f.err
+func (f *fakeGrants) ConsumeBudgetGrants(_ context.Context, _ string, needs []store.BudgetNeed) (string, error) {
+	f.calls++
+	f.needs = needs
+	if f.err != nil || !f.admit {
+		return needs[0].Subject, f.err
+	}
+	return "", nil
 }
 
 func TestBudgetGrantAdmitsOverCap(t *testing.T) {
 	g := &fakeGrants{admit: true}
 	m := &meter.Meter{Usage: &fakeUsage{tokens: 5}, Grants: g}
 	require.NoError(t, m.Check(context.Background(), store.Credential{Name: "a", CapTokens: i64(5)}))
-	require.Equal(t, 1, g.consumed, "an over-cap admit consumes exactly one use")
-	require.Equal(t, "tokens", g.subject)
+	require.Equal(t, 1, g.calls, "an over-cap admit is one grant transaction")
+	require.Equal(t, []store.BudgetNeed{{Subject: "tokens", Used: 5, Cap: 5}}, g.needs)
+}
+
+func TestBothCapsExceededIsOneGrantTransaction(t *testing.T) {
+	// Both caps exceeded: the grant store gets BOTH needs in one call —
+	// all-or-nothing, so a denial on either burns no uses on the other.
+	g := &fakeGrants{admit: true}
+	m := &meter.Meter{Usage: &fakeUsage{cents: 100, tokens: 5}, Grants: g}
+	cred := store.Credential{Name: "a", CapCents: i64(100), CapTokens: i64(5)}
+	require.NoError(t, m.Check(context.Background(), cred))
+	require.Equal(t, 1, g.calls)
+	require.Len(t, g.needs, 2)
+	require.Equal(t, "cents", g.needs[0].Subject)
+	require.Equal(t, "tokens", g.needs[1].Subject)
 }
 
 func TestBudgetGrantDenialNamesSubject(t *testing.T) {
@@ -99,7 +115,7 @@ func TestUnderCapNeverConsultsGrants(t *testing.T) {
 	g := &fakeGrants{admit: true}
 	m := &meter.Meter{Usage: &fakeUsage{tokens: 4}, Grants: g}
 	require.NoError(t, m.Check(context.Background(), store.Credential{Name: "a", CapTokens: i64(5)}))
-	require.Zero(t, g.consumed, "under-cap traffic must not burn grant uses")
+	require.Zero(t, g.calls, "under-cap traffic must not burn grant uses")
 }
 
 func TestNilGrantsPreservesCapDenial(t *testing.T) {

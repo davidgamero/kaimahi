@@ -182,8 +182,9 @@ Details: [docs/P3-RUNBOOK.md](docs/P3-RUNBOOK.md).
 > a per-credential tool allowlist projected into what the agent can even
 > see, and every call audited ([docs/P4B-RUNBOOK.md](docs/P4B-RUNBOOK.md)).
 > A denial is no longer a dead end: it files an approval request, and
-> `make approve` mints a time-boxed permit that widens exactly what was
-> denied, then lapses ([docs/P4C-RUNBOOK.md](docs/P4C-RUNBOOK.md)).
+> `make approve` mints a bounded permit (expiry and/or use count) that
+> widens exactly what was denied, then lapses
+> ([docs/P4C-RUNBOOK.md](docs/P4C-RUNBOOK.md)).
 > Governance stays opt-in per agent: an *ungoverned* preset still bills
 > with no ledger, an ungoverned tools wiring still acts with no audit —
 > and cluster-level egress policy (NetworkPolicy) is still unbuilt.
