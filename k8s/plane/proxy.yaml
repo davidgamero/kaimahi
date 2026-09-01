@@ -27,8 +27,11 @@ spec:
         - name: proxy
           # Built from plane/Dockerfile and side-loaded into kind by
           # `make plane-image` (never pulled); on a real cluster,
-          # override with your registry's image.
-          image: kaimahi-proxy:p4a
+          # override with your registry's image. The tag moves with the
+          # phase so a stale side-loaded image can never satisfy a newer
+          # manifest silently (imagePullPolicy: Never reuses same-tag
+          # images without complaint).
+          image: kaimahi-proxy:p4b
           imagePullPolicy: Never
           env:
             - name: PGHOST
@@ -42,6 +45,8 @@ spec:
           ports:
             - name: data
               containerPort: 8080
+            - name: mcp
+              containerPort: 8081
             - name: admin
               containerPort: 9091
           volumeMounts:
@@ -108,3 +113,22 @@ spec:
     - name: data
       port: 8080
       targetPort: data
+---
+# The P4b MCP gateway's own address: the URL the Kaimahi-owned
+# RemoteMCPServer (k8s/kaimahi-tools.yaml) points kagent at. Same pod as
+# the proxy (the gateway is a second data listener in the kaimahi-proxy
+# process — zero extra CPU requests on the full CI node); a separate
+# Service keeps the tool seam addressable on its own name, and neither
+# Service exposes the admin port.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kaimahi-mcp-gateway
+  namespace: kaimahi
+spec:
+  selector:
+    app: kaimahi-proxy
+  ports:
+    - name: mcp
+      port: 8081
+      targetPort: mcp

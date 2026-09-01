@@ -1,0 +1,35 @@
+# The P4b seam: a Kaimahi-owned RemoteMCPServer whose URL is the
+# enforcing MCP gateway, which relays to kagent's chart-managed tool
+# server (the only entry in the plane's committed tool_upstreams table).
+# The chart-managed `kagent-tool-server` RemoteMCPServer is neither
+# shadowed nor mutated (P3 ruling) — this is a second, governed front
+# door, and `make govern-tools` points the hello-tools agent at it.
+#
+# Custody: headersFrom resolves the agent's credential from a Secret that
+# holds ONLY the Kaimahi-issued kmh_ opaque token (`make govern-tools`
+# mints it; the plane stores its sha256). No real credential exists on
+# the agent side of this seam — the lane's tool upstream is in-cluster
+# and unauthenticated, and a future keyed tool server would get its real
+# credential injected by the gateway from proxy-side custody.
+#
+# kagent's controller discovers tools THROUGH the gateway with this same
+# credential, so status.discoveredTools is the allowlist projection: an
+# agent never sees a tool its credential cannot call.
+apiVersion: kagent.dev/v1alpha2
+kind: RemoteMCPServer
+metadata:
+  name: kaimahi-tools
+  namespace: kagent
+spec:
+  description: Kaimahi-governed tools — the kagent tool server behind the enforcing MCP gateway
+  protocol: STREAMABLE_HTTP
+  url: http://kaimahi-mcp-gateway.kaimahi:8081/upstream/kagent-tools/mcp
+  timeout: 30s
+  sseReadTimeout: 5m0s
+  terminateOnClose: true
+  headersFrom:
+    - name: Authorization
+      valueFrom:
+        type: Secret
+        name: kaimahi-tools-token
+        key: api-key

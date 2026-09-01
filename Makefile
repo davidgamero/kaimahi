@@ -13,12 +13,15 @@ KUBECTL        := kubectl --context $(KUBE_CTX)
 OS   := $(shell uname -s | tr A-Z a-z)
 ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
 
-PLANE_IMAGE    ?= kaimahi-proxy:p4a
+PLANE_IMAGE    ?= kaimahi-proxy:p4b
 CRED           ?= hello-world
+CRED_TOOLS     ?= hello-tools
+TOOLS          ?= k8s_get_resources
 
 .PHONY: up cluster ollama model kagent agent tools-agent chat down status \
 	model-secret copilot-secret use use-ollama \
-	plane plane-image plane-secrets govern budget ledger plane-copilot-secret
+	plane plane-image plane-secrets govern budget ledger plane-copilot-secret \
+	govern-tools ungovern-tools tool-allow tool-allowlist tool-audit
 
 ## up: everything from an empty machine to ready agents (hello-world + tools)
 up: cluster ollama model kagent agent tools-agent status
@@ -133,6 +136,48 @@ budget:
 ## ledger: show the spend ledger (newest first) + month-to-date totals
 ledger:
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh ledger $(CRED)
+
+## ---- P4b: the enforcing MCP gateway (docs/P4B-RUNBOOK.md) ----
+
+## govern-tools: put the tools agent behind the MCP gateway — issue its
+## kmh_ credential (agent-side Secret kaimahi-tools-token), set the
+## default allowlist, apply the Kaimahi RemoteMCPServer, repoint
+## hello-tools at it. `make chat AGENT=hello-tools` then rides the
+## gateway: authenticated, allowlisted, audited.
+govern-tools:
+	@KUBECTL="$(KUBECTL)" GOVERNED_SECRET=kaimahi-tools-token \
+		bash scripts/plane-admin.sh issue $(CRED_TOOLS)
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-allow $(CRED_TOOLS) "$(TOOLS)"
+	$(KUBECTL) apply -f k8s/kaimahi-tools.yaml
+	$(KUBECTL) -n kagent wait \
+		--for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True \
+		remotemcpserver/kaimahi-tools --timeout=300s
+	$(KUBECTL) -n kagent patch agent hello-tools --type merge \
+		-p '{"spec":{"declarative":{"tools":[{"type":"McpServer","mcpServer":{"apiGroup":"kagent.dev","kind":"RemoteMCPServer","name":"kaimahi-tools","toolNames":["k8s_get_resources"]}}]}}}'
+	$(KUBECTL) -n kagent rollout status deploy/hello-tools --timeout=180s
+	$(KUBECTL) -n kagent wait \
+		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
+		agent/hello-tools --timeout=300s
+
+## ungovern-tools: restore the P3 wiring (direct to the chart-managed
+## tool server, ungoverned) by re-applying the committed Agent YAML
+ungovern-tools:
+	$(KUBECTL) apply -f k8s/tools-agent.yaml
+	$(KUBECTL) -n kagent rollout status deploy/hello-tools --timeout=180s
+
+## tool-allow: replace the tools credential's allowlist, e.g.
+##   make tool-allow TOOLS=k8s_get_resources,k8s_get_events
+##   make tool-allow TOOLS=-        (empty: nothing callable)
+tool-allow:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-allow $(CRED_TOOLS) "$(TOOLS)"
+
+## tool-allowlist: show the tools credential's allowlist
+tool-allowlist:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-allowlist $(CRED_TOOLS)
+
+## tool-audit: show the tool-call audit trail (newest first)
+tool-audit:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-audit $(CRED_TOOLS)
 
 ## plane-copilot-secret: mint the Copilot token into the PROXY's
 ## namespace (real-key custody: the agent-side governed preset never

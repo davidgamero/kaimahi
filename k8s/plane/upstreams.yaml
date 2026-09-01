@@ -11,6 +11,11 @@
 #     bundled: Copilot subscription usage has no per-token public price,
 #     and Kaimahi never invents one). Under a cents budget an unpriced
 #     model is denied (priced-pair gate); use a token budget instead.
+#
+# tool_upstreams is the P4b MCP gateway's table: the ONLY tool servers
+# the gateway will relay to — it forwards nowhere else, which is the
+# egress rule at this layer (cluster-level NetworkPolicy is a documented
+# P4b limitation). Exactly one entry: kagent's chart-managed tool server.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -34,6 +39,11 @@ data:
             "Copilot-Integration-Id": "vscode-chat",
             "Editor-Version": "vscode/1.103.0"
           }
+        }
+      },
+      "tool_upstreams": {
+        "kagent-tools": {
+          "url": "http://kagent-tools.kagent:8084/mcp"
         }
       }
     }
