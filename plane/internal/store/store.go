@@ -1,0 +1,137 @@
+// Package store is the plane's Postgres layer: credentials (hashes only),
+// budget caps, and the append-only spend ledger. Rewritten for the kagent
+// architecture — tomte-old's store carried the replaced control plane
+// (tenants, runs, workflows); only its spend-ledger pattern survives here.
+package store
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+var (
+	ErrNotFound = errors.New("store: not found")
+	ErrExists   = errors.New("store: already exists")
+)
+
+type Store struct {
+	pool *pgxpool.Pool
+}
+
+func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+
+// Credential is a Kaimahi-issued identity: the opaque token the governed
+// preset carries, known here only by its sha256. Caps are monthly (UTC);
+// nil means no cap of that kind.
+type Credential struct {
+	Name      string
+	CapCents  *int64
+	CapTokens *int64
+}
+
+// LedgerEntry is one append-only spend row. CostSource records why the
+// cost is what it is ('free', 'priced', 'unpriced', 'denied') — a zero
+// cost always carries its explanation (no blanket $0).
+type LedgerEntry struct {
+	CredentialName string    `json:"credential"`
+	Upstream       string    `json:"upstream"`
+	Model          string    `json:"model"`
+	InputTokens    int64     `json:"input_tokens"`
+	OutputTokens   int64     `json:"output_tokens"`
+	CostCents      int64     `json:"cost_cents"`
+	CostSource     string    `json:"cost_source"`
+	Status         int       `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (s *Store) CreateCredential(ctx context.Context, name string, tokenHash []byte) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO credential (name, token_hash) VALUES ($1, $2)`, name, tokenHash)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
+		return ErrExists
+	}
+	return err
+}
+
+// CredentialByTokenHash resolves an inbound bearer to its credential.
+// ErrNotFound means an unknown token — the caller answers 401.
+func (s *Store) CredentialByTokenHash(ctx context.Context, tokenHash []byte) (Credential, error) {
+	var c Credential
+	err := s.pool.QueryRow(ctx,
+		`SELECT name, cap_cents, cap_tokens FROM credential WHERE token_hash = $1`,
+		tokenHash).Scan(&c.Name, &c.CapCents, &c.CapTokens)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Credential{}, ErrNotFound
+	}
+	return c, err
+}
+
+// SetBudget replaces both caps for the named credential (nil clears a cap).
+func (s *Store) SetBudget(ctx context.Context, name string, capCents, capTokens *int64) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE credential SET cap_cents = $2, cap_tokens = $3 WHERE name = $1`,
+		name, capCents, capTokens)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RecordLedger appends one spend row. Append-only by construction: there
+// is no update or delete path in this package.
+func (s *Store) RecordLedger(ctx context.Context, e LedgerEntry) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO ledger_entry (credential_name, upstream, model, input_tokens, output_tokens, cost_cents, cost_source, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		e.CredentialName, e.Upstream, e.Model, e.InputTokens, e.OutputTokens, e.CostCents, e.CostSource, e.Status)
+	return err
+}
+
+// MonthUsage sums the ledger for one credential since monthStart. Denied
+// rows carry zero usage so including them is harmless; billed usage counts
+// whether or not the surrounding request succeeded (spend is recorded
+// before failures are honored — standing guidance).
+func (s *Store) MonthUsage(ctx context.Context, credentialName string, monthStart time.Time) (cents, tokens int64, err error) {
+	err = s.pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(cost_cents), 0), COALESCE(SUM(input_tokens + output_tokens), 0)
+		 FROM ledger_entry WHERE credential_name = $1 AND created_at >= $2`,
+		credentialName, monthStart).Scan(&cents, &tokens)
+	return cents, tokens, err
+}
+
+// Ledger returns the newest entries for one credential (all credentials
+// when name is empty), newest first.
+func (s *Store) Ledger(ctx context.Context, credentialName string, limit int) ([]LedgerEntry, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT credential_name, upstream, model, input_tokens, output_tokens, cost_cents, cost_source, status, created_at
+		 FROM ledger_entry
+		 WHERE ($1 = '' OR credential_name = $1)
+		 ORDER BY created_at DESC LIMIT $2`,
+		credentialName, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LedgerEntry
+	for rows.Next() {
+		var e LedgerEntry
+		if err := rows.Scan(&e.CredentialName, &e.Upstream, &e.Model, &e.InputTokens,
+			&e.OutputTokens, &e.CostCents, &e.CostSource, &e.Status, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
