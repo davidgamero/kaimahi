@@ -22,8 +22,9 @@
 #     kagent namespace holds only the agent's opaque kmh_ token.
 #
 # EGRESS. This is the FIRST pod in this repo with deliberate internet
-# egress (api.slack.com). Nothing in the cluster constrains that — see
-# the runbook's honest statement about the unbuilt NetworkPolicy work.
+# egress (api.slack.com). k8s/plane/network-policy.yaml bounds it to DNS
+# and TCP 443 to non-private addresses, and admits only the proxy inbound
+# — an IP/port rule, not a URL allowlist; see docs/egress.md.
 #
 # --no-cache is deliberate: the server's optional user/channel caches
 # would pull a directory of the whole workspace into this pod. Tools are

@@ -5,8 +5,10 @@
 > is now delivered in its first full pass — budgets, spend metering, and
 > credential custody for LLM calls; an enforcing gateway with allowlists
 > and audit for tool calls; and human approvals minting bounded
-> permits. Incubation continues honestly: NetworkPolicy egress,
-> internet-facing tool upstreams, and richer approval routing remain
+> permits; default-deny NetworkPolicy around the plane, proven by a probe
+> on every PR; and inbound hooks that let the outside world trigger an
+> agent, governed the same way. Incubation continues honestly:
+> internet-facing tool upstreams and richer approval routing remain
 > unbuilt, and the CLI front door is still a proposal. The name is
 > provisional — see [docs/NAMING.md](docs/NAMING.md).
 
@@ -206,9 +208,11 @@ Details: [docs/tools.md](docs/tools.md).
 > ([docs/slack.md](docs/slack.md)).
 >
 > Governance stays opt-in per agent: an *ungoverned* preset still bills
-> with no ledger, an ungoverned tools wiring still acts with no audit —
-> and cluster-level egress policy (NetworkPolicy) is still unbuilt, which
-> matters more now that a pod here talks to the internet.
+> with no ledger, and an ungoverned tools wiring still acts with no audit.
+> The plane's namespace is default-deny in both directions and the Slack
+> pod is the one thing allowed out, on 443 only
+> ([docs/egress.md](docs/egress.md)); the `kagent` and `ollama` namespaces
+> are not policed.
 
 ## The thesis: a governance plane
 
@@ -228,9 +232,10 @@ idea being incubated — phase 4, arriving in slices:
   and/or use count — unbounded grants are refused) that widens exactly
   the denied surface, then lapses.
 - **Egress enforcement** — agents reach only permitted endpoints.
-  *Built at the MCP seam (P4b)*: the gateway relays only to a committed
-  upstream table, with per-credential tool allowlists; cluster-level
-  NetworkPolicy is still to come.
+  *Built at the MCP seam (P4b)* — the gateway relays only to a committed
+  upstream table, with per-credential tool allowlists — *and at the
+  network (P7a)*: default-deny NetworkPolicy on the plane's namespace,
+  with a probe that proves the negative in CI.
 - **Audit** — who ran what, with which model, at what cost. *Built
   (P4a+P4b)*: the spend ledger and the tool-call audit trail, denials
   included.

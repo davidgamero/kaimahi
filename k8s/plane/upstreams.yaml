@@ -14,8 +14,8 @@
 #
 # tool_upstreams is the P4b MCP gateway's table: the ONLY tool servers
 # the gateway will relay to — it forwards nowhere else, which is the
-# egress rule at this layer (cluster-level NetworkPolicy is a documented
-# P4b limitation). Two entries, BOTH in-cluster:
+# egress rule at this layer; k8s/plane/network-policy.yaml is the rule
+# at the network. Two entries, BOTH in-cluster:
 #   - kagent-tools: kagent's chart-managed tool server (P4b).
 #   - slack:        the Slack MCP server this repo deploys (P5a,
 #                   k8s/slack-mcp.yaml). The gateway's own reach stays
@@ -27,8 +27,9 @@
 # credential_file names (never carries) a Secret-mounted file holding the
 # Slack MCP server's OWN bearer credential, injected by the gateway from
 # plane custody. Measured limitation: slack-mcp-server v1.3.0 does not
-# enforce it on its http transport, so it does not currently close the
-# direct-access bypass — NetworkPolicy does, and is unbuilt.
+# enforce it on its http transport, so it does not close the
+# direct-access bypass — the Slack pod's NetworkPolicy does (proxy-only
+# ingress).
 #
 # inbound_hooks is the P7b inbound bridge's table (docs/inbound.md): the
 # ONLY webhooks the plane accepts, each bound to a plane credential, a

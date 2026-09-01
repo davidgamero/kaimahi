@@ -42,9 +42,8 @@ and its expiry takes the capability away again. See
 
 > **This is the first component in the repo with deliberate INTERNET
 > egress.** See [What the internet-egress pod
-> means](#what-the-internet-egress-pod-means). Cluster-level
-> NetworkPolicy is being built in a parallel lane; until it lands the
-> gap described there is real.
+> means](#what-the-internet-egress-pod-means). NetworkPolicy now bounds
+> it: out on 443 only, in from the proxy only ([egress.md](egress.md)).
 
 ## Which Slack MCP server, and why
 
@@ -123,9 +122,9 @@ namespace kagent                          namespace kaimahi
 - **No ungoverned Slack path is *shipped*.** The tools docs keep an
   ungoverned wiring for contrast; this path ships none, so the only route
   this repo wires is through the gateway. That is a statement about the
-  committed configuration, **not** a containment claim: with no
-  NetworkPolicy, any pod in the cluster can still open a connection to
-  the Slack MCP server's Service and bypass the gateway entirely. See
+  committed configuration; the containment is the NetworkPolicy that
+  admits only the proxy to the Slack MCP server's pod
+  ([egress.md](egress.md)). See
   [What the internet-egress pod means](#what-the-internet-egress-pod-means).
 
 ## Credential custody
@@ -266,11 +265,12 @@ first for this repo, and it is worth stating plainly rather than burying:
 - **The gateway's own reach is unchanged.** Both `tool_upstreams` entries
   are in-cluster Services, so the gateway still never dials the internet,
   and CI asserts it keeps not doing so.
-- **Nothing constrains that pod's egress.** There is no NetworkPolicy in
-  this repo as of this doc. The Slack pod can reach anything the cluster
-  can reach, and, worse, **any pod in the cluster can reach the Slack MCP
-  server's Service directly**, bypassing the gateway, its allowlist, its
-  approvals and its audit trail entirely.
+- **The pod's egress is bounded by NetworkPolicy** ([egress.md](egress.md)):
+  DNS plus TCP 443 to non-private addresses, nothing else, and only the
+  proxy may connect to it. What that does *not* constrain: an IP/port
+  rule is not a URL allowlist, so the pod can still TLS to any public
+  host on 443 — bounded by the server's own code and the three
+  application layers above.
 - **The mitigation we hoped for does not work.** The plane supports
   injecting a tool upstream's own bearer credential from proxy-side
   custody (`credential_file` in the upstream table), which would let the
@@ -281,18 +281,13 @@ first for this repo, and it is worth stating plainly rather than burying:
   a wrong bearer; its SSE transport also served an unauthenticated
   stream. The injection is wired, tested and fails closed on our side,
   and it is documented here as not load-bearing today.
-- **What actually closes it** is cluster-level NetworkPolicy: default-deny
-  egress with an allowance for the Slack pod, and default-deny ingress to
-  the Slack pod except from the proxy. A parallel lane is building that.
-  Until it lands, treat the application-layer governance here as
-  *enforcement for agents that use the seam*, not as containment of a
-  hostile pod.
-- **And it cannot be closed on a stock kind cluster.** kind's default CNI
-  is `kindnet`, which does not implement NetworkPolicy: a policy applied
-  there is accepted by the API server and enforces nothing. Shipping one
-  without a policy-enforcing CNI would read as protection while providing
-  none, which is worse than the documented gap. Doing it properly means
-  Calico or Cilium on kind, or Azure NPM / Cilium on AKS.
+- **What closes the direct-access bypass** is that NetworkPolicy:
+  default-deny ingress to the Slack pod except from the proxy. It is
+  built and probed on every PR. One correction to an earlier version of
+  this doc: kind's `kindnet` *does* enforce NetworkPolicy (it runs
+  `kube-network-policies`; the probe proves it on the CI cluster). AKS
+  does not unless provisioned with `--network-policy` — see
+  [egress.md](egress.md) for that residual.
 
 Blast radius today is bounded by the credential rather than the network:
 the bot token carries `chat:write` for one workspace, and the MCP server

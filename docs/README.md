@@ -28,13 +28,10 @@ what `make up` actually does, the agent YAML, and how to talk to it.
 | Control which tools the agent can call, and audit every call | [tool-governance.md](tool-governance.md) | `make govern-tools`, `make tool-allow`, `make tool-audit` |
 | Have a human approve a denied action with a bounded, expiring grant | [approvals.md](approvals.md) | `make approvals`, `make approve`, `make grants` |
 | Let the agent post to Slack, one approved message at a time | [slack.md](slack.md) | `make slack-secret`, `make slack-mcp`, `make govern-slack`, `make slack-post` |
+| Let the outside world trigger an agent (webhooks), governed | [inbound.md](inbound.md) | `make inbound-credential`, `make inbound-secret`, `make inbound-audit` |
+| See what the plane's pods can and cannot reach, and prove it | [egress.md](egress.md) | `make netpol-verify`, `make egress-copilot`, `make egress-copilot-off` |
 | Run all of this on a real cluster (AKS) instead of kind | [aks.md](aks.md) | `TARGET=aks`, `make aks-cluster`, `make aks-down` |
 | Fix something that went wrong | [FAQ.md](FAQ.md) | |
-
-Two more capability docs are being written in parallel lanes and are not
-linked here until they land: cluster-level NetworkPolicy egress
-(`docs/egress.md`) and inbound connectors that let the outside world
-trigger an agent (`docs/inbound.md`).
 
 The docs build on each other in roughly the table's order: tool
 governance assumes the plane from [spend.md](spend.md) is deployed,
@@ -54,8 +51,9 @@ the plane covers, kept in one place so it cannot drift between docs.
 | Tool calls through `kagent-tool-server` directly | **Ungoverned, by choice.** `make govern-tools` to govern it |
 | Approvals and bounded grants | **Governed**: a denial files a request, a human mints a grant bounded by expiry and/or use count, the grant lapses ([approvals.md](approvals.md)) |
 | Slack posting | **Governed**: posting is not allowlisted, it is approved per use and audited with the grant id. There is no ungoverned Slack path in the repo ([slack.md](slack.md)) |
-| The Slack MCP server's own endpoint authentication | **Not effective.** The plane injects a credential that the server (v1.3.0) does not enforce on its HTTP transport ([slack.md](slack.md#what-the-internet-egress-pod-means)) |
-| Pod-level network egress (NetworkPolicy) | **Not built** as of this doc. The plane governs its seams; a pod that bypasses them can still open connections, and any pod can reach the Slack MCP server directly. A parallel lane is building this; until it lands, treat application-layer governance as enforcement for agents that use the seam, not containment of a hostile pod |
+| The Slack MCP server's own endpoint authentication | **Not effective, and no longer load-bearing.** The server (v1.3.0) ignores the injected credential on its HTTP transport; NetworkPolicy now admits only the proxy to that pod, so the bypass it was meant to close is closed at the network instead ([egress.md](egress.md)) |
+| Pod-level network egress (NetworkPolicy) | **Governed** in the `kaimahi` namespace: default-deny both ways, each pod allowed exactly its paths, the Slack pod out on 443 only, and a probe proves the negative on every PR ([egress.md](egress.md)). Residuals stated there: an IP/port rule is not a URL allowlist; the `kagent` and `ollama` namespaces are unpoliced; AKS does not enforce policy unless provisioned for it |
+| Inbound events (webhooks → agent) | **Governed**: signature or bearer auth before any work, replay window, per-hook rate limit and bounded queue, the target's budget checked at the door, and a bounded grant consumed per event ([inbound.md](inbound.md)). Rate limiter and queue are in-memory (single replica) |
 | Internet-facing *gateway* upstreams | **Not built.** Every committed tool upstream is in-cluster; going internet-facing needs a hardened dialer and SSRF protection that do not exist yet |
 | Approval routing (Slack, email, per-approver identity) | **Not built.** The queue is CLI-only, and "who approved" is the admin bearer token, not a person |
 | What an agent *sees* after a grant | **Lagging, not wrong.** Enforcement is immediate; the agent's discovered tool list updates on kagent's next RemoteMCPServer reconcile ([slack.md](slack.md#why-the-agent-is-never-the-one-denied)) |
