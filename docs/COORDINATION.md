@@ -87,7 +87,7 @@ build anything AKS-specific without a survey-backed justification.
 | Docs: CLI-first framing + naming record | teammate (Tatsinnit) | PR #10 MERGED (ratifies D12) | staleness fixes folded into reconciliation lane |
 | Docs: agent-first scenarios | teammate (Tatsinnit) | PR #11 MERGED (authors' public credit ratified by user merge) | lane closed |
 | Post-merge reconciliation | coordinator | PR #13 MERGED (0ce72ca, main CI green incl. hardened secret scan) | lane closed |
-| User docs (guide + FAQ, shipped functionality only) | unassigned | GO — W6 prompt ready (below); parallelizes with P4b | scope: NEW files in docs/ only; no README, no board, no P4b content |
+| User docs (guide + FAQ, shipped functionality only) | W6 worker | PR #14 MERGED (verified on main, 65c551d); coordinator-reviewed (fact-check + voice grep clean) | lane closed; shared-cluster collision recorded in its deviations |
 
 ## Decisions (user rulings, verbatim)
 
@@ -128,6 +128,13 @@ clone from the archive when P4 port evaluation needs the source.
   billing).
 
 ## Under consideration (not GO — do not build yet)
+
+- **`make up` guard for governed agents** (W6 finding, 2026-09-01):
+  `make up` re-applies `k8s/hello-world.yaml`, silently re-pointing the
+  agent at the ungoverned model — governance quietly drops off after any
+  re-run (FAQ-documented). A make-level guard (detect a governed
+  modelConfig and warn or re-govern) is a small, well-scoped fix — fold
+  into the P4b lane's close-out or a follow-up micro-lane.
 
 - **Connectors: outbound (Slack/Discord) + inbound (user APIs, webhooks,
   common sources)** — user feedback 2026-09-01: "i think a piece of
