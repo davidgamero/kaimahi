@@ -1,0 +1,238 @@
+# Governing spend: budgets, the ledger, and key custody
+
+This is the part kaimahi actually adds. A metering and enforcing LLM
+proxy sits at kagent's ModelConfig `baseUrl` seam. Every model call an
+agent makes through a governed preset is authenticated and
+budget-checked before it is forwarded, and ledgered (denials
+immediately; forwarded calls once the response reveals their usage).
+The real upstream credential lives only with the proxy. **Keys never
+reach the agent.**
+
+Assumes: a cluster from [getting-started.md](getting-started.md). The
+plane you deploy here is also what [tool-governance.md](tool-governance.md),
+[approvals.md](approvals.md) and [slack.md](slack.md) build on.
+
+> **This governs LLM traffic only, and only through `governed-*`
+> presets.** Tool calls are governed separately
+> ([tool-governance.md](tool-governance.md)), approvals separately
+> ([approvals.md](approvals.md)); each is its own opt-in. The plain
+> hosted presets from [models.md](models.md) (`make use PRESET=openai`
+> and friends) still exist and are still ungoverned. Nothing meters
+> them.
+
+## Architecture
+
+```text
+Agent pod (kagent)                         namespace kaimahi
+┌─────────────────────┐   opaque token   ┌──────────────────┐    real creds
+│ governed-ollama      │ ───────────────▶ │  kaimahi-proxy   │ ──────────────▶ upstream
+│ ModelConfig          │  (kmh_…, issued  │  authn → route → │  (ollama: none; │
+│ baseUrl = proxy      │   by the plane)  │  budget → fwd →  │   copilot: Secret
+│ apiKeySecret = token │                  │  ledger          │   mounted to proxy)
+└─────────────────────┘                  └────────┬─────────┘
+                                                  │
+                                         ┌────────▼─────────┐
+                                         │ Postgres 16      │  credentials (hashes),
+                                         │ (durable store)  │  budgets, spend ledger
+                                         └──────────────────┘
+```
+
+- **The plane** ([`k8s/plane/`](../k8s/plane/)): namespace `kaimahi`,
+  the proxy Deployment/Service, Postgres 16 with a 1 Gi PVC. Migrations
+  are embedded in the proxy binary and run idempotently at startup, so a
+  rollout is its own migration step.
+- **The mount** (`k8s/models/governed-*.yaml`): ModelConfigs whose
+  `openAI.baseUrl` points at the proxy and whose `apiKeySecret` is the
+  agent-side token Secret. kagent needs no changes. This is the seam
+  working as designed.
+- **Upstreams** ([`k8s/plane/upstreams.yaml`](../k8s/plane/upstreams.yaml)):
+  the only places the proxy will forward to. Two entries: in-cluster
+  ollama (the free demo tier) and the Copilot subscription endpoint. One
+  base URL and **one allowed (method, path)** per upstream is the whole
+  blast radius; any other request is denied before any upstream
+  contact. The same file also carries `tool_upstreams`, which is the MCP
+  gateway's table and belongs to
+  [tool-governance.md](tool-governance.md).
+- **Admin plane**: a second port (9091) that the Service deliberately
+  does not expose. `make govern`, `make budget` and `make ledger` reach
+  it via `kubectl port-forward` plus a bearer token read from the
+  `kaimahi-admin` Secret, so cluster credentials gate every admin
+  operation.
+
+## Credential custody
+
+- The agent-side Secret (`kagent/kaimahi-governed-token`) holds a
+  **kaimahi-issued opaque token** (`kmh_…`), minted by `make govern` and
+  shown exactly once. The plane stores only its sha256.
+- The **real** Copilot token lives in `kaimahi/kaimahi-copilot-token`,
+  mounted to the proxy pod and read per request. Rotate it with
+  `make plane-copilot-secret`; no restart needed. Ollama has no
+  credential at all and is forwarded bare: nothing is injected, by
+  contract rather than by accident.
+- The proxy strips the opaque token (and any other credential-slot
+  header) before injecting the real credential upstream. Keyed calls
+  never follow redirects. Logs pass through a redactor.
+
+You can check custody yourself without printing the whole token:
+
+```bash
+kubectl -n kagent get secret kaimahi-governed-token -o jsonpath='{.data.api-key}' | base64 -d | cut -c1-4
+```
+
+prints `kmh_`, not `sk-` or a GitHub token prefix.
+
+## From zero
+
+```sh
+make up          # cluster, ollama, kagent, agents
+make plane       # build the proxy image, load into kind, deploy proxy + Postgres
+make govern      # issue the credential, switch hello-world through the proxy
+make chat        # works as before, but now authenticated, metered, ledgered
+make ledger      # see the row the chat just wrote
+```
+
+`make govern` leaves `hello-world` on the `governed-ollama` preset and
+also applies `governed-copilot`. Switch to the latter with
+`make use PRESET=governed-copilot` once `make plane-copilot-secret` has
+given the proxy the real token. (On AKS there is no ollama, so `make
+govern` switches to `governed-copilot` directly. See [aks.md](aks.md).)
+
+## The ledger
+
+From a real run:
+
+```text
+created (UTC)       credential   upstream  model                in    out  cents source   status
+2026-09-01T03:41:45 hello-world  ollama    qwen2.5:3b          371     27      0 free     200
+```
+
+`source` says why the cost is what it is:
+
+- **free**: the upstream is explicitly classified `free` in
+  `upstreams.yaml` (in-cluster ollama). $0 is a classification, never an
+  inference from a $0-looking URL.
+- **priced**: a real price row (`prices` in `upstreams.yaml`, cents per
+  1M tokens) was applied.
+- **unpriced**: a metered upstream with no price row for that model.
+  Tokens are still counted honestly; cost stays 0. Under a **cents**
+  budget an unpriced model is **denied**, because spend that can't be
+  charged against the budget can't be admitted. Use a token budget for
+  Copilot unless you configure a price. No Copilot per-token price is
+  bundled: subscription usage has no public per-token price and kaimahi
+  never invents one.
+- **denied**: the request never went upstream.
+
+The FAQ has the longer answer to
+[why ollama is free but still budgeted in tokens](FAQ.md#ollama-is-free--why-is-it-budgeted-in-tokens).
+
+## Budgets
+
+Caps are monthly (calendar month, UTC), per credential:
+
+```bash
+make budget CAP_TOKENS=100000    # token cap — the only lever for the free tier
+make budget CAP_CENTS=500        # cents cap
+make budget                      # remove all caps
+```
+
+### What a denial looks like
+
+Set a cap below what any chat costs and try:
+
+```bash
+make budget CAP_TOKENS=1
+make chat
+```
+
+The task fails with the reason in plain text. This is a real run:
+
+```text
+"status":{"state":"failed","message":{... "parts":[{"kind":"text",
+"text":"monthly token budget reached"}] ...}}
+```
+
+The denial is a 429 from the proxy, sent before any upstream contact,
+and it lands in the ledger too. In our runs each attempt produced three
+denied rows, because the agent runtime retried the call:
+
+```text
+2026-09-01T03:42:26 hello-world  ollama    qwen2.5:3b            0      0      0 denied   429
+```
+
+Since approvals landed, the denial message also says an approval
+request was filed. A human can mint a bounded overage instead of
+raising the cap; see [approvals.md](approvals.md).
+
+### Enforcement properties
+
+All unit-tested and live-verified:
+
+- An exhausted budget denies with **429** and a clear error before any
+  upstream contact; the agent surfaces it as a failed task.
+- If the ledger store is unreadable, budgeted credentials are denied
+  (**403 "metering unavailable"**): no spend visibility, no spend. A
+  credential with no caps skips the budget read, but a failed ledger
+  *write* trips the whole data plane closed (**503 "spend ledger
+  unavailable"**) until a write succeeds again. Spend that cannot be
+  recorded must not happen.
+- Every attributable outcome is ledgered: success, upstream failure,
+  and denial. Unauthenticated requests have no credential to attribute.
+  Billed usage is recorded even when the surrounding request fails.
+- Forwarded traffic meters through the OpenAI `usage` object (streamed
+  requests get `stream_options.include_usage` injected); denials are
+  fixed zero-usage rows. If an upstream response carries no usage at
+  all, the row records zero tokens and the proxy logs a warning. Token
+  counts are never invented, so keep upstreams on OpenAI-compatible
+  surfaces that report usage.
+
+What each status code from the plane means, and what to do about it, is
+in the [FAQ](FAQ.md#what-the-planes-status-codes-mean).
+
+## Verification status
+
+- **governed-ollama**: live-verified end to end (chat, ledger row,
+  budget denial, restore), and exercised keylessly in CI on every PR.
+- **governed-copilot**: schema-valid, and the custody fail-closed path
+  is live-verified on kind (no proxy-side token means 503 "upstream
+  credential unavailable"; the request never leaves the cluster). A full
+  governed Copilot chat needs an interactive device login
+  (`make plane-copilot-secret`), so it is not part of the kind
+  verification or CI. It **was** completed for real once, on AKS on
+  2026-09-01, with its ledger row and a budget denial ([aks.md](aks.md)).
+
+## Operational notes
+
+- On kind the proxy image is side-loaded (`imagePullPolicy: Never`).
+  `make plane` always restarts the proxy after applying, because a
+  rebuilt image under the same tag leaves the spec unchanged and apply
+  alone would keep the old binary running. On a real cluster the image
+  goes through a registry; see [aks.md](aks.md).
+- `scripts/plane-secrets.sh` generates the Postgres password and admin
+  token idempotently. Existing Secrets are kept: regenerating the pg
+  password under a live database would lock the proxy out.
+- The admin API answers 503 if its token file is unreadable and 401 when
+  otherwise unauthenticated. Credential issuance shows the token exactly
+  once; if the agent-side Secret is lost, follow
+  [the FAQ](FAQ.md#i-lost-the-governed-token).
+- `make up` **preserves** a governed agent across re-runs: it warns and
+  restores a non-default modelConfig instead of silently resetting it.
+  `make use PRESET=ollama` is the explicit way back. If you are on an
+  older checkout, or something else re-applied the agent YAML, see
+  [the FAQ](FAQ.md#my-governed-agent-stopped-showing-up-in-the-ledger).
+- Re-run `make plane` after editing `upstreams.yaml`: the config is read
+  at boot (the ConfigMap mounts via subPath, which never live-updates).
+- Postgres data survives pod restarts via the PVC; `make down` destroys
+  it. The ledger is demo-durable, not backup-managed
+  ([FAQ](FAQ.md#where-did-my-ledger-go)).
+
+## Limitations
+
+- Only LLM calls through `governed-*` presets are governed. The plain
+  hosted presets are a live credit card with nothing in front of them.
+- Egress other than the two configured upstreams is not reachable
+  *through the plane*, but pod-level network egress is not enforced by
+  the plane.
+- No Copilot price is bundled, so Copilot can only be capped by tokens.
+
+The single table of what is and is not governed across the whole plane
+is in [README.md](README.md#what-is-governed-today-and-what-is-not).

@@ -57,7 +57,7 @@ make chat   # talk to it
 | Consume it as | How |
 |---|---|
 | **Local dev** | `make up` on kind; keyless, free, offline-capable model |
-| **Any conformant cluster** | the manifests are plain CRDs; **AKS** is the named managed target, and the governance plane has now been [run there for real](docs/P5B-RUNBOOK.md) |
+| **Any conformant cluster** | the manifests are plain CRDs; **AKS** is the named managed target, and the governance plane has now been [run there for real](docs/aks.md) |
 | **CI / automation** | the same targets run headless — this repo's [CI](.github/workflows/ci.yml) boots a cluster and asserts a real reply, and a real tool call, on every PR |
 | **Your own repo** | copy `k8s/` + the make targets; each agent is one YAML file |
 | **Existing kagent install** | `kubectl apply -f k8s/hello-world.yaml` — no kaimahi runtime required |
@@ -90,9 +90,10 @@ make down                                # delete the cluster
 ```
 
 `make chat` fetches the pinned kagent CLI to `bin/kagent` (checksum-verified),
-port-forwards the controller, and invokes the agent. Full walkthroughs:
-[P1](docs/P1-RUNBOOK.md) (cluster to conversation),
-[P2](docs/P2-RUNBOOK.md) (hosted models), [P3](docs/P3-RUNBOOK.md) (tools).
+port-forwards the controller, and invokes the agent. The docs are organised
+by what you want to do — start at [docs/README.md](docs/README.md):
+[getting started](docs/getting-started.md), [hosted models](docs/models.md),
+[tools](docs/tools.md).
 
 ## Command reference
 
@@ -123,7 +124,7 @@ is about to touch, and requires an explicit confirmation naming the
 context when that context is not a local kind cluster — fail closed, no
 confirmation no action. Read-only targets never prompt, and the Azure
 provisioning/teardown targets carry their own gates instead. See
-[docs/P5B-RUNBOOK.md](docs/P5B-RUNBOOK.md).
+[docs/aks.md](docs/aks.md).
 
 ## The artifact: agent as code
 
@@ -174,7 +175,7 @@ make chat
 
 "Schema-valid only" is literal: CI dry-runs every preset against the live
 CRDs, but no real completion has been bought through it yet. Details and
-caveats: [docs/P2-RUNBOOK.md](docs/P2-RUNBOOK.md).
+caveats: [docs/models.md](docs/models.md).
 
 ## Tools
 
@@ -182,27 +183,27 @@ caveats: [docs/P2-RUNBOOK.md](docs/P2-RUNBOOK.md).
 server is locked down at three layers: k8s tools only, `--read-only`, and a
 get/list/watch ClusterRole that **cannot read Secrets**, with a single-tool
 allowlist on top.
-Details: [docs/P3-RUNBOOK.md](docs/P3-RUNBOOK.md).
+Details: [docs/tools.md](docs/tools.md).
 
 > **Spend, tool calls, and exceptions can now be governed.** `make govern` routes the
 > agent's LLM calls through the in-cluster kaimahi proxy — monthly budgets
 > that fail closed, every call ledgered, and the real upstream credential
-> held only by the proxy ([docs/P4A-RUNBOOK.md](docs/P4A-RUNBOOK.md)).
+> held only by the proxy ([docs/spend.md](docs/spend.md)).
 > `make govern-tools` puts the tools agent behind the enforcing MCP
 > gateway — a committed upstream table as the egress rule at that seam,
 > a per-credential tool allowlist projected into what the agent can even
-> see, and every call audited ([docs/P4B-RUNBOOK.md](docs/P4B-RUNBOOK.md)).
+> see, and every call audited ([docs/tool-governance.md](docs/tool-governance.md)).
 > A denial is no longer a dead end: it files an approval request, and
 > `make approve` mints a bounded permit (expiry and/or use count) that
 > widens exactly what was denied, then lapses
-> ([docs/P4C-RUNBOOK.md](docs/P4C-RUNBOOK.md)).
+> ([docs/approvals.md](docs/approvals.md)).
 > And it now guards something worth guarding: `make slack-secret` →
 > `make slack-mcp` → `make govern-slack` puts a demo agent behind an
 > in-cluster Slack MCP server (third-party, digest-pinned, deployed by
 > kagent — no connector code), where **posting is not allowlisted**. The agent is denied, a request is filed, a human
 > grants one bounded use, the message lands, the grant burns, the next
 > attempt is denied again — all of it audited
-> ([docs/P5A-RUNBOOK.md](docs/P5A-RUNBOOK.md)).
+> ([docs/slack.md](docs/slack.md)).
 >
 > Governance stays opt-in per agent: an *ungoverned* preset still bills
 > with no ledger, an ungoverned tools wiring still acts with no audit —
@@ -249,8 +250,8 @@ journeys that argue for these five specifically are collected in
 | 4a | Governed LLM spend (proxy, budgets, ledger, custody) | **runs** — `make govern`, denial + ledger asserted in CI |
 | 4b | Governed tool calls (MCP gateway, allowlists, audit) | **runs** — `make govern-tools`, denial + audit asserted in CI |
 | 4c | Approvals / time-boxed permits (deny-and-pend, bounded grants) | **runs** — `make approvals`, both cycles asserted in CI |
-| 5a | Governed Slack outbound — posting is an approved action | **runs** — `make govern-slack`; the deny → approve → post → burn cycle asserted keyless in CI ([P5A-RUNBOOK](docs/P5A-RUNBOOK.md)) |
-| 5b | Cluster portability + a real managed-cluster run | **demonstrated once** — the plane, a governed Copilot chat, a ledger row, a budget denial and a governed tool call, all on a real AKS cluster, which was then deleted ([P5B-RUNBOOK](docs/P5B-RUNBOOK.md)) |
+| 5a | Governed Slack outbound — posting is an approved action | **runs** — `make govern-slack`; the deny → approve → post → burn cycle asserted keyless in CI ([docs/slack.md](docs/slack.md)) |
+| 5b | Cluster portability + a real managed-cluster run | **demonstrated once** — the plane, a governed Copilot chat, a ledger row, a budget denial and a governed tool call, all on a real AKS cluster, which was then deleted ([docs/aks.md](docs/aks.md)) |
 | — | `kaimahi create` CLI | proposed — [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) |
 
 Cloud-agnostic — it runs on any conformant Kubernetes — with first-class
@@ -263,6 +264,11 @@ standing cluster and no Azure credential in CI — the repo is public and
 fork-exposed, so CI stays on kind and keyless, re-proving the portability
 *logic* (the context guard's decisions, the registry render) on every PR
 rather than the cloud itself.
+
+## Documentation
+
+[docs/README.md](docs/README.md) routes by what you want to do, and holds
+the one table of what is governed today and what is not.
 
 ## Development
 
