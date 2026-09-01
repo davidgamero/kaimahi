@@ -201,6 +201,46 @@ jobs:
           fi
           make ledger | tee ledger-denied.out
           grep -E 'denied +429' ledger-denied.out
+      # P4b, keyless: the enforcing MCP gateway in the same cluster/job.
+      # No new pods (the gateway is a second listener in the existing
+      # proxy pod — zero added CPU requests on the ~full node). The tools
+      # agent is governed through the gateway, a REAL tool call is proven
+      # with the P3 probe-ConfigMap pattern, the audit row is asserted,
+      # and a NOT-allowlisted call is denied fail-closed and audited.
+      - name: Govern the tools agent through the MCP gateway
+        run: make govern-tools
+      - name: Governed tool call rides the gateway (P3 probe proof)
+        run: |
+          probe="probe-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
+          kubectl --context kind-kaimahi-p1 -n default create configmap "$probe" \
+            --from-literal=owner=kaimahi-p4b-ci
+          make chat AGENT=hello-tools \
+            TASK='List the configmaps in the default namespace.' | tee gw-chat.out
+          python3 scripts/verify-chat.py gw-chat.out k8s_get_resources "$probe"
+      - name: Assert the audit recorded the governed tool call
+        run: |
+          make tool-audit | tee tool-audit.out
+          grep -E 'hello-tools +kagent-tools +tools/call +k8s_get_resources +allowed +200' tool-audit.out
+      - name: Non-allowlisted tool call denied fail-closed and audited
+        run: |
+          bash scripts/tool-denial-probe.sh k8s_describe_resource
+          make tool-audit | tee tool-audit-denied.out
+          grep -E 'hello-tools +kagent-tools +tools/call +k8s_describe_resource +denied +403' tool-audit-denied.out
+      - name: Agent-side tool wiring carries only the kmh_ token
+        run: |
+          # The Secret value never leaves the pipe; grep -c prints only a
+          # count. The RemoteMCPServer must reference the Secret (no
+          # inline header value), and discovery through the gateway must
+          # project exactly the allowlisted tool.
+          n=$(kubectl --context kind-kaimahi-p1 -n kagent get secret kaimahi-tools-token \
+            -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
+          test "$n" = 1
+          ref=$(kubectl --context kind-kaimahi-p1 -n kagent get remotemcpserver kaimahi-tools \
+            -o jsonpath='{.spec.headersFrom[0].valueFrom.name}')
+          test "$ref" = kaimahi-tools-token
+          discovered=$(kubectl --context kind-kaimahi-p1 -n kagent get remotemcpserver kaimahi-tools \
+            -o jsonpath='{.status.discoveredTools[*].name}')
+          test "$discovered" = k8s_get_resources
       - name: Cluster state on failure
         if: failure()
         run: |
