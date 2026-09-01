@@ -27,6 +27,11 @@ type fakeStore struct {
 	credErr    error
 	audits     []store.ToolAuditEntry
 	credential store.Credential
+	// P4c: tool -> remaining grant uses (0 = exhausted/absent).
+	toolGrants map[string]int
+	grantErr   error
+	filed      []string // "kind/subject" of filed requests
+	fileErr    error
 }
 
 func (f *fakeStore) CredentialByTokenHash(_ context.Context, hash []byte) (store.Credential, error) {
@@ -50,6 +55,38 @@ func (f *fakeStore) RecordToolAudit(_ context.Context, e store.ToolAuditEntry) e
 	}
 	f.audits = append(f.audits, e)
 	return nil
+}
+
+func (f *fakeStore) ConsumeToolGrant(_ context.Context, _, tool string) (string, bool, error) {
+	if f.grantErr != nil {
+		return "", false, f.grantErr
+	}
+	if f.toolGrants[tool] > 0 {
+		f.toolGrants[tool]--
+		return "grant-1", true, nil
+	}
+	return "", false, nil
+}
+
+func (f *fakeStore) LiveToolGrantSubjects(_ context.Context, _ string) ([]string, error) {
+	if f.grantErr != nil {
+		return nil, f.grantErr
+	}
+	var out []string
+	for tool, uses := range f.toolGrants {
+		if uses > 0 {
+			out = append(out, tool)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) FileApprovalRequest(_ context.Context, _, kind, subject, _ string) (bool, error) {
+	if f.fileErr != nil {
+		return false, f.fileErr
+	}
+	f.filed = append(f.filed, kind+"/"+subject)
+	return true, nil
 }
 
 func rpc(t *testing.T, method string, params any) []byte {
@@ -382,6 +419,96 @@ func TestUpstreamRedirectRefused(t *testing.T) {
 		assert.Equal(t, http.StatusBadGateway, rec.Code)
 		assert.Empty(t, rec.Header().Get("Location"), "Location must not leak through")
 	}
+}
+
+func TestToolGrantAdmitsConsumesAndExhausts(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`))
+	}))
+	defer up.Close()
+	fs := &fakeStore{credential: store.Credential{Name: "hello-tools"},
+		allow: []string{"k8s_get_resources"}, toolGrants: map[string]int{"k8s_get_events": 1}}
+	h := newGateway(t, fs, up)
+	call := rpc(t, "tools/call", map[string]any{"name": "k8s_get_events"})
+
+	// USES=1: the first call is admitted via the grant and audited with
+	// the grant noted...
+	rec := post(h, goodToken, call)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "not permitted")
+	require.Len(t, fs.audits, 1)
+	assert.Equal(t, "allowed", fs.audits[0].Decision)
+	assert.Contains(t, fs.audits[0].Detail, "granted")
+
+	// ...and the second is denied (exhausted grant is not a grant) and
+	// files a fresh approval request.
+	rec = post(h, goodToken, call)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "not permitted")
+	assert.Contains(t, rec.Body.String(), "approval request filed")
+	assert.Equal(t, []string{"tool/k8s_get_events"}, fs.filed)
+
+	// A statically allowlisted tool never consumes a grant.
+	fs.toolGrants["k8s_get_resources"] = 5
+	rec = post(h, goodToken, rpc(t, "tools/call", map[string]any{"name": "k8s_get_resources"}))
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, 5, fs.toolGrants["k8s_get_resources"])
+}
+
+func TestToolDenialFilesRequestAndFilingFailureStillDenies(t *testing.T) {
+	fs := &fakeStore{credential: store.Credential{Name: "hello-tools"}}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("denied calls must not reach the upstream")
+	}))
+	defer up.Close()
+	h := newGateway(t, fs, up)
+	call := rpc(t, "tools/call", map[string]any{"name": "k8s_get_events"})
+
+	rec := post(h, goodToken, call)
+	assert.Contains(t, rec.Body.String(), "approval request filed")
+	assert.Equal(t, []string{"tool/k8s_get_events"}, fs.filed)
+
+	// Filing failure: the denial stands, without claiming a request was
+	// filed, and nothing trips.
+	fs.fileErr = errors.New("pg down")
+	rec = post(h, goodToken, call)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "not permitted")
+	assert.NotContains(t, rec.Body.String(), "approval request filed")
+}
+
+func TestGrantCheckFailureClosed(t *testing.T) {
+	fs := &fakeStore{credential: store.Credential{Name: "hello-tools"},
+		grantErr: errors.New("pg down")}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream must not be reached")
+	}))
+	defer up.Close()
+	h := newGateway(t, fs, up)
+	rec := post(h, goodToken, rpc(t, "tools/call", map[string]any{"name": "k8s_get_events"}))
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	// tools/list projection also fails closed on a grant read failure.
+	fs.allow = []string{"a"}
+	assert.Equal(t, http.StatusServiceUnavailable, post(h, goodToken, rpc(t, "tools/list", nil)).Code)
+}
+
+func TestProjectionIncludesLiveGrants(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+			`{"name":"k8s_get_resources"},{"name":"k8s_get_events"},{"name":"k8s_describe_resource"}]}}`))
+	}))
+	defer up.Close()
+	fs := &fakeStore{credential: store.Credential{Name: "hello-tools"},
+		allow: []string{"k8s_get_resources"}, toolGrants: map[string]int{"k8s_get_events": 1}}
+	h := newGateway(t, fs, up)
+	rec := post(h, goodToken, rpc(t, "tools/list", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "k8s_get_resources")
+	assert.Contains(t, rec.Body.String(), "k8s_get_events", "live-granted tools are visible")
+	assert.NotContains(t, rec.Body.String(), "k8s_describe_resource")
+	assert.Equal(t, 1, fs.toolGrants["k8s_get_events"], "listing burns no uses")
 }
 
 func TestGetAnswers405(t *testing.T) {

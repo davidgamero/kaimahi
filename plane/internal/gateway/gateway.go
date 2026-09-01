@@ -62,6 +62,12 @@ type Store interface {
 	CredentialByTokenHash(ctx context.Context, tokenHash []byte) (store.Credential, error)
 	ToolAllowlist(ctx context.Context, credentialName string) ([]string, error)
 	RecordToolAudit(ctx context.Context, e store.ToolAuditEntry) error
+	// P4c approvals: bounded grants admit tools outside the static
+	// allowlist (consuming a use, liveness evaluated in SQL at call
+	// time), and a denial files a pending approval request.
+	ConsumeToolGrant(ctx context.Context, credential, tool string) (grantID string, ok bool, err error)
+	LiveToolGrantSubjects(ctx context.Context, credential string) ([]string, error)
+	FileApprovalRequest(ctx context.Context, credential, kind, subject, detail string) (filed bool, err error)
 }
 
 type Deps struct {
@@ -249,6 +255,9 @@ func (h *handler) relay(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
+		if allowed, ok = h.projectable(w, r, cred, name, msg.Method, allowed); !ok {
+			return
+		}
 		h.forwardProjected(w, r, cred, name, up, body, allowed)
 
 	case "tools/call":
@@ -263,14 +272,37 @@ func (h *handler) relay(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
+		detail := ""
 		if !slices.Contains(allowed, params.Name) {
-			h.rpcDeny(w, r, cred, name, msg.Method, params.Name, msg.ID,
-				codeToolNotPermitted, "tool not permitted by the Kaimahi allowlist")
-			return
+			// Outside the static allowlist: a live time-boxed grant
+			// (P4c) can still admit the call, consuming one use — the
+			// use is consumed before the forward, so an upstream
+			// failure burns it (conservative direction).
+			grantID, ok, err := h.d.Store.ConsumeToolGrant(r.Context(), cred.Name, params.Name)
+			if err != nil {
+				slog.Error("gateway: grant check failed", "credential", cred.Name, "tool", params.Name, "err", err)
+				h.httpDeny(w, r, cred, name, msg.Method, params.Name, http.StatusServiceUnavailable, "grant check unavailable")
+				return
+			}
+			if !ok {
+				// Deny-and-pend (D13): the denial stands AND files a
+				// pending approval request (deduped per credential/
+				// kind/subject). A filing failure never un-denies and
+				// never trips the breaker — denial is the safe state.
+				denyMsg := "tool not permitted by the Kaimahi allowlist"
+				if h.fileRequest(r, cred.Name, "tool", params.Name,
+					"denied tools/call via upstream "+name) {
+					denyMsg += "; approval request filed — run 'make approvals'"
+				}
+				h.rpcDeny(w, r, cred, name, msg.Method, params.Name, msg.ID,
+					codeToolNotPermitted, denyMsg)
+				return
+			}
+			detail = "granted " + grantID
 		}
 		status := h.forward(w, r, name, up, body)
 		h.audit(r, store.ToolAuditEntry{CredentialName: cred.Name, Upstream: name,
-			Method: msg.Method, Tool: params.Name, Decision: "allowed", Status: status})
+			Method: msg.Method, Tool: params.Name, Decision: "allowed", Status: status, Detail: detail})
 
 	default:
 		h.rpcDeny(w, r, cred, name, msg.Method, "", msg.ID,
@@ -303,9 +335,9 @@ func canonicalize(body []byte) ([]byte, error) {
 	return json.Marshal(top)
 }
 
-// allowlist reads the credential's tool allowlist, failing the request
-// closed (503, audited) when it cannot be read. An empty list is a valid
-// answer: nothing callable.
+// allowlist reads the credential's static tool allowlist, failing the
+// request closed (503, audited) when it cannot be read. An empty list
+// is a valid answer: nothing callable without a live grant.
 func (h *handler) allowlist(w http.ResponseWriter, r *http.Request, cred store.Credential,
 	upstream, method string) ([]string, bool) {
 	allowed, err := h.d.Store.ToolAllowlist(r.Context(), cred.Name)
@@ -315,6 +347,40 @@ func (h *handler) allowlist(w http.ResponseWriter, r *http.Request, cred store.C
 		return nil, false
 	}
 	return allowed, true
+}
+
+// projectable is the tools/list projection set: the static allowlist
+// plus tools currently callable via live grants (a read-only liveness
+// query — listing burns no uses). Visible = callable right now.
+func (h *handler) projectable(w http.ResponseWriter, r *http.Request, cred store.Credential,
+	upstream, method string, allowed []string) ([]string, bool) {
+	granted, err := h.d.Store.LiveToolGrantSubjects(r.Context(), cred.Name)
+	if err != nil {
+		slog.Error("gateway: grant projection read failed", "credential", cred.Name, "err", err)
+		h.httpDeny(w, r, cred, upstream, method, "", http.StatusServiceUnavailable, "tool allowlist unavailable")
+		return nil, false
+	}
+	for _, g := range granted {
+		if !slices.Contains(allowed, g) {
+			allowed = append(allowed, g)
+		}
+	}
+	return allowed, true
+}
+
+// fileRequest files a pending approval request on a cancel-free context
+// (a client disconnect must not drop the filing). Reports whether a
+// request is now pending — freshly filed or already deduped both count;
+// only a store failure (logged) reports false.
+func (h *handler) fileRequest(r *http.Request, credential, kind, subject, detail string) bool {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	if _, err := h.d.Store.FileApprovalRequest(ctx, credential, kind, subject, detail); err != nil {
+		slog.Error("gateway: filing approval request failed (denial stands)",
+			"credential", credential, "kind", kind, "subject", subject, "err", err)
+		return false
+	}
+	return true
 }
 
 // forward relays one message upstream byte-faithfully (SSE responses

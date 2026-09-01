@@ -109,7 +109,7 @@ func main() {
 	st := store.New(pool)
 	deps := proxy.Deps{
 		Store:  st,
-		Meter:  &meter.Meter{Usage: st},
+		Meter:  &meter.Meter{Usage: st, Grants: st},
 		Config: cfg,
 	}
 

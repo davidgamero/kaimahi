@@ -56,6 +56,58 @@ func TestDeniesAtTokenCap(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, d.Status)
 }
 
+type fakeGrants struct {
+	admit    bool
+	err      error
+	consumed int
+	subject  string
+}
+
+func (f *fakeGrants) ConsumeBudgetGrant(_ context.Context, _, subject string, _, _ int64) (bool, error) {
+	f.consumed++
+	f.subject = subject
+	return f.admit, f.err
+}
+
+func TestBudgetGrantAdmitsOverCap(t *testing.T) {
+	g := &fakeGrants{admit: true}
+	m := &meter.Meter{Usage: &fakeUsage{tokens: 5}, Grants: g}
+	require.NoError(t, m.Check(context.Background(), store.Credential{Name: "a", CapTokens: i64(5)}))
+	require.Equal(t, 1, g.consumed, "an over-cap admit consumes exactly one use")
+	require.Equal(t, "tokens", g.subject)
+}
+
+func TestBudgetGrantDenialNamesSubject(t *testing.T) {
+	g := &fakeGrants{admit: false}
+	m := &meter.Meter{Usage: &fakeUsage{tokens: 5}, Grants: g}
+	err := m.Check(context.Background(), store.Credential{Name: "a", CapTokens: i64(5)})
+	var d meter.Denial
+	require.ErrorAs(t, err, &d)
+	require.Equal(t, "tokens", d.BudgetSubject)
+}
+
+func TestBudgetGrantErrorFailsClosed(t *testing.T) {
+	g := &fakeGrants{admit: true, err: errors.New("pg down")}
+	m := &meter.Meter{Usage: &fakeUsage{cents: 100}, Grants: g}
+	err := m.Check(context.Background(), store.Credential{Name: "a", CapCents: i64(100)})
+	var d meter.Denial
+	require.ErrorAs(t, err, &d, "a grant-store failure must not admit")
+	require.Equal(t, "cents", d.BudgetSubject)
+}
+
+func TestUnderCapNeverConsultsGrants(t *testing.T) {
+	g := &fakeGrants{admit: true}
+	m := &meter.Meter{Usage: &fakeUsage{tokens: 4}, Grants: g}
+	require.NoError(t, m.Check(context.Background(), store.Credential{Name: "a", CapTokens: i64(5)}))
+	require.Zero(t, g.consumed, "under-cap traffic must not burn grant uses")
+}
+
+func TestNilGrantsPreservesCapDenial(t *testing.T) {
+	m := &meter.Meter{Usage: &fakeUsage{tokens: 5}}
+	var d meter.Denial
+	require.ErrorAs(t, m.Check(context.Background(), store.Credential{Name: "a", CapTokens: i64(5)}), &d)
+}
+
 func TestAllowsUnderBothCaps(t *testing.T) {
 	f := &fakeUsage{cents: 99, tokens: 4}
 	now := time.Date(2026, 8, 31, 15, 4, 5, 0, time.UTC)
