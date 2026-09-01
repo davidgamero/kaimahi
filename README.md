@@ -37,7 +37,7 @@ That is the whole reason to build a CLI at all. A Makefile requires a clone;
 `npx` does not. Consumption without a clone is the property being chased.
 
 > **`kaimahi create` is proposed, not built.** No package is published and
-> the name is unclaimed. The design, a survey against kagent's own CLI, and
+> the name is unclaimed. The design, a survey of what already exists, and
 > the security model are in [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) —
 > including the honest case *against* building it. Everything below this
 > line works today.
@@ -59,9 +59,8 @@ make chat   # talk to it
 
 Agents run on [kagent](https://kagent.dev) — declarative Kubernetes agents
 whose Agent CRD YAML *is* the topology artifact. kaimahi is thin glue over
-`kind`, `helm`, `kubectl`, and kagent's own CLI. kagent already ships a CLI
-and a dashboard; kaimahi does not rebuild them, and `create` is proposed
-only for the gap they leave: scaffolding declarative agent YAML.
+`kind`, `helm`, `kubectl`, and the kagent CLI; `create` would scaffold that
+YAML.
 
 ## Quickstart
 
@@ -163,11 +162,10 @@ caveats: [docs/P2-RUNBOOK.md](docs/P2-RUNBOOK.md).
 
 ## Tools
 
-`hello-tools` reaches kagent's own bundled MCP server, wired through
-`spec.declarative.tools` — kagent's native mechanism. Kaimahi ships no MCP
-runtime, proxy, or gateway. The server is locked down at three layers: k8s
-tools only, `--read-only`, and a get/list/watch ClusterRole that **cannot
-read Secrets**, with a single-tool allowlist on top.
+`hello-tools` reaches an MCP server through `spec.declarative.tools`. The
+server is locked down at three layers: k8s tools only, `--read-only`, and a
+get/list/watch ClusterRole that **cannot read Secrets**, with a single-tool
+allowlist on top.
 Details: [docs/P3-RUNBOOK.md](docs/P3-RUNBOOK.md).
 
 > **Both spend and tools are ungoverned today.** A hosted preset sends every
@@ -177,12 +175,11 @@ Details: [docs/P3-RUNBOOK.md](docs/P3-RUNBOOK.md).
 > the only limits. That governance is the idea being incubated, and it
 > arrives in phase 4.
 
-## What kaimahi would add over raw kagent
+## The thesis: a governance plane
 
-kagent answers *"how do agents run on Kubernetes."* Kaimahi asks *"how do
-you hand one to a team without regretting it."* Scaffolding is the part that
-runs today. The thesis is the governance plane kagent lacks — **none of it
-is built; it is what phase 4 mounts:**
+Getting an agent running is the easy part, and it runs today. The open
+question is how you hand one to a team without regretting it. That is the
+idea being incubated — **none of it is built; it is what phase 4 is:**
 
 - **Budgets and spend metering** — every billed call ledgered, even when the
   surrounding operation fails.
@@ -192,10 +189,10 @@ is built; it is what phase 4 mounts:**
 - **Egress enforcement** — agents reach only permitted endpoints.
 - **Audit** — who ran what, with which model, at what cost.
 
-None of it would fork or wrap the runtime: it mounts at kagent's existing
-seams (ModelConfig `baseUrl`, MCP tool server). The delegation journeys that
-argue for these five specifically are collected in `docs/SCENARIOS.md`
-(proposed separately).
+It would mount at seams that already exist — the model `baseUrl` and the MCP
+tool server — rather than forking or wrapping the runtime. The delegation
+journeys that argue for these five specifically are collected in
+`docs/SCENARIOS.md` (proposed separately).
 
 ## Status
 
@@ -204,10 +201,10 @@ argue for these five specifically are collected in `docs/SCENARIOS.md`
 | 1 | Hello world on Kubernetes | **runs** — `make up && make chat`, verified in CI |
 | 2 | Hosted LLM endpoints via ModelConfig | **runs** — presets above |
 | 3 | Connectors/tools via MCP | **runs** — `hello-tools`, real tool call asserted in CI |
-| 4 | Governance plane at kagent's seams | thesis, not built |
+| 4 | Governance plane | thesis, not built |
 | — | `kaimahi create` CLI | proposed — [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) |
 
-Cloud-agnostic (kagent runs on any conformant Kubernetes) with first-class
+Cloud-agnostic — it runs on any conformant Kubernetes — with first-class
 attention to the Azure path: **AKS** as the managed target, **Azure AI
 Foundry** among the model endpoints.
 
