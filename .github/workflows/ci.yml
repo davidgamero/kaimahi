@@ -89,7 +89,11 @@ jobs:
             bash scripts/plane-deploy.sh >never.out 2>&1
           rc=$?
           set -e
+          # Assert WHY it failed, not just that it did: any nonzero exit
+          # would satisfy a bare rc check, including a ModuleNotFoundError
+          # that never reached the policy check at all.
           test "$rc" -ne 0 || { echo 'pull policy Never accepted on a registry target'; exit 1; }
+          grep -q "refusing pull policy 'Never'" never.out
           # ...and a registry target with no image at all must not deploy
           # the committed local tag by accident.
           set +e
@@ -97,6 +101,7 @@ jobs:
           rc=$?
           set -e
           test "$rc" -ne 0 || { echo 'registry target deployed with no PLANE_IMAGE'; exit 1; }
+          grep -q 'PLANE_IMAGE is required' noimg.out
           # The committed manifest itself must still be the kind one.
           # Parsed, not grepped: the string "imagePullPolicy: Never" also
           # appears in that file's own comments, so a grep would keep
