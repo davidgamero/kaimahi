@@ -141,29 +141,31 @@ func main() {
 func retryConnect(ctx context.Context, dsn string) *pgxpool.Pool {
 	deadline := time.Now().Add(90 * time.Second)
 	for {
-		// Bound each attempt so a hung connection cannot outlive the
-		// retry budget silently.
+		// Bound each attempt — migrate and pool ping together — so a
+		// hung connection cannot outlive the retry budget silently. The
+		// pool itself is not tied to attemptCtx; it only bounds startup.
 		attemptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := db.Migrate(attemptCtx, dsn)
+		pool, err := connectOnce(attemptCtx, dsn)
 		cancel()
-		if err != nil {
-			if time.Now().After(deadline) || ctx.Err() != nil {
-				slog.Error("migrations failed", "err", err)
-				return nil
-			}
-			slog.Warn("waiting for postgres", "err", err)
-			select {
-			case <-time.After(3 * time.Second):
-				continue
-			case <-ctx.Done():
-				return nil
-			}
+		if err == nil {
+			return pool
 		}
-		pool, err := db.NewPool(ctx, dsn)
-		if err != nil {
-			slog.Error("connecting pool after migrate", "err", err)
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			slog.Error("database startup failed", "err", err)
 			return nil
 		}
-		return pool
+		slog.Warn("waiting for postgres", "err", err)
+		select {
+		case <-time.After(3 * time.Second):
+		case <-ctx.Done():
+			return nil
+		}
 	}
+}
+
+func connectOnce(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	if err := db.Migrate(ctx, dsn); err != nil {
+		return nil, err
+	}
+	return db.NewPool(ctx, dsn)
 }

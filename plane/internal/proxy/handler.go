@@ -239,12 +239,18 @@ type usage struct {
 // honest when a metered model has no configured price.
 func ledgerFor(cred store.Credential, upstream, model string, up config.Upstream,
 	priced bool, price pricing.Price, u usage, status int) store.LedgerEntry {
+	// Usage is upstream-reported input, not truth: clamp to the ledger's
+	// valid range so a hostile count can neither wrap the cost math nor
+	// fail the row's CHECK constraints (which would trip the plane).
+	clamp := func(n int64) int64 {
+		return min(max(n, 0), pricing.MaxTokens)
+	}
 	e := store.LedgerEntry{
 		CredentialName: cred.Name,
 		Upstream:       upstream,
 		Model:          model,
-		InputTokens:    u.PromptTokens,
-		OutputTokens:   u.CompletionTokens,
+		InputTokens:    clamp(u.PromptTokens),
+		OutputTokens:   clamp(u.CompletionTokens),
 		Status:         status,
 	}
 	switch {
