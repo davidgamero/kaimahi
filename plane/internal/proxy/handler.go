@@ -245,12 +245,13 @@ func ledgerFor(cred store.Credential, upstream, model string, up config.Upstream
 	clamp := func(n int64) int64 {
 		return min(max(n, 0), pricing.MaxTokens)
 	}
+	in, out := clamp(u.PromptTokens), clamp(u.CompletionTokens)
 	e := store.LedgerEntry{
 		CredentialName: cred.Name,
 		Upstream:       upstream,
 		Model:          model,
-		InputTokens:    clamp(u.PromptTokens),
-		OutputTokens:   clamp(u.CompletionTokens),
+		InputTokens:    in,
+		OutputTokens:   out,
 		Status:         status,
 	}
 	switch {
@@ -258,7 +259,7 @@ func ledgerFor(cred store.Credential, upstream, model string, up config.Upstream
 		e.CostSource = "free"
 	case priced:
 		e.CostSource = "priced"
-		e.CostCents = pricing.CostCents(price, u.PromptTokens, u.CompletionTokens)
+		e.CostCents = pricing.CostCents(price, in, out)
 	default:
 		e.CostSource = "unpriced"
 	}
