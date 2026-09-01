@@ -99,8 +99,9 @@ prefix.
 | P4a: metering/enforcing LLM proxy (D11) | W4 worker | PR #12 MERGED; coordinator verified live incl. budget denial + custody (delta sheet below) | lane closed |
 | P4b: enforcing MCP gateway | W5 worker | PR #15 MERGED (97c2b5f, payload identical to verified 06873d2; post-merge main CI green); delta sheet below | lane closed |
 | P4c: approvals/permits (D13) | W7 worker | PR #17 MERGED (dd08f00); coordinator verified both approval cycles independently pre-merge (delta sheet below) | lane closed — ARC COMPLETE |
-| P5a: governed Slack connector (D14) | unassigned | GO — W8 prompt ready (below) | needs from user: a bot token and a NAMED private test channel; contended: k8s/ + Makefile + docs + CI |
-| P5b: cluster portability + real AKS run (D14) | — | queued behind P5a merge | no pre-stacked bases; needs Azure creds + spend; see arc note for the kind-specific obstacles |
+| P5a: governed Slack connector (D14) | W8 worker | PR #18 MERGED; coordinator verified (custody, and the discovery finding reproduced independently); delta sheet below | lane closed |
+| P5b: cluster portability + real AKS run (D14) | — | UNBLOCKED by P5a merge; awaiting coordinator prompt | needs Azure creds + spend; see arc note for the kind-specific obstacles |
+| NetworkPolicy egress (promoted 2026-09-01) | — | candidate, not GO | P5a put a deliberate internet-egress pod in the cluster; three non-network layers bound blast radius today. Strongest-argument-yet per P5a's own accounting |
 | P6: inbound connectors (webhooks/user APIs) | — | parked candidate; own blindspot pass when reached | genuine net-new surface: ingress auth, replay, rate limits, every event causes spend |
 | CLI prototype (Tatsinnit, PR #16) | teammate | OPEN, unreviewed — a working `kaimahi agent create` prototype; board holds the CLI as under-consideration/not-GO with five open decisions reserved for the user (docs/CLI-PROPOSAL.md) | awaiting user ruling before coordinator review |
 | Docs: CLI-first framing + naming record | teammate (Tatsinnit) | PR #10 MERGED (ratifies D12) | staleness fixes folded into reconciliation lane |
@@ -818,6 +819,70 @@ PR's "Deviations & decisions" section.
 ```
 
 ## Delta sheets from finished lanes
+
+### P5a — governed Slack outbound (PR #18, merged 2026-09-01)
+
+Delivered on main: `k8s/slack-mcp.yaml` (in-cluster Slack MCP server,
+pinned, `--no-cache`), `k8s/kaimahi-slack.yaml` (gateway upstream +
+Kaimahi-owned RemoteMCPServer), `k8s/slack-agent.yaml`,
+`scripts/slack-secret.sh` (stdin-only, xoxb- prefix validated),
+gateway-injected per-upstream credentials in `plane/`, `docs/P5A-RUNBOOK.md`,
+keyless CI assertions. Only route to Slack is through the gateway — no
+ungoverned contrast path ships.
+
+Coordinator verification (independent, 2026-09-01): custody clean — tree
+scan finds no token (the three `xoxb` hits are a rejection test fixture
+and the capture script's own prompt/validation); agent-namespace Secrets
+hold ONLY `kmh_` tokens, while the real `xoxb-` bot token lives
+plane-side in the `kaimahi` namespace; config.Parse rejects inline
+credentials and a header-without-file at load ("key material never
+belongs in the committed table"). Post-merge main CI green (all three
+jobs). The discovery finding reproduced independently: the agent SELECTS
+`[conversations_history, conversations_add_message]` but discovery
+projects only `conversations_history` (the live allowlist) — the post
+tool is named in the agent's spec yet absent from its hands.
+
+RULING on deviation 2 — the lane prompt's demo shape was WRONG, and the
+correction is an improvement. W8 specified "an agent tries to post and is
+DENIED". kagent computes an agent's toolset as `discovered ∩ toolNames`
+and discovery flows through the gateway, so a non-allowlisted tool is
+never projected and the agent never attempts it. The security property is
+STRONGER than specified: the capability does not exist until approved, so
+the model cannot be prompt-injected into attempting it, cannot hallucinate
+its availability, and cannot leak that it exists. **Corrected demo
+narrative for anyone presenting this:** approval is CONSTRUCTIVE — the
+capability materialises on approval and evaporates on exhaustion; the
+deny-and-file path is exercised at the gateway by any direct MCP client
+(what CI asserts). The worker documented this rather than faking the
+prompt's shape, which is the correct call.
+
+Other rulings — all ACCEPTED: gateway-injected upstream credentials
+(net-new plane code, user-ruled mid-lane: keep it and document that the
+chosen server ignores it — it is the right plane mechanism for any future
+keyed upstream, and it fails closed at 503 rather than forwarding bare);
+`toolNames` is selection while the allowlist is authority (CI's assertion
+correctly moved to the LIVE allowlist, not committed YAML); pre-forward
+use consumption so a 503 burns a use and audits as `allowed 503` (follows
+P4c's conservative-direction ruling); `--no-cache` (its caches would pull
+a workspace directory into the pod); no ungoverned Slack path; NetworkPolicy
+declined as out-of-scope with an honest accounting (three non-network
+layers bound blast radius; promoted to a named candidate above).
+
+Carried forward:
+
+- **Board-level lesson — a verification tool can itself fail open.** The
+  worker's own probe reported ADMITTED for any 503, but the gateway
+  answers 503 from four pre-forward DENIAL paths, so a Postgres blip
+  would have verified as success. Standing guidance already says a verify
+  path accepts only a well-formed positive; this is the reminder that the
+  rule binds probes and CI assertions, not just product code.
+- **User action owed (workspace-side, not repo-side):** the Slack app
+  carries `chat:write.public`, which lets the bot post to any public
+  channel without being invited. Worker recommends removal; only the
+  workspace owner can do it.
+- Measurement beat documentation twice (upstream README and a web survey
+  both wrong about API-key enforcement and streamable-HTTP support) —
+  run the image, believe the run.
 
 ### P1 — kagent hello world on kind (PR #2, merged 2026-08-31)
 
