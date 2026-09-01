@@ -12,9 +12,12 @@
 //   - a per-credential tool allowlist is enforced on tools/call and
 //     PROJECTED onto tools/list — an agent never sees a tool it cannot
 //     call, and kagent's controller discovery sees the same projection;
-//   - every tools/call and every denial is audited; a failed audit write
-//     trips the gateway to 503 until a write succeeds (P4a's fail-closed
-//     ledger-degradation rule, applied to actions).
+//   - tools/call outcomes and every attributable denial are audited
+//     (401/503 pre-auth refusals have no credential to attribute). Like
+//     P4a's ledger, the allowed row is written after the response it
+//     describes; a failed write trips the gateway to 503 for all
+//     SUBSEQUENT traffic until a write succeeds — the same
+//     fail-closed-degradation contract the spend plane runs under.
 //
 // Authentication is exactly the P4a proxy's: a Kaimahi-issued kmh_ opaque
 // token in the Authorization header (Bearer prefix optional — kagent's
@@ -64,9 +67,9 @@ type Store interface {
 type Deps struct {
 	Store     Store
 	Upstreams map[string]config.ToolUpstream
-	// Client makes upstream calls. Nil gets a default that REFUSES
-	// redirects (standing guidance: no redirects on keyed calls) and
-	// bounds a call at 5 minutes.
+	// Client makes upstream calls. Nil gets a default that never FOLLOWS
+	// a redirect (standing guidance); the relay paths then refuse the
+	// 3xx itself with a 502. Calls are bounded at 5 minutes.
 	Client *http.Client
 }
 
@@ -203,7 +206,7 @@ func (h *handler) relay(w http.ResponseWriter, r *http.Request) {
 		h.httpDeny(w, r, cred, name, "", "", http.StatusBadRequest, "request body unreadable or too large")
 		return
 	}
-	if len(bytes.TrimSpace(body)) > 0 && bytes.TrimSpace(body)[0] == '[' {
+	if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 && trimmed[0] == '[' {
 		// Single-message only: a batch could smuggle a denied method
 		// past a first-element check. Fail closed.
 		h.httpDeny(w, r, cred, name, "", "", http.StatusBadRequest, "JSON-RPC batches are not relayed")
@@ -216,6 +219,13 @@ func (h *handler) relay(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.Unmarshal(body, &msg); err != nil {
 		h.httpDeny(w, r, cred, name, "", "", http.StatusBadRequest, "request body is not a JSON-RPC message")
+		return
+	}
+	// Forward exactly what was checked: rebuild the message from the
+	// parse so duplicated JSON keys cannot smuggle a different method or
+	// tool past enforcement into a first-key-wins upstream parser.
+	if body, err = canonicalize(body); err != nil {
+		h.httpDeny(w, r, cred, name, msg.Method, "", http.StatusBadRequest, "request body is not a JSON-RPC message")
 		return
 	}
 
@@ -268,6 +278,31 @@ func (h *handler) relay(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// canonicalize re-marshals a JSON-RPC message (and one level of params)
+// from Go's last-key-wins parse — the same parse enforcement decisions
+// were made on — collapsing any duplicated keys before the bytes go
+// upstream.
+func canonicalize(body []byte) ([]byte, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil {
+		return nil, err
+	}
+	if raw, ok := top["params"]; ok {
+		if t := bytes.TrimSpace(raw); len(t) > 0 && t[0] == '{' {
+			var params map[string]json.RawMessage
+			if err := json.Unmarshal(t, &params); err != nil {
+				return nil, err
+			}
+			rebuilt, err := json.Marshal(params)
+			if err != nil {
+				return nil, err
+			}
+			top["params"] = rebuilt
+		}
+	}
+	return json.Marshal(top)
+}
+
 // allowlist reads the credential's tool allowlist, failing the request
 // closed (503, audited) when it cannot be read. An empty list is a valid
 // answer: nothing callable.
@@ -294,6 +329,14 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request, name string,
 		return http.StatusBadGateway
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// A redirect is refused, not relayed: the client never followed it
+	// (see Deps.client), and a Location header must not leak an escape
+	// hatch from the committed upstream table.
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		slog.Error("gateway: tool upstream answered a redirect; refusing", "upstream", name, "status", resp.StatusCode)
+		http.Error(w, "tool upstream redirected (refused)", http.StatusBadGateway)
+		return http.StatusBadGateway
+	}
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
@@ -328,6 +371,11 @@ func (h *handler) forwardProjected(w http.ResponseWriter, r *http.Request, cred 
 	if err != nil {
 		slog.Error("gateway: reading tools/list response", "upstream", name, "err", err)
 		http.Error(w, "tool upstream response unreadable", http.StatusBadGateway)
+		return
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		slog.Error("gateway: tool upstream answered a redirect; refusing", "upstream", name, "status", resp.StatusCode)
+		http.Error(w, "tool upstream redirected (refused)", http.StatusBadGateway)
 		return
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
