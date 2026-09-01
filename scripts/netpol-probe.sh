@@ -67,13 +67,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
-ollama_ip=$($KUBECTL -n ollama get svc ollama -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
-pg_ip=$($KUBECTL -n "$NAMESPACE" get svc kaimahi-postgres -o jsonpath='{.spec.clusterIP}')
-test -n "$pg_ip" || { echo "kaimahi-postgres Service not found — deploy the plane first (make plane)" >&2; exit 1; }
+# Under errexit a bare `var=$(cmd)` exits on cmd's failure before any
+# message, so capture the outcome explicitly to say what to do about it.
+if ! pg_ip=$($KUBECTL -n "$NAMESPACE" get svc kaimahi-postgres -o jsonpath='{.spec.clusterIP}' 2>&1) || [ -z "$pg_ip" ]; then
+  echo "kaimahi-postgres Service not found — deploy the plane first (make plane): $pg_ip" >&2
+  exit 1
+fi
+# Only a genuine NotFound may drop the ollama column (a Copilot-only
+# managed cluster has no ollama, D15). Any other failure — RBAC, a
+# transient API error, a wrong context — must not quietly turn into
+# "nothing to check" and shrink every row's assertions.
+ollama_ip=""
+if out=$($KUBECTL -n ollama get svc ollama -o jsonpath='{.spec.clusterIP}' 2>&1); then
+  ollama_ip=$out
+elif ! printf '%s' "$out" | grep -q 'NotFound'; then
+  echo "cannot look up the ollama Service (refusing to skip its column): $out" >&2
+  exit 1
+fi
 if [ -z "$ollama_ip" ]; then
-  # No ollama (a Copilot-only managed cluster): the ollama column is
-  # skipped rather than faked.
-  echo "note: no ollama Service — skipping the ollama column" >&2
+  echo "note: no ollama Service on this cluster — the ollama column is SKIPPED, not asserted" >&2
 fi
 
 # The check program every probe runs. Prints one RESULT line per target
@@ -145,9 +157,19 @@ EOF
   $KUBECTL -n "$ns" logs "$name"
 }
 
-# exec_probe <ns> <deploy> — the same checks inside a REAL pod.
+# exec_probe <ns> <deploy> <loopback-port> — the same checks inside a
+# REAL pod, prefixed with a POSITIVE the pod must pass: a connect to its
+# own listener over loopback, which no NetworkPolicy governs. Without
+# it, an image with no `nc` (exit 127) would print "blocked" down the
+# whole row and the run would report the boundary enforced without the
+# pod ever having dialed anything — the exact fail-open shape the
+# board's probe rule forbids. The throwaway pods do not need this: the
+# control pod runs the same image and must read "reachable" first.
 exec_probe() {
-  $KUBECTL -n "$1" exec "deploy/$2" -- sh -c "$checks"
+  $KUBECTL -n "$1" exec "deploy/$2" -- sh -c "
+r() { n=\$1; shift; if \"\$@\" >/dev/null 2>&1; then echo \"RESULT \$n reachable\"; else echo \"RESULT \$n blocked\"; fi; }
+r loopback nc -z -w 3 127.0.0.1 $3
+$checks"
 }
 
 failures=0
@@ -205,10 +227,11 @@ run_probe "$NAMESPACE" "netpol-slack-$suffix" '{"app.kubernetes.io/name": "kaima
 expect slack "$work/slack" dns=reachable ollama=blocked postgres=blocked net443=reachable net80=blocked
 
 echo "== kaimahi-postgres (exec into the real pod)"
-exec_probe "$NAMESPACE" kaimahi-postgres > "$work/postgres"
-# The postgres column is the pod dialing its own Service IP; not a
-# boundary statement either way, so it is not asserted.
-expect postgres "$work/postgres" dns=blocked ollama=blocked postgres=skip net443=blocked net80=blocked
+exec_probe "$NAMESPACE" kaimahi-postgres 5432 > "$work/postgres"
+# loopback is the row's positive (see exec_probe). The postgres column
+# is the pod dialing its own Service IP; not a boundary statement either
+# way, so it is not asserted.
+expect postgres "$work/postgres" loopback=reachable dns=blocked ollama=blocked postgres=skip net443=blocked net80=blocked
 
 if [ "$failures" -ne 0 ]; then
   echo "netpol-probe: $failures expectation(s) failed" >&2

@@ -146,17 +146,30 @@ jobs:
                   and sorted(p["spec"].get("policyTypes", [])) == ["Egress", "Ingress"]
                   and not p["spec"].get("ingress") and not p["spec"].get("egress")]
           assert len(deny) == 1, f"expected exactly one default-deny(Ingress+Egress), found {len(deny)}"
-          private = {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"}
+          # The full exclusion list the manifests carry — trimming any of
+          # it must fail here, not only the four RFC1918/link-local ones.
+          private = {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+                     "169.254.0.0/16", "100.64.0.0/10", "127.0.0.0/8"}
           copilot = yaml.safe_load(pathlib.Path("k8s/egress-copilot.yaml").read_text())
           for p in pols + [copilot]:
+              name = p["metadata"]["name"]
               for rule in p["spec"].get("egress") or []:
-                  for peer in rule.get("to") or []:
+                  # A rule with no `to` allows its ports to EVERY destination,
+                  # cluster included — the exact thing the except list exists
+                  # to prevent. Refuse it outright rather than skip it.
+                  assert rule.get("to"), f"{name}: egress rule without `to` (allows all destinations)"
+                  for peer in rule["to"]:
                       ib = peer.get("ipBlock")
-                      if ib and ib["cidr"] == "0.0.0.0/0":
-                          missing = private - set(ib.get("except") or [])
-                          assert not missing, f'{p["metadata"]["name"]}: internet rule does not exclude {missing}'
-                          ports = {(x.get("protocol", "TCP"), x["port"]) for x in rule.get("ports") or []}
-                          assert ports == {("TCP", 443)}, f'{p["metadata"]["name"]}: internet rule ports {ports} != 443 only'
+                      if not ib:
+                          continue
+                      # Every ipBlock is an internet allowance here (in-cluster
+                      # peers are selected by label), so every one must be the
+                      # 0.0.0.0/0-minus-private shape and 443 only.
+                      assert ib["cidr"] == "0.0.0.0/0", f'{name}: ipBlock {ib["cidr"]} — use 0.0.0.0/0 with the private except list'
+                      missing = private - set(ib.get("except") or [])
+                      assert not missing, f"{name}: internet rule does not exclude {missing}"
+                      ports = {(x.get("protocol", "TCP"), x["port"]) for x in rule.get("ports") or []}
+                      assert ports == {("TCP", 443)}, f"{name}: internet rule ports {ports} != 443 only"
           assert copilot["metadata"]["name"] not in {p["metadata"]["name"] for p in pols}, "Copilot allowance leaked into k8s/plane/"
           print(f"{len(pols)} plane policies; internet allowances are 443-only with private ranges excluded")
           EOF

@@ -86,9 +86,19 @@ The proxy is a distroless image with nothing to exec, and CI deploys no
 Slack server (no token, no spare CPU), so those two rows use throwaway
 pods carrying the same labels the real pods carry. The policies select
 on labels, so the rules evaluated are the same rules. The Postgres row
-is the real pod. Probe pods run as non-root with no resource requests,
-so they schedule even on the full CI node, and they are deleted when
-the probe exits.
+is the real pod, and it carries its own positive: a connect to its own
+listener over loopback, which no policy governs, must succeed before
+its "blocked" results count. Probe pods run as non-root with no
+resource requests, so they schedule even on the full CI node, and they
+are deleted when the probe exits.
+
+One assumption to know about on a multi-node cluster: the control pod
+and the policed pods may land on different nodes, and the attribution
+argument assumes both nodes have the same route out. On a managed
+cluster with mixed node pools, or a pool missing its NAT route, a
+"blocked" on the policed side could be the node rather than the policy.
+Single-node kind cannot hit this; on AKS, pin the probe pods to one
+node pool if the result looks surprising.
 
 What was verified where:
 
