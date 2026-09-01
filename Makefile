@@ -145,7 +145,33 @@ CHAT_PORT ?= 8083
 # The CLI defaults to localhost:8083; name the port we actually opened so
 # it can never fall back to someone else's.
 KAGENT_INVOKE = $(KAGENT) --kagent-url http://127.0.0.1:$(CHAT_PORT) invoke
+
+# $(1) is the agent whose Service must be servable; $(2) is the command.
+#
+# Waiting for the agent's ENDPOINTS is not redundant with `use`'s
+# `rollout status` + Agent-Ready wait. Both of those can return while the
+# Service still has no ready endpoint: during a preset-switch rollout the
+# old pod is already out of the endpoint list and the new one may not be
+# in it yet. kube-proxy REJECTS a connection to a Service with no ready
+# endpoints, so the controller reports
+#   dial tcp <clusterIP>:8080: connect: connection refused
+# which reads like a broken agent rather than a one-second race. Observed
+# in CI on this branch. Ready is not the same as reachable, so check the
+# thing that actually has to be true.
 define kagent_forward
+for _ in $$(seq 1 120); do \
+	eps=$$($(KUBECTL) -n kagent get endpoints $(1) \
+		-o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null); \
+	[ -n "$$eps" ] && break; \
+	sleep 1; \
+done; \
+eps=$$($(KUBECTL) -n kagent get endpoints $(1) \
+	-o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null); \
+if [ -z "$$eps" ]; then \
+	echo "agent '$(1)' has no ready Service endpoints after 120s — refusing to invoke" >&2; \
+	echo "  (a chat now would fail with 'connection refused' from the controller)" >&2; \
+	exit 1; \
+fi; \
 pf_out=$$(mktemp); \
 $(KUBECTL) -n kagent port-forward --address 127.0.0.1 \
 	svc/kagent-controller $(CHAT_PORT):8083 >"$$pf_out" 2>&1 & \
@@ -163,7 +189,7 @@ if [ -z "$$ready" ]; then \
 	echo "  the task would have run THERE. Use CHAT_PORT=<free port>." >&2; \
 	exit 1; \
 fi; \
-$(1)
+$(2)
 endef
 
 # The `up` journey differs by environment. On kind it is unchanged. On AKS
@@ -324,7 +350,7 @@ tools-agent: guard
 ## chat: one question to an agent via the kagent CLI (override with TASK=...,
 ## AGENT=hello-tools for the P3 tools agent)
 chat: $(KAGENT)
-	@$(call kagent_forward,$(KAGENT_INVOKE) --agent $(AGENT) --task "$(TASK)")
+	@$(call kagent_forward,$(AGENT),$(KAGENT_INVOKE) --agent $(AGENT) --task "$(TASK)")
 
 ## model-secret: store an API key as a K8s Secret, stdin-only (paste, Enter, Ctrl-D).
 # The key never touches argv, env listings, YAML, or logs; tr strips the
@@ -671,7 +697,7 @@ slack-post: $(KAGENT)
 	@case "$(SLACK_CHANNEL)" in \
 		*[!A-Z0-9]*) echo 'invalid SLACK_CHANNEL (want a channel ID like C0XXXXXXXXX, not a #name)' >&2; exit 1 ;; \
 	esac
-	@$(call kagent_forward,$(KAGENT_INVOKE) --agent hello-slack --task "$$KAIMAHI_SLACK_TASK")
+	@$(call kagent_forward,hello-slack,$(KAGENT_INVOKE) --agent hello-slack --task "$$KAIMAHI_SLACK_TASK")
 
 ## slack-down: remove the P5a demo (agent, gateway seam, MCP server).
 ## The Secrets are left alone — delete them explicitly to revoke.
