@@ -97,8 +97,10 @@ and the policed pods may land on different nodes, and the attribution
 argument assumes both nodes have the same route out. On a managed
 cluster with mixed node pools, or a pool missing its NAT route, a
 "blocked" on the policed side could be the node rather than the policy.
-Single-node kind cannot hit this; on AKS, pin the probe pods to one
-node pool if the result looks surprising.
+Single-node kind cannot hit this, and the verified AKS run below was
+also one node, so the caveat has not been exercised anywhere yet; on a
+multi-node AKS cluster, pin the probe pods to one node pool if the
+result looks surprising.
 
 What was verified where:
 
@@ -107,13 +109,23 @@ What was verified where:
   The governed chat, the governed tool call, the gateway denial, the
   approval cycles, and the Slack cycle all run with the policies in
   place, because the policies deploy before any of them.
-- **AKS**: not exercised in this lane. The P5b provisioning script
-  creates the cluster without a `--network-policy` engine, and on such
-  a cluster these policies are present and inert. Before trusting them
-  there, create the cluster with a network policy engine (`azure`,
-  `calico` or `cilium` in `az aks create`) and run
-  `TARGET=aks make netpol-verify`. Expect the probe to say so loudly if
-  enforcement is missing.
+- **AKS** (Azure CNI Overlay powered by Cilium): the whole matrix
+  passes on a real cluster, verified 2026-09-01 and then deleted
+  (Kubernetes 1.35.7, Cilium 1.18, one `Standard_B4ms` node,
+  `TARGET=aks make netpol-verify`; the full redacted output is in the
+  PR that shipped it). The unlabeled pod, which is the enforcement check
+  itself, was blocked on every column; the proxy-shaped pod reached 443
+  because the Copilot allowance is always applied on that target; a
+  governed Copilot chat completed and ledgered through the boundary
+  afterwards. **Only because the cluster was provisioned with a policy
+  engine.** A bare `az aks create` builds a cluster whose CNI ignores
+  NetworkPolicy, which is what the first AKS run here had and what the
+  probe was written to catch. `scripts/aks-up.sh` now always passes
+  `--network-policy` (Cilium by default, `azure` and `calico` accepted,
+  nothing else) and refuses to reuse an existing cluster on a different
+  engine, since existing clusters are not migrated. The choice and the
+  flags are in [aks.md](aks.md). On this target the probe skips the
+  ollama column, since no ollama Service exists there, and says so.
 
 ## Copilot: the proxy's opt-in internet allowance
 
@@ -182,7 +194,10 @@ not a phrasing problem, and this file will say so until it is closed.
   the enforcer's pod informer has seen it (measured three times; the
   probe pods sleep past it, and the comment in the script records the
   numbers). The plane's workloads are long-lived, so this affects a pod
-  that dials out immediately at start, not the proxy or the ledger.
+  that dials out immediately at start, not the proxy or the ledger. On
+  the AKS Cilium run the probe was also run once with the settle wait
+  set to zero and every unlabeled-pod check was still blocked; that is
+  one run, not a measurement of the window, and the settle stays in.
 - **IPv6.** kind is IPv4-only by default and the rules are IPv4. A
   dual-stack cluster needs a matching `::/0`-with-exceptions rule or
   the internet allowances silently do not apply to v6.

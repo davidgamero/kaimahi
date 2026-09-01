@@ -12,9 +12,13 @@ image path replaces the kind side-load, and one real governed run on a
 real AKS cluster happened, and was then **deleted**. This is a doc for
 reproducing that run, not a description of a maintained environment.
 
-> **Scope, honestly.** One verified run on 2026-09-01, then torn down.
-> AKS is *demonstrated*, not *maintained*: there is no standing cluster,
-> no scheduled job re-proving it, and no Azure credential in CI, ever.
+> **Scope, honestly.** Two verified runs on 2026-09-01, each torn down
+> the same day: the first proved the governed Copilot path on a managed
+> cluster; the second proved the NetworkPolicy boundary is **enforced**
+> there, which the first cluster, created without a policy engine,
+> could not have. AKS is *demonstrated*, not *maintained*: there is no
+> standing cluster, no scheduled job re-proving it, and no Azure
+> credential in CI, ever.
 > CI stays on kind and keyless. What re-runs on every PR is the
 > portability *logic* (the context guard's decisions and the registry
 > render), not the cloud.
@@ -32,6 +36,7 @@ none:
 | Grant a cluster pull rights | `az aks update --attach-acr` | a line in `scripts/aks-up.sh` |
 | Environment-specific manifests | Kustomize, Helm, envsubst | **none of them**, see below |
 | Provision AKS | `az aks create` | a parameterised, tagged wrapper |
+| Enforce NetworkPolicy | the cluster's CNI (Cilium, here) | a flag the wrapper always passes, and a probe that proves it took |
 
 The one place a tool would have been the obvious reach is the
 environment-dependent `imagePullPolicy`. Kustomize's `images:`
@@ -137,6 +142,7 @@ export ACR_NAME=<globally-unique-name>     # 5-50 chars, alphanumeric
 export AKS_CLUSTER=kaimahi-demo            # also the kube-context name
 export AKS_LOCATION=westus3                # see "What this costs"
 export TARGET=aks
+# export AKS_NETWORK_POLICY=cilium         # the default; azure | calico also accepted
 ```
 
 ### 1. Provision: resource group + private ACR + AKS
@@ -147,12 +153,44 @@ make aks-cluster
 
 This creates the group **tagged** `kaimahi-ephemeral`, a **private** ACR
 (Basic, admin user disabled; never a public image), and a one-node AKS
-cluster on the **Free** control-plane tier, then grants the cluster's
-kubelet identity `AcrPull` and writes the kubeconfig context.
+cluster on the **Free** control-plane tier **with a NetworkPolicy
+engine**, then grants the cluster's kubelet identity `AcrPull` and
+writes the kubeconfig context.
 
 It refuses to build inside a resource group it did not create, so a
 mistyped group name cannot quietly scatter resources through someone
 else's environment.
+
+#### The policy engine is not optional
+
+A bare `az aks create` builds a cluster whose CNI **ignores
+NetworkPolicy**. The objects apply, `kubectl` lists them, and they block
+nothing, which is the "worse than none" case [egress.md](egress.md)
+warns about, and it is exactly what the first AKS run here had. The
+script now always passes `--network-policy`, and refuses `none` or an
+empty value outright rather than treating it as the operator's choice.
+
+| `AKS_NETWORK_POLICY` | What it is | Why |
+|---|---|---|
+| `cilium` (**default**) | Azure CNI Overlay powered by Cilium: eBPF dataplane, `--network-dataplane cilium --network-policy cilium` | Microsoft's recommendation for new clusters, and the engine the other two are being retired in favour of. **Verified** enforcing the plane's whole matrix (below). |
+| `azure` | Azure Network Policy Manager, iptables | Accepted for clusters that need it. Retiring: end of support on Linux is 2028-09-30. Not exercised here. |
+| `calico` | Azure-managed Calico | Accepted. Not exercised here. |
+
+All three ride Azure CNI Overlay (`--network-plugin azure
+--network-plugin-mode overlay`): kubenet is retiring too (2028-03-31)
+and Azure NPM never supported it. The script reads the engine back from
+the control plane after the create and fails if it does not match, but
+that only proves the flag took. Enforcement is a property of the CNI,
+which the API server cannot vouch for, so the proof is step 6's
+`make netpol-verify`.
+
+**Existing clusters are not migrated.** If the cluster already exists
+on a different engine, or on none, the script refuses and says what
+the cluster actually has. `az aks update --network-policy` exists for
+`azure` and `calico` but reimages every node pool at once, and moving
+to Cilium is a dataplane upgrade with its own prerequisites; neither
+belongs behind a script whose contract is "create". The cluster is
+ephemeral, so the honest fix is `make aks-down` and a fresh create.
 
 Everything after this point acts on a **remote** context, so confirm once
 for the session:
@@ -229,7 +267,15 @@ make ledger                                   # the row it wrote
 make budget CAP_TOKENS=1 && make chat         # fails closed
 make chat AGENT=hello-tools TASK='List the configmaps in the default namespace.'
 make tool-audit                               # the tool call, allowed + audited
+make netpol-verify                            # the boundary is ENFORCED, not just present
 ```
+
+`netpol-verify` is the step that makes the policy engine above a fact
+rather than a flag. It runs the probe from [egress.md](egress.md): a
+control pod that must reach everything, then an unlabeled pod in the
+plane's namespace that must reach **nothing**. On `TARGET=aks` the probe
+expects the proxy to reach the internet on 443, because the Copilot
+allowance from step 3 is always applied there.
 
 Or the whole journey in one command, once the exports from step 1 are set:
 
@@ -280,9 +326,11 @@ Measured choices, not guesses (Azure retail prices API, 2026-09-01):
 | Load balancer | AKS default (Standard) | ~$0.025/hr; created for egress even with no `LoadBalancer` Service |
 | Disks | 32 GiB OS disk + the 1 Gi Postgres PVC | rounded up to Azure's minimum billable sizes |
 
-A run of a few hours is **well under US$2**. The verified run existed for
-about 29 minutes (17:52–18:22 UTC) and cost roughly **US$0.10**. The
-dominant risk to the bill is not the rate. It is forgetting step 7.
+A run of a few hours is **well under US$2**. The first verified run
+existed for about 29 minutes (17:52–18:22 UTC) and cost roughly
+**US$0.10**; the NetworkPolicy run existed for about 26 minutes
+(22:39–23:05 UTC) and cost about the same. Cilium adds no line item.
+The dominant risk to the bill is not the rate. It is forgetting step 7.
 
 ## What differs from kind
 
@@ -292,6 +340,7 @@ dominant risk to the bill is not the rate. It is forgetting step 7.
 | **Plane image** | `docker build` + `kind load`, `imagePullPolicy: Never` | `az acr build` into a **private** ACR, pulled via the kubelet identity's `AcrPull` |
 | **Agent's initial model** | starts on the keyless preset, governed later | created **on** `governed-copilot`; governance precedes the agents |
 | **Storage** | the kind default `standard` provisioner | the cluster's default StorageClass, which on AKS 1.35.7 is one literally **named `default`** (`disk.csi.azure.com`), *not* `managed-csi`, which also exists but is not marked default. The PVC deliberately sets **no** `storageClassName`, so it takes whichever class the cluster defaults to; it bound `1Gi RWO` first try. Verified, not assumed: the assumption going in was `managed-csi`. |
+| **NetworkPolicy** | enforced by kindnetd (kube-network-policies), nothing to configure | enforced **only** because `aks-up.sh` provisions a policy engine (Cilium by default). A cluster created without one applies the same manifests and blocks nothing. `make netpol-verify` is the proof either way. |
 | **Mutating commands** | proceed with a banner | require confirmation naming the context |
 | **`make down`** | `kind delete cluster` | deletes the whole tagged resource group |
 | **Slack** | demonstrated ([slack.md](slack.md)) | **deliberately not deployed.** Putting a real workspace token into a temporary cloud cluster is credential exposure for little added proof. The wiring is plain CRDs plus one `tool_upstreams` entry, nothing kind-specific, but it is not demonstrated here. |
@@ -363,14 +412,42 @@ Azure identifiers redacted):
 - teardown: resource group deleted, and re-checked gone. 0 clusters, 0
   registries, 0 kubeconfig contexts left.
 
+Verified live on a second AKS cluster the same day (Kubernetes 1.35.7,
+Azure CNI Overlay, **Cilium 1.18** as dataplane and policy engine, 1 ×
+`Standard_B4ms`, westus3; the full redacted probe output is in the PR
+that shipped it):
+
+- `aks-up.sh` provisioning with `--network-policy cilium` and reading
+  the engine back from the control plane, then, on a re-run, taking the
+  existing-cluster path and accepting the cluster because its engine
+  matched;
+- the whole `make up` journey on that cluster: kagent, the Copilot
+  Secret, the plane from the private ACR, governance, both agents;
+- `TARGET=aks make netpol-verify`: **boundary enforced as written**. The
+  unlabeled pod in the plane's namespace, which is the enforcement check
+  itself, was blocked on DNS, Postgres, 443 and 80; the proxy-shaped
+  pod reached DNS, Postgres and 443 (the Copilot allowance) and was
+  blocked on 80; the Slack-shaped pod reached DNS and 443 only; the
+  real Postgres pod reached its own loopback and nothing else. The
+  ollama column is skipped on this target, with a note, because no
+  ollama Service exists there;
+- a governed Copilot chat completing **through** that boundary
+  afterwards, and its ledger row (`hello-world copilot gpt-5-mini 335
+  239 0 unpriced 200`);
+- teardown, re-checked gone.
+
+The multi-node caveat in [egress.md](egress.md) was not exercised: both
+runs were single-node, which is the script's default.
+
 Also verified: `aks-down` **refuses** a resource group that lacks the tag
 `aks-up.sh` sets, even when given a correct confirmation. Tested against a
 throwaway untagged group, which survived.
 
 **Not** verified on AKS: the Slack path (deliberate, above), Ollama
-(deliberate), NetworkPolicy egress (a parallel lane is building it), and
-anything about durability, upgrades, node replacement or multi-node
-scheduling. The cluster existed for about half an hour and was deleted.
+(deliberate), the `azure` and `calico` policy engines (accepted by the
+script, never run), and anything about durability, upgrades, node
+replacement or multi-node scheduling. Each cluster existed for well
+under an hour and was deleted.
 
 ## Limitations
 
@@ -382,7 +459,12 @@ to this path:
   run; only the portability logic runs in CI.
 - **Copilot only.** No keyless model on AKS, so no free tier there.
 - **Slack is not deployed on AKS**, by choice.
-- **The AKS cluster is not hardened** beyond a private registry and a
-  tagged, ephemeral resource group: default node SSH access, no
-  NetworkPolicy, no durability story. It is a demo that should be torn
-  down the same day.
+- **The AKS cluster is not hardened** beyond a private registry, a
+  tagged, ephemeral resource group, and the plane's NetworkPolicy
+  boundary: default node SSH access, no durability story, and the
+  `kagent` and `ollama` namespaces are as unpoliced as on kind. It is a
+  demo that should be torn down the same day.
+- **Only Cilium is verified.** `azure` and `calico` are accepted by the
+  script because the flag is the same shape, but no run here has proven
+  either enforces the matrix. Run `make netpol-verify` before trusting
+  one.
