@@ -140,6 +140,18 @@ jobs:
       # proxy 25m) to fit the 2-CPU runner's request ceiling (P3 delta).
       # Chat rides the governed ollama path via the proxy; the ledger row
       # and the budget denial are asserted fail-closed.
+      # Preset switches roll the agent Deployment with maxSurge=1, so the
+      # node must fit a SECOND agent pod's requests while the old one
+      # drains. With the plane deployed the 2-CPU node cannot fit a
+      # second 100m/384Mi hello-world, so shrink its runtime requests to
+      # hello-tools' proven values (P3 delta) via the Agent CRD — the P1
+      # artifact k8s/hello-world.yaml stays untouched; this is a CI
+      # sizing patch, not a topology change.
+      - name: Shrink hello-world requests so preset switches can surge
+        run: |
+          kubectl --context kind-kaimahi-p1 -n kagent patch agent hello-world \
+            --type merge -p '{"spec":{"declarative":{"deployment":{"resources":{"requests":{"cpu":"50m","memory":"320Mi"},"limits":{"memory":"1Gi"}}}}}}'
+          kubectl --context kind-kaimahi-p1 -n kagent rollout status deploy/hello-world --timeout=300s
       - name: Deploy the governance plane
         run: make plane
       - name: Issue governed credential and switch agent through the proxy
