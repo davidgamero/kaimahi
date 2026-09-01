@@ -101,11 +101,11 @@ prefix.
 | P4c: approvals/permits (D13) | W7 worker | PR #17 MERGED (dd08f00); coordinator verified both approval cycles independently pre-merge (delta sheet below) | lane closed — ARC COMPLETE |
 | P5a: governed Slack connector (D14) | W8 worker | PR #18 MERGED; coordinator verified (custody, and the discovery finding reproduced independently); delta sheet below | lane closed |
 | P5b: cluster portability + real AKS run (D14/D15) | W9 worker | PR #19 MERGED; coordinator verified (leak scan, teardown, guard, kind regression) — delta sheet below | lane closed |
-| P7a: NetworkPolicy egress | unassigned | GO — W10 prompt below | PARALLEL SET (see rules below); own cluster `netpol-verify` |
-| P7b: P6 inbound connectors | unassigned | GO — W11 prompt below | PARALLEL SET; own cluster `inbound-verify`; the big one |
-| P7c: docs restructure (capability, not chronology) | unassigned | GO — W12 prompt below | PARALLEL SET; owns `docs/` structure; no cluster needed |
+| P7a: NetworkPolicy egress | W10 worker | PR #23 OPEN — awaiting coordinator verification (negative test, kindnet enforcement, P1–P5 unregressed) | PARALLEL SET (see rules below); own cluster `netpol-verify` |
+| P7b: P6 inbound connectors | W11 worker | PR #24 OPEN — awaiting coordinator verification (auth-before-work, replay, budgets/ledger, bounded queue) | PARALLEL SET; own cluster `inbound-verify`; the big one |
+| P7c: docs restructure (capability, not chronology) | W12 worker | PRs #21/#22 MERGED (8a3e568, 29e031c) — coordinator verification + delta sheet owed | PARALLEL SET; owns `docs/` structure; no cluster needed |
 | CLI decisions + PR #16 review | user + coordinator | awaiting the user's five CLI-PROPOSAL rulings | not a build lane; parallelises with everything |
-| CI flake: agent-readiness race (P5b finding) | coordinator — PR #20 CHECKS-GREEN at 492cdfb after a review round (retry anchored to the controller's whole error line; slack-post retries only unambiguous failures), awaiting user merge | User ruling 2026-09-01: fold into the next phase rather than a standalone micro-lane — as its **FIRST commit, before feature work**, so the lane's own CI is not reddened by someone else's race | retry predicate covers `connection refused` but not `EOF`; main went red once then green on re-run. Widen narrowly (EOF, connection-reset) so it cannot mask a real outage — see P5b delta sheet |
+| CI flake: agent-readiness race (P5b finding) | coordinator — PR #20 MERGED (73917e9) after a review round: retry anchored to the controller's whole error line; slack-post retries only unambiguous failures | User ruling 2026-09-01: fold into the next phase rather than a standalone micro-lane — as its **FIRST commit, before feature work**, so the lane's own CI is not reddened by someone else's race | retry predicate covers `connection refused` but not `EOF`; main went red once then green on re-run. Widen narrowly (EOF, connection-reset) so it cannot mask a real outage — see P5b delta sheet |
 | NetworkPolicy egress (promoted 2026-09-01) | — | candidate, not GO | P5a put a deliberate internet-egress pod in the cluster; three non-network layers bound blast radius today. Strongest-argument-yet per P5a's own accounting |
 | P6: inbound connectors (webhooks/user APIs) | — | parked candidate; own blindspot pass when reached | genuine net-new surface: ingress auth, replay, rate limits, every event causes spend |
 | CLI prototype (Tatsinnit, PR #16) | teammate | OPEN, unreviewed — a working `kaimahi agent create` prototype; board holds the CLI as under-consideration/not-GO with five open decisions reserved for the user (docs/CLI-PROPOSAL.md) | awaiting user ruling before coordinator review |
@@ -131,6 +131,7 @@ prefix.
 | D11 | 2026-08-31 | P4 shaping: (1) the metering/enforcing LLM proxy leads (P4a); MCP gateway (P4b) and approvals (P4c) follow as separate lanes. (2) The durable store is in-cluster Postgres. (3) The P4 demo is CLI-only | ruled via options: "LLM proxy first (Recommended)", "In-cluster Postgres (Recommended)", "Yes, CLI only (Recommended)" |
 | D12 | 2026-09-01 | README positioning: CLI-first/incubation framing leads; the governance plane is presented as the incubated thesis. Supersedes D6's framing (D6's substance — the five governance controls and the AKS/Foundry paragraph — is retained). The agent-first scenario doc with four named authors is published under MIT. Both ratified by the user merging PRs #10/#11 after coordinator review | "sure, go ahead" (post the reviews) → "ok, that merged as well" — ratified by merge |
 | D15 | 2026-09-01 | P5b shaping: (1) the plane image goes to a **private ACR** (`az acr build` + AKS attach) — deliberately NOT a public ghcr image, which would be an outward-facing artifact and a soft public claim on the provisional name while D9's gates are open; (2) the **worker creates and tears down** the AKS cluster with the already-authenticated `az` CLI (same pattern as `gh`), with teardown MANDATORY at lane end and a reported spend estimate; (3) the AKS path is **Copilot-only — no Ollama** (the keyless path is already CI-proven on kind every PR; AKS's job is proving the plane runs on a managed cluster with a real model) | ruled via options: "ACR, private (Recommended)", "Worker creates and tears down (Recommended)", "Copilot-only on AKS (Recommended)" |
+| D16 | 2026-09-01 | Repo moved to a GitHub ORGANIZATION: **kaimahi-agents/kaimahi** (public). Old paths redirect (gambtho/kaimahi, gambtho/tomte). All `gh -R` targets, worker prompts and docs should name the org from now on. Note for D9: creating an org named for the project is a stronger public claim on the still-provisional name than the repo rename was; D9's gates (cultural read, trademark counsel) remain open and are now more urgent, and NAMING.md's "nothing here is claimed" is no longer strictly true | "i moved the repo to an oranization - https://github.com/kaimahi-agents/kaimahi" |
 | D14 | 2026-09-01 | P5 direction: the **undeniable demo** — not a new capability arc but making the built one legible and credible. Rulings: (1) outbound connector platform is **Slack** (via existing MCP servers, no connector code); (2) AKS work goes all the way — cluster portability AND a real AKS deployment with evidence (accepts Azure spend + credentials in a worker session); (3) demos run on the **Copilot** preset while **CI stays keyless on ollama** (public fork-exposed repo — no repo secrets in CI, ever). Rationale on the board: everything governed so far protects an agent that lists ConfigMaps; posting to a channel humans read is the first consequential action, and it makes the approval gate the point rather than the plumbing | "sure, that's undeniable demo makes sense" — then ruled via options: "Slack (Recommended)", "Portability + real AKS run (Recommended)", "Copilot for demo, ollama for CI (Recommended)" |
 | D13 | 2026-09-01 | P4c approval model: TIME-BOXED PERMITS — a denied action files a pending request; approval grants it bounded (expiry by duration and/or use count) and compiles into the existing allowlist/budget rows; deny-and-retry mechanics, no held-open calls. Demo scenarios: tool-access widening (k8s_get_events, read-only) AND budget overage; the P3 tool-server read-only posture stays untouched (write-tool demo deferred) | ruled via options: "Time-boxed permits (Recommended)"; "Widen tool access (Recommended), Budget overage (Recommended)" |
 
@@ -913,6 +914,17 @@ Suite green at every commit. Branch from current main; PR targets main;
 no stacked bases. Lane ends at PR-open-with-checks-green — do not merge.
 Report deviations in the PR's "Deviations & decisions" section.
 ```
+
+## Post-move follow-up (D16)
+
+- `plane/go.mod` is `module github.com/gambtho/kaimahi/plane` with 36
+  imports of that path. Nothing fetches it (internal module), so builds are
+  unaffected — but the canonical path should become
+  `github.com/kaimahi-agents/kaimahi/plane`. Mechanical sed across plane/,
+  SEQUENCED AFTER #23/#24 merge (both touch plane/; doing it now would
+  conflict with #24 everywhere). Also `docs/CLI-PROPOSAL.md`'s
+  `npx github:gambtho/kaimahi` and NAMING.md's present-tense owner lines.
+  Small coordinator PR when the lanes are in.
 
 ## Parallel set rules (P7a / P7b / P7c, 2026-09-01)
 
