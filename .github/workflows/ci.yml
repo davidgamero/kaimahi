@@ -36,10 +36,20 @@ jobs:
           sys.exit(1 if failed else 0)
           EOF
       - name: No secrets in tree
+        # Fail closed: distinguish "no match" (grep exit 1, pass) from both
+        # "match found" (exit 0) and "scanner failed to run" (exit >= 2) —
+        # a bare `! grep` lets a grep error pass the gate.
         run: |
-          ! grep -rEIn --exclude-dir=.git \
-            '(sk[-]ant-|sk[-]proj-|api[_-]?key[[:space:]]*[:=][[:space:]]*["'"'"'][A-Za-z0-9_-]{20,})' . \
-            || { echo "possible credential committed"; exit 1; }
+          set +e
+          grep -rEIn --exclude-dir=.git \
+            '(sk[-]ant-|sk[-]proj-|api[_-]?key[[:space:]]*[:=][[:space:]]*["'"'"'][A-Za-z0-9_-]{20,})' .
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "possible credential committed"; exit 1
+          elif [ "$rc" -ne 1 ]; then
+            echo "secret scan failed to run (grep exit $rc)"; exit 1
+          fi
 
   # P4a: the governance plane's Go module — build, vet, gofmt, tests.
   # A separate quick job so proxy logic failures surface in seconds, not

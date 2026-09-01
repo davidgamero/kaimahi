@@ -1,9 +1,10 @@
 # kaimahi
 
 > **Incubation project.** An idea being worked out in the open. Phases 1–3
-> run and are verified on every commit; the CLI front door and the
-> governance plane are proposals, not products. The name is provisional —
-> see [docs/NAMING.md](docs/NAMING.md).
+> run and are verified on every commit, and the governance plane's first
+> slice — budgets, spend metering, and credential custody for LLM calls —
+> now runs too. The CLI front door and the rest of the plane are proposals,
+> not products. The name is provisional — see [docs/NAMING.md](docs/NAMING.md).
 
 **Scaffold an agent onto Kubernetes from your terminal.** The agent is a YAML
 file. The interface is a command. No dashboard, no SaaS account, no runtime
@@ -168,29 +169,36 @@ get/list/watch ClusterRole that **cannot read Secrets**, with a single-tool
 allowlist on top.
 Details: [docs/P3-RUNBOOK.md](docs/P3-RUNBOOK.md).
 
-> **Both spend and tools are ungoverned today.** A hosted preset sends every
-> conversation to a billed API with no budget or ledger in front of it. A
-> tool-enabled agent acts on the world with no egress enforcement, no tool
-> permits, no approvals, and no audit trail. The demo's own lockdowns are
-> the only limits. That governance is the idea being incubated, and it
-> arrives in phase 4.
+> **Spend can now be governed; tools cannot yet.** `make govern` routes the
+> agent's LLM calls through the in-cluster kaimahi proxy — monthly budgets
+> that fail closed, every call ledgered, and the real upstream credential
+> held only by the proxy ([docs/P4A-RUNBOOK.md](docs/P4A-RUNBOOK.md)). An
+> *ungoverned* hosted preset still bills with no ledger in front of it, and
+> a tool-enabled agent still acts with no egress enforcement, tool permits,
+> or approvals — the demo's own lockdowns are the only limits there until
+> the later phase-4 slices.
 
 ## The thesis: a governance plane
 
 Getting an agent running is the easy part, and it runs today. The open
 question is how you hand one to a team without regretting it. That is the
-idea being incubated — **none of it is built; it is what phase 4 is:**
+idea being incubated — phase 4, arriving in slices:
 
-- **Budgets and spend metering** — every billed call ledgered, even when the
-  surrounding operation fails.
+- **Budgets and spend metering** — *built (P4a)*: every call through the
+  governed preset is ledgered — even denials, even at $0 — and budgets
+  fail closed.
+- **Credential custody** — *built (P4a)*: the agent holds an opaque
+  kaimahi token; real provider keys live only with the proxy and never
+  reach agent pods, YAML, or logs.
 - **Approvals and blast-radius permits** — consequential actions wait for a
-  human yes, scoped to what was approved.
-- **Credential custody** — provider keys never reach agent pods, YAML, or logs.
+  human yes, scoped to what was approved. *Proposed (P4c).*
 - **Egress enforcement** — agents reach only permitted endpoints.
-- **Audit** — who ran what, with which model, at what cost.
+  *Proposed — the MCP gateway slice (P4b).*
+- **Audit** — who ran what, with which model, at what cost. *The ledger
+  (P4a) is the first piece; tool-call audit arrives with P4b.*
 
-It would mount at seams that already exist — the model `baseUrl` and the MCP
-tool server — rather than forking or wrapping the runtime. The delegation
+It mounts at seams that already exist — the model `baseUrl` today, the MCP
+tool server next — rather than forking or wrapping the runtime. The delegation
 journeys that argue for these five specifically are collected in
 `docs/SCENARIOS.md` (proposed separately).
 
@@ -201,7 +209,8 @@ journeys that argue for these five specifically are collected in
 | 1 | Hello world on Kubernetes | **runs** — `make up && make chat`, verified in CI |
 | 2 | Hosted LLM endpoints via ModelConfig | **runs** — presets above |
 | 3 | Connectors/tools via MCP | **runs** — `hello-tools`, real tool call asserted in CI |
-| 4 | Governance plane | thesis, not built |
+| 4a | Governed LLM spend (proxy, budgets, ledger, custody) | **runs** — `make govern`, denial + ledger asserted in CI |
+| 4b/4c | MCP gateway, approvals | thesis, not built |
 | — | `kaimahi create` CLI | proposed — [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) |
 
 Cloud-agnostic — it runs on any conformant Kubernetes — with first-class

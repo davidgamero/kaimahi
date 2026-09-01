@@ -79,8 +79,9 @@ FYI, in plain terms:
   (was `tomte-p1`) and the Copilot token cache moved to
   `~/.config/kaimahi/` — both are one-time local migrations for anyone with
   an existing checkout; see the P1 and P2 runbooks. The coordination board
-  is coordinator-owned and was excluded from that lane, so
-  [COORDINATION.md](COORDINATION.md) still reads "Tomte".
+  is coordinator-owned and was excluded from that lane; the coordinator
+  renamed its present-tense references separately (historical quotes and
+  delta sheets on the board keep the old name verbatim).
 - **Renaming the tree is not the same as clearing the name.** Both D9 gates
   above remain open; the rename lane was explicitly scoped to mechanical
   substitution and kept the no-trademark wording.
