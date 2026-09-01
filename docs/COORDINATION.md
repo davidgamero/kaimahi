@@ -83,6 +83,8 @@ build anything AKS-specific without a survey-backed justification.
 | Rename lane: in-repo tomte → kaimahi (D9/D10) | rename worker | PR #5 MERGED (01f5c3c); coordinator verified (delta sheet below); board renamed by coordinator | lane closed |
 | P4a: metering/enforcing LLM proxy (D11) | unassigned | GO — blindspot pass + D11 shaping done, W4 prompt ready (below) | contended: whole repo (new Go module + k8s + Makefile + CI) |
 | P4b: enforcing MCP gateway / P4c: approvals | — | blocked on P4a merge | no pre-stacked PR bases |
+| Docs: CLI-first framing + naming record | teammate (Tatsinnit) | PR #10 open, checks green, coordinator-reviewed | awaiting: NAMING.md staleness fix; user ruling on README positioning shift (D12 candidate — supersedes D6 framing); README status must be refreshed at P4a close-out |
+| Docs: agent-first scenarios | teammate (Tatsinnit) | PR #11 open, checks green, coordinator-reviewed | awaiting: user confirms the four named authors consent to public credit |
 
 ## Decisions (user rulings, verbatim)
 
