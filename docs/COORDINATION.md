@@ -146,6 +146,12 @@ clone from the archive when P4 port evaluation needs the source.
 - Board is the single coordination doc; coordinator is the only writer.
 - One session owns a contended directory at a time; docs and independent dirs
   parallelize freely.
+- A live cluster is a contended resource like a directory: the shared
+  kaimahi-p1 belongs to the open lane that deploys to it; every other
+  session (coordinator verification included) uses its own
+  `KIND_CLUSTER=<name>` cluster while that lane is open. (Learned
+  2026-09-01: a parallel docs lane's `make plane` from main reverted the
+  P4b worker's in-progress gateway deployment.)
 - Every PR targets main; NO pre-stacked PR bases — each phase waits for its
   predecessor to merge. A GitHub MERGED status is not proof work is on main:
   verify against the tree.
@@ -572,8 +578,11 @@ VOICE — this is half the assignment. Informal, human, direct:
   tool call"), not marketing lines.
 
 Verification is real, docs included: RUN every command you publish,
-against a live cluster (`make up` from main, or the existing kaimahi-p1),
-and paste nothing you did not see. Where output varies (model replies),
+against a live cluster — YOUR OWN cluster, never the shared kaimahi-p1
+(the open P4b lane owns it): `make up KIND_CLUSTER=docs-verify`, the same
+override on every command you run, `make down KIND_CLUSTER=docs-verify`
+when finished (published docs still show the plain commands). Paste
+nothing you did not see. Where output varies (model replies),
 say so instead of presenting one lucky run as typical. Cross-check every
 factual claim against the current tree, not memory — presets, target
 names, paths. In the PR description, list each command block and confirm
