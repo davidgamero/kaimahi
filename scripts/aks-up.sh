@@ -61,10 +61,38 @@ command -v az >/dev/null 2>&1 || { echo "aks-up: the az CLI is not installed" >&
 az account show >/dev/null 2>&1 || {
   echo "aks-up: not logged in — run: az login" >&2; exit 1; }
 
+# `az group exists` prints true/false on stdout, but on failure (expired
+# token, throttled ARM call) it prints nothing there and errors on stderr.
+# Piping it straight into `grep -qx true` cannot tell "does not exist" from
+# "could not ask" — and getting that backwards here is the worst bug in the
+# repo: the caller would fall through to `az group create`, which is
+# idempotent-by-UPDATE and would stamp our ephemeral tag onto a
+# pre-existing group. That tag is the only thing standing between someone
+# else's resource group and `aks-down.sh`.
+#
+# So: accept only a well-formed positive (standing guidance). Anything that
+# is not literally "true" or "false" is an error, not a "no".
+group_exists() { # <rg> -> prints true|false; nonzero if the answer is unusable
+  local out
+  out=$(az group exists --name "$1" 2>/dev/null) || return 1
+  case "$out" in
+    true | false) printf '%s' "$out" ;;
+    *) return 1 ;;
+  esac
+}
+
 # --- resource group -------------------------------------------------------
 # Refuse to touch a pre-existing group. Adopting one would mean teardown
 # later deletes resources this script never created.
-if az group exists --name "$RG" | grep -qx true; then
+if ! rg_state=$(group_exists "$RG"); then
+  echo "aks-up: cannot determine whether resource group '$RG' exists." >&2
+  echo "  Refusing to continue: guessing 'no' here would create-and-TAG a" >&2
+  echo "  group that may already belong to someone else. Check 'az account" >&2
+  echo "  show' / your credentials and re-run." >&2
+  exit 1
+fi
+
+if [ "$rg_state" = true ]; then
   existing=$(az group show --name "$RG" \
     --query "tags.\"$OWNER_TAG_KEY\"" -o tsv 2>/dev/null || true)
   if [ "$existing" != "$OWNER_TAG_VALUE" ]; then
@@ -135,28 +163,48 @@ if [ -z "$acr_id" ] || [ -z "$kubelet_oid" ]; then
   exit 1
 fi
 
-has_acrpull() {
-  az role assignment list --assignee "$kubelet_oid" --scope "$acr_id" \
-    --query "[?roleDefinitionName=='AcrPull'] | length(@)" -o tsv 2>/dev/null
+# Same rule as group_exists: a query that ERRORED must never read as an
+# answer. Returning "" on failure would make `[ "$out" = 0 ]` false and
+# `[ "$out" != 0 ]` true at the same time — skipping the repair, breaking
+# the wait loop on its first pass, and sailing through the final check to
+# print "AcrPull confirmed" with no evidence whatsoever.
+acrpull_count() { # -> prints a count; nonzero if the answer is unusable
+  local out
+  out=$(az role assignment list --assignee "$kubelet_oid" --scope "$acr_id" \
+    --query "[?roleDefinitionName=='AcrPull'] | length(@)" -o tsv 2>/dev/null) || return 1
+  case "$out" in
+    '' | *[!0-9]*) return 1 ;;
+    *) printf '%s' "$out" ;;
+  esac
 }
 
-if [ "$(has_acrpull)" = 0 ]; then
-  echo "aks-up: AcrPull missing — attaching the registry (a few minutes)" >&2
+# Repair when the role is genuinely absent — and also when the answer is
+# unreadable, since attaching is idempotent and the alternative is
+# proceeding on an unknown.
+if ! count=$(acrpull_count) || [ "$count" -eq 0 ]; then
+  echo "aks-up: AcrPull not confirmed — attaching the registry (a few minutes)" >&2
   az aks update --name "$CLUSTER" --resource-group "$RG" \
     --attach-acr "$ACR" --output none
 fi
 
-# Fail closed on the claim itself, and give role propagation a moment:
-# the assignment is created asynchronously, so a create that raced would
-# otherwise surface much later as an unexplained ImagePullBackOff.
+# Fail closed on the claim itself, and give role propagation a moment: the
+# assignment is created asynchronously, so a create that raced would
+# otherwise surface much later as an unexplained ImagePullBackOff. Only a
+# well-formed count >= 1 counts as confirmation.
+confirmed=no
 for _ in $(seq 1 12); do
-  [ "$(has_acrpull)" != 0 ] && break
+  if count=$(acrpull_count) && [ "$count" -ge 1 ]; then
+    confirmed=yes
+    break
+  fi
   sleep 5
 done
-if [ "$(has_acrpull)" = 0 ]; then
-  echo "aks-up: the kubelet identity still has no AcrPull on '$ACR'." >&2
-  echo "  The proxy image would fail to pull. Check whether your account can" >&2
-  echo "  create role assignments, then re-run." >&2
+if [ "$confirmed" != yes ]; then
+  echo "aks-up: could not confirm AcrPull for the kubelet identity on '$ACR'." >&2
+  echo "  Either the assignment is missing, or the role query failed (reading" >&2
+  echo "  role assignments needs Microsoft.Authorization/roleAssignments/read)." >&2
+  echo "  Not claiming success: the proxy image would fail to pull. Re-run" >&2
+  echo "  once you can read role assignments, or grant AcrPull manually." >&2
   exit 1
 fi
 echo "aks-up: AcrPull confirmed" >&2

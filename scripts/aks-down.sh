@@ -36,7 +36,31 @@ command -v az >/dev/null 2>&1 || { echo "aks-down: the az CLI is not installed" 
 az account show >/dev/null 2>&1 || {
   echo "aks-down: not logged in — run: az login" >&2; exit 1; }
 
-if ! az group exists --name "$RG" | grep -qx true; then
+# `az group exists` prints true/false on stdout and nothing there when the
+# call itself fails. Piping into `grep -qx true` collapses "does not exist"
+# and "could not ask" into the same answer — and in THIS script that
+# mistake reports a teardown that never happened: exit 0, "nothing to
+# delete", kubeconfig entries removed (taking away the easiest way to
+# notice), and a cluster quietly still billing. Accept only a well-formed
+# positive.
+group_exists() { # <rg> -> prints true|false; nonzero if the answer is unusable
+  local out
+  out=$(az group exists --name "$1" 2>/dev/null) || return 1
+  case "$out" in
+    true | false) printf '%s' "$out" ;;
+    *) return 1 ;;
+  esac
+}
+
+if ! rg_state=$(group_exists "$RG"); then
+  echo "aks-down: cannot determine whether resource group '$RG' exists." >&2
+  echo "  NOT reporting a teardown that may not have happened. Check your" >&2
+  echo "  credentials ('az account show') and re-run — if the cluster is" >&2
+  echo "  still there it is still billing." >&2
+  exit 1
+fi
+
+if [ "$rg_state" = false ]; then
   echo "aks-down: resource group '$RG' does not exist — nothing to delete." >&2
   # Still clean up any stale kubeconfig entries for the cluster name.
   kubectl config delete-context "$CLUSTER" >/dev/null 2>&1 || true
@@ -100,8 +124,15 @@ echo "aks-down: deleting '$RG' (waiting for completion — this takes a few minu
 az group delete --name "$RG" --yes --output none
 
 # Fail closed on the claim itself: confirm the group is actually gone
-# before saying so.
-if az group exists --name "$RG" | grep -qx true; then
+# before saying so — and an unreadable answer is not a confirmation, for
+# the same reason as above.
+if ! rg_state=$(group_exists "$RG"); then
+  echo "aks-down: delete returned, but the group's state could not be" >&2
+  echo "  re-checked — not claiming it is gone. Verify with:" >&2
+  echo "    az group exists --name $RG" >&2
+  exit 1
+fi
+if [ "$rg_state" = true ]; then
   echo "aks-down: resource group '$RG' still exists after delete returned." >&2
   exit 1
 fi

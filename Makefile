@@ -16,6 +16,12 @@
 # cluster. Fail closed — no confirmation, no action.
 TARGET         ?= kind
 
+# `up` is the default goal, as it has always been. Stated explicitly
+# because it is no longer the first rule in the file: make takes the first
+# non-dot target, which is now `guard`, so a bare `make` would otherwise
+# print a banner and exit 0 — a no-op that looks like a successful run.
+.DEFAULT_GOAL := up
+
 KIND_CLUSTER   ?= kaimahi-p1
 AKS_CLUSTER    ?= kaimahi
 KAGENT_VERSION ?= 0.9.12
@@ -96,9 +102,11 @@ SLACK_TOOLNAMES_JSON = $(if $(filter -,$(SLACK_AGENT_TOOLS)),,"$(subst $(comma),
 # NOT depend on it — they cannot change a cluster, and adding a prompt to
 # them would be noise. Make runs it once per invocation, so a single
 # `make up` asks at most once.
+# MAKECMDGOALS is empty for a bare `make`, which would print an action-less
+# banner; name the default goal instead.
 guard:
 	@KUBE_CTX='$(KUBE_CTX)' KUBE_NS='$(GUARD_NS)' \
-		bash scripts/kube-guard.sh '$(MAKECMDGOALS) [TARGET=$(TARGET)]'
+		bash scripts/kube-guard.sh '$(if $(MAKECMDGOALS),$(MAKECMDGOALS),$(.DEFAULT_GOAL)) [TARGET=$(TARGET)]'
 
 GUARD_NS ?= kagent, kaimahi, ollama
 
@@ -147,21 +155,28 @@ endif
 # not deployed (D15): the keyless path is already proven on kind by CI on
 # every PR, and AKS's job is proving the plane runs on a managed cluster
 # with a real model. Refuse loudly rather than half-deploying it.
+#
+# The non-kind forms carry no `guard`: they touch nothing, so making the
+# operator confirm a cluster before being told the target does not apply
+# there is pure friction — and friction is what teaches people to type
+# past confirmations.
+ifeq ($(TARGET),kind)
 ollama: guard
-ifneq ($(TARGET),kind)
-	@echo 'ollama is not deployed on TARGET=$(TARGET) — the managed path is' >&2
-	@echo 'Copilot-only (D15). See docs/P5B-RUNBOOK.md.' >&2
-	@exit 1
-endif
 	$(KUBECTL) apply -f k8s/ollama.yaml
 	$(KUBECTL) -n ollama rollout status deploy/ollama --timeout=300s
 
 model: guard
-ifneq ($(TARGET),kind)
+	$(KUBECTL) -n ollama exec deploy/ollama -- ollama pull $(MODEL)
+else
+ollama:
+	@echo 'ollama is not deployed on TARGET=$(TARGET) — the managed path is' >&2
+	@echo 'Copilot-only (D15). See docs/P5B-RUNBOOK.md.' >&2
+	@exit 1
+
+model:
 	@echo 'no Ollama on TARGET=$(TARGET) — nothing to pull (D15).' >&2
 	@exit 1
 endif
-	$(KUBECTL) -n ollama exec deploy/ollama -- ollama pull $(MODEL)
 
 kagent: guard
 	helm upgrade --install kagent-crds \
@@ -212,6 +227,16 @@ agent: guard
 
 ## tools-agent: the P3 tools-enabled agent (kagent-tools MCP server comes
 ## from the kagent helm install; this applies the Agent wired to it)
+# Same desired-modelConfig treatment as `agent` above — but note this one
+# IS a behavioural delta on kind, not just a generalisation: previously
+# `tools-agent` never read modelConfig, so re-applying always reset
+# hello-tools to the committed value. It now preserves a live non-default
+# one. That is deliberate and matches P4c's governance-preservation guard
+# (which already covers hello-tools' gateway wiring, just below); it is
+# unreachable in every documented kind workflow, because nothing switches
+# hello-tools' model — `make use` and `make govern` only touch
+# hello-world. It matters on AKS, where hello-tools must come up on the
+# governed Copilot preset.
 tools-agent: guard
 	$(KUBECTL) -n kagent wait \
 		--for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True \
