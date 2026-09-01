@@ -50,6 +50,55 @@ jobs:
           elif [ "$rc" -ne 1 ]; then
             echo "secret scan failed to run (grep exit $rc)"; exit 1
           fi
+      # P5b: this repo is public and now documents a managed-cluster path.
+      # A subscription/tenant GUID, an AKS FQDN, or a real ACR login server
+      # must never land in the tree — every Azure identifier is supplied by
+      # the operator at run time. The same script is what the operator runs
+      # locally while writing up an AKS run.
+      - name: No Azure identifiers in tree
+        run: bash scripts/check-no-azure-ids.sh
+      # P5b: the context guard is pure policy — every branch of it decides
+      # whether to touch somebody's cluster — but the e2e job below can only
+      # ever exercise the one branch it runs on (local kind). These tests
+      # build their own kubeconfig, so all of them are covered keyless in
+      # seconds: local kind proceeds, an unwritten kind context proceeds
+      # (that is `make up` on an empty machine), and a typo, a kind-NAMED
+      # remote, a remote with no confirmation, and a confirmation naming a
+      # different context are all refused.
+      - name: Context guard fails closed
+        run: bash scripts/kube-guard-test.sh
+      # P5b: kind keeps `imagePullPolicy: Never` (deliberate — a side-loaded
+      # local tag must never fall back to pulling a squattable public name),
+      # so a registry-backed cluster needs both the image and the policy
+      # rendered at deploy time. Assert the render without a cluster:
+      # KUBECTL=true makes the applies no-ops while the transform and its
+      # fail-closed verification still run for real.
+      - name: Registry render swaps image and pull policy
+        run: |
+          KUBECTL=true PLANE_TARGET=registry \
+            PLANE_IMAGE=registry.example/kaimahi-proxy:test \
+            PLANE_PULL_POLICY=IfNotPresent \
+            bash scripts/plane-deploy.sh 2>&1 | tee render.out
+          grep -q 'image=registry.example/kaimahi-proxy:test pullPolicy=IfNotPresent' render.out
+          # `Never` on a registry target would mean ErrImageNeverPull
+          # forever, so the script must refuse it outright.
+          set +e
+          KUBECTL=true PLANE_TARGET=registry \
+            PLANE_IMAGE=registry.example/kaimahi-proxy:test \
+            PLANE_PULL_POLICY=Never \
+            bash scripts/plane-deploy.sh >never.out 2>&1
+          rc=$?
+          set -e
+          test "$rc" -ne 0 || { echo 'pull policy Never accepted on a registry target'; exit 1; }
+          # ...and a registry target with no image at all must not deploy
+          # the committed local tag by accident.
+          set +e
+          KUBECTL=true PLANE_TARGET=registry bash scripts/plane-deploy.sh >noimg.out 2>&1
+          rc=$?
+          set -e
+          test "$rc" -ne 0 || { echo 'registry target deployed with no PLANE_IMAGE'; exit 1; }
+          # The committed manifest itself must still be the kind one.
+          grep -q 'imagePullPolicy: Never' k8s/plane/proxy.yaml
 
   # P4a: the governance plane's Go module — build, vet, gofmt, tests.
   # A separate quick job so proxy logic failures surface in seconds, not

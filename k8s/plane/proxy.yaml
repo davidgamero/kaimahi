@@ -26,12 +26,21 @@ spec:
       containers:
         - name: proxy
           # Built from plane/Dockerfile and side-loaded into kind by
-          # `make plane-image` (never pulled); on a real cluster,
-          # override with your registry's image. The tag moves with the
+          # `make plane-image` (never pulled). The tag moves with the
           # phase so a stale side-loaded image can never satisfy a newer
           # manifest silently (imagePullPolicy: Never reuses same-tag
           # images without complaint).
-          image: kaimahi-proxy:p5a
+          #
+          # `Never` is deliberate and stays the committed default: a
+          # side-loaded LOCAL tag must never quietly fall back to PULLING
+          # a squattable public name (P4a/P4b rulings). It is also what
+          # makes this file unusable as-is off kind — so P5b makes the
+          # image reference and the pull policy environment-dependent
+          # rather than editing them here: for a registry-backed cluster
+          # (AKS, private ACR) scripts/plane-deploy.sh renders both from
+          # PLANE_IMAGE / PLANE_PULL_POLICY at deploy time, and the kind
+          # path applies this document exactly as committed.
+          image: kaimahi-proxy:p5b
           imagePullPolicy: Never
           env:
             - name: PGHOST
