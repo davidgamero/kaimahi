@@ -102,7 +102,7 @@ prefix.
 | P5a: governed Slack connector (D14) | W8 worker | PR #18 MERGED; coordinator verified (custody, and the discovery finding reproduced independently); delta sheet below | lane closed |
 | P5b: cluster portability + real AKS run (D14/D15) | W9 worker | PR #19 MERGED; coordinator verified (leak scan, teardown, guard, kind regression) — delta sheet below | lane closed |
 | P7a: NetworkPolicy egress | W10 worker | PR #23 MERGED (7fd0e3f); coordinator verified — negative matrix reproduced on the lane's cluster (delta sheet below) | lane closed; doc reconciliation owed (see sheet) | PARALLEL SET (see rules below); own cluster `netpol-verify` |
-| P7b: P6 inbound connectors | W11 worker | PR #24 MERGED — coordinator verification + delta sheet owed | PARALLEL SET; own cluster `inbound-verify`; the big one |
+| P7b: P6 inbound connectors | W11 worker | PR #24 MERGED; coordinator verified via CI matrix + code read (delta sheet below) | lane closed | PARALLEL SET; own cluster `inbound-verify`; the big one |
 | P7c: docs restructure (capability, not chronology) | W12 worker | PRs #21/#22 MERGED (8a3e568, 29e031c); coordinator verified (delta sheet below) | lane closed | PARALLEL SET; owns `docs/` structure; no cluster needed |
 | Post-move: Go module path + owner refs (D16) | W13 worker | RUNNING (#23/#24 merged) | owns plane/, CLI-PROPOSAL.md, NAMING.md |
 | CI hygiene: verifier reads function_response; docs-only e2e short-circuit | unassigned | GO — W14 prompt below | owns ci.yml + scripts/verify-chat.py |
@@ -1293,6 +1293,56 @@ targets main; no stacked bases; lane ends at PR-open-with-checks-green
 ```
 
 ## Delta sheets from finished lanes
+
+### P7b — inbound connectors (PR #24, merged 2026-09-01)
+
+Delivered on main: `plane/internal/inbound` — a webhook → A2A bridge in
+the existing proxy process; hooks from a committed, secret-free table;
+per-hook HMAC (Slack-style signed timestamp + delivery id) or bearer
+auth; a signed-timestamp replay window (±5 min) plus a delivery-id
+index (replay → 409); per-hook token-bucket rate limit and request-size
+cap BEFORE authentication (bounds the audit-write rate an
+unauthenticated flood could cause — a deliberate, stated trade); the
+target agent's governed budget checked at the door (429, no grant use
+burned); a bounded `inbound` grant consumed per admitted event (403 +
+auto-filed request when none is live); one bounded queue of
+invocations; audit for every outcome with the fail-closed-degradation
+rule (503 while the trail cannot be written). Migration widens the
+approvals `kind` CHECK to `'inbound'` rather than adding a table. The
+proxy's one new egress (kagent-controller:8083) added to the P7a policy.
+`docs/inbound.md` is the capability doc.
+
+Coordinator verification (2026-09-01): the worker tore down
+`inbound-verify` at lane end, so no live reproduction; verified instead
+by (a) the CI matrix on the merge commit and again on main's post-merge
+run (green): hook table in-cluster and secret-free; admin not on a
+Service; unauthenticated / forged / stale-timestamp → 401 ×3 audited;
+exhausted target budget → 429 at the door; signed-but-ungranted → 403
+with a request filed; USES=2 approval admits and the agent runs (outcome
+row with runtime token counts, one more governed ledger row); replay →
+409; exhaustion → 403; and (b) a read of the gate order in
+`inbound.go`: limiter → size cap → authenticate → budget credential →
+budget door → grant → queue → audit, with the audit breaker now BEFORE
+authentication (the lane's own polish pass found it had sat after —
+"nothing is honoured while degraded" is now true of the code, not just
+the doc).
+
+The one red run (twice) was diagnosed by the coordinator: first the P3
+relaying flake (not the lane's), then the lane's own ungranted-event
+probe expecting 403 but getting 429 because the earlier P4c
+budget-overage step had exhausted the cap. The worker chose "budget
+first, like P4a" and asserted THAT order in CI (b47d682) — accepted: a
+budget denial is the cheaper answer and never burns a grant use.
+
+Rulings — all ACCEPTED: rate limit before auth (stated trade); in-memory
+limiter and queue (single replica, documented); session attribution to
+the hook not the external sender; kind-CHECK widening over a new table;
+image tag → p7b. Slack Events end to end is NOT covered (no public URL
+in CI) — the generic signed webhook is what is proven; the doc says so.
+
+Carried forward: a multi-replica plane needs a shared limiter/queue;
+Slack Events live needs a public ingress (P8 candidate alongside
+approval routing).
 
 ### P7a — NetworkPolicy egress (PR #23, merged 2026-09-01) — the product sentence is now complete
 
