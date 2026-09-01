@@ -217,11 +217,14 @@ make chat AGENT=hello-tools TASK='List the configmaps in the default namespace.'
 make tool-audit                               # the tool call, allowed + audited
 ```
 
-Or the whole journey in one command, once the exports are set:
+Or the whole journey in one command, once the exports from step 1 are set:
 
 ```bash
-make up      # cluster -> kagent -> plane -> copilot secret -> govern -> agents
+make up      # cluster -> kagent -> copilot secret -> plane -> govern -> agents
 ```
+
+`up` runs exactly the steps above, in that order. Note that the credential
+comes **before** the plane, for the reason in step 3.
 
 ### 7. Tear it down — this is not optional
 
@@ -263,8 +266,9 @@ Measured choices, not guesses (Azure retail prices API, 2026-09-01):
 | Load balancer | AKS default (Standard) | ~$0.025/hr; created for egress even with no `LoadBalancer` Service |
 | Disks | 32 GiB OS disk + the 1 Gi Postgres PVC | rounded up to Azure's minimum billable sizes |
 
-A run of a few hours is **well under US$2**. The dominant risk to the
-bill is not the rate — it is forgetting step 7.
+A run of a few hours is **well under US$2**. The verified run existed for
+about 29 minutes (17:52–18:22 UTC) and cost roughly **US$0.10**. The
+dominant risk to the bill is not the rate — it is forgetting step 7.
 
 ## What differs from kind — the honest list
 
@@ -305,12 +309,31 @@ Two smaller carry-overs, recorded rather than hidden:
 
 ## What was verified, and what was not
 
-Verified live on the AKS cluster (evidence in the PR, Azure identifiers
-redacted): the plane deployed from the private ACR, a governed Copilot
-chat completing, the ledger row it wrote, a budget denial failing closed,
-and a real tool call through the enforcing MCP gateway with its audit row.
+Verified live on a real AKS cluster on 2026-09-01 (Kubernetes 1.35.7,
+1 × `Standard_B4ms`, westus3; evidence in the PR with Azure identifiers
+redacted):
+
+- the proxy image built by `az acr build` **in Azure** and pulled from the
+  private ACR, with `imagePullPolicy: IfNotPresent` rendered at deploy time
+  while the committed manifest still says `Never`;
+- the Postgres PVC binding `1Gi RWO` on the cluster's default StorageClass;
+- a governed **Copilot** chat completing, and its ledger row —
+  `hello-world copilot gpt-5-mini 335 357 0 unpriced 200`;
+- a budget denial failing closed: `CAP_TOKENS=1`, the task does **not**
+  complete, three `denied 429` rows ledgered, month-to-date unchanged;
+- a real tool call through the enforcing MCP gateway
+  (`k8s_get_resources allowed 200`), proven with the P3 probe-ConfigMap
+  pattern so the answer can only come from a live invocation;
+- custody intact: the agent-side Secret matches `^kmh_[0-9a-f]{64}$` while
+  the real Copilot token stays in the `kaimahi` namespace;
+- teardown: resource group deleted, and re-checked gone — 0 clusters, 0
+  registries, 0 kubeconfig contexts left.
+
+Also verified: `aks-down` **refuses** a resource group that lacks the tag
+`aks-up.sh` sets, even when given a correct confirmation — tested against a
+throwaway untagged group, which survived.
 
 **Not** verified on AKS: the Slack path (deliberate, above), Ollama
 (deliberate), NetworkPolicy egress (unbuilt, out of scope), and anything
-about durability or upgrades — the cluster existed for one run and was
-deleted.
+about durability, upgrades, node replacement or multi-node scheduling — the
+cluster existed for about half an hour and was deleted.
