@@ -927,6 +927,22 @@ Report deviations in the PR's "Deviations & decisions" section.
   `npx github:gambtho/kaimahi` and NAMING.md's present-tense owner lines.
   Small coordinator PR when the lanes are in.
 
+## CI flake class 2 — model relaying (recorded 2026-09-01)
+
+PR #24's e2e went red at the P3 probe step with the tool call SUCCEEDING
+(function_call + isError:false; the tool's own output contained
+`probe-46649d55`) while the 3B model relayed it as `probe-466448a247`, and
+`scripts/verify-chat.py` requires the probe name in the model's REPLY.
+That is the P3-delta relaying-side failure mode, now observed in CI; the
+system-message mitigation measured 10/10 at the time but is not 100%.
+Independent of the transport flake #20 fixed. Follow-up (small, not GO
+until the parallel set merges — it touches CI): the verifier should
+take the probe name from the `function_response` payload, which is the
+real proof of a live round-trip, and treat the prose as informational.
+Requiring a 3B model to copy an unguessable string verbatim tests the
+model, not the tool path. Until then: re-run the job when this shape
+appears; do not hold lanes for it.
+
 ## Parallel set rules (P7a / P7b / P7c, 2026-09-01)
 
 Three lanes run at once by user ruling. The board's "one session owns a
