@@ -81,10 +81,11 @@ build anything AKS-specific without a survey-backed justification.
 | P2: LLM-enhanced via ModelConfig | W2 worker | PR #3 MERGED (d1a584d, tree-identical to checks-green branch); coordinator verified (delta sheet below) | lane closed |
 | P3: connectors/tools via MCP | W3 worker | PR #4 MERGED (99edd8a); coordinator verified incl. live tool call (delta sheet below) | lane closed |
 | Rename lane: in-repo tomte → kaimahi (D9/D10) | rename worker | PR #5 MERGED (01f5c3c); coordinator verified (delta sheet below); board renamed by coordinator | lane closed |
-| P4a: metering/enforcing LLM proxy (D11) | unassigned | GO — blindspot pass + D11 shaping done, W4 prompt ready (below) | contended: whole repo (new Go module + k8s + Makefile + CI) |
-| P4b: enforcing MCP gateway / P4c: approvals | — | blocked on P4a merge | no pre-stacked PR bases |
-| Docs: CLI-first framing + naming record | teammate (Tatsinnit) | PR #10 open, checks green, coordinator-reviewed | awaiting: NAMING.md staleness fix; user ruling on README positioning shift (D12 candidate — supersedes D6 framing); README status must be refreshed at P4a close-out |
-| Docs: agent-first scenarios | teammate (Tatsinnit) | PR #11 open, checks green, coordinator-reviewed | awaiting: user confirms the four named authors consent to public credit |
+| P4a: metering/enforcing LLM proxy (D11) | W4 worker | PR #12 MERGED; coordinator verified live incl. budget denial + custody (delta sheet below) | lane closed |
+| P4b: enforcing MCP gateway / P4c: approvals | — | UNBLOCKED by P4a merge; awaiting coordinator blindspot pass + GO per slice | no pre-stacked PR bases |
+| Docs: CLI-first framing + naming record | teammate (Tatsinnit) | PR #10 MERGED (ratifies D12) | staleness fixes folded into reconciliation lane |
+| Docs: agent-first scenarios | teammate (Tatsinnit) | PR #11 MERGED (authors' public credit ratified by user merge) | lane closed |
+| Post-merge reconciliation | coordinator | PR pending | README status refresh (P4a shipped), NAMING.md stale board line, hygiene-CI grep fail-open fix (P4a deviation 11) |
 
 ## Decisions (user rulings, verbatim)
 
@@ -101,6 +102,7 @@ build anything AKS-specific without a survey-backed justification.
 | D9 | 2026-08-31 | TENTATIVE rename: tomte → **kaimahi** (te reo Māori: worker). No changes yet — no repo/README/board/package renames until the user says go. Still owed before final: the NZ developer's read + Māori cultural appropriateness, and trademark counsel. Availability as checked 2026-08-31 (decays — nothing claimed): npm kaimahi + create-kaimahi, PyPI, crates, kaimahi.dev/.io all free; claiming any of them is outward-facing and needs explicit user approval naming the artifact | "lets tentatively go with a rename to kaimahi, but lets not make the changes yet" |
 | D10 | 2026-08-31 | Repo rename executed ahead of D9's freeze: user renamed the GitHub repo (initially to "kaiwahi" — a typo; coordinator caught the m/w mismatch vs D9 and, with user approval, corrected it to **gambtho/kaimahi**). The in-repo rename (README, board, Makefile names, docs) is a lane queued to run AFTER P3 merges. D9's remaining gates (cultural read, counsel) still stand for the name going truly final | "i changed the repo name to kaiwahi -- whenever p3 finishes we should do the rename change" — then ruled via option: "kaimahi — fix repo (Recommended)" |
 | D11 | 2026-08-31 | P4 shaping: (1) the metering/enforcing LLM proxy leads (P4a); MCP gateway (P4b) and approvals (P4c) follow as separate lanes. (2) The durable store is in-cluster Postgres. (3) The P4 demo is CLI-only | ruled via options: "LLM proxy first (Recommended)", "In-cluster Postgres (Recommended)", "Yes, CLI only (Recommended)" |
+| D12 | 2026-09-01 | README positioning: CLI-first/incubation framing leads; the governance plane is presented as the incubated thesis. Supersedes D6's framing (D6's substance — the five governance controls and the AKS/Foundry paragraph — is retained). The agent-first scenario doc with four named authors is published under MIT. Both ratified by the user merging PRs #10/#11 after coordinator review | "sure, go ahead" (post the reviews) → "ok, that merged as well" — ratified by merge |
 
 Old-repo history is preserved at https://github.com/gambtho/tomte-old
 (archived, read-only). No local checkout of it exists (deleted 2026-08-31);
@@ -562,3 +564,51 @@ migration notes; delegated choices confirmed in Makefile/script; post-merge
 main CI green (full P1+P2+P3 e2e, 6m13s). Board's own present-tense
 references renamed by the coordinator in this commit (historical
 quotes/delta sheets stay verbatim). No deviations reported; scope held.
+
+### P4a — metering/enforcing LLM proxy (PR #12, merged 2026-09-01)
+
+Delivered on main: `plane/` Go module (P4b/P4c extend it), `k8s/plane/`
+(namespace kaimahi, proxy + Postgres 16 + PVC, operator-configured
+upstream table), governed presets `k8s/models/governed-{ollama,copilot}`,
+make targets (plane/govern/budget/ledger), `scripts/plane-admin.sh`,
+`docs/P4A-RUNBOOK.md`, CI `go-plane` job + governed e2e assertions in the
+existing cluster job. Port evaluation per package in the PR (redact/db
+PORT, meter/pricing/proxy ADAPT, vault/permit/SDKs/store-shell SKIP with
+reasons, store REWRITE around the spend-ledger pattern).
+
+Coordinator verification (independent, 2026-09-01): P4a payload on main
+byte-identical to the branch (remaining tree delta = PRs #10/#11 docs);
+main CI green (go-plane + e2e incl. governed assertions); live re-run by
+the coordinator on kaimahi-p1 — governed chat completed and ledgered
+(367/25 tokens, source=free, 200), token-cap exhaustion failed CLOSED
+("monthly token budget reached", three denied 429 rows themselves
+ledgered), custody proven (agent-side Secret holds a `kmh_` opaque token;
+Postgres `credential.token_hash` is a 32-byte sha256, no plaintext; proxy
+Service exposes 8080 only — admin 9091 reachable solely via port-forward
++ bearer token).
+
+Coordinator rulings on flagged deviations: vault SKIP accepted (K8s-Secret
+custody + hash-only DB replaces envelope encryption; no requirement behind
+a master key). Token caps alongside cents caps accepted (only honest lever
+on the $0-classified ollama tier; no invented prices — Copilot governed by
+token caps, and under a cents budget an unpriced metered model is denied
+pre-forward). Soft-stop budget semantics (small in-flight overshoot)
+accepted for P4a, revisit with P4c approvals. `imagePullPolicy: Never`
+decline accepted (a side-loaded local tag must never fall back to pulling
+a squattable public name).
+
+Deviations carried forward:
+
+- Ledger `cost_source ∈ {free,priced,unpriced,denied}` — every $0 row
+  carries its explanation; denials are ledgered (zero usage, real status).
+- Fail-closed ledger degradation: a failed ledger write trips the data
+  plane to 503 — spend that can't be recorded must not happen.
+- Streaming usage: proxy injects `stream_options.include_usage` and scans
+  the SSE tail; upstreams reporting no usage record zero tokens + a
+  warning (never invented). Known limitation in the runbook.
+- CI node is effectively full (~1935m/2000m requests with the plane
+  deployed; a CI-only Agent-CRD patch shrinks hello-world's runtime
+  requests). P4b MUST budget CPU requests before adding anything.
+- Pre-existing hygiene-CI bug (deviation 11): the "No secrets in tree"
+  step's `! grep` inverts exit codes so a grep ERROR (exit 2) passes the
+  gate — fail-open. Fix assigned to the coordinator's reconciliation PR.
