@@ -87,6 +87,7 @@ build anything AKS-specific without a survey-backed justification.
 | Docs: CLI-first framing + naming record | teammate (Tatsinnit) | PR #10 MERGED (ratifies D12) | staleness fixes folded into reconciliation lane |
 | Docs: agent-first scenarios | teammate (Tatsinnit) | PR #11 MERGED (authors' public credit ratified by user merge) | lane closed |
 | Post-merge reconciliation | coordinator | PR #13 MERGED (0ce72ca, main CI green incl. hardened secret scan) | lane closed |
+| User docs (guide + FAQ, shipped functionality only) | unassigned | GO — W6 prompt ready (below); parallelizes with P4b | scope: NEW files in docs/ only; no README, no board, no P4b content |
 
 ## Decisions (user rulings, verbatim)
 
@@ -515,6 +516,70 @@ agent-side wiring carries only the kmh_ token. Suite green at every
 commit. Branch from current main; PR targets main; no stacked bases.
 Lane ends at PR-open-with-checks-green — do not merge. Report deviations
 in the PR's "Deviations & decisions" section.
+```
+
+### W6 — user documentation for shipped functionality (UNASSIGNED — paste into a fresh CLI session in this repo; runs in PARALLEL with P4b)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout). Read docs/COORDINATION.md first — process rules bind you, and
+the delta sheets are your best source material. Your lane: user-facing
+documentation for what is SHIPPED today — P1–P3 and P4a (governed spend).
+
+HARD SCOPE (a P4b lane runs in parallel):
+- You create NEW files under docs/ only. Do not touch README.md, the
+  board, the runbooks, the Makefile, code, or CI. Do not document P4b
+  (the MCP gateway) — it has not merged; tool governance is "coming",
+  nothing more. If P4b merges mid-lane, still leave it out; a follow-up
+  covers it.
+- Branch from current main; PR targets main; no stacked bases; lane ends
+  at PR-open-with-checks-green — do not merge.
+
+Deliverables (keep it to these two files; link to runbooks rather than
+duplicating them):
+(a) docs/GUIDE.md — the doc for someone who just found the repo. What
+    this is (one paragraph, matching the README's incubation honesty),
+    zero-to-working-agent, then the concepts as a user meets them:
+    agent-as-code YAML, model presets and switching, keys and how
+    custody works, governing spend with `make govern` (budgets, the
+    ledger, what a denial looks like). End with where to go deeper
+    (runbooks per phase).
+(b) docs/FAQ.md — troubleshooting and honest answers, mined from the
+    delta sheets and runbooks: the small-model gotchas (ask_user
+    misfires; correct tool call but wrong summary), Copilot token
+    expiry and re-minting, moving from the tomte-era names (cluster,
+    token path), why some presets say "schema-valid only", why ollama
+    is $0 but still budgeted by tokens, what 401/403/429/503 from the
+    plane each mean.
+
+VOICE — this is half the assignment. Informal, human, direct:
+- Write like you are explaining it to a colleague at their desk. "You"
+  and "it". Short sentences. Contractions are fine.
+- Concrete over abstract: every claim is a command someone can run or a
+  thing they will see on screen.
+- Be honest about rough edges the way the README and CLI-PROPOSAL are
+  ("the honest case against") — say what does not work yet.
+- BANNED, and reviewers will grep for them: "delve", "dive in", "dive
+  deep", "leverage", "seamless(ly)", "robust", "streamline", "harness
+  the power", "unlock", "supercharge", "game-changer", "In this
+  guide/section, we'll", "Let's explore", "It's important to note",
+  "Note that" as a sentence opener, "simply"/"just" before a step,
+  "Whether you're X or Y", "In today's world", "modern" as filler,
+  rhetorical-question headers, emoji in headers, bolded topic sentences
+  on every bullet, and closing pep-talk paragraphs. If a sentence reads
+  like a product page, delete it.
+- Headers are plain nouns ("Budgets", "When the model lies about a
+  tool call"), not marketing lines.
+
+Verification is real, docs included: RUN every command you publish,
+against a live cluster (`make up` from main, or the existing kaimahi-p1),
+and paste nothing you did not see. Where output varies (model replies),
+say so instead of presenting one lucky run as typical. Cross-check every
+factual claim against the current tree, not memory — presets, target
+names, paths. In the PR description, list each command block and confirm
+it was executed.
+
+Report deviations in the PR's "Deviations & decisions" section.
 ```
 
 ## Delta sheets from finished lanes
