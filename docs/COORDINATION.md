@@ -103,7 +103,7 @@ prefix.
 | P5b: cluster portability + real AKS run (D14/D15) | W9 worker | PR #19 MERGED; coordinator verified (leak scan, teardown, guard, kind regression) — delta sheet below | lane closed |
 | P7a: NetworkPolicy egress | W10 worker | PR #23 OPEN — awaiting coordinator verification (negative test, kindnet enforcement, P1–P5 unregressed) | PARALLEL SET (see rules below); own cluster `netpol-verify` |
 | P7b: P6 inbound connectors | W11 worker | PR #24 OPEN — awaiting coordinator verification (auth-before-work, replay, budgets/ledger, bounded queue) | PARALLEL SET; own cluster `inbound-verify`; the big one |
-| P7c: docs restructure (capability, not chronology) | W12 worker | PRs #21/#22 MERGED (8a3e568, 29e031c) — coordinator verification + delta sheet owed | PARALLEL SET; owns `docs/` structure; no cluster needed |
+| P7c: docs restructure (capability, not chronology) | W12 worker | PRs #21/#22 MERGED (8a3e568, 29e031c); coordinator verified (delta sheet below) | lane closed | PARALLEL SET; owns `docs/` structure; no cluster needed |
 | CLI decisions + PR #16 review | user + coordinator | awaiting the user's five CLI-PROPOSAL rulings | not a build lane; parallelises with everything |
 | CI flake: agent-readiness race (P5b finding) | coordinator — PR #20 MERGED (73917e9) after a review round: retry anchored to the controller's whole error line; slack-post retries only unambiguous failures | User ruling 2026-09-01: fold into the next phase rather than a standalone micro-lane — as its **FIRST commit, before feature work**, so the lane's own CI is not reddened by someone else's race | retry predicate covers `connection refused` but not `EOF`; main went red once then green on re-run. Widen narrowly (EOF, connection-reset) so it cannot mask a real outage — see P5b delta sheet |
 | NetworkPolicy egress (promoted 2026-09-01) | — | candidate, not GO | P5a put a deliberate internet-egress pod in the cluster; three non-network layers bound blast radius today. Strongest-argument-yet per P5a's own accounting |
@@ -1128,6 +1128,49 @@ in the PR.
 ```
 
 ## Delta sheets from finished lanes
+
+### P7c — docs restructure by capability (PRs #21/#22, merged 2026-09-01)
+
+Delivered on main: `docs/README.md` as the router ("by what you want to
+do" table, the ONE governed-vs-ungoverned table, the editorial rule
+stated in the open); capability docs `getting-started`, `models`,
+`tools`, `spend`, `tool-governance`, `approvals`, `slack`, `aks`; FAQ
+kept (one stale entry rewritten under an unchanged anchor); the eight
+phase runbooks and GUIDE.md reduced to 5-line forwarding stubs;
+`scripts/check-doc-links.py` wired into the hygiene job so a broken
+relative link or anchor fails CI; code comments repointed in #22.
+`egress.md` / `inbound.md` reserved for P7a/P7b by path, not linked
+(a link to a missing file would fail the new gate).
+
+Coordinator verification (independent, 2026-09-01): link checker green on
+main (24 files); every `make` target named in the capability docs and FAQ
+exists in the Makefile (41 named, all resolve — the only misses were prose
+words); banned-phrase grep over the changed docs clean; honesty markers
+survived (68 across the capability docs), and ten load-bearing caveats
+spot-checked verbatim — the agent-is-never-the-one-denied finding, the
+five schema-valid-only presets, the Copilot undocumented-surface note,
+at-least-one-bound on grants, the AKS one-off-then-torn-down scope, the
+`chat:write.public` warning, the relaying-side model failure, the
+`imagePullPolicy: Never` rationale, and the NetworkPolicy gap (named in
+four docs). Post-merge main CI green.
+
+Rulings — all ACCEPTED: the use-it / govern-it split (models vs spend,
+tools vs tool-governance) is the right seam because the ungoverned path
+is a real shipped choice; lowercase single-word filenames matching the
+P7a/P7b convention; stubs kept because PR descriptions, this board and
+code comments link the old names; the editorial rule (commands, on-screen
+output, caveats and verification STATUS stay; alternatives-considered,
+provenance and board numbers move out — this board holds them) is exactly
+the split the prompt asked for and it is written down where readers can
+see it; the "no command was executed live" note is honest and acceptable
+for a pure restructure — the carried outputs are labelled as recorded
+runs with dates. Deviation 1 (branched before #20) had no effect: the
+lane touched nothing #20 touched.
+
+Carried forward: decide after the parallel set merges whether the stubs
+can go (nothing in-tree needs them once #22 repointed the comments; PR
+descriptions and this board are the remaining referrers). Line count
+4,351 → 4,243 confirms the "navigation, not duplication" diagnosis.
 
 ### P5b — cluster portability + a real AKS run (PR #19, merged 2026-09-01)
 
