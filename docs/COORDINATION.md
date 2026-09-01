@@ -104,10 +104,10 @@ prefix.
 | P7a: NetworkPolicy egress | W10 worker | PR #23 MERGED (7fd0e3f); coordinator verified — negative matrix reproduced on the lane's cluster (delta sheet below) | lane closed; doc reconciliation owed (see sheet) | PARALLEL SET (see rules below); own cluster `netpol-verify` |
 | P7b: P6 inbound connectors | W11 worker | PR #24 MERGED; coordinator verified via CI matrix + code read (delta sheet below) | lane closed | PARALLEL SET; own cluster `inbound-verify`; the big one |
 | P7c: docs restructure (capability, not chronology) | W12 worker | PRs #21/#22 MERGED (8a3e568, 29e031c); coordinator verified (delta sheet below) | lane closed | PARALLEL SET; owns `docs/` structure; no cluster needed |
-| Post-move: Go module path + owner refs (D16) | W13 worker | RUNNING (#23/#24 merged) | owns plane/, CLI-PROPOSAL.md, NAMING.md |
-| CI hygiene: verifier reads function_response; docs-only e2e short-circuit | unassigned | GO — W14 prompt below | owns ci.yml + scripts/verify-chat.py |
-| AKS NetworkPolicy enforcement (P7a finding) | unassigned | GO — W15 prompt below | owns scripts/aks-up.sh, docs/aks.md, docs/egress.md; Azure spend, teardown mandatory |
-| Post-P7a/P7b reconciliation | coordinator | PR pending | README, docs/README (router links egress/inbound), docs/slack, two manifest comments |
+| Post-move: Go module path + owner refs (D16) | W13 worker | PR #26 MERGED; verified (delta sheet below) | lane closed |
+| CI hygiene: verifier reads function_response; docs-only e2e short-circuit | W14 worker | PR #29 MERGED; verified (delta sheet below) — this board PR is the first live docs-only test of the short-circuit | lane closed |
+| AKS NetworkPolicy enforcement (P7a finding) | W15 worker | PR #30 MERGED; verified incl. teardown (delta sheet below) | lane closed |
+| Post-P7a/P7b reconciliation | coordinator | PR #28 MERGED | lane closed |
 | CLI decisions + PR #16 review | user + coordinator | awaiting the user's five CLI-PROPOSAL rulings | not a build lane; parallelises with everything |
 | CI flake: agent-readiness race (P5b finding) | coordinator — PR #20 MERGED (73917e9) after a review round: retry anchored to the controller's whole error line; slack-post retries only unambiguous failures | User ruling 2026-09-01: fold into the next phase rather than a standalone micro-lane — as its **FIRST commit, before feature work**, so the lane's own CI is not reddened by someone else's race | retry predicate covers `connection refused` but not `EOF`; main went red once then green on re-run. Widen narrowly (EOF, connection-reset) so it cannot mask a real outage — see P5b delta sheet |
 | NetworkPolicy egress (promoted 2026-09-01) | — | candidate, not GO | P5a put a deliberate internet-egress pod in the cluster; three non-network layers bound blast radius today. Strongest-argument-yet per P5a's own accounting |
@@ -937,7 +937,7 @@ Report deviations in the PR's "Deviations & decisions" section.
   `npx github:gambtho/kaimahi` and NAMING.md's present-tense owner lines.
   Small coordinator PR when the lanes are in.
 
-## CI flake class 2 — model relaying (recorded 2026-09-01)
+## CI flake class 2 — model relaying (recorded 2026-09-01) — RESOLVED by #29 (W14)
 
 PR #24's e2e went red at the P3 probe step with the tool call SUCCEEDING
 (function_call + isError:false; the tool's own output contained
@@ -952,6 +952,39 @@ real proof of a live round-trip, and treat the prose as informational.
 Requiring a 3B model to copy an unguessable string verbatim tests the
 model, not the tool path. Until then: re-run the job when this shape
 appears; do not hold lanes for it.
+
+## CI flake class 3 — the old pod answers after `use` (recorded 2026-09-01)
+
+Docs-only board PR #27 went red at "Assert the ledger recorded the
+governed chat": the governed chat COMPLETED, the ledger had zero rows.
+`make govern` delegates to `use`, which patches the ModelConfig, waits
+for `rollout status` and the Agent's Ready condition, then returns — with
+`maxSurge: 1, maxUnavailable: 0` that is the moment the NEW pod is Ready
+while the OLD one (still on the ungoverned preset) is terminating. If the
+chat lands on the old pod it completes straight against ollama and nothing
+is metered. Hypothesis: the failed attempt's log was replaced by the
+re-run (which passed), and a silent ledger-write failure is ruled out by
+P4a's design (a failed write trips the proxy to 503, so the chat could
+not have completed). Follow-up (Makefile, small, NOT GO yet): `use` should
+return only when exactly one pod with the new template hash remains, so
+"governed" means the ungoverned pod is gone, not outnumbered. Bundle with
+the Makefile comment for `AKS_NETWORK_POLICY` (W15 deviation 3).
+
+## Open items after the second parallel set (2026-09-01)
+
+- **#16 (Tatsinnit's CLI)** — rulings given on the PR; blocking fix is the
+  uncommitted `cli/bin/kaimahi.js` (root `.gitignore` `bin/`). Waiting on
+  the author.
+- **D9 naming gates** — cultural read + trademark counsel, now more urgent
+  (org exists; npm publish deferred until they clear).
+- **Makefile micro-lane**: `use` waits for the old pod to be gone (flake
+  class 3); `AKS_NETWORK_POLICY` in the AKS variable comment block.
+- **Unverified engines**: `azure`/`calico` on AKS; multi-node AKS with the
+  probe's single-node caveat.
+- **P8 candidates** (not GO): Slack Events live end to end (needs a public
+  ingress); approval routing + per-approver identity; shared limiter/queue
+  for a multi-replica plane; internet-facing gateway upstreams with the
+  hardened dialer/SSRF set; retiring the phase-runbook stubs.
 
 ## Parallel set rules (P7a / P7b / P7c, 2026-09-01)
 
@@ -1293,6 +1326,59 @@ targets main; no stacked bases; lane ends at PR-open-with-checks-green
 ```
 
 ## Delta sheets from finished lanes
+
+### W13 — post-move Go module path + owner references (PR #26, merged 2026-09-01)
+
+`plane/go.mod` is `module github.com/kaimahi-agents/kaimahi/plane`; every
+import rewritten; `go.sum` unchanged; go-plane CI needed no edit.
+CLI-PROPOSAL's `npx github:` path and NAMING.md's present-tense lines
+updated; NAMING.md now says plainly that one thing IS claimed — the
+`kaimahi-agents` organization — and that D9's gates are more urgent for
+it. Coordinator verification: module line confirmed on main; `git grep
+gambtho` outside the board finds only NAMING.md's history paragraphs and
+the tomte-old archive links. No deviations. Accepted.
+
+### W14 — CI hygiene (PR #29, merged 2026-09-01)
+
+`scripts/verify-chat.py` now requires the probe inside the successful
+`function_response` payload and prints the prose without asserting on it;
+self-test fixtures cover PR #24's real garbled case (passes), no
+function_response (fails), payload without the probe (fails). The e2e
+job classifies each PR (base tip vs merge commit, fetched by SHA under
+`persist-credentials: false`) and skips the cluster steps when the diff
+is docs-only, FAILING CLOSED to a full run on any doubt; hygiene gains a
+self-check that every e2e step (37) carries the guard, so a future step
+cannot silently escape it. Coordinator verification: verifier and guard
+read on main; the run on the PR proved the classify step on a real
+`pull_request` event (`docs_only=false`, because it changed ci.yml).
+Deviation accepted: the "docs-only commit first" demo the prompt asked
+for is impossible on a PR that edits the workflow, and per-push
+classification would be fail-open — the per-PR semantics are the right
+ones. THIS board PR is the first live docs-only test. Docs follow-up
+(docs/tools.md's old wording) done in this PR.
+
+### W15 — AKS provisions NetworkPolicy enforcement (PR #30, merged 2026-09-01)
+
+`scripts/aks-up.sh` always provisions a policy engine —
+`AKS_NETWORK_POLICY=cilium` by default (Azure CNI Overlay + Cilium,
+Microsoft's recommendation), `azure`/`calico` accepted but unverified;
+existing clusters are never migrated, and an explicit empty value is
+refused. Proven on a real cluster: `TARGET=aks make netpol-verify` reported
+the boundary enforced with the unlabeled-pod row blocked on every column
+(ollama column skipped by design — Copilot-only target, D15); cluster
+torn down; spend recorded in docs/aks.md. Coordinator verification:
+`az group list` shows no kaimahi resource group; identifier scan clean on
+main; flag and default read in the script. Rulings — accepted: the
+AcrPull confirmation now asks ARM directly (the tenant's conditional
+access refused the CLI a Graph token while ARM worked) and resolves the
+role definition by NAME at runtime, since its GUID would rightly trip the
+identifier gate; the post-run review round's two fixes (the cluster
+existence probe failed OPEN — any az error read as "does not exist" and
+fell through to a create that would have PUT a new network profile onto
+an existing cluster; and `${VAR:-}` silently defaulting an explicit
+empty) are exactly the fail-closed discipline this board asks for.
+Carried forward: Makefile comment for `AKS_NETWORK_POLICY`; azure/calico
+and multi-node unverified.
 
 ### P7b — inbound connectors (PR #24, merged 2026-09-01)
 

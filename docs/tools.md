@@ -107,8 +107,11 @@ keyless on every push, and it forces a live data round-trip:
 3. `python3 scripts/verify-chat.py tool-chat.out k8s_get_resources $probe`
    then requires, fail-closed: A2A `state=completed`, a `function_call`
    for `k8s_get_resources` **and** a successful (`isError: false`)
-   `function_response` in the task history, and the probe name in the
-   reply text.
+   `function_response` in the task history, and the probe name inside
+   that response's payload. The reply text is printed but not asserted:
+   a 3B model garbles unguessable strings, and requiring a verbatim copy
+   tested the model, not the tool path (CI went red on exactly that
+   before the check moved).
 
 The A2A task history is the invocation evidence: kagent records the tool
 call and its response as structured message parts. The tool server's own
