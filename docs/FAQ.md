@@ -1,8 +1,9 @@
 # FAQ and troubleshooting
 
-Honest answers, mined from what actually went wrong while building this.
-Every claim here was hit or reproduced on a live cluster. Commands assume
-the [guide](GUIDE.md) setup.
+Honest answers, mined from what actually went wrong while building this —
+each entry comes from a phase's recorded verification or from something
+hit while writing these docs, not from speculation. Commands assume the
+[guide](GUIDE.md) setup.
 
 ## The agent errors with `'str' object has no attribute 'get'`
 
@@ -158,8 +159,13 @@ deletion. It's demo-durable, not backup-managed.
 ## `make use` hangs at "waiting for Ready"
 
 Almost always a missing key Secret: an agent pointed at a ModelConfig
-whose Secret doesn't exist never becomes Ready. Create it first
-(`make model-secret NAME=<preset>-api-key`), then switch. Check with
+whose Secret doesn't exist never becomes Ready. Create it first, then
+switch. Which command depends on the preset: `make model-secret
+NAME=<preset>-api-key` for the five key-based presets (`anthropic`,
+`openai`, `openrouter`, `azure-foundry`, `openai-compatible`),
+`make copilot-secret` for `github-copilot` (its Secret is
+`github-copilot-token`), and `make govern` for the governed presets
+(their Secret is the issued `kaimahi-governed-token`). Check with
 `kubectl -n kagent describe agent hello-world` if it's something else.
 
 ## The model I pulled disappeared after a pod restart

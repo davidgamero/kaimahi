@@ -1,7 +1,9 @@
 # User guide
 
-Everything in this guide is shipped and was run against a live cluster
-before being written down. For what's *proposed* rather than built, see
+Everything in this guide is shipped, and the commands were run against a
+live cluster before being written down — except where the text says a
+paid key or an interactive login is needed, or a preset is marked
+schema-valid only. For what's *proposed* rather than built, see
 [CLI-PROPOSAL.md](CLI-PROPOSAL.md) and the phase-4 sections of the
 [README](../README.md).
 
@@ -122,9 +124,10 @@ Custody gets stronger once the governance plane is up. With a governed
 preset, the agent's Secret holds a kaimahi-issued opaque token (`kmh_…`) —
 not a real key. The real upstream credential is mounted only to the proxy
 pod, and the plane's database stores only a hash of the opaque token. You
-can check this yourself: `kubectl -n kagent get secret
-kaimahi-governed-token -o jsonpath='{.data.api-key}' | base64 -d` starts
-with `kmh_`, not `sk-` or a GitHub token.
+can check this yourself without printing the whole token:
+`kubectl -n kagent get secret kaimahi-governed-token -o
+jsonpath='{.data.api-key}' | base64 -d | cut -c1-4` prints `kmh_` — not
+`sk-` or a GitHub token prefix.
 
 ## Governing spend
 
