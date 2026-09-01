@@ -130,21 +130,23 @@ var toolName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 // default state, not an error.
 func (h *handler) setToolAllowlist(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Credential string   `json:"credential"`
-		Tools      []string `json:"tools"`
+		Credential string `json:"credential"`
+		// A pointer so an ABSENT tools field is a 400, never a silent
+		// clear — clearing the allowlist takes an explicit [].
+		Tools *[]string `json:"tools"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 65536)).Decode(&req); err != nil ||
-		!credentialName.MatchString(req.Credential) {
-		http.Error(w, "body must be {\"credential\": ..., \"tools\": [...]}", http.StatusBadRequest)
+		!credentialName.MatchString(req.Credential) || req.Tools == nil {
+		http.Error(w, "body must be {\"credential\": ..., \"tools\": [...]} (tools required; [] clears)", http.StatusBadRequest)
 		return
 	}
-	for _, t := range req.Tools {
+	for _, t := range *req.Tools {
 		if !toolName.MatchString(t) {
 			http.Error(w, "invalid tool name "+strconv.Quote(t), http.StatusBadRequest)
 			return
 		}
 	}
-	if err := h.d.Store.SetToolAllowlist(r.Context(), req.Credential, req.Tools); err != nil {
+	if err := h.d.Store.SetToolAllowlist(r.Context(), req.Credential, *req.Tools); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, "no such credential", http.StatusNotFound)
 			return

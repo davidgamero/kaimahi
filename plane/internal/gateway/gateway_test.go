@@ -73,7 +73,8 @@ func newGateway(t *testing.T, fs *fakeStore, upstream *httptest.Server) http.Han
 }
 
 func post(h http.Handler, token string, body []byte) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/upstream/kagent-tools/mcp", strings.NewReader(string(body)))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost,
+		"/upstream/kagent-tools/mcp", strings.NewReader(string(body)))
 	if token != "" {
 		req.Header.Set("Authorization", token)
 	}
@@ -189,6 +190,11 @@ func TestToolsListProjected(t *testing.T) {
 		"sse": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = w.Write([]byte("event: message\ndata: " + listing + "\n\n"))
+		},
+		// The space after "data:" is optional per the SSE format.
+		"sse-no-space": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: message\ndata:" + listing + "\n\n"))
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -381,7 +387,7 @@ func TestUpstreamRedirectRefused(t *testing.T) {
 func TestGetAnswers405(t *testing.T) {
 	fs := &fakeStore{credential: store.Credential{Name: "hello-tools"}}
 	h := newGateway(t, fs, nil)
-	req := httptest.NewRequest(http.MethodGet, "/upstream/kagent-tools/mcp", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/upstream/kagent-tools/mcp", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
@@ -397,7 +403,7 @@ func TestDeleteRelaysSessionTermination(t *testing.T) {
 	defer up.Close()
 	fs := &fakeStore{credential: store.Credential{Name: "hello-tools"}}
 	h := newGateway(t, fs, up)
-	req := httptest.NewRequest(http.MethodDelete, "/upstream/kagent-tools/mcp", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodDelete, "/upstream/kagent-tools/mcp", nil)
 	req.Header.Set("Authorization", goodToken)
 	req.Header.Set("Mcp-Session-Id", "s-1")
 	rec := httptest.NewRecorder()

@@ -156,7 +156,7 @@ Enforcement properties (all unit-tested and live-verified):
 |---------|--------|
 | LLM calls via `governed-*` presets | **Governed**: authn, budgets, ledger, custody |
 | LLM calls via P2 presets (`openai`, `anthropic`, …) | Ungoverned (by choice — switch presets to govern) |
-| MCP/tool calls | **Governed by P4b** after `make govern-tools` — see [P4B-RUNBOOK.md](P4B-RUNBOOK.md) |
+| MCP/tool calls via the `kaimahi-tools` RemoteMCPServer | **Governed by P4b** after `make govern-tools` — see [P4B-RUNBOOK.md](P4B-RUNBOOK.md); the direct `kagent-tool-server` wiring stays ungoverned |
 | Approvals / permits / blast-radius workflows | Absent until **P4c** |
 | Egress other than the configured upstreams | Not reachable **through the plane** (denied); pod-level network egress is unenforced until cluster NetworkPolicy (post-P4b limitation) |
 

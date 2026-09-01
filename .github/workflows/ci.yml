@@ -235,9 +235,10 @@ jobs:
           n=$(kubectl --context kind-kaimahi-p1 -n kagent get secret kaimahi-tools-token \
             -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
           test "$n" = 1
-          ref=$(kubectl --context kind-kaimahi-p1 -n kagent get remotemcpserver kaimahi-tools \
-            -o jsonpath='{.spec.headersFrom[0].valueFrom.name}')
-          test "$ref" = kaimahi-tools-token
+          # Exactly one headersFrom entry, Secret-sourced (no inline value),
+          # referencing kaimahi-tools-token — the complete credential set.
+          kubectl --context kind-kaimahi-p1 -n kagent get remotemcpserver kaimahi-tools -o json \
+            | python3 -c 'import json,sys; h=json.load(sys.stdin)["spec"]["headersFrom"]; assert len(h)==1 and "value" not in h[0] and h[0]["valueFrom"]=={"type":"Secret","name":"kaimahi-tools-token","key":"api-key"}, h'
           discovered=$(kubectl --context kind-kaimahi-p1 -n kagent get remotemcpserver kaimahi-tools \
             -o jsonpath='{.status.discoveredTools[*].name}')
           test "$discovered" = k8s_get_resources
