@@ -21,13 +21,20 @@ TOOLS          ?= k8s_get_resources
 # read-only tool is allowlisted from the start; POSTING is not — it is
 # the action a human approves (make approvals / make approve).
 CRED_SLACK     ?= hello-slack
+# SLACK_TOOLS is the gateway ALLOWLIST — the authority. Posting is absent
+# from it deliberately; an approval is what admits the call.
 SLACK_TOOLS    ?= conversations_history
 SLACK_POST_TOOL := conversations_add_message
+# SLACK_AGENT_TOOLS is the agent's SELECTION (kagent wires discovered ∩
+# toolNames). It names the posting tool so a grant can take effect
+# without editing the agent; while the tool is not allowlisted it is not
+# projected, not discovered, and not in the agent's hands.
+SLACK_AGENT_TOOLS ?= $(SLACK_TOOLS),$(SLACK_POST_TOOL)
 # TOOLS as a JSON string array for the Agent patch, so the agent's
 # toolNames stay aligned with the gateway allowlist ("-" -> empty).
 comma          := ,
 TOOLNAMES_JSON  = $(if $(filter -,$(TOOLS)),,"$(subst $(comma),"$(comma)",$(TOOLS))")
-SLACK_TOOLNAMES_JSON = $(if $(filter -,$(SLACK_TOOLS)),,"$(subst $(comma),"$(comma)",$(SLACK_TOOLS))")
+SLACK_TOOLNAMES_JSON = $(if $(filter -,$(SLACK_AGENT_TOOLS)),,"$(subst $(comma),"$(comma)",$(SLACK_AGENT_TOOLS))")
 
 .PHONY: up cluster ollama model kagent agent tools-agent chat down status \
 	model-secret copilot-secret use use-ollama \

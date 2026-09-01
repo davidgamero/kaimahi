@@ -321,11 +321,16 @@ jobs:
           if len(h) != 1 or "value" in h[0] or h[0]["valueFrom"] != {
                   "type": "Secret", "name": "kaimahi-slack-token", "key": "api-key"}:
               fail.append(f"unexpected headersFrom: {h}")
-          # Posting is never allowlisted in committed YAML.
+          # The agent's toolNames is a SELECTION, not a grant: kagent wires
+          # (discovered ∩ toolNames) and discovery runs through the gateway.
+          # Assert it selects from the Slack seam only — the authority is the
+          # plane's allowlist, checked dynamically below.
           agent = yaml.safe_load(pathlib.Path("k8s/slack-agent.yaml").read_text())
-          names = agent["spec"]["declarative"]["tools"][0]["mcpServer"]["toolNames"]
-          if "conversations_add_message" in names:
-              fail.append("posting is allowlisted in committed YAML; it must be approved, not configured")
+          tools = agent["spec"]["declarative"]["tools"]
+          if len(tools) != 1 or tools[0]["mcpServer"]["name"] != "kaimahi-slack":
+              fail.append(f"the demo agent reaches something other than the governed Slack seam: {tools}")
+          if agent["spec"]["declarative"]["modelConfig"] != "governed-copilot":
+              fail.append("the demo agent is not on a governed model preset")
           for line in fail:
               print(line)
           sys.exit(1 if fail else 0)
@@ -368,6 +373,11 @@ jobs:
           make slack-allow SLACK_TOOLS=conversations_history
           make tool-allowlist CRED_TOOLS=hello-slack | tee slack-allowlist.out
           grep -q conversations_history slack-allowlist.out
+          # The authority: posting must NOT be allowlisted. `! cmd` is
+          # exempt from errexit, so assert the absence explicitly.
+          if grep -q conversations_add_message slack-allowlist.out; then
+            echo 'posting is allowlisted — it must be approved, not configured' >&2; exit 1
+          fi
           # Custody: the agent-side Secret holds ONLY an opaque kmh_ token.
           n=$(kubectl --context kind-kaimahi-p1 -n kagent get secret kaimahi-slack-token \
             -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
