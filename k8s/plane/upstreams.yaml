@@ -1,0 +1,39 @@
+# The proxy's upstream table: one base URL and EXACTLY ONE allowed
+# forwarded path per upstream — the whole blast radius a governed
+# credential buys. No key material here: credential_file names a
+# Secret-mounted path only the proxy pod can read.
+#
+# Classifications are explicit (standing guidance: no $0 by inference):
+#   - ollama:  free — the in-cluster demo tier costs nothing by
+#     classification, so only a token budget can exhaust it.
+#   - copilot: metered — tokens are always counted; a cost applies only
+#     when a real price row is configured under "prices" (none are
+#     bundled: Copilot subscription usage has no per-token public price,
+#     and Kaimahi never invents one). Under a cents budget an unpriced
+#     model is denied (priced-pair gate); use a token budget instead.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kaimahi-upstreams
+  namespace: kaimahi
+data:
+  upstreams.json: |
+    {
+      "upstreams": {
+        "ollama": {
+          "base_url": "http://ollama.ollama.svc.cluster.local:11434",
+          "path": "v1/chat/completions",
+          "classification": "free"
+        },
+        "copilot": {
+          "base_url": "https://api.githubcopilot.com",
+          "path": "chat/completions",
+          "classification": "metered",
+          "credential_file": "/etc/kaimahi/upstream-creds/copilot/api-key",
+          "extra_headers": {
+            "Copilot-Integration-Id": "vscode-chat",
+            "Editor-Version": "vscode/1.103.0"
+          }
+        }
+      }
+    }

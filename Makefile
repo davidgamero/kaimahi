@@ -13,8 +13,12 @@ KUBECTL        := kubectl --context $(KUBE_CTX)
 OS   := $(shell uname -s | tr A-Z a-z)
 ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
 
+PLANE_IMAGE    ?= kaimahi-proxy:p4a
+CRED           ?= hello-world
+
 .PHONY: up cluster ollama model kagent agent tools-agent chat down status \
-	model-secret copilot-secret use use-ollama
+	model-secret copilot-secret use use-ollama \
+	plane plane-image plane-secrets govern budget ledger plane-copilot-secret
 
 ## up: everything from an empty machine to ready agents (hello-world + tools)
 up: cluster ollama model kagent agent tools-agent status
@@ -96,6 +100,47 @@ use:
 ## use-ollama: switch back to the keyless in-cluster model
 use-ollama:
 	$(MAKE) use PRESET=ollama
+
+## ---- P4a: the governance plane (docs/P4A-RUNBOOK.md) ----
+
+## plane: build + deploy the Kaimahi proxy and its Postgres ledger
+plane: plane-image plane-secrets
+	$(KUBECTL) apply -f k8s/plane/
+	$(KUBECTL) -n kaimahi rollout status deploy/kaimahi-postgres --timeout=300s
+	$(KUBECTL) -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
+
+plane-image:
+	docker build -t $(PLANE_IMAGE) plane/
+	kind load docker-image $(PLANE_IMAGE) --name $(KIND_CLUSTER)
+
+plane-secrets:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-secrets.sh
+
+## govern: issue the Kaimahi credential (opaque token -> agent-side
+## Secret), apply the governed presets, switch hello-world through the
+## proxy. The agent never sees a real upstream key.
+govern:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh issue $(CRED)
+	$(MAKE) use PRESET=governed-ollama
+	$(KUBECTL) apply -f k8s/models/governed-copilot.yaml
+
+## budget: set monthly caps for a credential, e.g.
+##   make budget CAP_CENTS=100 CAP_TOKENS=-     (- or empty = no cap)
+budget:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh budget $(CRED) \
+		"$(if $(CAP_CENTS),$(CAP_CENTS),-)" "$(if $(CAP_TOKENS),$(CAP_TOKENS),-)"
+
+## ledger: show the spend ledger (newest first) + month-to-date totals
+ledger:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh ledger $(CRED)
+
+## plane-copilot-secret: mint the Copilot token into the PROXY's
+## namespace (real-key custody: the agent-side governed preset never
+## holds it). Re-run to rotate; the proxy picks it up without a restart.
+plane-copilot-secret:
+	@KUBECTL="$(KUBECTL)" COPILOT_SECRET_NAMESPACE=kaimahi \
+		COPILOT_SECRET_NAME=kaimahi-copilot-token \
+		bash scripts/copilot-secret.sh
 
 status:
 	$(KUBECTL) -n kagent get agents,modelconfigs
