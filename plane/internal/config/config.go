@@ -140,15 +140,17 @@ func Parse(raw []byte) (Config, error) {
 }
 
 // validHeaderName accepts an empty name (the Authorization default) or a
-// well-formed RFC 7230 token — the value is operator-committed, but a
-// malformed name would be silently dropped by net/http rather than
-// enforced, so reject it at load.
+// well-formed RFC 7230 field-name token — the full tchar set, so a legal
+// header like "X-Api.Key" is not rejected for being unusual. The value is
+// operator-committed, but a malformed name would be silently dropped by
+// net/http rather than enforced, so reject it at load.
 func validHeaderName(name string) bool {
 	if name == "" {
 		return true
 	}
 	for _, r := range name {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			strings.ContainsRune("!#$%&'*+-.^_`|~", r) {
 			continue
 		}
 		return false
