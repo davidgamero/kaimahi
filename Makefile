@@ -36,7 +36,7 @@ ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
 # The plane image. The tag moves with the phase so a stale side-loaded
 # image can never satisfy a newer manifest silently (P4b deviation 6).
 PLANE_IMAGE_REPO ?= kaimahi-proxy
-PLANE_IMAGE_TAG  ?= p5b
+PLANE_IMAGE_TAG  ?= p7b
 
 # ---- environment-dependent settings --------------------------------------
 # Everything that genuinely differs between kind and a managed cluster is
@@ -100,7 +100,8 @@ SLACK_TOOLNAMES_JSON = $(if $(filter -,$(SLACK_AGENT_TOOLS)),,"$(subst $(comma),
 	approvals approve deny request grants approval-audit \
 	slack-secret slack-mcp govern-slack slack-allow slack-audit \
 	slack-post slack-down aks-cluster aks-creds aks-down \
-	netpol-verify egress-copilot egress-copilot-off
+	netpol-verify egress-copilot egress-copilot-off \
+	inbound-credential inbound-secret inbound-fire inbound-audit
 
 # guard: the context-safety net every MUTATING target depends on. Prints
 # the target context/namespaces; demands explicit confirmation for
@@ -817,3 +818,43 @@ egress-copilot-off: guard
 	@# Delete by manifest, not by a name typed here: a renamed policy
 	@# would otherwise delete nothing, exit 0, and leave the hole open.
 	$(KUBECTL) delete -f k8s/egress-copilot.yaml --ignore-not-found
+
+## ---- P7b: inbound connectors (docs/inbound.md) ----
+#
+# The plane's one ingress: an external event (a webhook) may trigger a
+# kagent agent, on the plane's terms. The hooks live in the committed
+# upstreams table (k8s/plane/upstreams.yaml); these targets issue the
+# hook's identity, store its signing secret, deliver an event, and read
+# the trail. Approving a hook rides the P4c targets unchanged:
+# `make approvals` / `make approve ID=... USES=... TTL=...`.
+HOOK          ?= demo
+CRED_INBOUND  ?= inbound-demo
+# Where a BEARER hook's token goes (kaimahi namespace: the caller is
+# outside the cluster, not an agent). `-` discards the token: the right
+# choice for SIGNED hooks, whose credential is an identity, not a bearer.
+INBOUND_SECRET ?= -
+EVENT         ?= Reply with exactly the word PONG.
+
+## inbound-credential: issue the hook's plane credential, e.g.
+##   make inbound-credential                                  (signed demo hook)
+##   make inbound-credential CRED_INBOUND=inbound-bearer INBOUND_SECRET=kaimahi-inbound-token
+inbound-credential: guard
+	@KUBECTL="$(KUBECTL)" SECRET_NAMESPACE=kaimahi GOVERNED_SECRET='$(INBOUND_SECRET)' \
+		bash scripts/plane-admin.sh issue $(CRED_INBOUND)
+
+## inbound-secret: store a hook's signing secret — paste the SOURCE's
+## secret on stdin, or GENERATE=1 for a fresh one a Kaimahi-scheme caller
+## is then told (see scripts/inbound-secret.sh for retrieval).
+inbound-secret: guard
+	@KUBECTL="$(KUBECTL)" HOOK=$(HOOK) bash scripts/inbound-secret.sh $(if $(GENERATE),--generate,)
+
+## inbound-fire: deliver one event to a hook and report the plane's
+## decision. Unguarded for the same reason `chat` is (it runs through
+## the guarded probe script, which resolves and vets its own context).
+##   make inbound-fire [HOOK=demo] [EVENT='...'] [AUTH=hmac|bearer|none] [EXPECT=202]
+inbound-fire:
+	@KUBECTL="$(KUBECTL)" bash scripts/inbound-probe.sh $(HOOK) "$(EVENT)"
+
+## inbound-audit: the inbound event trail (decisions and outcomes, newest first)
+inbound-audit:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh inbound-audit $(if $(filter -,$(HOOK)),,$(HOOK))

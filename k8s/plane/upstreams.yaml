@@ -29,6 +29,30 @@
 # plane custody. Measured limitation: slack-mcp-server v1.3.0 does not
 # enforce it on its http transport, so it does not currently close the
 # direct-access bypass — NetworkPolicy does, and is unbuilt.
+#
+# inbound_hooks is the P7b inbound bridge's table (docs/inbound.md): the
+# ONLY webhooks the plane accepts, each bound to a plane credential, a
+# proof mode, the agent it triggers, and the governed credential that
+# agent spends under. Three entries:
+#   - demo:         Kaimahi's generic SIGNED webhook (kaimahi-hmac): the
+#                   primitive, and the one CI exercises end to end —
+#                   unauthenticated, forged, stale, replayed and
+#                   ungranted events all refused fail-closed.
+#   - demo-bearer:  the same target for a source that can set a header
+#                   but cannot sign. Weaker (the proof travels with every
+#                   request); present so the generic path serves both.
+#   - slack-events: the one NAMED source, Slack's Events API request
+#                   signing (v0). NOT live-verified: Slack must reach a
+#                   public HTTPS URL, which a kind cluster does not have,
+#                   and enabling event subscriptions is a workspace-side
+#                   change. The signature and envelope handling are
+#                   unit-tested against Slack's documented scheme.
+# signing_secret_file names (never carries) a key of the
+# kaimahi-inbound-signing Secret (scripts/inbound-secret.sh).
+# budget_credential is the credential the target agent's governed preset
+# carries: hello-world's governed presets and the Slack demo agent's
+# governed-copilot preset all mount kaimahi-governed-token, issued to
+# credential "hello-world" by `make govern`.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -61,6 +85,31 @@ data:
         "slack": {
           "url": "http://kaimahi-slack-mcp.kaimahi:13080/mcp",
           "credential_file": "/etc/kaimahi/upstream-creds/slack/SLACK_MCP_API_KEY"
+        }
+      },
+      "inbound_hooks": {
+        "demo": {
+          "credential": "inbound-demo",
+          "auth": "kaimahi-hmac",
+          "signing_secret_file": "/etc/kaimahi/inbound/demo",
+          "agent_namespace": "kagent",
+          "agent": "hello-world",
+          "budget_credential": "hello-world"
+        },
+        "demo-bearer": {
+          "credential": "inbound-bearer",
+          "auth": "bearer",
+          "agent_namespace": "kagent",
+          "agent": "hello-world",
+          "budget_credential": "hello-world"
+        },
+        "slack-events": {
+          "credential": "inbound-slack",
+          "auth": "slack",
+          "signing_secret_file": "/etc/kaimahi/inbound/slack-events",
+          "agent_namespace": "kagent",
+          "agent": "hello-slack",
+          "budget_credential": "hello-world"
         }
       }
     }

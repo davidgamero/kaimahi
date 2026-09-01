@@ -19,7 +19,12 @@
 #                                          Secret $GOVERNED_SECRET
 #                                          (default kaimahi-governed-token;
 #                                          the P4b tools credential uses
-#                                          GOVERNED_SECRET=kaimahi-tools-token)
+#                                          GOVERNED_SECRET=kaimahi-tools-token;
+#                                          GOVERNED_SECRET=- DISCARDS the
+#                                          token — P7b's signed hooks need
+#                                          the identity, never a bearer;
+#                                          SECRET_NAMESPACE overrides the
+#                                          kagent default)
 #   plane-admin.sh budget <name> <cents|-> <tokens|->   set caps (- = none)
 #   plane-admin.sh ledger [name]           show ledger (+ month totals)
 #   plane-admin.sh tool-allow <name> <tool,tool|->      replace tool allowlist
@@ -33,16 +38,19 @@
 #                                          s/m/h/d suffixes; amount only
 #                                          for budget requests)
 #   plane-admin.sh deny <id>               deny a pending request
-#   plane-admin.sh request <name> <tool|budget> <subject>
+#   plane-admin.sh request <name> <tool|budget|inbound> <subject>
 #                                          file a request explicitly
+#                                          (inbound subject: hook name)
 #   plane-admin.sh grants [name]           list grants (with liveness)
 #   plane-admin.sh approval-audit [name]   show the approvals audit trail
+#   plane-admin.sh inbound-audit [hook]    show the inbound event trail (P7b)
 set -euo pipefail
 umask 077
 
 KUBECTL="${KUBECTL:-kubectl}"
 NAMESPACE=kaimahi
 AGENT_NAMESPACE=kagent
+SECRET_NAMESPACE="${SECRET_NAMESPACE:-$AGENT_NAMESPACE}"
 GOVERNED_SECRET="${GOVERNED_SECRET:-kaimahi-governed-token}"
 ADMIN_PORT="${ADMIN_PORT:-19091}"
 
@@ -116,8 +124,12 @@ case "$cmd" in
     check_name "$name"
     printf '{"name": "%s"}\n' "$name" > "$workdir/req"
     admin_curl POST /admin/credentials "$workdir/req"
+    if [ "$status" = 409 ] && [ "$GOVERNED_SECRET" = - ]; then
+      echo "Credential '$name' already issued; keeping it (no token is stored for it)." >&2
+      exit 0
+    fi
     if [ "$status" = 409 ]; then
-      bound=$($KUBECTL -n "$AGENT_NAMESPACE" get secret "$GOVERNED_SECRET" \
+      bound=$($KUBECTL -n "$SECRET_NAMESPACE" get secret "$GOVERNED_SECRET" \
         -o jsonpath='{.metadata.annotations.kaimahi\.dev/credential}' 2>/dev/null || true)
       if [ "$bound" = "$name" ]; then
         echo "Credential '$name' already issued and $GOVERNED_SECRET is bound to it; keeping both." >&2
@@ -134,16 +146,24 @@ case "$cmd" in
       exit 1
     fi
     [ "$status" = 201 ] || { echo "issue failed (HTTP $status):" >&2; cat "$workdir/resp" >&2; exit 1; }
+    if [ "$GOVERNED_SECRET" = - ]; then
+      # P7b signed hooks: the credential is an IDENTITY (grants, audit);
+      # the caller proves it with the hook's signing secret, so the
+      # bearer token is discarded here — it exists in $workdir only until
+      # the trap removes it, and nowhere else, ever.
+      echo "Credential '$name' issued as an identity only; its bearer token was discarded, not stored." >&2
+      exit 0
+    fi
     json_get "$workdir/resp" token > "$workdir/governed-token"
     test -s "$workdir/governed-token" || { echo "no token in response" >&2; exit 1; }
-    $KUBECTL -n "$AGENT_NAMESPACE" create secret generic "$GOVERNED_SECRET" \
+    $KUBECTL -n "$SECRET_NAMESPACE" create secret generic "$GOVERNED_SECRET" \
       --from-file=api-key="$workdir/governed-token" \
-      --dry-run=client -o yaml | $KUBECTL -n "$AGENT_NAMESPACE" apply -f -
+      --dry-run=client -o yaml | $KUBECTL -n "$SECRET_NAMESPACE" apply -f -
     # Bind the Secret to its credential so a later issue of a DIFFERENT
     # name can detect the mismatch instead of silently reusing this token.
-    $KUBECTL -n "$AGENT_NAMESPACE" annotate --overwrite secret "$GOVERNED_SECRET" \
+    $KUBECTL -n "$SECRET_NAMESPACE" annotate --overwrite secret "$GOVERNED_SECRET" \
       "kaimahi.dev/credential=$name" >/dev/null
-    echo "Governed credential '$name' issued; agent-side Secret $GOVERNED_SECRET created." >&2
+    echo "Governed credential '$name' issued; Secret $SECRET_NAMESPACE/$GOVERNED_SECRET created." >&2
     echo "The plane stores only its hash — the real upstream keys stay with the proxy." >&2
     ;;
   budget)
@@ -287,11 +307,11 @@ print(f'"'"'Granted: {g["credential"]} {g["kind"]}/{g["subject"]} — {", ".join
     echo "Request $id denied." >&2
     ;;
   request)
-    name="${2:?usage: plane-admin.sh request <name> <tool|budget> <subject>}"
-    kind="${3:?kind (tool|budget)}"
-    subject="${4:?subject (tool name, or tokens|cents)}"
+    name="${2:?usage: plane-admin.sh request <name> <tool|budget|inbound> <subject>}"
+    kind="${3:?kind (tool|budget|inbound)}"
+    subject="${4:?subject (tool name, tokens|cents, or hook name)}"
     check_name "$name"
-    case "$kind" in (tool|budget) ;; (*) echo "kind must be tool or budget" >&2; exit 2 ;; esac
+    case "$kind" in (tool|budget|inbound) ;; (*) echo "kind must be tool, budget or inbound" >&2; exit 2 ;; esac
     case "$subject" in
       (*[!A-Za-z0-9._-]*|'') echo "invalid subject '$subject'" >&2; exit 2 ;;
     esac
@@ -342,8 +362,24 @@ for e in rows:
     print(fmt % (e["created_at"][:19], e["credential"], e["kind"], e["subject"], e["action"], e["bounds"]))
 EOF
     ;;
+  inbound-audit)
+    hook="${2:-}"
+    [ -z "$hook" ] || check_name "$hook"
+    admin_curl GET "/admin/inbound-audit?hook=$hook&limit=50"
+    [ "$status" = 200 ] || { echo "inbound-audit read failed (HTTP $status):" >&2; cat "$workdir/resp" >&2; exit 1; }
+    python3 - "$workdir/resp" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+rows = d.get("entries") or []
+fmt = "%-19s %-12s %-14s %-20s %-9s %6s %6s %6s %s"
+print(fmt % ("created (UTC)", "hook", "credential", "delivery", "decision", "status", "in", "out", "detail"))
+for e in rows:
+    print(fmt % (e["created_at"][:19], e["hook"], e["credential"], e["delivery_id"][:20],
+                 e["decision"], e["status"], e["input_tokens"], e["output_tokens"], e["detail"]))
+EOF
+    ;;
   *)
-    echo "usage: plane-admin.sh issue|budget|ledger|tool-allow|tool-allowlist|tool-audit|approvals|approve|deny|request|grants|approval-audit ..." >&2
+    echo "usage: plane-admin.sh issue|budget|ledger|tool-allow|tool-allowlist|tool-audit|approvals|approve|deny|request|grants|approval-audit|inbound-audit ..." >&2
     exit 2
     ;;
 esac

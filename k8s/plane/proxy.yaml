@@ -40,7 +40,7 @@ spec:
           # (AKS, private ACR) scripts/plane-deploy.sh renders both from
           # PLANE_IMAGE / PLANE_PULL_POLICY at deploy time, and the kind
           # path applies this document exactly as committed.
-          image: kaimahi-proxy:p5b
+          image: kaimahi-proxy:p7b
           imagePullPolicy: Never
           env:
             - name: PGHOST
@@ -56,6 +56,8 @@ spec:
               containerPort: 8080
             - name: mcp
               containerPort: 8081
+            - name: inbound
+              containerPort: 8082
             - name: admin
               containerPort: 9091
           volumeMounts:
@@ -74,6 +76,9 @@ spec:
               readOnly: true
             - name: slack-mcp-cred
               mountPath: /etc/kaimahi/upstream-creds/slack
+              readOnly: true
+            - name: inbound-signing
+              mountPath: /etc/kaimahi/inbound
               readOnly: true
           readinessProbe:
             httpGet:
@@ -122,6 +127,16 @@ spec:
             # Optional, same contract: with no Secret the slack upstream
             # fails closed (503) and every other path is unaffected.
             optional: true
+        # P7b: signing secrets for HMAC-authenticated inbound hooks, one
+        # key per hook name (scripts/inbound-secret.sh). Plane custody
+        # only — the caller holds its own copy, nothing agent-side does.
+        # Optional: a signed hook whose secret is absent fails closed
+        # (503 "hook signing secret unavailable"); bearer hooks and every
+        # other listener are unaffected.
+        - name: inbound-signing
+          secret:
+            secretName: kaimahi-inbound-signing
+            optional: true
 ---
 apiVersion: v1
 kind: Service
@@ -154,3 +169,23 @@ spec:
     - name: mcp
       port: 8081
       targetPort: mcp
+---
+# The P7b inbound bridge's own address: where external events are
+# delivered. Same pod (a fourth listener in the kaimahi-proxy process —
+# zero extra CPU requests), its own Service so the ingress seam is
+# addressable on its own name and can be exposed on its own terms. It is
+# a ClusterIP: on kind the demo reaches it via port-forward; exposing it
+# beyond the cluster (an Ingress/LoadBalancer with TLS) is the operator's
+# step and is documented, not committed. The admin port stays off it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kaimahi-inbound
+  namespace: kaimahi
+spec:
+  selector:
+    app: kaimahi-proxy
+  ports:
+    - name: inbound
+      port: 8082
+      targetPort: inbound
