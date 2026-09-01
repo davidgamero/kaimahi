@@ -102,3 +102,51 @@ func TestSetBudgetAndLedger(t *testing.T) {
 	require.NotNil(t, resp.MonthCents)
 	require.NotNil(t, resp.MonthTokens)
 }
+
+func TestToolAllowlistRoundTrip(t *testing.T) {
+	f := newFakeStore()
+	f.addToken("kmh_x", store.Credential{Name: "hello-tools"})
+	mux, tok := adminMux(t, f)
+
+	// Unknown credential 404s; bad credential and tool names 400.
+	require.Equal(t, 404, adminDo(mux, "PUT", "/admin/tool-allowlist", tok,
+		`{"credential": "ghost", "tools": ["a"]}`).Code)
+	require.Equal(t, 400, adminDo(mux, "PUT", "/admin/tool-allowlist", tok,
+		`{"credential": "UPPER", "tools": []}`).Code)
+	require.Equal(t, 400, adminDo(mux, "PUT", "/admin/tool-allowlist", tok,
+		`{"credential": "hello-tools", "tools": ["bad tool name"]}`).Code)
+
+	require.Equal(t, 204, adminDo(mux, "PUT", "/admin/tool-allowlist", tok,
+		`{"credential": "hello-tools", "tools": ["k8s_get_resources", "k8s_get_events"]}`).Code)
+
+	w := adminDo(mux, "GET", "/admin/tool-allowlist?credential=hello-tools", tok, "")
+	require.Equal(t, 200, w.Code)
+	var listResp struct{ Tools []string }
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &listResp))
+	require.ElementsMatch(t, []string{"k8s_get_resources", "k8s_get_events"}, listResp.Tools)
+
+	// Clearing to empty is valid (nothing callable) and reads back as [].
+	require.Equal(t, 204, adminDo(mux, "PUT", "/admin/tool-allowlist", tok,
+		`{"credential": "hello-tools", "tools": []}`).Code)
+	w = adminDo(mux, "GET", "/admin/tool-allowlist?credential=hello-tools", tok, "")
+	require.Equal(t, 200, w.Code)
+	require.Contains(t, w.Body.String(), `"tools":[]`)
+}
+
+func TestToolAuditRead(t *testing.T) {
+	f := newFakeStore()
+	f.audits = []store.ToolAuditEntry{
+		{CredentialName: "hello-tools", Upstream: "kagent-tools", Method: "tools/call",
+			Tool: "k8s_get_resources", Decision: "allowed", Status: 200},
+		{CredentialName: "other", Upstream: "kagent-tools", Method: "tools/call",
+			Tool: "x", Decision: "denied", Status: 403},
+	}
+	mux, tok := adminMux(t, f)
+	require.Equal(t, 401, adminDo(mux, "GET", "/admin/tool-audit", "", "").Code)
+	w := adminDo(mux, "GET", "/admin/tool-audit?credential=hello-tools", tok, "")
+	require.Equal(t, 200, w.Code)
+	var auditResp struct{ Entries []store.ToolAuditEntry }
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &auditResp))
+	require.Len(t, auditResp.Entries, 1)
+	require.Equal(t, "allowed", auditResp.Entries[0].Decision)
+}

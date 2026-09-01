@@ -33,9 +33,13 @@ type fakeStore struct {
 	monthCents int64
 	monthToks  int64
 	monthErr   error
+	allowlists map[string][]string
+	audits     []store.ToolAuditEntry
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{creds: map[string]store.Credential{}} }
+func newFakeStore() *fakeStore {
+	return &fakeStore{creds: map[string]store.Credential{}, allowlists: map[string][]string{}}
+}
 
 func (f *fakeStore) addToken(token string, c store.Credential) {
 	h := sha256.Sum256([]byte(token))
@@ -94,6 +98,30 @@ func (f *fakeStore) Ledger(_ context.Context, name string, _ int) ([]store.Ledge
 
 func (f *fakeStore) MonthUsage(_ context.Context, _ string, _ time.Time) (int64, int64, error) {
 	return f.monthCents, f.monthToks, f.monthErr
+}
+
+func (f *fakeStore) SetToolAllowlist(_ context.Context, name string, tools []string) error {
+	for _, c := range f.creds {
+		if c.Name == name {
+			f.allowlists[name] = tools
+			return nil
+		}
+	}
+	return store.ErrNotFound
+}
+
+func (f *fakeStore) ToolAllowlist(_ context.Context, name string) ([]string, error) {
+	return f.allowlists[name], nil
+}
+
+func (f *fakeStore) ToolAudit(_ context.Context, name string, _ int) ([]store.ToolAuditEntry, error) {
+	var out []store.ToolAuditEntry
+	for _, e := range f.audits {
+		if name == "" || e.CredentialName == name {
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }
 
 func i64(v int64) *int64 { return &v }
