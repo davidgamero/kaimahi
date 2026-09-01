@@ -1132,8 +1132,9 @@ completed and the cluster torn down.
 
 Coordinator verification (independent, 2026-09-01):
 - **Guardrail 1 — no Azure identifiers.** My own scan of the tracked
-  tree AND the lane's commit history for GUIDs, `*.azurecr.io`,
-  `*.azmk8s.io`: every hit is a variable expansion (`$(ACR_NAME)`,
+  tree AND the lane's commit history for GUIDs, registry hostnames
+  (`<name>.azurecr.io`) and cluster FQDNs: every hit is a variable
+  expansion (`$(ACR_NAME)`,
   `$ACR`) or a comment inside the scanner explaining what it blocks. No
   subscription, tenant, RG, registry, or FQDN literal reached the public
   repo or its history.
