@@ -148,28 +148,50 @@ KAGENT_INVOKE = $(KAGENT) --kagent-url http://127.0.0.1:$(CHAT_PORT) invoke
 
 # $(1) is the agent whose Service must be servable; $(2) is the command.
 #
-# Waiting for the agent's ENDPOINTS is not redundant with `use`'s
-# `rollout status` + Agent-Ready wait. Both of those can return while the
-# Service still has no ready endpoint: during a preset-switch rollout the
-# old pod is already out of the endpoint list and the new one may not be
-# in it yet. kube-proxy REJECTS a connection to a Service with no ready
-# endpoints, so the controller reports
+# Before invoking, prove the agent is actually SERVABLE — do not infer it.
+#
+# `use` already waits twice (`rollout status`, then the Agent's Ready
+# condition) and neither is sufficient during a preset-switch rollout:
+# CI failed here twice with
 #   dial tcp <clusterIP>:8080: connect: connection refused
-# which reads like a broken agent rather than a one-second race. Observed
-# in CI on this branch. Ready is not the same as reachable, so check the
-# thing that actually has to be true.
+# because at the moment of the call the Service had no ready backend (the
+# old pod removed, the new one not yet propagated) — kube-proxy REJECTs
+# that, so it looks like a broken agent rather than a race. Checking the
+# endpoint list is also too weak: it can read ready one instant and be
+# empty the next.
+#
+# So make the check the same thing the caller needs: fetch the agent's own
+# A2A card THROUGH the Service, via the API server's service proxy. That
+# resolves endpoints server-side and returns a real HTTP body, so it fails
+# while there is no ready backend and succeeds only once the agent answers.
+# (The kagent readiness probe uses the same path.) One kubectl call — no
+# extra port, no second forward.
+#
+# This replaces the `sleep 3` the recipe used to rely on. That sleep was
+# quietly doing this job: it is why `main` passes and why removing it
+# surfaced the race. Padding is not a readiness check.
+#
+# The probe alone is NOT sufficient, and it is worth being precise about
+# why: the API server's service proxy resolves the endpoint and connects to
+# the POD directly, so it can succeed while kube-proxy has not yet
+# programmed the ClusterIP the controller dials. Only the controller can
+# answer "can I reach the agent", so the invoke below additionally retries
+# a bounded number of times on exactly that error. It cannot mask a real
+# outage: after the retries the original output and exit status are
+# emitted unchanged, and a connection-refused reply still fails
+# verify-chat.py. Note kagent exits 0 on this error, so the retry keys on
+# the message, not the status.
 define kagent_forward
+agent_ok=; \
 for _ in $$(seq 1 120); do \
-	eps=$$($(KUBECTL) -n kagent get endpoints $(1) \
-		-o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null); \
-	[ -n "$$eps" ] && break; \
+	if $(KUBECTL) -n kagent get --raw \
+		'/api/v1/namespaces/kagent/services/$(1):8080/proxy/.well-known/agent-card.json' \
+		>/dev/null 2>&1; then agent_ok=1; break; fi; \
 	sleep 1; \
 done; \
-eps=$$($(KUBECTL) -n kagent get endpoints $(1) \
-	-o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null); \
-if [ -z "$$eps" ]; then \
-	echo "agent '$(1)' has no ready Service endpoints after 120s — refusing to invoke" >&2; \
-	echo "  (a chat now would fail with 'connection refused' from the controller)" >&2; \
+if [ -z "$$agent_ok" ]; then \
+	echo "agent '$(1)' is not answering through its Service after 120s — refusing to invoke" >&2; \
+	echo "  (invoking now would fail with 'connection refused' from the controller)" >&2; \
 	exit 1; \
 fi; \
 pf_out=$$(mktemp); \
@@ -189,7 +211,17 @@ if [ -z "$$ready" ]; then \
 	echo "  the task would have run THERE. Use CHAT_PORT=<free port>." >&2; \
 	exit 1; \
 fi; \
-$(2)
+out=$$(mktemp); rc=0; \
+for attempt in 1 2 3 4; do \
+	rc=0; $(2) >"$$out" 2>&1 || rc=$$?; \
+	grep -q 'connection refused' "$$out" || break; \
+	if [ "$$attempt" != 4 ]; then \
+		echo "kagent could not reach agent '$(1)' yet (connection refused); retry $$attempt/3 in 5s" >&2; \
+		sleep 5; \
+	fi; \
+done; \
+cat "$$out"; rm -f "$$out"; \
+exit $$rc
 endef
 
 # The `up` journey differs by environment. On kind it is unchanged. On AKS
