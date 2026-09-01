@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gambtho/kaimahi/plane/internal/config"
@@ -27,6 +28,11 @@ const (
 
 type handler struct {
 	d Deps
+	// ledgerDegraded trips when a ledger write fails and clears on the
+	// next success. While tripped, the data plane denies: the meter reads
+	// budgets from ledger sums, so unrecorded spend would silently
+	// un-enforce every cap (fail closed — no ledger, no egress).
+	ledgerDegraded atomic.Bool
 }
 
 // NewDataMux serves the governed data plane: the surface kagent's OpenAI
@@ -49,9 +55,12 @@ func (h *handler) record(r *http.Request, e store.LedgerEntry) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 	defer cancel()
 	if err := h.d.Store.RecordLedger(ctx, e); err != nil {
-		slog.Error("proxy: ledger append failed", "credential", e.CredentialName,
-			"upstream", e.Upstream, "status", e.Status, "err", err)
+		h.ledgerDegraded.Store(true)
+		slog.Error("proxy: ledger append failed; denying traffic until a write succeeds",
+			"credential", e.CredentialName, "upstream", e.Upstream, "status", e.Status, "err", err)
+		return
 	}
+	h.ledgerDegraded.Store(false)
 }
 
 // deny is the single exit for every pre-forward refusal: the denial is
@@ -125,6 +134,14 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request) {
 	if up.Classification == config.ClassMetered && cred.CapCents != nil && !priced {
 		h.deny(w, r, cred, name, req.Model, http.StatusForbidden,
 			"model has no configured price; a cents budget requires one (set a price or use a token budget)")
+		return
+	}
+
+	// A tripped ledger fails the plane closed: budgets are enforced from
+	// ledger sums, so spend that cannot be recorded must not happen. The
+	// denial's own record attempt is the recovery probe.
+	if h.ledgerDegraded.Load() {
+		h.deny(w, r, cred, name, req.Model, http.StatusServiceUnavailable, "spend ledger unavailable")
 		return
 	}
 

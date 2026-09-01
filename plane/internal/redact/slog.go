@@ -44,6 +44,12 @@ func (h Handler) redactAttr(a slog.Attr) slog.Attr {
 		return slog.String(a.Key, h.R.Redact(a.Value.String()))
 	case slog.KindGroup:
 		return slog.Attr{Key: a.Key, Value: slog.GroupValue(h.redactAttrs(a.Value.Group())...)}
+	case slog.KindAny:
+		// Errors land here (slog has no error kind), and error strings
+		// from drivers/libraries are exactly where secrets echo back —
+		// e.g. a DSN inside a pgx connect error. Render via the same
+		// fmt.Sprint the handler would use, then scrub.
+		return slog.String(a.Key, h.R.Redact(a.Value.String()))
 	default:
 		return a
 	}

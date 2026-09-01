@@ -7,8 +7,9 @@
 # Custody rules (docs/COORDINATION.md security guidance):
 #   - The admin token and any issued governed token travel only through
 #     pipes and 0600 files (curl reads the auth header from a file;
-#     kubectl reads the secret value with --from-file) — never argv, env
-#     listings, YAML, or logs.
+#     kubectl reads the secret value with --from-file, and the issued
+#     token's dry-run manifest exists only inside the apply pipe) —
+#     never argv, env listings, on-disk YAML, or logs.
 #   - Fail closed: every step checks a well-formed positive; no -L on
 #     any authenticated call.
 #
@@ -42,8 +43,11 @@ $KUBECTL -n "$NAMESPACE" get secret kaimahi-admin -o jsonpath='{.data.token}' \
 test -s "$workdir/token" || { echo "kaimahi-admin secret missing/empty (run make plane)" >&2; exit 1; }
 { printf 'Authorization: Bearer '; cat "$workdir/token"; printf '\n'; } > "$workdir/auth-header"
 
-$KUBECTL -n "$NAMESPACE" port-forward deploy/kaimahi-proxy "$ADMIN_PORT:9091" \
-  >/dev/null 2>&1 &
+# --address pins IPv4 explicitly: if the port is already taken, kubectl
+# must fail (and this script with it) rather than bind only the v6 side
+# while curl talks to whatever squats on 127.0.0.1.
+$KUBECTL -n "$NAMESPACE" port-forward --address 127.0.0.1 \
+  deploy/kaimahi-proxy "$ADMIN_PORT:9091" >/dev/null 2>&1 &
 pf_pid=$!
 for _ in $(seq 1 50); do
   curl -fsS -o /dev/null "http://127.0.0.1:$ADMIN_PORT/healthz" 2>/dev/null && break

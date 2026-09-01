@@ -2,6 +2,7 @@ package redact_test
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -21,6 +22,19 @@ func TestHandlerRedactsMessageAndAttrs(t *testing.T) {
 	out := buf.String()
 	require.NotContains(t, out, "sk-super-secret")
 	require.True(t, strings.Contains(out, "[REDACTED]"))
+}
+
+func TestHandlerRedactsErrorAttrs(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(redact.Handler{
+		Inner: slog.NewTextHandler(&buf, nil),
+		R:     redact.New([]string{"sk-super-secret"}),
+	})
+	err := errors.New("connect failed: postgres://u:sk-super-secret@host/db")
+	logger.Error("boom", "err", err)
+	out := buf.String()
+	require.NotContains(t, out, "sk-super-secret")
+	require.Contains(t, out, "[REDACTED]")
 }
 
 func TestHandlerRedactsGroupedAttrs(t *testing.T) {
