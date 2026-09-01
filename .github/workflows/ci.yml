@@ -41,6 +41,8 @@ jobs:
   # after a 6-minute cluster bring-up.
   go-plane:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: plane
@@ -181,7 +183,11 @@ jobs:
           cat denied-chat.out
           grep -q 'monthly token budget reached' denied-chat.out
           grep -q '"state":"failed"' denied-chat.out
-          ! grep -q '"state":"completed"' denied-chat.out
+          # `! cmd` is exempt from errexit (see the lockdown step above),
+          # so assert the absence explicitly.
+          if grep -q '"state":"completed"' denied-chat.out; then
+            echo 'chat completed despite exhausted budget' >&2; exit 1
+          fi
           make ledger | tee ledger-denied.out
           grep -E 'denied +429' ledger-denied.out
       - name: Cluster state on failure

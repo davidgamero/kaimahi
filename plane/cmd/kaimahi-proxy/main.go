@@ -109,8 +109,13 @@ func main() {
 		Config: cfg,
 	}
 
-	dataSrv := &http.Server{Addr: dataAddr, Handler: proxy.NewDataMux(deps), ReadHeaderTimeout: 10 * time.Second}
-	adminSrv := &http.Server{Addr: adminAddr, Handler: proxy.NewAdminMux(deps, adminTokenFile), ReadHeaderTimeout: 10 * time.Second}
+	// ReadTimeout bounds slow request-body writers (chat requests are
+	// small; streamed RESPONSES are unaffected — WriteTimeout stays 0 so
+	// long generations can flush indefinitely).
+	dataSrv := &http.Server{Addr: dataAddr, Handler: proxy.NewDataMux(deps),
+		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}
+	adminSrv := &http.Server{Addr: adminAddr, Handler: proxy.NewAdminMux(deps, adminTokenFile),
+		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
 
 	errCh := make(chan error, 2)
 	go func() { errCh <- dataSrv.ListenAndServe() }()
@@ -136,7 +141,12 @@ func main() {
 func retryConnect(ctx context.Context, dsn string) *pgxpool.Pool {
 	deadline := time.Now().Add(90 * time.Second)
 	for {
-		if err := db.Migrate(ctx, dsn); err != nil {
+		// Bound each attempt so a hung connection cannot outlive the
+		// retry budget silently.
+		attemptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := db.Migrate(attemptCtx, dsn)
+		cancel()
+		if err != nil {
 			if time.Now().After(deadline) || ctx.Err() != nil {
 				slog.Error("migrations failed", "err", err)
 				return nil
