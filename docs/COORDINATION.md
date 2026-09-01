@@ -83,7 +83,8 @@ build anything AKS-specific without a survey-backed justification.
 | Rename lane: in-repo tomte → kaimahi (D9/D10) | rename worker | PR #5 MERGED (01f5c3c); coordinator verified (delta sheet below); board renamed by coordinator | lane closed |
 | P4a: metering/enforcing LLM proxy (D11) | W4 worker | PR #12 MERGED; coordinator verified live incl. budget denial + custody (delta sheet below) | lane closed |
 | P4b: enforcing MCP gateway | W5 worker | PR #15 MERGED (97c2b5f, payload identical to verified 06873d2; post-merge main CI green); delta sheet below | lane closed |
-| P4c: approvals/permits (D13) | unassigned | GO — blindspot pass + D13 shaping done, W7 prompt ready (below) | last arc phase; contended: plane/ + k8s/ + Makefile + CI + README status |
+| P4c: approvals/permits (D13) | W7 worker | PR #17 CHECKS-GREEN at 630fcea; coordinator verified both approval cycles independently (own probes/timestamps: deny→file→bounded grant→allowed-citing-grant→exhaust→re-deny; unbounded approve refused; denials still enforcement-audited); awaiting user merge | delta sheet + deviation rulings at close-out after merge |
+| CLI prototype (Tatsinnit, PR #16) | teammate | OPEN, unreviewed — a working `kaimahi agent create` prototype; board holds the CLI as under-consideration/not-GO with five open decisions reserved for the user (docs/CLI-PROPOSAL.md) | awaiting user ruling before coordinator review |
 | Docs: CLI-first framing + naming record | teammate (Tatsinnit) | PR #10 MERGED (ratifies D12) | staleness fixes folded into reconciliation lane |
 | Docs: agent-first scenarios | teammate (Tatsinnit) | PR #11 MERGED (authors' public credit ratified by user merge) | lane closed |
 | Post-merge reconciliation | coordinator | PR #13 MERGED (0ce72ca, main CI green incl. hardened secret scan) | lane closed |
