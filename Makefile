@@ -53,8 +53,18 @@ kagent:
 		--kube-context $(KUBE_CTX) -f k8s/kagent-values.yaml
 	$(KUBECTL) -n kagent wait --for=condition=Ready pods --all --timeout=420s
 
+# Re-applying the committed YAML must not silently drop governance (or
+# any preset switch) from a live agent: capture the current modelConfig
+# first and restore a non-default one after the apply, with a warning.
 agent:
-	$(KUBECTL) apply -f k8s/hello-world.yaml
+	@current=$$($(KUBECTL) -n kagent get agent hello-world \
+		-o jsonpath='{.spec.declarative.modelConfig}' 2>/dev/null || true); \
+	$(KUBECTL) apply -f k8s/hello-world.yaml && \
+	if [ -n "$$current" ] && [ "$$current" != hello-world-model ]; then \
+		echo "NOTE: hello-world was on modelConfig '$$current' — preserving it ('make use PRESET=ollama' resets)" >&2; \
+		$(KUBECTL) -n kagent patch agent hello-world --type merge \
+			-p "{\"spec\":{\"declarative\":{\"modelConfig\":\"$$current\"}}}"; \
+	fi
 	$(KUBECTL) -n kagent wait \
 		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
 		agent/hello-world --timeout=300s
@@ -65,7 +75,17 @@ tools-agent:
 	$(KUBECTL) -n kagent wait \
 		--for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True \
 		remotemcpserver/kagent-tool-server --timeout=300s
-	$(KUBECTL) apply -f k8s/tools-agent.yaml
+	@server=$$($(KUBECTL) -n kagent get agent hello-tools \
+		-o jsonpath='{.spec.declarative.tools[0].mcpServer.name}' 2>/dev/null || true); \
+	tools=$$($(KUBECTL) -n kagent get agent hello-tools -o json 2>/dev/null \
+		| python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["spec"]["declarative"]["tools"]))' \
+		2>/dev/null || true); \
+	$(KUBECTL) apply -f k8s/tools-agent.yaml && \
+	if [ "$$server" = kaimahi-tools ] && [ -n "$$tools" ]; then \
+		echo "NOTE: hello-tools was governed via kaimahi-tools — restoring gateway wiring ('make ungovern-tools' opts out)" >&2; \
+		$(KUBECTL) -n kagent patch agent hello-tools --type merge \
+			-p "{\"spec\":{\"declarative\":{\"tools\":$$tools}}}"; \
+	fi
 	$(KUBECTL) -n kagent wait \
 		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
 		agent/hello-tools --timeout=300s
