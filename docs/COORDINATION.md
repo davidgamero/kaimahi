@@ -81,7 +81,8 @@ build anything AKS-specific without a survey-backed justification.
 | P2: LLM-enhanced via ModelConfig | W2 worker | PR #3 MERGED (d1a584d, tree-identical to checks-green branch); coordinator verified (delta sheet below) | lane closed |
 | P3: connectors/tools via MCP | W3 worker | PR #4 MERGED (99edd8a); coordinator verified incl. live tool call (delta sheet below) | lane closed |
 | Rename lane: in-repo tomte → kaimahi (D9/D10) | rename worker | PR #5 MERGED (01f5c3c); coordinator verified (delta sheet below); board renamed by coordinator | lane closed |
-| P4: governance plane | unassigned | UNBLOCKED — awaiting coordinator blindspot pass + user shaping questions + GO | biggest phase; port evaluation of tomte-old server/ first |
+| P4a: metering/enforcing LLM proxy (D11) | unassigned | GO — blindspot pass + D11 shaping done, W4 prompt ready (below) | contended: whole repo (new Go module + k8s + Makefile + CI) |
+| P4b: enforcing MCP gateway / P4c: approvals | — | blocked on P4a merge | no pre-stacked PR bases |
 
 ## Decisions (user rulings, verbatim)
 
@@ -97,6 +98,7 @@ build anything AKS-specific without a survey-backed justification.
 | D8 | 2026-08-31 | P2's keyed path is the Copilot subscription's model API directly (api.githubcopilot.com, no local proxy), superseding D7. Forced by two verified facts: GitHub Models retired 2026-07-30 (endpoint returns 410) and gh CLI tokens fail the Copilot token exchange (403) — device flow required. The endpoint's undocumented-surface caveat must stay documented wherever the preset appears | ruled mid-lane in the P2 worker session (not captured verbatim); recorded per PR #3 "Deviations & decisions" item 2 and the user-relayed close-out; ratified by the user's merge of PR #3 |
 | D9 | 2026-08-31 | TENTATIVE rename: tomte → **kaimahi** (te reo Māori: worker). No changes yet — no repo/README/board/package renames until the user says go. Still owed before final: the NZ developer's read + Māori cultural appropriateness, and trademark counsel. Availability as checked 2026-08-31 (decays — nothing claimed): npm kaimahi + create-kaimahi, PyPI, crates, kaimahi.dev/.io all free; claiming any of them is outward-facing and needs explicit user approval naming the artifact | "lets tentatively go with a rename to kaimahi, but lets not make the changes yet" |
 | D10 | 2026-08-31 | Repo rename executed ahead of D9's freeze: user renamed the GitHub repo (initially to "kaiwahi" — a typo; coordinator caught the m/w mismatch vs D9 and, with user approval, corrected it to **gambtho/kaimahi**). The in-repo rename (README, board, Makefile names, docs) is a lane queued to run AFTER P3 merges. D9's remaining gates (cultural read, counsel) still stand for the name going truly final | "i changed the repo name to kaiwahi -- whenever p3 finishes we should do the rename change" — then ruled via option: "kaimahi — fix repo (Recommended)" |
+| D11 | 2026-08-31 | P4 shaping: (1) the metering/enforcing LLM proxy leads (P4a); MCP gateway (P4b) and approvals (P4c) follow as separate lanes. (2) The durable store is in-cluster Postgres. (3) The P4 demo is CLI-only | ruled via options: "LLM proxy first (Recommended)", "In-cluster Postgres (Recommended)", "Yes, CLI only (Recommended)" |
 
 Old-repo history is preserved at https://github.com/gambtho/tomte-old
 (archived, read-only). No local checkout of it exists (deleted 2026-08-31);
@@ -359,6 +361,77 @@ the Makefile.
 Branch from current main; PR targets main; no stacked bases. Lane ends at
 PR-open-with-checks-green — do not merge. Report deviations in the PR's
 "Deviations & decisions" section.
+```
+
+### W4 — P4a: metering/enforcing LLM proxy (UNASSIGNED — paste into a fresh CLI session in this repo)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout). Read docs/COORDINATION.md first — prime directive, process
+rules, security standing guidance, decisions D1–D11, and ALL delta sheets
+bind you. Your lane: P4a — the first governance slice: a metering and
+enforcing LLM proxy, mounted at kagent's ModelConfig baseUrl seam (D11).
+
+PORT EVALUATION FIRST (prime directive, both directions): clone the
+archived https://github.com/gambtho/tomte-old and evaluate porting its
+verified Go stack before writing anything new. Coordinator's inventory to
+seed your survey: server/ is ~9k LOC across 22 packages, but it is the
+OLD architecture's full control plane — its engine/scheduler/reaper,
+harness, httpapi/session shell, and workflow model are REPLACED by kagent;
+do not port them. The governance core is what you evaluate:
+internal/{proxy,proxyadapter,meter,permit,vault,llm,redact} and the
+store/db layer they drag in (Postgres 16 — sanctioned by D11). Record in
+the PR, per package: port / adapt / rewrite / skip, with reasons.
+
+Architecture (board + D11):
+- The plane runs in-cluster: namespace kaimahi, proxy Deployment/Service,
+  Postgres 16 Deployment as the durable store, a migrations step.
+- Mount: a governed ModelConfig preset whose openAI.baseUrl points at the
+  proxy; the proxy forwards upstream. Upstreams in scope: exactly the two
+  live-verified paths — in-cluster ollama (free tier of the demo) and the
+  Copilot subscription endpoint (D8 semantics: expiring token, custody
+  rules). No other upstreams in this lane.
+- Credential custody: real upstream credentials live only with the proxy
+  (Secret mounted to it); the agent's governed preset carries a
+  Kaimahi-issued opaque credential, never the real key. Keys never reach
+  the agent — this is the mission sentence, prove it in evidence.
+- Budgets fail CLOSED: an exhausted budget denies with a clear error.
+  Ledger records spend BEFORE honoring failures (standing guidance).
+  Pricing: no blanket $0 by inference — ollama is $0 only as an explicit
+  classification; Copilot usage is counted (tokens) and priced only if a
+  real price is configured (the old repo's priced-pair gate is the
+  pattern). Never invent prices.
+- Security guidance binds throughout: fail-closed verify paths, stdin-only
+  key capture via pipefail scripts, no redirects on keyed calls, redaction
+  in logs (port redact), no key material in YAML/argv/env/logs.
+
+Deliverables:
+(a) The Go code in a top-level module dir (choose the name, state why),
+    `go test ./...` green at every commit.
+(b) k8s manifests for the plane + the governed ModelConfig preset.
+(c) Makefile glue: deploy the plane, set a budget, chat through the
+    governed preset, show the ledger, demonstrate budget exhaustion
+    failing closed — CLI only (D11), following the make-target style of
+    P1–P3.
+(d) docs/P4A-RUNBOOK.md per the runbook pattern, including what is now
+    governed vs still ungoverned (MCP/tools until P4b; approvals until
+    P4c).
+(e) CI: Go build+test job; keyless e2e extension driving the governed
+    ollama path (chat via proxy → ledger row asserted → budget denial
+    asserted, fail-closed). Mind the 2-CPU budget (P3 delta: node was
+    ~95% requests before shrinking) — a separate job or trimmed resources
+    may be needed; state your choice.
+
+Out of scope: MCP gateway (P4b), approval workflows beyond what budgets
+need (P4c), any UI, new model endpoints, npm/domain/external claims.
+
+Verification is real: live cluster evidence in the PR — a governed chat
+that works, the ledger rows for it, the same chat denied after budget
+exhaustion, and proof the real key never appears agent-side (e.g. the
+governed preset's Secret contents vs the proxy's). Suite green at every
+commit. Branch from current main; PR targets main; no stacked bases. Lane
+ends at PR-open-with-checks-green — do not merge. Report deviations in
+the PR's "Deviations & decisions" section.
 ```
 
 ## Delta sheets from finished lanes
