@@ -287,6 +287,26 @@ func TestUpstreamFailureIsStillLedgered(t *testing.T) {
 	require.Equal(t, 502, f.ledger[0].Status)
 }
 
+func TestLedgerWriteFailureTripsFailClosedUntilRecovery(t *testing.T) {
+	f := newFakeStore()
+	f.addToken("tok", store.Credential{Name: "hello"})
+	up, _, _ := newUpstream(t)
+	mux := proxy.NewDataMux(testDeps(f, map[string]config.Upstream{
+		"ollama": {BaseURL: up.URL, Path: "v1/chat/completions", Classification: config.ClassFree},
+	}))
+	// First call forwards, but its ledger write fails -> plane trips.
+	f.ledgerErr = errors.New("disk full")
+	require.Equal(t, 200, doChat(t, mux, "tok", "/upstream/ollama/v1/chat/completions", chatBody).Code)
+	// Tripped: budgets can no longer be enforced, so traffic is denied.
+	require.Equal(t, 503, doChat(t, mux, "tok", "/upstream/ollama/v1/chat/completions", chatBody).Code)
+	// Ledger recovers; the denied request's own record was the probe (it
+	// failed above), so the next request's denial record succeeds and
+	// clears the trip, and the one after forwards again.
+	f.ledgerErr = nil
+	require.Equal(t, 503, doChat(t, mux, "tok", "/upstream/ollama/v1/chat/completions", chatBody).Code)
+	require.Equal(t, 200, doChat(t, mux, "tok", "/upstream/ollama/v1/chat/completions", chatBody).Code)
+}
+
 func TestStreamingInjectsIncludeUsageAndCapturesUsage(t *testing.T) {
 	f := newFakeStore()
 	f.addToken("tok", store.Credential{Name: "hello"})

@@ -10,7 +10,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -74,6 +73,12 @@ func main() {
 		}
 		if raw, err := os.ReadFile(u.CredentialFile); err == nil {
 			secrets = append(secrets, strings.TrimSpace(string(raw)))
+		} else {
+			// Not fatal (the upstream is optional and read per request),
+			// but say so: this credential is outside the redactor until
+			// the next rollout.
+			slog.Warn("upstream credential unreadable at boot; value not redacted in logs",
+				"file", u.CredentialFile, "err", err)
 		}
 	}
 	slog.SetDefault(slog.New(redact.Handler{
@@ -120,10 +125,11 @@ func main() {
 		_ = dataSrv.Shutdown(shutdownCtx)
 		_ = adminSrv.Shutdown(shutdownCtx)
 	case err := <-errCh:
-		if !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("server failed", "err", err)
-			os.Exit(1)
-		}
+		// Either listener stopping before a shutdown signal is abnormal —
+		// even ErrServerClosed — so exit nonzero and let Kubernetes
+		// restart the pod rather than report a clean exit.
+		slog.Error("server stopped unexpectedly", "err", err)
+		os.Exit(1)
 	}
 }
 

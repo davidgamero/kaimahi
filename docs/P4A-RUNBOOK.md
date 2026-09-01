@@ -3,8 +3,9 @@
 P1–P3 built the agent; P4 builds what Kaimahi actually sells: governance.
 P4a is the first slice — a metering and enforcing LLM proxy mounted at
 kagent's ModelConfig `baseUrl` seam (D11). Every model call an agent makes
-through a governed preset is authenticated, budget-checked, ledgered, and
-only then forwarded upstream — and the real upstream credential lives
+through a governed preset is authenticated and budget-checked before it
+is forwarded, and ledgered (denials immediately; forwarded calls once the
+response reveals their usage) — and the real upstream credential lives
 only with the proxy. **Keys never reach the agent.**
 
 > **⚠️ P4a governs LLM traffic only.** MCP/tool calls are still
@@ -20,8 +21,8 @@ Agent pod (kagent)                         namespace kaimahi
 ┌─────────────────────┐   opaque token   ┌──────────────────┐    real creds
 │ governed-ollama      │ ───────────────▶ │  kaimahi-proxy   │ ──────────────▶ upstream
 │ ModelConfig          │  (kmh_…, issued  │  authn → route → │  (ollama: none; │
-│ baseUrl = proxy      │   by the plane)  │  budget → ledger │   copilot: Secret
-│ apiKeySecret = token │                  │  → forward       │   mounted to proxy)
+│ baseUrl = proxy      │   by the plane)  │  budget → fwd →  │   copilot: Secret
+│ apiKeySecret = token │                  │  ledger          │   mounted to proxy)
 └─────────────────────┘                  └────────┬─────────┘
                                                   │
                                          ┌────────▼─────────┐
@@ -104,13 +105,22 @@ Enforcement properties (all unit-tested and live-verified):
 
 - An exhausted budget denies with **429** and a clear error before any
   upstream contact; the agent surfaces it as a failed task.
-- If the ledger store is unreachable, requests are denied (**403
-  "metering unavailable"**) — no spend visibility, no spend.
-- Every outcome is ledgered — success, upstream failure, and denial —
-  and billed usage is recorded even when the surrounding request fails
+- If the ledger store is unreadable, budgeted credentials are denied
+  (**403 "metering unavailable"**) — no spend visibility, no spend. A
+  credential with no caps skips the budget read, but a failed ledger
+  *write* trips the whole data plane closed (**503 "spend ledger
+  unavailable"**) until a write succeeds again — spend that cannot be
+  recorded must not happen.
+- Every attributable outcome is ledgered — success, upstream failure,
+  and denial (unauthenticated requests have no credential to attribute)
+  — and billed usage is recorded even when the surrounding request fails
   (spend before failures are honored).
-- Denied/streamed/normal traffic all meter through the OpenAI `usage`
-  object; streamed requests get `stream_options.include_usage` injected.
+- Forwarded traffic meters through the OpenAI `usage` object (streamed
+  requests get `stream_options.include_usage` injected); denials are
+  fixed zero-usage rows. If an upstream response carries no usage at
+  all, the row records zero tokens and the proxy logs a warning — token
+  counts are never invented, so keep upstreams on OpenAI-compatible
+  surfaces that report usage.
 
 ## Pricing — nothing is invented
 
