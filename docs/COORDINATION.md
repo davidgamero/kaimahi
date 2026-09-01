@@ -82,8 +82,8 @@ build anything AKS-specific without a survey-backed justification.
 | P3: connectors/tools via MCP | W3 worker | PR #4 MERGED (99edd8a); coordinator verified incl. live tool call (delta sheet below) | lane closed |
 | Rename lane: in-repo tomte → kaimahi (D9/D10) | rename worker | PR #5 MERGED (01f5c3c); coordinator verified (delta sheet below); board renamed by coordinator | lane closed |
 | P4a: metering/enforcing LLM proxy (D11) | W4 worker | PR #12 MERGED; coordinator verified live incl. budget denial + custody (delta sheet below) | lane closed |
-| P4b: enforcing MCP gateway | W5 worker | PR #15 CHECKS-GREEN at 06873d2; coordinator verified independently (projection, governed round-trip, denial + audit rows, custody, fail-closed code paths); awaiting user merge | delta sheet + deviation rulings recorded at close-out after merge |
-| P4c: approvals/permits | — | blocked on P4b merge | no pre-stacked PR bases |
+| P4b: enforcing MCP gateway | W5 worker | PR #15 MERGED (97c2b5f, payload identical to verified 06873d2; post-merge main CI green); delta sheet below | lane closed |
+| P4c: approvals/permits | — | UNBLOCKED by P4b merge; awaiting coordinator blindspot pass + shaping questions + GO | last arc phase; connectors candidate is the natural demo |
 | Docs: CLI-first framing + naming record | teammate (Tatsinnit) | PR #10 MERGED (ratifies D12) | staleness fixes folded into reconciliation lane |
 | Docs: agent-first scenarios | teammate (Tatsinnit) | PR #11 MERGED (authors' public credit ratified by user merge) | lane closed |
 | Post-merge reconciliation | coordinator | PR #13 MERGED (0ce72ca, main CI green incl. hardened secret scan) | lane closed |
@@ -792,3 +792,52 @@ Deviations carried forward:
 - Pre-existing hygiene-CI bug (deviation 11): the "No secrets in tree"
   step's `! grep` inverts exit codes so a grep ERROR (exit 2) passes the
   gate — fail-open. Fix assigned to the coordinator's reconciliation PR.
+
+### P4b — enforcing MCP gateway (PR #15, merged 2026-09-01)
+
+Delivered on main (97c2b5f): `plane/internal/gateway` — a second listener
+in the existing proxy process (zero added CPU requests) relaying MCP
+streamable-HTTP and enforcing fail-closed; `k8s/kaimahi-tools.yaml`
+(Kaimahi-owned RemoteMCPServer at the gateway; chart-managed server
+untouched per the P3 ruling); separate `hello-tools` credential +
+`kaimahi-tools-token` Secret carried via headersFrom; `tool_audit` table;
+make targets govern-tools/ungovern-tools/tool-allow/tool-allowlist/
+tool-audit; `scripts/tool-denial-probe.sh`; `docs/P4B-RUNBOOK.md`; CI
+gateway assertions (governed probe call, allowed-200 row, denial +
+denied-403 row, custody + projection checks).
+
+Coordinator verification (independent, pre-merge at 06873d2, payload
+identical on main): projection (upstream 8 tools → credential sees 1);
+governed round-trip with a coordinator-minted probe (function_call +
+probe in reply + allowed-200 audit row); non-allowlisted call denied
+(JSON-RPC -32001, denied-403 row) — coordinator's own timestamps; custody
+(Secret matches ^kmh_[0-9a-f]{64}$, zero kmh_ occurrences in proxy logs,
+hash-only DB); code read confirmed denied-methods-never-relayed and the
+audit-breaker (healing request itself denied) are test-asserted.
+Post-merge main CI green (go-plane + hygiene + full e2e).
+
+Coordinator rulings on the nine deviations — all ACCEPTED: same-pod
+gateway (CPU ceiling); MCP lifecycle additions (notifications/initialized
+relayed, ping answered locally, batches rejected, GET 405, DELETE
+relayed); tool_audit as its own table (ledger cost semantics don't
+describe actions; fail-closed machinery shared); per-seam credential;
+govern-tools ordering; image tag moves with the phase (imagePullPolicy
+Never rationale); SSE→JSON re-emit on tools/list with unparseable
+listings failed closed; the W6 shared-cluster disruption (rule already on
+the board); known limitations recorded (NetworkPolicy egress unbuilt,
+projection refresh on reconcile, allowlist per-credential not
+per-upstream). Blueprint adaptations (permits→static allowlist until
+P4c; pinned snapshots→live projection; SSRF dialer deferred while the
+upstream table is single-entry in-cluster) are consistent with the lane
+prompt.
+
+Carried forward for P4c:
+
+- The static allowlist is the permit model's placeholder — P4c's
+  approvals should compile down to it (and may pin tool snapshots, per
+  the blueprint, once approvals can pin).
+- Relay-then-audit ordering is the accepted P4a ledger contract applied
+  to actions; revisit only if P4c's approval semantics demand
+  pre-commit audit.
+- NetworkPolicy egress and internet-facing tool upstreams (with the
+  blueprint's hardened dialer/SSRF set) remain unbuilt and documented.
