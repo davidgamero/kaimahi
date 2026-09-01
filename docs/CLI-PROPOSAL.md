@@ -60,7 +60,7 @@ Its help is explicit: the `.env` *must* contain `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, or `GOOGLE_API_KEY`, and the command loads it into a
 Secret. That is precisely the custody model this project rejects — keys go
 in via stdin and nowhere else, never a file, argv, env listing, or log
-([`docs/P2-RUNBOOK.md`](P2-RUNBOOK.md)). There is also no preset switching
+([`docs/models.md`](models.md)). There is also no preset switching
 (`make use PRESET=`) upstream.
 
 Note what gap 3 means: this is not a convenience gap, it is a security

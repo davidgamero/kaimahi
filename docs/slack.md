@@ -1,0 +1,388 @@
+# Slack: posting as an approved action
+
+Assumes the governance plane is deployed ([spend.md](spend.md)), the MCP
+gateway is understood ([tool-governance.md](tool-governance.md)), and you
+know how a denial becomes a bounded grant ([approvals.md](approvals.md)).
+
+Everything the plane governs up to approvals protects an agent that lists
+ConfigMaps. Nothing in that demo *needs* governance. This path fixes
+that: the agent posts into a Slack channel humans read, which is the
+first genuinely consequential action in this repo.
+
+The deliverable is not "Slack works". It is this cycle:
+
+```text
+  agent / MCP client            plane                          human
+    │ "post this to Slack"        │                              │
+    │ ─── no posting tool ──────▶ │ the agent's credential        │
+    │ ◀── "I can't do that" ───── │ projects 1 of the 14 tools    │
+    │                             │ the server offers             │
+    │ conversations_add_message   │                              │
+    │ ──────────────────────────▶ │ DENIED (not allowlisted)     │
+    │ ◀──── JSON-RPC -32001 ───── │ + approval request FILED     │
+    │       "request filed"       │                              │ make approvals
+    │                             │ ◀─── make approve ID=… ───── │ TTL=15m USES=1
+    │                             │ the grant enters the          │
+    │ ◀── tool now discoverable ─ │ projection: the capability    │
+    │ conversations_add_message   │ APPEARS for the agent         │
+    │ ──────────────────────────▶ │ ADMITTED via grant ──────────┼──▶ Slack
+    │ ◀──── "Posted." ─────────── │ (use consumed, audited)      │   (a human
+    │ "post another one"          │                              │    reads it)
+    │ ──────────────────────────▶ │ grant spent → not live →     │
+    │ ◀── "I can't do that" ───── │ the capability DISAPPEARS    │
+```
+
+The connector is the payload. The approval gate is the point.
+
+The shape is stronger than "the call is refused": under the gateway's
+*visible = callable* rule, an approval does not merely permit an action
+the agent was already reaching for. It **materialises the capability**,
+and its expiry takes the capability away again. See
+[Why the agent is never the one denied](#why-the-agent-is-never-the-one-denied).
+
+> **This is the first component in the repo with deliberate INTERNET
+> egress.** See [What the internet-egress pod
+> means](#what-the-internet-egress-pod-means). Cluster-level
+> NetworkPolicy is being built in a parallel lane; until it lands the
+> gap described there is real.
+
+## Which Slack MCP server, and why
+
+Kaimahi writes **no connector code**. Slack MCP servers already exist and
+kagent already deploys MCP servers. The candidates, surveyed 2026-09-01
+against the npm registry, GHCR and the running image rather than from
+documentation alone:
+
+| Candidate | Verdict |
+|---|---|
+| Slack's own hosted MCP server (`https://mcp.slack.com/mcp`, [docs](https://docs.slack.dev/ai/slack-mcp-server/)) | **Rejected.** Not self-hostable, and it authenticates with confidential OAuth 2.0 **user** tokens from a registered Slack app. A headless agent posting as a bot is not the shape it serves, and a hosted endpoint would make the *gateway's* upstream internet-facing, which needs the hardened dialer that does not exist yet. Revisit if approval routing ever needs to act as a person. |
+| [`@modelcontextprotocol/server-slack`](https://www.npmjs.com/package/@modelcontextprotocol/server-slack) (the reference server) | **Rejected.** Repo archived 2025-05-29; npm marks it *"Package no longer supported"*, last publish 2025-04-25. A deprecated package is not something to hand a workspace token. |
+| `@zencoderai/slack-mcp-server`, `ubie-oss/slack-mcp-server`, assorted `@mseep/*` forks | **Rejected.** Forks of the archived lineage: a single `0.0.1` publish, or GitHub-registry-only publishing that needs a PAT. None is maintained enough to hold a workspace token. |
+| [`korotovsky/slack-mcp-server`](https://github.com/korotovsky/slack-mcp-server) | **Chosen.** MIT, ~1.8k stars, actively maintained (npm `1.3.0`, 2026-05-14). Runs as a long-lived container serving **streamable HTTP**, verified in-cluster, so the gateway relays to it with no `npx` fetch at pod start. Multi-arch image on GHCR. |
+
+Where documentation and measurement disagreed, the measurement won. The
+`SLACK_MCP_API_KEY` finding below is the example: the docs say the server
+enforces it, and it does not.
+
+Provenance and pinning, because this is third-party code that holds a
+Slack workspace token:
+
+- Pinned **by digest**, not by tag:
+  `ghcr.io/korotovsky/slack-mcp-server@sha256:35cbc988d9282409e27b755957e48a6096fcf037dee72118e97177fe38b1a1b3`
+  (the multi-arch index for `v1.3.0`). A tag can be moved; the bytes that
+  run must be the bytes that were reviewed. CI asserts the manifest is
+  digest-pinned.
+- Why it is trusted enough: MIT, source public, an active maintainer,
+  and, decisively, it never needs to be trusted with more than we give
+  it. It runs in its own pod in the plane's namespace with a bot token
+  scoped to one private channel, its posting tool is restricted
+  server-side to that channel ID, and every call the agent makes to it
+  is allowlisted and audited by the gateway.
+- **Honest caveat.** This project's headline feature is a "stealth mode"
+  that authenticates with a user's browser session cookies (`xoxc`/`xoxd`)
+  to avoid needing workspace-admin approval. Kaimahi deliberately does
+  **not** use that path: it uses a proper `xoxb` bot token, and
+  `scripts/slack-secret.sh` refuses anything else. A bot acts as itself;
+  a session token acts as a person.
+
+## Architecture
+
+```text
+namespace kagent                          namespace kaimahi
+┌──────────────────────┐                 ┌──────────────────────┐
+│ hello-slack agent    │  Authorization: │ kaimahi-proxy pod    │
+│  modelConfig:        │  kmh_… (Secret- │  :8080 LLM proxy     │
+│   governed-copilot ──┼──▶ resolved via │  :8081 MCP GATEWAY   │
+│  tools[] ──▶ kaimahi-│  headersFrom)   │  authn → scope →     │
+│   slack RemoteMCP ───┼────────────────▶│  allowlist/grant →   │
+└──────────────────────┘                 │  relay → audit       │
+                                          └──┬────────────┬──────┘
+  the agent holds ONLY a kmh_ token          │            │
+  no Slack token exists in this namespace    │            │ injects
+                                              ▼            ▼ SLACK_MCP_API_KEY
+                              ┌──────────────────┐  ┌──────────────────────┐
+                              │ kagent-tools     │  │ kaimahi-slack-mcp    │
+                              │ (tool upstream)  │  │ MCPServer, digest-   │
+                              └──────────────────┘  │ pinned, xoxb token   │
+                                                     │ via envFrom Secret   │
+                                                     └──────────┬───────────┘
+  BOTH tool upstreams stay in-cluster, so the gateway            │ INTERNET
+  itself never dials the internet.                               ▼
+  This POD, however, talks to the internet.              api.slack.com
+```
+
+- **Placement**: the Slack MCP server runs in the **plane's** namespace,
+  not the agent's. kagent reconciles an `MCPServer` in any namespace
+  (verified on the live cluster), so the workspace token sits next to the
+  Copilot key in `kaimahi`, and `kagent` holds nothing but opaque `kmh_`
+  tokens.
+- **Upstream table**: `k8s/plane/upstreams.yaml` has a second
+  `tool_upstreams` entry, `slack`. CI asserts both entries resolve to
+  in-cluster hostnames. An internet-facing *gateway upstream* would need
+  the missing SSRF protections and must not slip in silently.
+- **No ungoverned Slack path is *shipped*.** The tools docs keep an
+  ungoverned wiring for contrast; this path ships none, so the only route
+  this repo wires is through the gateway. That is a statement about the
+  committed configuration, **not** a containment claim: with no
+  NetworkPolicy, any pod in the cluster can still open a connection to
+  the Slack MCP server's Service and bypass the gateway entirely. See
+  [What the internet-egress pod means](#what-the-internet-egress-pod-means).
+
+## Credential custody
+
+Three secrets, split so no pod holds more than its job needs:
+
+| Secret (ns) | Holds | Reaches |
+|---|---|---|
+| `kaimahi-slack-bot` (kaimahi) | `SLACK_MCP_XOXB_TOKEN`, `SLACK_MCP_ADD_MESSAGE_TOOL` (the channel ID) | the **MCP server pod only** |
+| `kaimahi-slack-mcp-key` (kaimahi) | `SLACK_MCP_API_KEY` | the MCP server pod **and** the proxy, which injects it upstream |
+| `kaimahi-slack-token` (kagent) | the agent's `kmh_…` opaque token | the **agent only** |
+
+- The bot token never appears in YAML, argv, env listings or logs.
+  `spec.deployment.env` in `k8s/slack-mcp.yaml` is plaintext YAML and
+  carries only host/port/log-level; everything secret arrives through
+  `secretRefs`, which kagent renders as `envFrom.secretRef` (verified
+  against the live 0.9.12 CRD). CI fails if a secret-capable key appears
+  in that plaintext map.
+- The **channel ID is never committed**. It is workspace-identifying, so
+  it rides the Secret and is passed per task at demo time.
+- `scripts/slack-secret.sh` captures the token stdin-only into a 0600
+  file, checks `auth.test`, and **refuses to store anything** unless
+  `conversations.info` says the channel `is_private` and the bot is a
+  member. It also refuses a non-`xoxb` token.
+
+Least-privilege bot scopes for this demo: `chat:write` (post),
+`groups:read` (prove the channel is private), `groups:history` (the
+read-only tool), `users:read` (name resolution). `chat:write.public`,
+which Slack offers by default, lets a bot post to **any** public channel
+without being invited. Drop it.
+
+## Run it
+
+```sh
+make plane                                   # the governance plane
+make plane-copilot-secret                    # the demo model runs governed Copilot
+make slack-secret SLACK_CHANNEL=C0XXXXXXXXX  # stdin-only; refuses a non-private channel
+make slack-mcp                               # the digest-pinned server, in-cluster
+make govern-slack                            # kmh_ credential + READ-ONLY allowlist + agent
+```
+
+After `make govern-slack` the credential may call `conversations_history`
+and nothing else. `make tool-allowlist CRED_TOOLS=hello-slack` shows it;
+the gateway projects it onto `tools/list`, so the agent cannot even see
+a posting tool.
+
+The demo agent runs `governed-copilot`. `qwen2.5:3b` fails at both halves
+of this task, composing a message and calling a tool, so the ollama path
+is CI's, not the demo's.
+
+### The demo
+
+```sh
+# 0. What the agent can even see: the server offers 14 tools; the
+#    credential projects one. Posting is not among them.
+kubectl -n kagent get remotemcpserver kaimahi-slack \
+  -o jsonpath='{.status.discoveredTools[*].name}'      # conversations_history
+
+# 1. Ask the agent to post. It cannot: there is no posting tool in its
+#    hands to call.
+make slack-post SLACK_CHANNEL=C0XXXXXXXXX MESSAGE='Kaimahi governance demo.'
+
+# 2. The gateway's enforcement point, exercised directly — this is the
+#    DENIAL that files the request (and what any MCP client that tries
+#    the call gets).
+UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
+  bash scripts/tool-denial-probe.sh conversations_add_message
+make slack-audit          # denied 403, "approval request filed"
+
+# 3. A human looks at the queue and grants a BOUNDED permit.
+make approvals            # copy the id (kind=tool, subject=conversations_add_message)
+make approve ID=<uuid> TTL=15m USES=1
+
+# 4. The grant is now in the projection, so the capability appears.
+#    kagent re-discovers on reconcile; nudge it and roll the agent.
+kubectl -n kagent annotate remotemcpserver kaimahi-slack \
+  kaimahi.dev/rediscover="$(date +%s)" --overwrite
+kubectl -n kagent get remotemcpserver kaimahi-slack \
+  -o jsonpath='{.status.discoveredTools[*].name}'      # now includes the post tool
+kubectl -n kagent rollout restart deploy/hello-slack
+
+# 5. The agent posts. For real, into a channel a human reads.
+make slack-post SLACK_CHANNEL=C0XXXXXXXXX MESSAGE='Kaimahi governance demo.'
+make slack-audit          # allowed 200, detail: granted <grant-id>
+
+# 6. The use is spent. Ask again — nothing is posted.
+make slack-post SLACK_CHANNEL=C0XXXXXXXXX MESSAGE='And again?'
+make grants               # the grant, live=no, uses 1/1
+make approval-audit       # requested / approved / denied, with the bounds
+```
+
+Nothing in step 5 widens the *configuration*: the static allowlist still
+holds one read-only tool throughout. `make slack-allow SLACK_TOOLS=…` is
+the config lever, and it is deliberately not what the demo uses. The
+point is that a human said yes to one post, for fifteen minutes, once.
+
+`make slack-down` removes the agent, the seam and the server. The
+Secrets survive; delete them to revoke.
+
+## Why the agent is never the one denied
+
+Measured, not assumed: kagent wires an agent only to tools it
+**discovered**. Naming an undiscovered tool in
+`spec.declarative.tools[].toolNames` does nothing. This was verified by
+patching `conversations_add_message` into the agent's `toolNames` while
+the allowlist excluded it, and watching the agent report it had no such
+tool rather than attempt a call.
+
+Because the gateway projects `tools/list` down to what the credential
+may call right now, a non-allowlisted tool is invisible, so a kagent
+agent can never *produce* the JSON-RPC denial for it. Three consequences
+worth stating plainly:
+
+- **The denial and auto-filing are exercised at the gateway**, by a
+  client that attempts the call directly (`tool-denial-probe.sh`, and any
+  non-kagent MCP client). This is the real enforcement point, and the
+  one CI asserts.
+- **For an agent, the guarantee is stronger than refusal**: the
+  capability is not in its hands at all. There is no call to smuggle, no
+  retry loop, no prompt injection that reaches a tool the credential
+  cannot call. A denied tool is not a locked door, it is a door that is
+  not in the room.
+- **An approval is therefore constructive**: minting a bounded grant puts
+  the tool into the projection, kagent re-discovers it, and the agent
+  gains the capability for exactly the grant's life. Exhaustion removes
+  it again on the next reconcile.
+
+The cost is a discovery lag: enforcement is immediate, but what an agent
+*sees* changes only on kagent's next RemoteMCPServer reconcile, which is
+why step 4 nudges it. That lag is a known gateway limitation; this is
+where it becomes visible in the demo path.
+
+## What the internet-egress pod means
+
+`kaimahi-slack-mcp` opens connections to `api.slack.com`. That is a
+first for this repo, and it is worth stating plainly rather than burying:
+
+- **The gateway's own reach is unchanged.** Both `tool_upstreams` entries
+  are in-cluster Services, so the gateway still never dials the internet,
+  and CI asserts it keeps not doing so.
+- **Nothing constrains that pod's egress.** There is no NetworkPolicy in
+  this repo as of this doc. The Slack pod can reach anything the cluster
+  can reach, and, worse, **any pod in the cluster can reach the Slack MCP
+  server's Service directly**, bypassing the gateway, its allowlist, its
+  approvals and its audit trail entirely.
+- **The mitigation we hoped for does not work.** The plane supports
+  injecting a tool upstream's own bearer credential from proxy-side
+  custody (`credential_file` in the upstream table), which would let the
+  Slack server reject any caller that did not come through the gateway.
+  Measured on the live cluster with slack-mcp-server v1.3.0: it **does
+  not enforce** `SLACK_MCP_API_KEY` on its `http` transport. An
+  unauthenticated `initialize` and `tools/list` both answered 200, as did
+  a wrong bearer; its SSE transport also served an unauthenticated
+  stream. The injection is wired, tested and fails closed on our side,
+  and it is documented here as not load-bearing today.
+- **What actually closes it** is cluster-level NetworkPolicy: default-deny
+  egress with an allowance for the Slack pod, and default-deny ingress to
+  the Slack pod except from the proxy. A parallel lane is building that.
+  Until it lands, treat the application-layer governance here as
+  *enforcement for agents that use the seam*, not as containment of a
+  hostile pod.
+- **And it cannot be closed on a stock kind cluster.** kind's default CNI
+  is `kindnet`, which does not implement NetworkPolicy: a policy applied
+  there is accepted by the API server and enforces nothing. Shipping one
+  without a policy-enforcing CNI would read as protection while providing
+  none, which is worse than the documented gap. Doing it properly means
+  Calico or Cilium on kind, or Azure NPM / Cilium on AKS.
+
+Blast radius today is bounded by the credential rather than the network:
+the bot token carries `chat:write` for one workspace, and the MCP server
+itself restricts `conversations_add_message` to the single channel ID in
+`SLACK_MCP_ADD_MESSAGE_TOOL`. That is three independent layers before a
+message reaches a channel (gateway allowlist/approval, server-side
+channel restriction, and Slack's own scopes), but none of them is a
+network boundary.
+
+## What CI covers, and what it cannot
+
+CI is **keyless** and stays that way (public, fork-exposed repo): no
+Slack token, no Copilot token, ever. The Slack MCP server is therefore
+**not deployed in CI**. Rather than stand up a fake Slack to paper over
+that, the boundary is made structural: the gateway decides *before* it
+forwards, so the whole approval cycle runs, the gateway then **dials**
+the committed `slack` upstream, and the call answers **502** because no
+such Service exists. `scripts/tool-admit-probe.sh` **fails on a 200**,
+so CI cannot silently start reaching a tool server, and it fails on any
+503 that is a pre-forward denial wearing a 503 (a Postgres blip must
+never read as "admitted").
+
+Be precise about what that proves. It proves the allowlist and grant
+decisions, and that an admitted call is actually forwarded. It does
+**not** validate the upstream URL itself: any unreachable URL answers
+502 alike. CI needs a throwaway upstream credential in the plane for the
+dial to happen at all. It is not a Slack credential, and no Slack token
+exists in CI.
+
+CI asserts:
+
+- the Slack manifests are valid against the live kagent CRDs;
+- the committed wiring carries no credential: no secret-capable key in
+  plaintext `env`, exactly the two expected `secretRefs`, a
+  digest-pinned image, a single Secret-resolved `headersFrom`, no
+  `xox[bpca]-` token shape anywhere in the tree, and **posting absent
+  from the committed allowlist**;
+- the gateway's upstream table has both entries and both are in-cluster;
+- the agent-side Secret holds only a `kmh_…` opaque token;
+- the full cycle over the `slack` upstream: post **denied 403** and a
+  request auto-filed → bounded approval → **admitted**, audited
+  `allowed … granted <id>` → use exhausted → denied again.
+
+CI does **not** cover: the Slack MCP server pod itself, its runtime
+token custody, the gateway relaying a real Slack response, or Slack
+accepting the message. Those were live-verified once (2026-09-01) on a
+cluster with a real bot token, and nowhere else.
+
+## Operational notes
+
+- The proxy image tag is the one in `k8s/plane/proxy.yaml`; re-run
+  `make plane` to roll it. `imagePullPolicy: Never` means a same-tag
+  rebuild needs the restart `make plane` already does.
+- The Slack MCP server runs with `--no-cache` deliberately: its optional
+  user/channel caches would pull a directory of the whole workspace into
+  the pod. Tools are addressed by channel ID. `channels_list` is
+  consequently not useful and is not allowlisted.
+- **A burned grant does not guarantee a delivered message.** A tool-grant
+  use is consumed *before* the forward (the conservative direction), so
+  if the plane cannot read the Slack server's upstream credential (the
+  Secret deleted, or the proxy rolled before it existed) the call is
+  refused 503 and the audit row reads `allowed 503 granted <id>`: the
+  human's approval is spent and nothing was sent. The audit trail says
+  so plainly; re-approve after fixing the Secret. `make slack-mcp`
+  checks for the key Secret up front for exactly this reason.
+- Rotating the bot token: re-run `make slack-secret`, then
+  `kubectl -n kaimahi rollout restart deploy/kaimahi-slack-mcp` (the
+  server reads its env at start). The gateway key is generated once and
+  kept, since rotating it under a running server would break injected
+  calls until both sides roll.
+- This path is not deployed on AKS ([aks.md](aks.md)): putting a real
+  workspace token into a temporary cloud cluster is credential exposure
+  for little added proof.
+
+## Limitations
+
+The full governed-vs-ungoverned table is in
+[README.md](README.md#what-is-governed-today-and-what-is-not). Specific
+to this path:
+
+- **Pod-level network egress is not enforced** as of this doc, and the
+  Slack pod is the reason it matters: it egresses to the internet, and
+  any pod can reach it directly. See above.
+- **The Slack MCP server's own endpoint auth is not effective**
+  (v1.3.0, http transport). The plane injects a credential the server
+  does not check.
+- **Approval routing is not built.** The queue is CLI-only; the approver
+  identity is the admin bearer, not a person. The agent posts to Slack;
+  approvals are not routed there.
+- **What the agent sees lags a grant** until kagent's next reconcile.
+  Enforcement does not lag.
+- **A spent grant is not a delivered message** when the upstream
+  credential is unreadable. Read the audit row.

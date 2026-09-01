@@ -3,7 +3,7 @@
 Honest answers, mined from what actually went wrong while building this —
 each entry comes from a phase's recorded verification or from something
 hit while writing these docs, not from speculation. Commands assume the
-[guide](GUIDE.md) setup.
+[getting started](getting-started.md) setup.
 
 ## The agent errors with `'str' object has no attribute 'get'`
 
@@ -133,14 +133,21 @@ upstream; the attempt is still ledgered (zero tokens).
 
 ## My governed agent stopped showing up in the ledger
 
-Did you re-run `make up`? Its `agent` step re-applies
-`k8s/hello-world.yaml`, and that file points at the ungoverned
-`hello-world-model` — so the apply quietly moves the agent off its
-governed preset. The chats still work; they're only no longer metered
-(this FAQ was nearly published with that mistake in it). Check with
+Did something re-apply `k8s/hello-world.yaml`? That file points at the
+ungoverned `hello-world-model`, so a plain `kubectl apply -f` of it moves
+the agent off its governed preset. The chats still work; they're only no
+longer metered (an early draft of this FAQ was nearly published with that
+mistake in it).
+
+`make up` used to do exactly this. It no longer does: its `agent` step now
+reads the live modelConfig first, re-applies, and restores whatever the
+agent was on, printing a `NOTE:` line naming the preserved preset. If it
+cannot read the live value it refuses rather than risk un-governing you.
+So if you're off the governed preset, something other than `make up` put
+you there. Check with
 `kubectl -n kagent get agent hello-world -o
 jsonpath='{.spec.declarative.modelConfig}'` and re-run `make govern`
-(or `make use PRESET=governed-ollama`) after any `make up`.
+(or `make use PRESET=governed-ollama`).
 
 ## I lost the governed token
 
