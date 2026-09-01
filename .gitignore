@@ -2,3 +2,9 @@
 bin/
 # Local-only credential scratch (Slack bot token, channel id). Never committed.
 .env
+
+# Verification artifacts written into the working tree by the runbooks and
+# by CI (`make chat | tee chat.out`, ledger/audit dumps). They are run
+# output, not source — and a captured A2A task or an AKS transcript is
+# exactly the kind of thing that must not land in a public repo.
+*.out
