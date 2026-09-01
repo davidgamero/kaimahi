@@ -54,7 +54,7 @@ anyway. The network's job is "only from where agents live".
 
 ## Proving it is enforced
 
-```
+```sh
 make netpol-verify
 ```
 
@@ -122,7 +122,7 @@ needs to leave the cluster. The plane's own policy does not let it. The
 Copilot upstream lives on the internet, so enabling Copilot is what
 opens the hole:
 
-```
+```sh
 make plane-copilot-secret     # mints the token, then applies k8s/egress-copilot.yaml
 make egress-copilot-off       # closes it again; governed Copilot calls then fail closed
 ```
