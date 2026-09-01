@@ -97,8 +97,8 @@ is worth noticing even when nobody is billed.
 
 The flip side: Copilot is `metered` with no bundled price, since
 subscription usage has no public per-token price and kaimahi never invents
-one. Its tokens count honestly at 0 cents (`source=unpriced`) — so govern
-it with a token budget. Under a *cents* budget an unpriced model is denied
+one. Its tokens are still counted, at 0 cents (`source=unpriced`) — so
+govern it with a token budget. Under a *cents* budget an unpriced model is denied
 outright, because spend that can't be charged against the budget can't be
 admitted.
 
@@ -108,16 +108,18 @@ When a governed chat fails, the proxy's status tells you which layer said
 no. The agent surfaces it as a failed task with the message text.
 
 - **401 unauthorized** — the request carried no kaimahi token, or one the
-  plane doesn't recognize. Usually the agent-side Secret is missing or
-  stale: re-run `make govern`.
+  plane doesn't recognize. Usually the agent-side `kaimahi-governed-token`
+  Secret is missing or holds a stale token. Re-running `make govern` alone
+  won't mint a new one (it sees the existing credential and keeps it);
+  recovery is the lost-token procedure below.
 - **403 forbidden** — authenticated, but not allowed: an upstream not in
   the table, a path other than the one allowed route, "metering
   unavailable" (budget exists but the ledger can't be read — fail closed),
   or an unpriced model under a cents budget.
 - **429 too many requests** — "monthly budget reached" / "monthly token
   budget reached". The cap is monthly (UTC). Raise or clear it with
-  `make budget`; expect several ledgered denial rows per attempt, because
-  the runtime retries.
+  `make budget`. In our runs each attempt left three denied rows in the
+  ledger, because the agent runtime retried the call.
 - **503 service unavailable** — the plane protecting its own guarantees:
   the credential store or spend ledger is unreachable (nothing is admitted
   while spend can't be recorded), or "upstream credential unavailable" —
@@ -127,6 +129,17 @@ no. The agent surfaces it as a failed task with the message text.
 
 A **502** means the proxy admitted the call but couldn't reach the
 upstream; the attempt is still ledgered (zero tokens).
+
+## My governed agent stopped showing up in the ledger
+
+Did you re-run `make up`? Its `agent` step re-applies
+`k8s/hello-world.yaml`, and that file points at the ungoverned
+`hello-world-model` — so the apply quietly moves the agent off its
+governed preset. The chats still work; they're only no longer metered
+(this FAQ was nearly published with that mistake in it). Check with
+`kubectl -n kagent get agent hello-world -o
+jsonpath='{.spec.declarative.modelConfig}'` and re-run `make govern`
+(or `make use PRESET=governed-ollama`) after any `make up`.
 
 ## I lost the governed token
 

@@ -88,11 +88,11 @@ make use-ollama              # back to the free in-cluster model
 
 The presets: `ollama`, `github-copilot`, `anthropic`, `openai`,
 `openrouter`, `azure-foundry`, `openai-compatible`, and the governed pair
-`governed-ollama` / `governed-copilot` (below). Only `ollama` and
-`github-copilot` have been live-verified — the rest are "schema-valid
-only", which means CI dry-runs them against the real CRDs but nobody has
-bought a completion through them yet ([FAQ](FAQ.md#what-schema-valid-only-means)
-has the honest version).
+`governed-ollama` / `governed-copilot` (below). `ollama`, `github-copilot`,
+and `governed-ollama` are live-verified. The other five hosted presets are
+"schema-valid only": CI dry-runs them against the real CRDs, but nobody
+has bought a completion through them yet
+([FAQ](FAQ.md#what-schema-valid-only-means)).
 
 Two things bite people here:
 
@@ -179,8 +179,8 @@ The task fails with the reason in plain text — this is a real run:
 ```
 
 The denial is a 429 from the proxy, sent before any upstream contact, and
-it lands in the ledger too (you'll see several rows per attempt — the
-runtime retries):
+it lands in the ledger too. In our runs each attempt produced three
+denied rows, because the agent runtime retried the call:
 
 ```text
 2026-09-01T03:42:26 hello-world  ollama    qwen2.5:3b            0      0      0 denied   429
@@ -198,8 +198,8 @@ Only LLM calls through `governed-*` presets. The plain P2 presets still
 exist and are still ungoverned. Tool/MCP calls have no gateway, permits, or
 audit yet — that's the next slice (P4b), and it hasn't merged. Approvals
 are further out (P4c). The
-[P4a runbook](P4A-RUNBOOK.md#governed-vs-still-ungoverned) keeps the
-honest table.
+[P4a runbook](P4A-RUNBOOK.md#governed-vs-still-ungoverned) has the full
+governed-vs-ungoverned table.
 
 ## Tools
 
