@@ -102,9 +102,12 @@ prefix.
 | P5a: governed Slack connector (D14) | W8 worker | PR #18 MERGED; coordinator verified (custody, and the discovery finding reproduced independently); delta sheet below | lane closed |
 | P5b: cluster portability + real AKS run (D14/D15) | W9 worker | PR #19 MERGED; coordinator verified (leak scan, teardown, guard, kind regression) — delta sheet below | lane closed |
 | P7a: NetworkPolicy egress | W10 worker | PR #23 MERGED (7fd0e3f); coordinator verified — negative matrix reproduced on the lane's cluster (delta sheet below) | lane closed; doc reconciliation owed (see sheet) | PARALLEL SET (see rules below); own cluster `netpol-verify` |
-| P7b: P6 inbound connectors | W11 worker | PR #24 OPEN — awaiting coordinator verification (auth-before-work, replay, budgets/ledger, bounded queue) | PARALLEL SET; own cluster `inbound-verify`; the big one |
+| P7b: P6 inbound connectors | W11 worker | PR #24 MERGED — coordinator verification + delta sheet owed | PARALLEL SET; own cluster `inbound-verify`; the big one |
 | P7c: docs restructure (capability, not chronology) | W12 worker | PRs #21/#22 MERGED (8a3e568, 29e031c); coordinator verified (delta sheet below) | lane closed | PARALLEL SET; owns `docs/` structure; no cluster needed |
-| Post-move: Go module path + owner refs (D16) | unassigned | GO — W13 prompt below; GATED on #24 (and #23) merging first | mechanical; must not branch before #24 lands |
+| Post-move: Go module path + owner refs (D16) | W13 worker | RUNNING (#23/#24 merged) | owns plane/, CLI-PROPOSAL.md, NAMING.md |
+| CI hygiene: verifier reads function_response; docs-only e2e short-circuit | unassigned | GO — W14 prompt below | owns ci.yml + scripts/verify-chat.py |
+| AKS NetworkPolicy enforcement (P7a finding) | unassigned | GO — W15 prompt below | owns scripts/aks-up.sh, docs/aks.md, docs/egress.md; Azure spend, teardown mandatory |
+| Post-P7a/P7b reconciliation | coordinator | PR pending | README, docs/README (router links egress/inbound), docs/slack, two manifest comments |
 | CLI decisions + PR #16 review | user + coordinator | awaiting the user's five CLI-PROPOSAL rulings | not a build lane; parallelises with everything |
 | CI flake: agent-readiness race (P5b finding) | coordinator — PR #20 MERGED (73917e9) after a review round: retry anchored to the controller's whole error line; slack-post retries only unambiguous failures | User ruling 2026-09-01: fold into the next phase rather than a standalone micro-lane — as its **FIRST commit, before feature work**, so the lane's own CI is not reddened by someone else's race | retry predicate covers `connection refused` but not `EOF`; main went red once then green on re-run. Widen narrowly (EOF, connection-reset) so it cannot mask a real outage — see P5b delta sheet |
 | NetworkPolicy egress (promoted 2026-09-01) | — | candidate, not GO | P5a put a deliberate internet-egress pod in the cluster; three non-network layers bound blast radius today. Strongest-argument-yet per P5a's own accounting |
@@ -1207,6 +1210,86 @@ Verification is real:
 Branch from current main (post-#23/#24); PR targets main; no stacked
 bases; lane ends at PR-open-with-checks-green — do not merge. Report
 deviations and the gambtho audit table in the PR.
+```
+
+### W14 — CI hygiene: a verifier that proves the tool path, and a docs-only short-circuit (UNASSIGNED — paste into a fresh CLI session)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout). Read docs/COORDINATION.md first — process rules and the
+"CI flake class 2" note bind you. Your lane: two CI fixes, one PR. You
+own .github/workflows/ci.yml and scripts/verify-chat.py and nothing else;
+three other lanes are running in parallel and touch neither file.
+
+1. verify-chat.py currently requires the probe ConfigMap's name in the
+   MODEL'S REPLY. A 3B model garbles unguessable strings (PR #24 went red
+   on exactly that: the function_response contained `probe-46649d55`, the
+   prose said `probe-466448a247`). That assertion tests the model, not
+   the tool path. Change it: the probe name must appear in the
+   function_response payload — the actual proof of a live round-trip —
+   with function_call + isError:false as now. Print the prose; do not
+   assert on it. Keep the non-empty-reply assertion for plain chats.
+   Verify with fixtures: PR #24's failing task JSON (run 33562345538)
+   must now PASS; a task with no function_response must FAIL; a task
+   whose function_response lacks the probe must FAIL.
+
+2. Board updates are now PRs (D17) and the ruleset requires the e2e
+   check, so a docs-only PR waits ~11 minutes for a cluster it cannot
+   affect. Add a docs-only short-circuit: the e2e job still RUNS and
+   REPORTS success (a required check that never reports blocks the
+   merge), but skips the cluster steps when every changed file is
+   documentation (docs/**, *.md). FAIL CLOSED: if the changed-file set
+   cannot be determined (shallow history, force push, missing base), or
+   contains anything else at all, run the full job. Use plain git, no new
+   marketplace actions. Cover both pull_request and push-to-main events.
+
+Verification is real, on this PR's own runs: push the docs-only commit
+FIRST (a comment-only change in ci.yml does not count — make the first
+commit touch only a doc) and show the e2e check green in seconds; then
+the code commit and show the full e2e run. Both runs linked in the PR.
+
+Branch from current main; PR targets main; no stacked bases; lane ends
+at PR-open-with-checks-green — do not merge. Report deviations in the PR.
+```
+
+### W15 — AKS actually enforces NetworkPolicy (UNASSIGNED — paste into a fresh CLI session)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout). Read docs/COORDINATION.md first — decisions D15/D16, the P5b
+and P7a delta sheets, and the security standing guidance bind you. Your
+lane: close the gap P7a found — AKS does not enforce NetworkPolicy by
+default, so the plane's policies would be present and inert there,
+which is the "worse than none" case. You own scripts/aks-up.sh,
+docs/aks.md and docs/egress.md; three other lanes run in parallel.
+
+Do:
+- Make the provisioning script create clusters WITH policy enforcement
+  (`az aks create --network-policy …`; choose azure vs cilium, say why,
+  keep it parameterised). Existing clusters are not migrated — say so.
+- Prove it on a real cluster, the P5b way: you create it with the
+  already-authenticated az CLI, deploy the plane (TARGET=aks is
+  Copilot-only per D15, so mint the Copilot secret first — P5b delta),
+  run `TARGET=aks make netpol-verify`, and the probe must report the
+  boundary enforced — including the unlabeled-pod row, which is the
+  enforcement check itself. If AKS is multi-node, handle the probe's
+  documented single-node caveat honestly rather than skipping the row.
+- TEAR THE CLUSTER DOWN at lane end. Mandatory. State it is gone and
+  give a rough spend figure.
+- Update docs/aks.md and the "AKS: not exercised" lines in
+  docs/egress.md to what actually happened.
+
+Guardrails, both hard: NO Azure identifiers in committed files or the
+PR (subscription, tenant, resource group, ACR host, cluster FQDN —
+scripts/check-no-azure-ids.sh is the gate); and every mutating command
+goes through the context guard.
+
+Out of scope: everything else. No Azure credentials in CI, ever.
+
+Verification is real: the probe's full output from the AKS cluster,
+redacted; the teardown; the spend note. Branch from current main; PR
+targets main; no stacked bases; lane ends at PR-open-with-checks-green
+— do not merge. Report deviations in the PR.
 ```
 
 ## Delta sheets from finished lanes
