@@ -100,7 +100,7 @@ prefix.
 | P4b: enforcing MCP gateway | W5 worker | PR #15 MERGED (97c2b5f, payload identical to verified 06873d2; post-merge main CI green); delta sheet below | lane closed |
 | P4c: approvals/permits (D13) | W7 worker | PR #17 MERGED (dd08f00); coordinator verified both approval cycles independently pre-merge (delta sheet below) | lane closed — ARC COMPLETE |
 | P5a: governed Slack connector (D14) | W8 worker | PR #18 MERGED; coordinator verified (custody, and the discovery finding reproduced independently); delta sheet below | lane closed |
-| P5b: cluster portability + real AKS run (D14) | — | UNBLOCKED by P5a merge; awaiting coordinator prompt | needs Azure creds + spend; see arc note for the kind-specific obstacles |
+| P5b: cluster portability + real AKS run (D14/D15) | unassigned | GO — W9 prompt ready (below) | contended: Makefile + k8s/ + docs + CI; mandatory AKS teardown; no Azure identifiers in committed files |
 | NetworkPolicy egress (promoted 2026-09-01) | — | candidate, not GO | P5a put a deliberate internet-egress pod in the cluster; three non-network layers bound blast radius today. Strongest-argument-yet per P5a's own accounting |
 | P6: inbound connectors (webhooks/user APIs) | — | parked candidate; own blindspot pass when reached | genuine net-new surface: ingress auth, replay, rate limits, every event causes spend |
 | CLI prototype (Tatsinnit, PR #16) | teammate | OPEN, unreviewed — a working `kaimahi agent create` prototype; board holds the CLI as under-consideration/not-GO with five open decisions reserved for the user (docs/CLI-PROPOSAL.md) | awaiting user ruling before coordinator review |
@@ -125,6 +125,7 @@ prefix.
 | D10 | 2026-08-31 | Repo rename executed ahead of D9's freeze: user renamed the GitHub repo (initially to "kaiwahi" — a typo; coordinator caught the m/w mismatch vs D9 and, with user approval, corrected it to **gambtho/kaimahi**). The in-repo rename (README, board, Makefile names, docs) is a lane queued to run AFTER P3 merges. D9's remaining gates (cultural read, counsel) still stand for the name going truly final | "i changed the repo name to kaiwahi -- whenever p3 finishes we should do the rename change" — then ruled via option: "kaimahi — fix repo (Recommended)" |
 | D11 | 2026-08-31 | P4 shaping: (1) the metering/enforcing LLM proxy leads (P4a); MCP gateway (P4b) and approvals (P4c) follow as separate lanes. (2) The durable store is in-cluster Postgres. (3) The P4 demo is CLI-only | ruled via options: "LLM proxy first (Recommended)", "In-cluster Postgres (Recommended)", "Yes, CLI only (Recommended)" |
 | D12 | 2026-09-01 | README positioning: CLI-first/incubation framing leads; the governance plane is presented as the incubated thesis. Supersedes D6's framing (D6's substance — the five governance controls and the AKS/Foundry paragraph — is retained). The agent-first scenario doc with four named authors is published under MIT. Both ratified by the user merging PRs #10/#11 after coordinator review | "sure, go ahead" (post the reviews) → "ok, that merged as well" — ratified by merge |
+| D15 | 2026-09-01 | P5b shaping: (1) the plane image goes to a **private ACR** (`az acr build` + AKS attach) — deliberately NOT a public ghcr image, which would be an outward-facing artifact and a soft public claim on the provisional name while D9's gates are open; (2) the **worker creates and tears down** the AKS cluster with the already-authenticated `az` CLI (same pattern as `gh`), with teardown MANDATORY at lane end and a reported spend estimate; (3) the AKS path is **Copilot-only — no Ollama** (the keyless path is already CI-proven on kind every PR; AKS's job is proving the plane runs on a managed cluster with a real model) | ruled via options: "ACR, private (Recommended)", "Worker creates and tears down (Recommended)", "Copilot-only on AKS (Recommended)" |
 | D14 | 2026-09-01 | P5 direction: the **undeniable demo** — not a new capability arc but making the built one legible and credible. Rulings: (1) outbound connector platform is **Slack** (via existing MCP servers, no connector code); (2) AKS work goes all the way — cluster portability AND a real AKS deployment with evidence (accepts Azure spend + credentials in a worker session); (3) demos run on the **Copilot** preset while **CI stays keyless on ollama** (public fork-exposed repo — no repo secrets in CI, ever). Rationale on the board: everything governed so far protects an agent that lists ConfigMaps; posting to a channel humans read is the first consequential action, and it makes the approval gate the point rather than the plumbing | "sure, that's undeniable demo makes sense" — then ruled via options: "Slack (Recommended)", "Portability + real AKS run (Recommended)", "Copilot for demo, ollama for CI (Recommended)" |
 | D13 | 2026-09-01 | P4c approval model: TIME-BOXED PERMITS — a denied action files a pending request; approval grants it bounded (expiry by duration and/or use count) and compiles into the existing allowlist/budget rows; deny-and-retry mechanics, no held-open calls. Demo scenarios: tool-access widening (k8s_get_events, read-only) AND budget overage; the P3 tool-server read-only posture stays untouched (write-tool demo deferred) | ruled via options: "Time-boxed permits (Recommended)"; "Widen tool access (Recommended), Budget overage (Recommended)" |
 
@@ -816,6 +817,96 @@ and the plane's audit trail for all of it. Suite green at every commit.
 Branch from current main; PR targets main; no stacked bases. Lane ends
 at PR-open-with-checks-green — do not merge. Report deviations in the
 PR's "Deviations & decisions" section.
+```
+
+### W9 — P5b: cluster portability + a real AKS run (UNASSIGNED — paste into a fresh CLI session in this repo)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout). Read docs/COORDINATION.md first — prime directive, process
+rules, security standing guidance, decisions D1–D15, and ALL delta
+sheets bind you. Your lane: P5b — make the stack cluster-agnostic and
+prove it by running the governance plane on a real AKS cluster.
+
+WHY THIS LANE EXISTS: the README has named AKS as the managed target
+since D6, and nothing has ever run there. Worse, the tooling cannot even
+target it — `KUBE_CTX := kind-$(KIND_CLUSTER)` prefixes every context
+with `kind-`. This lane closes a claim the project has been making in
+public.
+
+Verified obstacles (checked by the coordinator; confirm each yourself):
+- `KUBE_CTX := kind-$(KIND_CLUSTER)` hardcodes the kind context prefix.
+- `make cluster` unconditionally runs `kind create cluster`.
+- The plane image is built locally and `kind load`ed, and
+  k8s/plane/proxy.yaml pins `imagePullPolicy: Never` — deliberate for
+  kind (P4b deviation 6), unusable on AKS. This is the real work: a
+  registry path.
+- SOFTER THAN EXPECTED: the Postgres PVC sets no `storageClassName`, so
+  it should take AKS's default (managed-csi). Verify rather than assume.
+- The CI-only Agent-resource shrink patch must not leak into the AKS
+  path (it exists for a 2-CPU runner).
+
+Shape (D15):
+- Registry: a PRIVATE ACR — `az acr build` (build in Azure, no local
+  docker push) and `az aks update --attach-acr`. Do NOT publish a public
+  image: that is outward-facing and a soft public claim on a provisional
+  name while D9's gates are open. `imagePullPolicy` becomes
+  environment-dependent: `Never` stays correct for kind (keep its
+  rationale comment), a pull policy for AKS.
+- Cluster lifecycle: YOU create the AKS cluster with the already
+  authenticated `az` CLI and YOU TEAR IT DOWN at lane end — teardown is
+  mandatory, not best-effort, and the PR must state the cluster is gone
+  plus a rough spend estimate. Pick a cheap SKU/region and say why. Ship
+  the provisioning as a documented, parameterised script.
+- Model: Copilot-only on AKS. Do NOT deploy Ollama there (the keyless
+  path is CI-proven on kind every PR). The AKS run uses the governed
+  Copilot preset, so it exercises spend governance and tool governance
+  on the managed cluster.
+- Slack (P5a) stays OUT of the AKS run: putting a real workspace token
+  into a temporary cloud cluster is credential exposure for little added
+  proof. The wiring is plain CRDs and a gateway upstream entry — say so
+  in the runbook, don't demonstrate it.
+
+TWO HARD GUARDRAILS:
+1. NO AZURE IDENTIFIERS IN COMMITTED FILES OR THE PR — no subscription
+   ID, tenant ID, resource-group name, ACR login server, or cluster FQDN.
+   Parameterise them (env vars/placeholders) and redact them from pasted
+   evidence. This repo is public.
+2. CONTEXT SAFETY. Once the tooling can target non-kind clusters, a
+   mistyped `make down` or `make up` can hit the wrong cluster — the
+   repo's own CLI-PROPOSAL names this foot-gun ("--apply on a production
+   context by accident"). Every target that MUTATES must print the
+   target context and namespace, and must require explicit confirmation
+   when the context is not a local kind cluster. Destructive targets
+   (`down`) especially. Fail closed: no confirmation, no action.
+
+Deliverables:
+(a) The portability refactor — kind and AKS both first-class, kind's
+    behaviour UNCHANGED for existing users (this is the main regression
+    risk; CI is your proof).
+(b) The ACR/AKS provisioning + deploy path as parameterised scripts and
+    make targets, in the established style.
+(c) docs/P5B-RUNBOOK.md: the exact commands from an empty Azure
+    subscription to a governed chat on AKS, the cost note, teardown, and
+    an honest list of what differs from kind.
+(d) CI: stays on kind, keyless, and MUST still pass unchanged — plus any
+    cheap static assertion of the portability work (e.g. the context
+    guard's logic). No Azure credentials in CI, ever.
+(e) README/status: AKS moves from claimed to demonstrated, with the
+    honest scope (one verified run, then torn down — not a maintained
+    environment).
+
+Out of scope: inbound/webhooks (P6), NetworkPolicy egress, Slack on AKS,
+any UI, npm/domain/public-image claims, Azure Database for PostgreSQL
+(D11 says in-cluster Postgres).
+
+Verification is real: PR evidence of the governed stack running on the
+actual AKS cluster — plane deployed, governed Copilot chat completing,
+a ledger row, a budget denial, and the tool path working — with Azure
+identifiers redacted, PLUS proof the kind path still works end to end.
+Suite green at every commit. Branch from current main; PR targets main;
+no stacked bases. Lane ends at PR-open-with-checks-green — do not merge.
+Report deviations in the PR's "Deviations & decisions" section.
 ```
 
 ## Delta sheets from finished lanes
