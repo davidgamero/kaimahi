@@ -57,7 +57,9 @@ CLUSTER="${AKS_CLUSTER:-kaimahi}"
 LOCATION="${AKS_LOCATION:-westus3}"
 NODE_SIZE="${AKS_NODE_SIZE:-Standard_B4ms}"
 NODE_COUNT="${AKS_NODE_COUNT:-1}"
-NETWORK_POLICY="${AKS_NETWORK_POLICY:-cilium}"
+# `-` not `:-`: an EXPLICITLY empty AKS_NETWORK_POLICY must reach the
+# refusal below with its message, not be silently swapped for the default.
+NETWORK_POLICY="${AKS_NETWORK_POLICY-cilium}"
 
 # The tag that makes teardown safe. Must match scripts/aks-down.sh.
 OWNER_TAG_KEY=kaimahi-ephemeral
@@ -180,7 +182,30 @@ cluster_policy() { # -> prints the engine ('' when none); nonzero if unusable
   esac
 }
 
-if az aks show --name "$CLUSTER" --resource-group "$RG" >/dev/null 2>&1; then
+# Existence is asked the same way as group_exists: a NotFound is "no", a
+# success is "yes", and anything else (throttled, expired token, ARM
+# hiccup) is an ERROR — not a "no". Falling through to `az aks create`
+# on a misread would PUT the full spec, network flags included, onto a
+# cluster that exists: the very migration the refusal below promises
+# never to perform.
+cluster_exists() { # -> prints true|false; nonzero if the answer is unusable
+  local err
+  if err=$(az aks show --name "$CLUSTER" --resource-group "$RG" --output none 2>&1); then
+    printf 'true'
+  elif printf '%s' "$err" | grep -q 'NotFound'; then
+    printf 'false'
+  else
+    return 1
+  fi
+}
+if ! cluster_state=$(cluster_exists); then
+  echo "aks-up: cannot determine whether cluster '$CLUSTER' exists — refusing to" >&2
+  echo "  guess: a create aimed at an existing cluster would rewrite its network" >&2
+  echo "  profile. Check 'az account show' and re-run (re-running is safe)." >&2
+  exit 1
+fi
+
+if [ "$cluster_state" = true ]; then
   echo "aks-up: cluster '$CLUSTER' already present" >&2
   # NOT migrated. `az aks update --network-policy` exists for azure/calico
   # but reimages every node pool at once, and moving to cilium is a
@@ -230,9 +255,14 @@ fi
 # CNI property the API server cannot vouch for; that proof is
 # `TARGET=aks make netpol-verify`, which the next-steps text below insists
 # on. This check catches the cheaper failure: the flag not taking.
-if ! have=$(cluster_policy) || [ "$have" != "$NETWORK_POLICY" ]; then
+if ! have=$(cluster_policy); then
+  echo "aks-up: the cluster's network policy engine could not be read." >&2
+  echo "  Not claiming an enforcing cluster. Re-run once 'az aks show' works." >&2
+  exit 1
+fi
+if [ "$have" != "$NETWORK_POLICY" ]; then
   echo "aks-up: the cluster does not report network policy engine '$NETWORK_POLICY'" >&2
-  echo "  (reports '${have:-unreadable}'). Not claiming an enforcing cluster." >&2
+  echo "  (reports '${have:-none}'). Not claiming an enforcing cluster." >&2
   exit 1
 fi
 echo "aks-up: network policy engine '$NETWORK_POLICY' confirmed by the control plane" >&2
@@ -273,7 +303,8 @@ fi
 # refuses committed GUIDs, and the built-in role's id is one).
 acrpull_role=$(az role definition list --name AcrPull --query '[0].name' -o tsv 2>/dev/null || true)
 if [ -z "$acrpull_role" ]; then
-  echo "aks-up: could not resolve the AcrPull role definition — refusing to guess" >&2
+  echo "aks-up: could not resolve the AcrPull role definition — refusing to guess." >&2
+  echo "  Re-running is safe: everything created so far is reused, not rebuilt." >&2
   exit 1
 fi
 acrpull_count() { # -> prints a count; nonzero if the answer is unusable
