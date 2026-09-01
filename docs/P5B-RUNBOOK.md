@@ -307,24 +307,33 @@ Two smaller carry-overs, recorded rather than hidden:
   short-lived and the flag's availability varies by CLI version. Worth
   taking for anything longer-lived.
 - **Working two clusters at once? Move the local ports.** These tools
-  port-forward to fixed loopback ports: `plane-admin.sh` uses `19091`
-  (`ADMIN_PORT`), and each probe has its own `GATEWAY_PORT` default —
+  port-forward to fixed loopback ports: `make chat` / `make slack-post`
+  use `8083` (`CHAT_PORT`), `plane-admin.sh` uses `19091` (`ADMIN_PORT`),
+  and each probe has its own `GATEWAY_PORT` default —
   `tool-denial-probe.sh` `18081`, `tool-call-probe.sh` `18082`,
   `tool-admit-probe.sh` `18083`. Running a kind and an AKS verification
   concurrently makes the second bind lose, and its requests land on the
-  *other* cluster's forward — which surfaces as a flat
-  `HTTP 401 unauthorized`, because the admin token does not match. It fails
-  closed, but the message does not point at the cause. Override per
-  cluster:
+  *other* cluster's forward. Override per cluster:
 
   ```bash
-  ADMIN_PORT=19291 make approvals                     # make targets
+  CHAT_PORT=8183 make chat                            # chat / slack-post
+  ADMIN_PORT=19291 make approvals                     # plane-admin targets
   GATEWAY_PORT=18281 bash scripts/tool-denial-probe.sh k8s_get_events
   ```
 
-  `ADMIN_PORT` is what the make targets read (they all go through
-  `plane-admin.sh`); `GATEWAY_PORT` is read only by the probe scripts,
-  which are run directly rather than through a target.
+  `ADMIN_PORT` is what the plane-admin targets read; `GATEWAY_PORT` is
+  read only by the probe scripts, which are run directly rather than
+  through a target; `CHAT_PORT` covers the agent-invoking targets.
+
+  **The two collisions behave differently, and one used to be silent.** An
+  `ADMIN_PORT` clash fails closed with a flat `HTTP 401 unauthorized` (the
+  other cluster's admin token does not match) — safe, though the message
+  does not name the cause. A `CHAT_PORT` clash had no such protection: the
+  kagent controller on that forward is unauthenticated, so the task simply
+  ran on the wrong cluster and returned a plausible reply. `make chat` now
+  waits for its own forward and **refuses** if it did not come up, naming
+  the port. `--context` cannot help here — the aiming happens at the
+  socket, not at kubectl.
 
 ## What was verified, and what was not
 

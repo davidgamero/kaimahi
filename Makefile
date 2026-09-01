@@ -119,6 +119,53 @@ guard:
 
 GUARD_NS ?= kagent, kaimahi, ollama
 
+# Port-forward the kagent controller, WAIT FOR IT, then run $(1) against
+# that forward. Factored out because `chat` and `slack-post` had the same
+# recipe and the same defect.
+#
+# The old form was `port-forward ... >/dev/null 2>&1 & sleep 3` and then
+# an invoke that trusted the CLI's default localhost:8083. Three problems,
+# and P5b makes them reachable: running a kind and a managed verification
+# at once is now a first-class workflow (docs/P5B-RUNBOOK.md), and the
+# ports collide.
+#   1. If the bind failed because ANOTHER cluster's forward already held
+#      8083, the error went to /dev/null and `kagent invoke` connected to
+#      that forward instead — returning a real, plausible reply from the
+#      wrong cluster. It does NOT fail closed: the controller on that
+#      forward answers happily. (Demonstrated while reviewing this lane.)
+#      --context cannot protect this path, because the aiming happens at
+#      the socket, not at kubectl.
+#   2. `sleep 3` is a guess, not a readiness check.
+#   3. The port was hardcoded, so the runbook's "move the ports" advice for
+#      concurrent clusters could not be applied here at all.
+# Now: an overridable CHAT_PORT, an explicit --kagent-url so the CLI cannot
+# fall back to a port we did not open, and a wait for kubectl's own
+# "Forwarding from" line that fails loudly if it never appears.
+CHAT_PORT ?= 8083
+# The CLI defaults to localhost:8083; name the port we actually opened so
+# it can never fall back to someone else's.
+KAGENT_INVOKE = $(KAGENT) --kagent-url http://127.0.0.1:$(CHAT_PORT) invoke
+define kagent_forward
+pf_out=$$(mktemp); \
+$(KUBECTL) -n kagent port-forward --address 127.0.0.1 \
+	svc/kagent-controller $(CHAT_PORT):8083 >"$$pf_out" 2>&1 & \
+pf=$$!; trap 'kill $$pf 2>/dev/null; rm -f "$$pf_out"' EXIT; \
+ready=; \
+for _ in $$(seq 1 80); do \
+	if grep -q "Forwarding from 127.0.0.1:$(CHAT_PORT)" "$$pf_out" 2>/dev/null; then ready=1; break; fi; \
+	kill -0 $$pf 2>/dev/null || break; \
+	sleep 0.25; \
+done; \
+if [ -z "$$ready" ]; then \
+	echo "port-forward to kagent-controller never came up on 127.0.0.1:$(CHAT_PORT):" >&2; \
+	sed 's/^/  /' "$$pf_out" >&2; \
+	echo "  Refusing to invoke: if another cluster's forward holds this port," >&2; \
+	echo "  the task would have run THERE. Use CHAT_PORT=<free port>." >&2; \
+	exit 1; \
+fi; \
+$(1)
+endef
+
 # The `up` journey differs by environment. On kind it is unchanged. On AKS
 # there is no Ollama (D15: Copilot-only), and governance has to exist
 # BEFORE the agents do, because the agents go straight onto the governed
@@ -277,9 +324,7 @@ tools-agent: guard
 ## chat: one question to an agent via the kagent CLI (override with TASK=...,
 ## AGENT=hello-tools for the P3 tools agent)
 chat: $(KAGENT)
-	@$(KUBECTL) -n kagent port-forward svc/kagent-controller 8083:8083 >/dev/null 2>&1 & \
-	pf=$$!; trap 'kill $$pf 2>/dev/null' EXIT; sleep 3; \
-	$(KAGENT) invoke --agent $(AGENT) --task "$(TASK)"
+	@$(call kagent_forward,$(KAGENT_INVOKE) --agent $(AGENT) --task "$(TASK)")
 
 ## model-secret: store an API key as a K8s Secret, stdin-only (paste, Enter, Ctrl-D).
 # The key never touches argv, env listings, YAML, or logs; tr strips the
@@ -626,9 +671,7 @@ slack-post: $(KAGENT)
 	@case "$(SLACK_CHANNEL)" in \
 		*[!A-Z0-9]*) echo 'invalid SLACK_CHANNEL (want a channel ID like C0XXXXXXXXX, not a #name)' >&2; exit 1 ;; \
 	esac
-	@$(KUBECTL) -n kagent port-forward svc/kagent-controller 8083:8083 >/dev/null 2>&1 & \
-	pf=$$!; trap 'kill $$pf 2>/dev/null' EXIT; sleep 3; \
-	$(KAGENT) invoke --agent hello-slack --task "$$KAIMAHI_SLACK_TASK"
+	@$(call kagent_forward,$(KAGENT_INVOKE) --agent hello-slack --task "$$KAIMAHI_SLACK_TASK")
 
 ## slack-down: remove the P5a demo (agent, gateway seam, MCP server).
 ## The Secrets are left alone — delete them explicitly to revoke.
