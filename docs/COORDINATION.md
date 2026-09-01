@@ -101,7 +101,7 @@ prefix.
 | P4c: approvals/permits (D13) | W7 worker | PR #17 MERGED (dd08f00); coordinator verified both approval cycles independently pre-merge (delta sheet below) | lane closed — ARC COMPLETE |
 | P5a: governed Slack connector (D14) | W8 worker | PR #18 MERGED; coordinator verified (custody, and the discovery finding reproduced independently); delta sheet below | lane closed |
 | P5b: cluster portability + real AKS run (D14/D15) | W9 worker | PR #19 MERGED; coordinator verified (leak scan, teardown, guard, kind regression) — delta sheet below | lane closed |
-| P7a: NetworkPolicy egress | W10 worker | PR #23 OPEN — awaiting coordinator verification (negative test, kindnet enforcement, P1–P5 unregressed) | PARALLEL SET (see rules below); own cluster `netpol-verify` |
+| P7a: NetworkPolicy egress | W10 worker | PR #23 MERGED (7fd0e3f); coordinator verified — negative matrix reproduced on the lane's cluster (delta sheet below) | lane closed; doc reconciliation owed (see sheet) | PARALLEL SET (see rules below); own cluster `netpol-verify` |
 | P7b: P6 inbound connectors | W11 worker | PR #24 OPEN — awaiting coordinator verification (auth-before-work, replay, budgets/ledger, bounded queue) | PARALLEL SET; own cluster `inbound-verify`; the big one |
 | P7c: docs restructure (capability, not chronology) | W12 worker | PRs #21/#22 MERGED (8a3e568, 29e031c); coordinator verified (delta sheet below) | lane closed | PARALLEL SET; owns `docs/` structure; no cluster needed |
 | Post-move: Go module path + owner refs (D16) | unassigned | GO — W13 prompt below; GATED on #24 (and #23) merging first | mechanical; must not branch before #24 lands |
@@ -1203,6 +1203,68 @@ deviations and the gambtho audit table in the PR.
 ```
 
 ## Delta sheets from finished lanes
+
+### P7a — NetworkPolicy egress (PR #23, merged 2026-09-01) — the product sentence is now complete
+
+Delivered on main: `k8s/plane/network-policy.yaml` — default-deny
+Ingress+Egress on the `kaimahi` namespace; proxy admits the `kagent`
+namespace on 8080/8081 and reaches only Postgres 5432, ollama 11434,
+kagent-tools 8084, the Slack MCP server 13080 and DNS; Postgres admits
+the proxy only and has EXPLICIT ZERO egress; the Slack MCP server admits
+the proxy only and may reach DNS plus TCP 443 to non-private addresses
+(0.0.0.0/0 minus the six private/link-local/CGNAT ranges). The proxy's
+own 443 allowance for Copilot is OPT-IN (`k8s/egress-copilot.yaml`,
+applied by `plane-copilot-secret`, removed by `egress-copilot-off`,
+kept outside `k8s/plane/` so kind and CI deploy an internet-free proxy).
+`scripts/netpol-probe.sh` / `make netpol-verify` is the proof; CI runs a
+parsed shape check in hygiene and the probe after every governed e2e
+step, so every P4a–P5a assertion now runs WITH the policies in place.
+`docs/egress.md` is the capability doc. Ships with `make plane` on both
+targets — the boundary is never a separate step.
+
+Coordinator verification (independent, 2026-09-01, post-merge): ran
+`make netpol-verify` myself on the lane's `netpol-verify` cluster —
+control pod reaches everything but Postgres; an unlabeled pod in
+`kaimahi` reaches NOTHING (the enforcement check itself); proxy-shaped
+reaches DNS/ollama/Postgres and is blocked from the internet on 443 and
+80; slack-shaped reaches DNS and 443 only; the REAL Postgres pod, exec'd,
+reaches its own loopback and nothing else. `netpol-probe: boundary
+enforced as written`. kindnetd v20250214 logs `Starting controller
+kube-network-policies`. Main CI green on the merge commit. Manifests
+read line by line against the design above.
+
+Rulings — all ACCEPTED: Copilot egress opt-in rather than baked in (a
+permanent 443-out would make "internet-free proxy" false on every kind
+cluster and untestable); proxy ingress keyed on the `kagent` NAMESPACE
+rather than pod labels kagent may rename (the seam authenticates by
+credential; the network's job is "only from where agents live"); the
+~1–2 s unpoliced window for brand-new pods on kind measured and
+documented as a residual (real plane workloads are long-lived); the
+`kagent` and `ollama` namespaces left unpoliced and said so; IPv4-only.
+The lane's own review round (a `to`-less rule allows everything and
+previously passed the shape check; the exec'd-pod row needed a loopback
+positive so a `nc`-less image cannot pass as "blocked") is the
+fail-closed discipline this board asks for, applied to the verifier.
+
+Findings for the record:
+- **The Slack direct-access bypass P5a measured is now closed by the
+  network** — the MCP server accepts connections from the proxy only.
+- **AKS does not enforce NetworkPolicy by default.** `aks-up.sh` passes
+  no `--network-policy`; on such a cluster these policies are present
+  and inert — exactly the "worse than none" case. `TARGET=aks make
+  netpol-verify` fails loudly with "NOT ENFORCED". Fixing the
+  provisioning flag is a small follow-up for the next AKS run.
+- **An IP/port rule is not a URL allowlist**: the Slack pod may still TLS
+  to any public host on 443, bounded by the server's code and P5a's
+  three non-network layers. Closing that needs FQDN policy or an egress
+  gateway; `docs/egress.md` says so plainly.
+
+Reconciliation owed (coordinator PR, AFTER #24 merges to avoid k8s/plane
+conflicts): lines that now say NetworkPolicy is unbuilt — `README.md`
+(the incubation banner and line ~210), `docs/README.md` lines ~35 and
+the "Not built" table row, `docs/slack.md` ~46, and the comments in
+`k8s/plane/upstreams.yaml` and `k8s/slack-mcp.yaml`. Plus the AKS
+`--network-policy` provisioning flag.
 
 ### P7c — docs restructure by capability (PRs #21/#22, merged 2026-09-01)
 
