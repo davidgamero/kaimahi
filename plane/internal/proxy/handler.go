@@ -148,11 +148,26 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request) {
 	// Budget check, fail closed.
 	if err := h.d.Meter.Check(r.Context(), cred); err != nil {
 		status := http.StatusForbidden
+		msg := err.Error()
 		var d meter.Denial
 		if errors.As(err, &d) && (d.Status == http.StatusForbidden || d.Status == http.StatusTooManyRequests) {
 			status = d.Status
 		}
-		h.deny(w, r, cred, name, req.Model, status, err.Error())
+		// Deny-and-pend (D13): a budget-cap denial files a pending
+		// approval request (deduped in the store). Filing failure never
+		// un-denies — the denial is the safe state.
+		if d.BudgetSubject != "" {
+			fctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+			if _, ferr := h.d.Store.FileApprovalRequest(fctx, cred.Name, "budget", d.BudgetSubject,
+				"denied "+req.Model+" via upstream "+name); ferr != nil {
+				slog.Error("proxy: filing approval request failed (denial stands)",
+					"credential", cred.Name, "subject", d.BudgetSubject, "err", ferr)
+			} else {
+				msg += "; approval request filed — run 'make approvals'"
+			}
+			cancel()
+		}
+		h.deny(w, r, cred, name, req.Model, status, msg)
 		return
 	}
 

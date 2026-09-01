@@ -55,6 +55,12 @@ func NewAdminMux(d Deps, adminTokenFile string) *http.ServeMux {
 	mux.HandleFunc("PUT /admin/tool-allowlist", auth(h.setToolAllowlist))
 	mux.HandleFunc("GET /admin/tool-allowlist", auth(h.toolAllowlist))
 	mux.HandleFunc("GET /admin/tool-audit", auth(h.toolAudit))
+	mux.HandleFunc("POST /admin/requests", auth(h.fileRequest))
+	mux.HandleFunc("GET /admin/approvals", auth(h.listApprovals))
+	mux.HandleFunc("POST /admin/approvals/{id}/approve", auth(h.approve))
+	mux.HandleFunc("POST /admin/approvals/{id}/deny", auth(h.denyRequest))
+	mux.HandleFunc("GET /admin/grants", auth(h.listGrants))
+	mux.HandleFunc("GET /admin/approval-audit", auth(h.approvalAudit))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})

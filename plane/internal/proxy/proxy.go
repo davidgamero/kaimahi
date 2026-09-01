@@ -34,6 +34,14 @@ type Store interface {
 	SetToolAllowlist(ctx context.Context, credentialName string, tools []string) error
 	ToolAllowlist(ctx context.Context, credentialName string) ([]string, error)
 	ToolAudit(ctx context.Context, credentialName string, limit int) ([]store.ToolAuditEntry, error)
+	// P4c approvals: deny-and-pend filing (data path) and the decision
+	// surface (admin).
+	FileApprovalRequest(ctx context.Context, credential, kind, subject, detail string) (filed bool, err error)
+	PendingApprovals(ctx context.Context) ([]store.ApprovalRequest, error)
+	ApproveRequest(ctx context.Context, id string, expiresAt *time.Time, maxUses *int32, amount *int64) (store.Grant, error)
+	DenyApprovalRequest(ctx context.Context, id string) error
+	Grants(ctx context.Context, credential string, limit int) ([]store.Grant, []bool, error)
+	ApprovalAudit(ctx context.Context, credential string, limit int) ([]store.ApprovalAuditEntry, error)
 }
 
 // Meter admits or denies a request under the credential's budget caps.

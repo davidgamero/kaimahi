@@ -35,6 +35,11 @@ type fakeStore struct {
 	monthErr   error
 	allowlists map[string][]string
 	audits     []store.ToolAuditEntry
+	// P4c approvals, in memory.
+	requests       []*store.ApprovalRequest
+	grants         []store.Grant
+	approvalAudits []store.ApprovalAuditEntry
+	fileErr        error
 }
 
 func newFakeStore() *fakeStore {
@@ -122,6 +127,121 @@ func (f *fakeStore) ToolAudit(_ context.Context, name string, _ int) ([]store.To
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeStore) FileApprovalRequest(_ context.Context, credential, kind, subject, detail string) (bool, error) {
+	if f.fileErr != nil {
+		return false, f.fileErr
+	}
+	for _, r := range f.requests {
+		if r.Status == "pending" && r.CredentialName == credential && r.Kind == kind && r.Subject == subject {
+			return false, nil // deduped
+		}
+	}
+	id := fmt.Sprintf("00000000-0000-0000-0000-%012d", len(f.requests)+1)
+	f.requests = append(f.requests, &store.ApprovalRequest{ID: id, CredentialName: credential,
+		Kind: kind, Subject: subject, Status: "pending", Detail: detail, CreatedAt: time.Now()})
+	f.approvalAudits = append(f.approvalAudits, store.ApprovalAuditEntry{RequestID: id,
+		CredentialName: credential, Kind: kind, Subject: subject, Action: "requested"})
+	return true, nil
+}
+
+func (f *fakeStore) PendingApprovals(_ context.Context) ([]store.ApprovalRequest, error) {
+	var out []store.ApprovalRequest
+	for _, r := range f.requests {
+		if r.Status == "pending" {
+			out = append(out, *r)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) findRequest(id string) *store.ApprovalRequest {
+	for _, r := range f.requests {
+		if r.ID == id {
+			return r
+		}
+	}
+	return nil
+}
+
+func (f *fakeStore) ApproveRequest(_ context.Context, id string,
+	expiresAt *time.Time, maxUses *int32, amount *int64) (store.Grant, error) {
+	r := f.findRequest(id)
+	if r == nil {
+		return store.Grant{}, store.ErrNotFound
+	}
+	if r.Status != "pending" {
+		return store.Grant{}, store.ErrNotPending
+	}
+	if expiresAt == nil && maxUses == nil {
+		return store.Grant{}, store.ErrBounds
+	}
+	if (r.Kind == "budget") != (amount != nil) {
+		return store.Grant{}, store.ErrBounds
+	}
+	r.Status = "approved"
+	g := store.Grant{ID: "g-" + r.ID, RequestID: r.ID, CredentialName: r.CredentialName,
+		Kind: r.Kind, Subject: r.Subject, ExpiresAt: expiresAt, MaxUses: maxUses, Amount: amount}
+	f.grants = append(f.grants, g)
+	f.approvalAudits = append(f.approvalAudits, store.ApprovalAuditEntry{RequestID: r.ID,
+		CredentialName: r.CredentialName, Kind: r.Kind, Subject: r.Subject, Action: "approved"})
+	return g, nil
+}
+
+func (f *fakeStore) DenyApprovalRequest(_ context.Context, id string) error {
+	r := f.findRequest(id)
+	if r == nil {
+		return store.ErrNotFound
+	}
+	if r.Status != "pending" {
+		return store.ErrNotPending
+	}
+	r.Status = "denied"
+	f.approvalAudits = append(f.approvalAudits, store.ApprovalAuditEntry{RequestID: r.ID,
+		CredentialName: r.CredentialName, Kind: r.Kind, Subject: r.Subject, Action: "denied"})
+	return nil
+}
+
+func (f *fakeStore) Grants(_ context.Context, name string, _ int) ([]store.Grant, []bool, error) {
+	var out []store.Grant
+	var live []bool
+	for _, g := range f.grants {
+		if name == "" || g.CredentialName == name {
+			out = append(out, g)
+			live = append(live, true)
+		}
+	}
+	return out, live, nil
+}
+
+func (f *fakeStore) ApprovalAudit(_ context.Context, name string, _ int) ([]store.ApprovalAuditEntry, error) {
+	var out []store.ApprovalAuditEntry
+	for _, e := range f.approvalAudits {
+		if name == "" || e.CredentialName == name {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// ConsumeBudgetGrant satisfies meter.Grants for handler tests that wire
+// the fake as the grant source; admits when a live budget grant covers
+// the overage.
+func (f *fakeStore) ConsumeBudgetGrant(_ context.Context, credential, subject string, used, cap int64) (bool, error) {
+	for i, g := range f.grants {
+		if g.CredentialName != credential || g.Kind != "budget" || g.Subject != subject || g.Amount == nil {
+			continue
+		}
+		if g.MaxUses != nil && g.Uses >= *g.MaxUses {
+			continue
+		}
+		if used < cap+*g.Amount {
+			f.grants[i].Uses++
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func i64(v int64) *int64 { return &v }
@@ -381,6 +501,61 @@ func TestRedirectIsNotFollowed(t *testing.T) {
 	require.Equal(t, http.StatusTemporaryRedirect, w.Code, "3xx must surface, not be followed")
 	require.False(t, followed, "a keyed call must never follow a redirect")
 }
+
+func TestBudgetDenialFilesApprovalRequestDeduped(t *testing.T) {
+	f := newFakeStore()
+	f.addToken("tok", store.Credential{Name: "hello", CapTokens: i64(10)})
+	f.monthToks = 10
+	up, _, _ := newUpstream(t)
+	deps := testDeps(f, map[string]config.Upstream{
+		"ollama": {BaseURL: up.URL, Path: "v1/chat/completions", Classification: config.ClassFree},
+	})
+	deps.Meter = &meter.Meter{Usage: f, Grants: f}
+	mux := proxy.NewDataMux(deps)
+
+	w := doChat(t, mux, "tok", "/upstream/ollama/v1/chat/completions", chatBody)
+	require.Equal(t, 429, w.Code)
+	require.Contains(t, w.Body.String(), "approval request filed")
+	require.Len(t, f.requests, 1)
+	require.Equal(t, "budget", f.requests[0].Kind)
+	require.Equal(t, "tokens", f.requests[0].Subject)
+
+	// A retry loop must not spam the queue: still one pending request,
+	// and the message still points at the pending one.
+	w = doChat(t, mux, "tok", "/upstream/ollama/v1/chat/completions", chatBody)
+	require.Equal(t, 429, w.Code)
+	require.Contains(t, w.Body.String(), "approval request filed")
+	require.Len(t, f.requests, 1)
+	// The enforcement audit is never suppressed: both denials ledgered.
+	require.Len(t, f.ledger, 2)
+}
+
+func TestBudgetGrantAdmitsOverCapChat(t *testing.T) {
+	f := newFakeStore()
+	f.addToken("tok", store.Credential{Name: "hello", CapTokens: i64(10)})
+	f.monthToks = 10
+	f.grants = []store.Grant{{CredentialName: "hello", Kind: "budget", Subject: "tokens",
+		Amount: i64(100), MaxUses: i32(1)}}
+	up, _, _ := newUpstream(t)
+	deps := testDeps(f, map[string]config.Upstream{
+		"ollama": {BaseURL: up.URL, Path: "v1/chat/completions", Classification: config.ClassFree},
+	})
+	deps.Meter = &meter.Meter{Usage: f, Grants: f}
+	mux := proxy.NewDataMux(deps)
+
+	// The grant covers the overage: the chat is admitted and the use
+	// consumed...
+	w := doChat(t, mux, "tok", "/upstream/ollama/v1/chat/completions", chatBody)
+	require.Equal(t, 200, w.Code)
+	require.Equal(t, int32(1), f.grants[0].Uses)
+
+	// ...and once exhausted, the cap denies again (deny-and-pend).
+	w = doChat(t, mux, "tok", "/upstream/ollama/v1/chat/completions", chatBody)
+	require.Equal(t, 429, w.Code)
+	require.Len(t, f.requests, 1)
+}
+
+func i32(v int32) *int32 { return &v }
 
 func TestOnlyPostChatRouteExists(t *testing.T) {
 	f := newFakeStore()
