@@ -1,0 +1,502 @@
+// Package gateway is the P4b enforcing MCP gateway: the governance seam
+// between a kagent agent and the tool servers it calls. It RELAYS the MCP
+// streamable-HTTP protocol (kagent still runs the tools — no MCP runtime
+// here) and enforces, all fail-closed:
+//
+//   - upstream tool servers come only from the committed, operator-owned
+//     tool_upstreams table — the gateway forwards nowhere else, which IS
+//     the egress rule at this layer;
+//   - protocol scope is tools only: initialize, notifications/initialized,
+//     tools/list, tools/call (ping is answered locally, touching no
+//     upstream); every other method is denied, not relayed;
+//   - a per-credential tool allowlist is enforced on tools/call and
+//     PROJECTED onto tools/list — an agent never sees a tool it cannot
+//     call, and kagent's controller discovery sees the same projection;
+//   - every tools/call and every denial is audited; a failed audit write
+//     trips the gateway to 503 until a write succeeds (P4a's fail-closed
+//     ledger-degradation rule, applied to actions).
+//
+// Authentication is exactly the P4a proxy's: a Kaimahi-issued kmh_ opaque
+// token in the Authorization header (Bearer prefix optional — kagent's
+// headersFrom sends the Secret value verbatim), known to the store only
+// by sha256.
+package gateway
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"net/http"
+	"slices"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/gambtho/kaimahi/plane/internal/config"
+	"github.com/gambtho/kaimahi/plane/internal/store"
+)
+
+const (
+	maxRequestBody  = 4 << 20 // JSON-RPC tool calls; far beyond any sane arguments payload
+	maxBufferedResp = 8 << 20 // a buffered tools/list listing
+)
+
+// JSON-RPC error codes the gateway answers denials with. -32601 is the
+// standard "method not found"; -32001 is an implementation-defined code
+// for a tool outside the credential's allowlist.
+const (
+	codeMethodNotAllowed = -32601
+	codeToolNotPermitted = -32001
+)
+
+// Store is what the gateway needs from Postgres. *store.Store satisfies it.
+type Store interface {
+	CredentialByTokenHash(ctx context.Context, tokenHash []byte) (store.Credential, error)
+	ToolAllowlist(ctx context.Context, credentialName string) ([]string, error)
+	RecordToolAudit(ctx context.Context, e store.ToolAuditEntry) error
+}
+
+type Deps struct {
+	Store     Store
+	Upstreams map[string]config.ToolUpstream
+	// Client makes upstream calls. Nil gets a default that REFUSES
+	// redirects (standing guidance: no redirects on keyed calls) and
+	// bounds a call at 5 minutes.
+	Client *http.Client
+}
+
+func (d Deps) client() *http.Client {
+	if d.Client != nil {
+		return d.Client
+	}
+	return &http.Client{
+		Timeout: 5 * time.Minute,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+type handler struct {
+	d Deps
+	// auditDegraded trips when an audit write fails and clears on the
+	// next success. While tripped the gateway denies everything: an
+	// action that cannot be recorded must not happen (P4a's rule for
+	// spend, applied to tool calls).
+	auditDegraded atomic.Bool
+}
+
+// NewMux serves the governed MCP surface. One relay route —
+// /upstream/{name}/mcp — mirroring the P4a data plane's shape: POST
+// carries every JSON-RPC message, DELETE terminates a session
+// (terminateOnClose), and GET answers 405 via the mux (spec-legal: the
+// gateway offers no server-initiated stream).
+func NewMux(d Deps) *http.ServeMux {
+	h := &handler{d: d}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /upstream/{name}/mcp", h.relay)
+	mux.HandleFunc("DELETE /upstream/{name}/mcp", h.terminate)
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})
+	return mux
+}
+
+// audit appends one tool-audit row on a cancel-free context: a client
+// disconnect must not drop the record of a decision already made.
+func (h *handler) audit(r *http.Request, e store.ToolAuditEntry) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	if err := h.d.Store.RecordToolAudit(ctx, e); err != nil {
+		h.auditDegraded.Store(true)
+		slog.Error("gateway: audit append failed; denying tool traffic until a write succeeds",
+			"credential", e.CredentialName, "upstream", e.Upstream, "method", e.Method, "err", err)
+		return
+	}
+	h.auditDegraded.Store(false)
+}
+
+// httpDeny refuses pre-protocol (plain HTTP status), audited.
+func (h *handler) httpDeny(w http.ResponseWriter, r *http.Request, cred store.Credential,
+	upstream, method, tool string, status int, msg string) {
+	h.audit(r, store.ToolAuditEntry{CredentialName: cred.Name, Upstream: upstream,
+		Method: method, Tool: tool, Decision: "denied", Status: status, Detail: msg})
+	http.Error(w, msg, status)
+}
+
+// rpcDeny refuses in-protocol: a JSON-RPC error the MCP client surfaces
+// cleanly, audited as a 403 denial. Notifications (no id) cannot carry a
+// response, so they get the spec's 202 with an empty body.
+func (h *handler) rpcDeny(w http.ResponseWriter, r *http.Request, cred store.Credential,
+	upstream, method, tool string, id json.RawMessage, code int, msg string) {
+	h.audit(r, store.ToolAuditEntry{CredentialName: cred.Name, Upstream: upstream,
+		Method: method, Tool: tool, Decision: "denied", Status: http.StatusForbidden, Detail: msg})
+	if len(id) == 0 {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	writeRPC(w, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"error":   map[string]any{"code": code, "message": msg},
+	})
+}
+
+func writeRPC(w http.ResponseWriter, msg any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(msg)
+}
+
+// authenticate resolves the inbound kmh_ token (Bearer prefix optional —
+// headersFrom sends the Secret value verbatim). Same contract as P4a:
+// unknown token 401, store failure 503, neither audited (no credential
+// to attribute).
+func (h *handler) authenticate(w http.ResponseWriter, r *http.Request) (store.Credential, bool) {
+	token := r.Header.Get("Authorization")
+	if after, ok := strings.CutPrefix(token, "Bearer "); ok {
+		token = after
+	}
+	if token == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return store.Credential{}, false
+	}
+	hash := sha256.Sum256([]byte(token))
+	cred, err := h.d.Store.CredentialByTokenHash(r.Context(), hash[:])
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return store.Credential{}, false
+	}
+	if err != nil {
+		slog.Error("gateway: credential lookup failed", "err", err)
+		http.Error(w, "credential store unavailable", http.StatusServiceUnavailable)
+		return store.Credential{}, false
+	}
+	return cred, true
+}
+
+func (h *handler) relay(w http.ResponseWriter, r *http.Request) {
+	cred, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	name := r.PathValue("name")
+	up, ok := h.d.Upstreams[name]
+	if !ok {
+		h.httpDeny(w, r, cred, name, "", "", http.StatusForbidden, "unknown tool upstream")
+		return
+	}
+
+	// A tripped audit trail fails the gateway closed; the denial's own
+	// record attempt is the recovery probe.
+	if h.auditDegraded.Load() {
+		h.httpDeny(w, r, cred, name, "", "", http.StatusServiceUnavailable, "tool audit unavailable")
+		return
+	}
+
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
+	if err != nil {
+		h.httpDeny(w, r, cred, name, "", "", http.StatusBadRequest, "request body unreadable or too large")
+		return
+	}
+	if len(bytes.TrimSpace(body)) > 0 && bytes.TrimSpace(body)[0] == '[' {
+		// Single-message only: a batch could smuggle a denied method
+		// past a first-element check. Fail closed.
+		h.httpDeny(w, r, cred, name, "", "", http.StatusBadRequest, "JSON-RPC batches are not relayed")
+		return
+	}
+	var msg struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(body, &msg); err != nil {
+		h.httpDeny(w, r, cred, name, "", "", http.StatusBadRequest, "request body is not a JSON-RPC message")
+		return
+	}
+
+	switch msg.Method {
+	case "initialize", "notifications/initialized":
+		// The mandatory MCP lifecycle handshake, relayed verbatim.
+		h.forward(w, r, name, up, body)
+
+	case "ping":
+		// Answered locally: the spec demands a prompt response, and a
+		// liveness check earns no upstream contact through a governance
+		// gateway.
+		if len(msg.ID) == 0 {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		writeRPC(w, map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": map[string]any{}})
+
+	case "tools/list":
+		allowed, ok := h.allowlist(w, r, cred, name, msg.Method)
+		if !ok {
+			return
+		}
+		h.forwardProjected(w, r, cred, name, up, body, allowed)
+
+	case "tools/call":
+		var params struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(msg.Params, &params); err != nil || params.Name == "" {
+			h.httpDeny(w, r, cred, name, msg.Method, "", http.StatusBadRequest, "tools/call params carry no tool name")
+			return
+		}
+		allowed, ok := h.allowlist(w, r, cred, name, msg.Method)
+		if !ok {
+			return
+		}
+		if !slices.Contains(allowed, params.Name) {
+			h.rpcDeny(w, r, cred, name, msg.Method, params.Name, msg.ID,
+				codeToolNotPermitted, "tool not permitted by the Kaimahi allowlist")
+			return
+		}
+		status := h.forward(w, r, name, up, body)
+		h.audit(r, store.ToolAuditEntry{CredentialName: cred.Name, Upstream: name,
+			Method: msg.Method, Tool: params.Name, Decision: "allowed", Status: status})
+
+	default:
+		h.rpcDeny(w, r, cred, name, msg.Method, "", msg.ID,
+			codeMethodNotAllowed, "method not relayed by the Kaimahi gateway (tools only)")
+	}
+}
+
+// allowlist reads the credential's tool allowlist, failing the request
+// closed (503, audited) when it cannot be read. An empty list is a valid
+// answer: nothing callable.
+func (h *handler) allowlist(w http.ResponseWriter, r *http.Request, cred store.Credential,
+	upstream, method string) ([]string, bool) {
+	allowed, err := h.d.Store.ToolAllowlist(r.Context(), cred.Name)
+	if err != nil {
+		slog.Error("gateway: allowlist read failed", "credential", cred.Name, "err", err)
+		h.httpDeny(w, r, cred, upstream, method, "", http.StatusServiceUnavailable, "tool allowlist unavailable")
+		return nil, false
+	}
+	return allowed, true
+}
+
+// forward relays one message upstream byte-faithfully (SSE responses
+// stream through with per-line flushes) and reports the upstream HTTP
+// status (502 when unreachable) for the caller's audit row.
+func (h *handler) forward(w http.ResponseWriter, r *http.Request, name string,
+	up config.ToolUpstream, body []byte) int {
+	resp, err := h.do(r, up, body)
+	if err != nil {
+		slog.Error("gateway: tool upstream call failed", "upstream", name, "err", err)
+		http.Error(w, "tool upstream unreachable", http.StatusBadGateway)
+		return http.StatusBadGateway
+	}
+	defer func() { _ = resp.Body.Close() }()
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		relayStream(w, resp.Body)
+	} else {
+		if _, err := io.Copy(w, resp.Body); err != nil {
+			slog.Error("gateway: relaying tool response", "upstream", name, "err", err)
+		}
+	}
+	return resp.StatusCode
+}
+
+// forwardProjected relays a tools/list and rewrites the listing to the
+// credential's allowlist before it reaches the client — the projection
+// kagent's controller discovery stores as discoveredTools, so an agent
+// never sees a tool its credential cannot call. The upstream may answer
+// as plain JSON or as an SSE-framed response; either way the projected
+// answer goes back as application/json (always in the client's Accept
+// set). A 2xx answer the gateway cannot parse is failed closed: an
+// unprojectable listing must not reach the agent.
+func (h *handler) forwardProjected(w http.ResponseWriter, r *http.Request, cred store.Credential,
+	name string, up config.ToolUpstream, body []byte, allowed []string) {
+	resp, err := h.do(r, up, body)
+	if err != nil {
+		slog.Error("gateway: tool upstream call failed", "upstream", name, "err", err)
+		http.Error(w, "tool upstream unreachable", http.StatusBadGateway)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBufferedResp))
+	if err != nil {
+		slog.Error("gateway: reading tools/list response", "upstream", name, "err", err)
+		http.Error(w, "tool upstream response unreadable", http.StatusBadGateway)
+		return
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		// Nothing to project on an upstream error; relay it verbatim.
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(raw)
+		return
+	}
+
+	payload := raw
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		payload = lastSSEData(raw)
+	}
+	var rpc struct {
+		JSONRPC string                     `json:"jsonrpc"`
+		ID      json.RawMessage            `json:"id"`
+		Error   json.RawMessage            `json:"error,omitempty"`
+		Result  map[string]json.RawMessage `json:"result,omitempty"`
+	}
+	if err := json.Unmarshal(payload, &rpc); err != nil || rpc.JSONRPC == "" {
+		slog.Error("gateway: unparseable tools/list response; failing closed", "upstream", name, "err", err)
+		http.Error(w, "unprojectable tool-server response", http.StatusBadGateway)
+		return
+	}
+	if rpc.Result != nil {
+		var tools []json.RawMessage
+		if raw, ok := rpc.Result["tools"]; ok {
+			if err := json.Unmarshal(raw, &tools); err != nil {
+				slog.Error("gateway: unparseable tools listing; failing closed", "upstream", name, "err", err)
+				http.Error(w, "unprojectable tool-server response", http.StatusBadGateway)
+				return
+			}
+		}
+		kept := make([]json.RawMessage, 0, len(tools))
+		for _, t := range tools {
+			var tool struct {
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(t, &tool) == nil && slices.Contains(allowed, tool.Name) {
+				kept = append(kept, t)
+			}
+		}
+		keptRaw, err := json.Marshal(kept)
+		if err != nil {
+			http.Error(w, "projection failed", http.StatusInternalServerError)
+			return
+		}
+		rpc.Result["tools"] = keptRaw
+		slog.Info("gateway: projected tools/list", "credential", cred.Name,
+			"upstream", name, "offered", len(tools), "projected", len(kept))
+	}
+
+	// The session header (Mcp-Session-Id) must survive the rewrite; the
+	// upstream's framing headers must not.
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.Header().Del("Content-Length")
+	out := map[string]any{"jsonrpc": rpc.JSONRPC, "id": rpc.ID}
+	if rpc.Error != nil {
+		out["error"] = rpc.Error
+	} else {
+		out["result"] = rpc.Result
+	}
+	writeRPC(w, out)
+}
+
+// terminate relays a session DELETE (terminateOnClose) so upstream
+// sessions are cleaned up. Not a tool action: authenticated and confined
+// to the upstream table, but not audited.
+func (h *handler) terminate(w http.ResponseWriter, r *http.Request) {
+	cred, ok := h.authenticate(w, r)
+	if !ok {
+		return
+	}
+	name := r.PathValue("name")
+	up, ok := h.d.Upstreams[name]
+	if !ok {
+		h.httpDeny(w, r, cred, name, "", "", http.StatusForbidden, "unknown tool upstream")
+		return
+	}
+	outReq, err := http.NewRequestWithContext(r.Context(), http.MethodDelete, up.URL, nil)
+	if err != nil {
+		http.Error(w, "upstream request build failed", http.StatusBadGateway)
+		return
+	}
+	copyRequestHeaders(outReq.Header, r.Header)
+	resp, err := h.d.client().Do(outReq)
+	if err != nil {
+		http.Error(w, "tool upstream unreachable", http.StatusBadGateway)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+func (h *handler) do(r *http.Request, up config.ToolUpstream, body []byte) (*http.Response, error) {
+	outReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, up.URL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	copyRequestHeaders(outReq.Header, r.Header)
+	outReq.ContentLength = int64(len(body))
+	return h.d.client().Do(outReq)
+}
+
+// relayStream forwards SSE lines as they arrive, flushing each so a
+// long-running tool call streams through.
+func relayStream(w http.ResponseWriter, body io.Reader) {
+	flusher, _ := w.(http.Flusher)
+	sc := bufio.NewScanner(body)
+	sc.Buffer(make([]byte, 0, 64*1024), 4<<20)
+	for sc.Scan() {
+		_, _ = io.WriteString(w, sc.Text()+"\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	if err := sc.Err(); err != nil {
+		slog.Error("gateway: relaying stream", "err", err)
+	}
+}
+
+// lastSSEData extracts the final data payload from an SSE-framed body —
+// for a buffered tools/list response, that is the JSON-RPC response
+// message (a data: event per the streamable HTTP transport).
+func lastSSEData(raw []byte) []byte {
+	var last []byte
+	sc := bufio.NewScanner(bytes.NewReader(raw))
+	sc.Buffer(make([]byte, 0, 64*1024), maxBufferedResp)
+	for sc.Scan() {
+		if payload, ok := strings.CutPrefix(sc.Text(), "data: "); ok {
+			last = []byte(payload)
+		}
+	}
+	return last
+}
+
+// hopByHop are headers that must not be forwarded in either direction.
+var hopByHop = map[string]bool{
+	"Connection": true, "Keep-Alive": true, "Proxy-Authenticate": true,
+	"Proxy-Authorization": true, "Te": true, "Trailer": true,
+	"Transfer-Encoding": true, "Upgrade": true,
+}
+
+// copyRequestHeaders forwards client headers minus hop-by-hop, every
+// credential slot (the kmh_ token must never reach the tool server —
+// this lane's only upstream is unauthenticated, and a future keyed one
+// gets its credential injected from proxy-side custody, never passed
+// through), and Accept-Encoding (the gateway must read plaintext bodies
+// to project listings).
+func copyRequestHeaders(dst, src http.Header) {
+	for k, vs := range src {
+		ck := http.CanonicalHeaderKey(k)
+		if hopByHop[ck] || ck == "Authorization" || ck == "X-Api-Key" ||
+			ck == "Api-Key" || ck == "Accept-Encoding" || ck == "Content-Length" || ck == "Host" {
+			continue
+		}
+		dst[ck] = append([]string(nil), vs...)
+	}
+}
+
+func copyResponseHeaders(dst, src http.Header) {
+	for k, vs := range src {
+		ck := http.CanonicalHeaderKey(k)
+		if hopByHop[ck] {
+			continue
+		}
+		dst[ck] = append([]string(nil), vs...)
+	}
+}

@@ -1,7 +1,9 @@
-// kaimahi-proxy is the P4a governance plane: a metering and enforcing LLM
-// proxy mounted at kagent's ModelConfig baseUrl seam. Two listeners: the
-// data plane (governed OpenAI-compatible traffic) and the admin plane
-// (credentials, budgets, ledger) on a port the data Service never exposes.
+// kaimahi-proxy is the Kaimahi governance plane: the P4a metering and
+// enforcing LLM proxy mounted at kagent's ModelConfig baseUrl seam, and
+// the P4b enforcing MCP gateway mounted at the tool-server seam. Three
+// listeners: the LLM data plane, the MCP gateway (own Service), and the
+// admin plane (credentials, budgets, allowlists, ledger, audit) on a
+// port no data Service exposes.
 //
 // Secrets reach the process only as mounted files (never argv or env
 // values); non-secret wiring is env. Migrations run at startup —
@@ -24,6 +26,7 @@ import (
 
 	"github.com/gambtho/kaimahi/plane/internal/config"
 	"github.com/gambtho/kaimahi/plane/internal/db"
+	"github.com/gambtho/kaimahi/plane/internal/gateway"
 	"github.com/gambtho/kaimahi/plane/internal/meter"
 	"github.com/gambtho/kaimahi/plane/internal/proxy"
 	"github.com/gambtho/kaimahi/plane/internal/redact"
@@ -49,6 +52,7 @@ func mustReadSecretFile(path, what string) string {
 
 func main() {
 	dataAddr := env("DATA_ADDR", ":8080")
+	mcpAddr := env("MCP_ADDR", ":8081")
 	adminAddr := env("ADMIN_ADDR", ":9091")
 	configFile := env("CONFIG_FILE", "/etc/kaimahi/upstreams.json")
 	adminTokenFile := env("ADMIN_TOKEN_FILE", "/etc/kaimahi/admin/token")
@@ -112,22 +116,31 @@ func main() {
 	// ReadTimeout bounds slow request-body writers (chat requests are
 	// small; streamed RESPONSES are unaffected — WriteTimeout stays 0 so
 	// long generations can flush indefinitely).
+	// The P4b MCP gateway shares this process (and its pool, redactor,
+	// and fail-closed machinery); its listener gets its own Service so
+	// the tool seam has its own address.
+	gwDeps := gateway.Deps{Store: st, Upstreams: cfg.ToolUpstreams}
+
 	dataSrv := &http.Server{Addr: dataAddr, Handler: proxy.NewDataMux(deps),
+		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}
+	mcpSrv := &http.Server{Addr: mcpAddr, Handler: gateway.NewMux(gwDeps),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}
 	adminSrv := &http.Server{Addr: adminAddr, Handler: proxy.NewAdminMux(deps, adminTokenFile),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
 
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
 	go func() { errCh <- dataSrv.ListenAndServe() }()
+	go func() { errCh <- mcpSrv.ListenAndServe() }()
 	go func() { errCh <- adminSrv.ListenAndServe() }()
-	slog.Info("kaimahi-proxy up", "data", dataAddr, "admin", adminAddr,
-		"upstreams", len(cfg.Upstreams))
+	slog.Info("kaimahi-proxy up", "data", dataAddr, "mcp", mcpAddr, "admin", adminAddr,
+		"upstreams", len(cfg.Upstreams), "tool_upstreams", len(cfg.ToolUpstreams))
 
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		_ = dataSrv.Shutdown(shutdownCtx)
+		_ = mcpSrv.Shutdown(shutdownCtx)
 		_ = adminSrv.Shutdown(shutdownCtx)
 	case err := <-errCh:
 		// Either listener stopping before a shutdown signal is abnormal —

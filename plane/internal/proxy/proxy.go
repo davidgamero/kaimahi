@@ -29,6 +29,11 @@ type Store interface {
 	SetBudget(ctx context.Context, name string, capCents, capTokens *int64) error
 	Ledger(ctx context.Context, credentialName string, limit int) ([]store.LedgerEntry, error)
 	MonthUsage(ctx context.Context, credentialName string, monthStart time.Time) (cents, tokens int64, err error)
+	// P4b tool governance (admin surface; the gateway's own data path
+	// uses the narrower gateway.Store).
+	SetToolAllowlist(ctx context.Context, credentialName string, tools []string) error
+	ToolAllowlist(ctx context.Context, credentialName string) ([]string, error)
+	ToolAudit(ctx context.Context, credentialName string, limit int) ([]store.ToolAuditEntry, error)
 }
 
 // Meter admits or denies a request under the credential's budget caps.

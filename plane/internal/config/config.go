@@ -47,8 +47,21 @@ type Upstream struct {
 	Prices map[string]pricing.Price `json:"prices,omitempty"`
 }
 
+// ToolUpstream is one MCP tool server the gateway may relay to. The
+// committed table is the whole egress surface at this layer: the gateway
+// forwards nowhere it does not name (cluster-level NetworkPolicy is a
+// documented P4b limitation, not built here).
+type ToolUpstream struct {
+	// URL is the full MCP endpoint (e.g. the in-cluster
+	// http://kagent-tools.kagent:8084/mcp).
+	URL string `json:"url"`
+}
+
 type Config struct {
 	Upstreams map[string]Upstream `json:"upstreams"`
+	// ToolUpstreams is the MCP gateway's table (P4b). Optional: a
+	// P4a-only config still parses; an absent table relays nothing.
+	ToolUpstreams map[string]ToolUpstream `json:"tool_upstreams,omitempty"`
 }
 
 func Load(path string) (Config, error) {
@@ -95,6 +108,12 @@ func Parse(raw []byte) (Config, error) {
 				p.InCentsPer1M > maxCentsPer1M || p.OutCentsPer1M > maxCentsPer1M {
 				return Config{}, fmt.Errorf("config: upstream %q model %q: price out of range [0, %d]", name, model, maxCentsPer1M)
 			}
+		}
+	}
+	for name, t := range c.ToolUpstreams {
+		parsed, err := url.Parse(t.URL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return Config{}, fmt.Errorf("config: tool upstream %q: invalid url %q (want absolute http(s))", name, t.URL)
 		}
 	}
 	return c, nil
