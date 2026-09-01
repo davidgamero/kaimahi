@@ -82,10 +82,11 @@ build anything AKS-specific without a survey-backed justification.
 | P3: connectors/tools via MCP | W3 worker | PR #4 MERGED (99edd8a); coordinator verified incl. live tool call (delta sheet below) | lane closed |
 | Rename lane: in-repo tomte → kaimahi (D9/D10) | rename worker | PR #5 MERGED (01f5c3c); coordinator verified (delta sheet below); board renamed by coordinator | lane closed |
 | P4a: metering/enforcing LLM proxy (D11) | W4 worker | PR #12 MERGED; coordinator verified live incl. budget denial + custody (delta sheet below) | lane closed |
-| P4b: enforcing MCP gateway / P4c: approvals | — | UNBLOCKED by P4a merge; awaiting coordinator blindspot pass + GO per slice | no pre-stacked PR bases |
+| P4b: enforcing MCP gateway | unassigned | GO — blindspot pass done, W5 prompt ready (below) | contended: plane/ + k8s/ + Makefile + CI |
+| P4c: approvals/permits | — | blocked on P4b merge | no pre-stacked PR bases |
 | Docs: CLI-first framing + naming record | teammate (Tatsinnit) | PR #10 MERGED (ratifies D12) | staleness fixes folded into reconciliation lane |
 | Docs: agent-first scenarios | teammate (Tatsinnit) | PR #11 MERGED (authors' public credit ratified by user merge) | lane closed |
-| Post-merge reconciliation | coordinator | PR pending | README status refresh (P4a shipped), NAMING.md stale board line, hygiene-CI grep fail-open fix (P4a deviation 11) |
+| Post-merge reconciliation | coordinator | PR #13 MERGED (0ce72ca, main CI green incl. hardened secret scan) | lane closed |
 
 ## Decisions (user rulings, verbatim)
 
@@ -436,6 +437,84 @@ governed preset's Secret contents vs the proxy's). Suite green at every
 commit. Branch from current main; PR targets main; no stacked bases. Lane
 ends at PR-open-with-checks-green — do not merge. Report deviations in
 the PR's "Deviations & decisions" section.
+```
+
+### W5 — P4b: enforcing MCP gateway (UNASSIGNED — paste into a fresh CLI session in this repo)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout). Read docs/COORDINATION.md first — prime directive, process
+rules, security standing guidance, decisions D1–D12, and ALL delta sheets
+bind you (P4a's especially). Your lane: P4b — the governance plane's
+second slice: an enforcing MCP gateway at kagent's tool-server seam.
+
+DESIGN SOURCES FIRST (prime directive): (a) kagent 0.9.12's shipped MCP
+stack is on the board's P3 entries — RemoteMCPServer (STREAMABLE_HTTP),
+Agent.spec.declarative.tools[] with headersFrom (Secret-resolved headers
+sent to the tool), and the chart-managed kagent-tool-server at
+http://kagent-tools.kagent:8084/mcp. Build no MCP runtime — the gateway
+RELAYS the protocol and enforces; kagent still runs the tools. (b) The
+old repo's MCP-governance blueprint (plan, not code — consult, don't
+port): docs/superpowers/plans/2026-08-31-tomte-p2-connectors-main-road.md
+sections 7–8 in archived gambtho/tomte-old — SSRF defense set, pinned
+tool snapshots, permit + proxy + projection. Record in the PR what you
+took, adapted, or rejected from it.
+
+Architecture (board + D11 + P4a precedent):
+- The gateway extends the `plane/` module (P4a deviation-1 ruling) and
+  reuses its Postgres, credential model (kmh_ opaque tokens, sha256-only
+  storage), and ledger/audit machinery. Worker's choice whether it runs
+  in the existing proxy Deployment or its own (state why; the CI node
+  has ~65m CPU headroom — P4a delta — so a second pod must request ~10m).
+- Seam: a Kaimahi-owned RemoteMCPServer (do NOT shadow or mutate the
+  chart-managed one — P3 ruling) whose URL is the gateway; a governed
+  tools agent references it via spec.declarative.tools, carrying its
+  kmh_ credential in a headersFrom header from a Secret. The gateway
+  authenticates it exactly like the P4a proxy authenticates chats.
+- Enforcement, all fail-closed:
+  - Upstream tool servers come from a committed, operator-configured
+    table (the P4a upstreams pattern) — exactly one entry in this lane:
+    the in-cluster kagent-tool-server. The gateway forwards nowhere
+    else (that IS the egress rule at this layer; cluster-level
+    NetworkPolicy is documented as a known limitation, not built here).
+  - MCP scope: tools only — initialize, tools/list, tools/call. Any
+    other method is denied, not relayed.
+  - Per-credential tool ALLOWLIST enforced on tools/call, and PROJECTED
+    on tools/list (an agent never sees a tool it cannot call). Empty or
+    missing allowlist = nothing callable.
+  - Every tools/call is audited to the ledger (credential, tool, status;
+    denials recorded like P4a's denied rows). A failed audit write trips
+    the gateway to 503 — P4a's fail-closed-degradation rule applies to
+    actions exactly as it does to spend.
+- Approvals/human-in-the-loop are P4c — no approval flows here beyond
+  the static allowlist. No UI (D11).
+- Security guidance binds: pipefail scripts for anything key-bearing,
+  no key material in YAML/argv/env/logs, redaction on gateway logs, no
+  redirects on keyed calls.
+
+Deliverables:
+(a) Gateway code in plane/ — `go test ./...`, gofmt, vet green at every
+    commit (the go-plane CI job runs them).
+(b) k8s manifests: gateway wiring, the Kaimahi RemoteMCPServer, the
+    governed tools preset/patch, upstream tool-server table entry.
+(c) Make targets in the P1–P4a style: govern the tools agent, set/show
+    a tool allowlist, show the tool-call audit trail; `make chat
+    AGENT=hello-tools` rides the gateway after governing.
+(d) docs/P4B-RUNBOOK.md, including the governed-vs-ungoverned table
+    updated (tool calls now governed; approvals still P4c; cluster
+    NetworkPolicy egress documented as not-yet).
+(e) CI, keyless, in the existing cluster job: governed tool call through
+    the gateway succeeds (reuse the P3 probe-ConfigMap proof) → audit
+    row asserted → a NOT-allowlisted tool call denied fail-closed and
+    the denial audited. Respect the CPU ceiling (P4a delta: ~1935m/2000m
+    with the plane; state your sizing).
+
+Verification is real: live cluster evidence in the PR — the P3 probe
+round-trip via the gateway, the audit rows, the denial, and proof the
+agent-side wiring carries only the kmh_ token. Suite green at every
+commit. Branch from current main; PR targets main; no stacked bases.
+Lane ends at PR-open-with-checks-green — do not merge. Report deviations
+in the PR's "Deviations & decisions" section.
 ```
 
 ## Delta sheets from finished lanes
