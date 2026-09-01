@@ -178,9 +178,24 @@ KAGENT_INVOKE = $(KAGENT) --kagent-url http://127.0.0.1:$(CHAT_PORT) invoke
 # answer "can I reach the agent", so the invoke below additionally retries
 # a bounded number of times on exactly that error. It cannot mask a real
 # outage: after the retries the original output and exit status are
-# emitted unchanged, and a connection-refused reply still fails
+# emitted unchanged, and a transport-error reply still fails
 # verify-chat.py. Note kagent exits 0 on this error, so the retry keys on
 # the message, not the status.
+#
+# The race has more than one symptom, and the first fix only caught one of
+# them. `connection refused` is kube-proxy REJECTing when the Service has
+# no ready backend; but once a backend IS programmed and the pod tears the
+# connection down before answering, the controller reports instead:
+#   failed to send HTTP request: Post "http://<agent>.kagent:8080": EOF
+# That is the same race one moment later, and it reddened main after P5b
+# merged. Retry both.
+#
+# The predicate stays deliberately narrow. The output being matched
+# CONTAINS THE MODEL'S OWN REPLY, so a bare `EOF` (or `connection reset`)
+# would let an agent that merely talks about them trigger a retry. Both
+# are therefore only retryable when they terminate kagent's own transport
+# error; `connection refused` is specific enough to stand alone.
+CHAT_RETRYABLE = 'connection refused|failed to send HTTP request:.*(EOF|connection reset)'
 define kagent_forward
 agent_ok=; \
 for _ in $$(seq 1 120); do \
@@ -191,7 +206,7 @@ for _ in $$(seq 1 120); do \
 done; \
 if [ -z "$$agent_ok" ]; then \
 	echo "agent '$(1)' is not answering through its Service after 120s — refusing to invoke" >&2; \
-	echo "  (invoking now would fail with 'connection refused' from the controller)" >&2; \
+	echo "  (invoking now would fail with a transport error from the controller)" >&2; \
 	exit 1; \
 fi; \
 pf_out=$$(mktemp); \
@@ -214,9 +229,9 @@ fi; \
 out=$$(mktemp); rc=0; \
 for attempt in 1 2 3 4; do \
 	rc=0; $(2) >"$$out" 2>&1 || rc=$$?; \
-	grep -q 'connection refused' "$$out" || break; \
+	grep -Eq $(CHAT_RETRYABLE) "$$out" || break; \
 	if [ "$$attempt" != 4 ]; then \
-		echo "kagent could not reach agent '$(1)' yet (connection refused); retry $$attempt/3 in 5s" >&2; \
+		echo "kagent could not reach agent '$(1)' yet (transport error); retry $$attempt/3 in 5s" >&2; \
 		sleep 5; \
 	fi; \
 done; \
