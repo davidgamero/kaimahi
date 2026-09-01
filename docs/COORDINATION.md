@@ -108,6 +108,8 @@ prefix.
 | CI hygiene: verifier reads function_response; docs-only e2e short-circuit | W14 worker | PR #29 MERGED; verified (delta sheet below) — this board PR is the first live docs-only test of the short-circuit | lane closed |
 | AKS NetworkPolicy enforcement (P7a finding) | W15 worker | PR #30 MERGED; verified incl. teardown (delta sheet below) | lane closed |
 | Post-P7a/P7b reconciliation | coordinator | PR #28 MERGED | lane closed |
+| Makefile micro-lane: `use` waits for the old pod to be gone; `AKS_NETWORK_POLICY` comment | unassigned | GO — W16 prompt below | owns Makefile only; merges first, P8a rebases |
+| P8a: Slack Events live on AKS (D20) | unassigned | GO — W17 prompt below | owns plane/internal/inbound, k8s/, scripts/, docs/slack+inbound+aks; Azure spend; teardown mandatory |
 | CLI decisions + PR #16 review | user + coordinator | awaiting the user's five CLI-PROPOSAL rulings | not a build lane; parallelises with everything |
 | CI flake: agent-readiness race (P5b finding) | coordinator — PR #20 MERGED (73917e9) after a review round: retry anchored to the controller's whole error line; slack-post retries only unambiguous failures | User ruling 2026-09-01: fold into the next phase rather than a standalone micro-lane — as its **FIRST commit, before feature work**, so the lane's own CI is not reddened by someone else's race | retry predicate covers `connection refused` but not `EOF`; main went red once then green on re-run. Widen narrowly (EOF, connection-reset) so it cannot mask a real outage — see P5b delta sheet |
 | NetworkPolicy egress (promoted 2026-09-01) | — | candidate, not GO | P5a put a deliberate internet-egress pod in the cluster; three non-network layers bound blast radius today. Strongest-argument-yet per P5a's own accounting |
@@ -139,6 +141,7 @@ prefix.
 | D17 | 2026-09-01 | Board updates go through PULL REQUESTS from now on — supersedes D4. Context: the org move brought the `protect-main` ruleset (PR required + hygiene/go-plane/e2e as required checks; admins may bypass), and the coordinator's direct board pushes were landing via that bypass. The coordinator remains the board's single WRITER; the change is that every board edit is a PR the user merges. Practical consequence: each board PR waits on the full e2e (~11 min) — a docs-only short-circuit for the e2e job is a small CI follow-up so a doc-only PR still reports all three required checks without booting a cluster. This row is itself the first board PR | "i think we should start doing PRs for board updates." |
 | D18 | 2026-09-01 | The Slack app's `chat:write.public` scope (bot may post to any public channel uninvited — flagged by P5a, recommended for removal) is ACCEPTED as-is; item closed | "i'm not worried about the slack permissions" |
 | D19 | 2026-09-01 | CLI rulings (the five open decisions in docs/CLI-PROPOSAL.md; sequencing is moot now P4 shipped): (1) **do NOT publish to npm yet** — internal use via `npx github:kaimahi-agents/kaimahi`; publishing is a one-line decision once D9's gates clear; (2) **scaffold-only** — `agent create` is the only command, R/U/D refused by printing the kubectl/kagent command that already does the job; (3) **the Makefile owns cluster bring-up** — no `kaimahi up`/`install`; (4) **a zero-runtime-dependency Node toolchain is accepted** into the repo (`cli/`, with `make cli-test` in CI). PR #16 moves from parked prototype to coordinator review against these | ruled via options: "Not yet — internal via npx github: (Recommended)", "Scaffold-only, as built (Recommended)", "Makefile owns bring-up (Recommended)", "Yes, zero-dependency Node (Recommended)" |
+| D20 | 2026-09-01 | P8a is GO: **Slack Events live, end to end**, on **AKS behind a public LoadBalancer** (honest internet exposure of the inbound bridge — what its auth/replay/rate-limit design is for; TLS required; Azure spend, teardown mandatory). Approval routing via Slack is sequenced AFTER it (the approve click is an inbound event). Internet-facing gateway upstreams, shared limiter/queue, azure/calico engines, multi-node AKS and stub retirement stay parked | ruled via options: "Slack Events live (Recommended)", "AKS with a public LoadBalancer (Recommended)" |
 | D14 | 2026-09-01 | P5 direction: the **undeniable demo** — not a new capability arc but making the built one legible and credible. Rulings: (1) outbound connector platform is **Slack** (via existing MCP servers, no connector code); (2) AKS work goes all the way — cluster portability AND a real AKS deployment with evidence (accepts Azure spend + credentials in a worker session); (3) demos run on the **Copilot** preset while **CI stays keyless on ollama** (public fork-exposed repo — no repo secrets in CI, ever). Rationale on the board: everything governed so far protects an agent that lists ConfigMaps; posting to a channel humans read is the first consequential action, and it makes the approval gate the point rather than the plumbing | "sure, that's undeniable demo makes sense" — then ruled via options: "Slack (Recommended)", "Portability + real AKS run (Recommended)", "Copilot for demo, ollama for CI (Recommended)" |
 | D13 | 2026-09-01 | P4c approval model: TIME-BOXED PERMITS — a denied action files a pending request; approval grants it bounded (expiry by duration and/or use count) and compiles into the existing allowlist/budget rows; deny-and-retry mechanics, no held-open calls. Demo scenarios: tool-access widening (k8s_get_events, read-only) AND budget overage; the P3 tool-server read-only posture stays untouched (write-tool demo deferred) | ruled via options: "Time-boxed permits (Recommended)"; "Widen tool access (Recommended), Budget overage (Recommended)" |
 
@@ -1323,6 +1326,110 @@ Verification is real: the probe's full output from the AKS cluster,
 redacted; the teardown; the spend note. Branch from current main; PR
 targets main; no stacked bases; lane ends at PR-open-with-checks-green
 — do not merge. Report deviations in the PR.
+```
+
+### W16 — Makefile micro-lane (UNASSIGNED — paste into a fresh CLI session)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout). Read docs/COORDINATION.md first — process rules and the "CI
+flake class 3" note bind you. You own the Makefile and nothing else; a
+larger lane (P8a) runs in parallel and will rebase over you, so keep
+this small and merge fast.
+
+1. `use` (and therefore `govern`, `govern-tools`, anything that
+   preset-switches an agent) returns after `rollout status` plus the
+   Agent's Ready condition. With maxSurge 1 / maxUnavailable 0 that is
+   the moment the NEW pod is Ready while the OLD pod — still on the
+   previous ModelConfig — is terminating, and a chat can land on it. On
+   a docs-only PR the governed chat completed with an EMPTY ledger: the
+   old, ungoverned pod answered. Make `use` return only when exactly one
+   pod of the agent's Deployment remains and it carries the new
+   pod-template-hash (bounded wait, fail loudly on timeout). Governed
+   must mean the ungoverned pod is gone, not outnumbered.
+2. Add `AKS_NETWORK_POLICY` (cilium | azure | calico, default cilium —
+   see scripts/aks-up.sh) to the Makefile's AKS variable comment block.
+
+Verification is real: on your own kind cluster (`KIND_CLUSTER=…`, never
+kaimahi-p1), switch presets back and forth and show that immediately
+after `make use` only the new-hash pod exists; then `make govern` +
+`make chat` + `make ledger` shows a row on the first try. CI is expected
+to pass unchanged. Branch from current main; PR targets main; lane ends
+at PR-open-with-checks-green — do not merge. Report deviations in the PR.
+```
+
+### W17 — P8a: Slack Events live, end to end, on AKS (UNASSIGNED — paste into a fresh CLI session)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout). Read docs/COORDINATION.md first — decisions D14/D15/D16/D20,
+the P5a, P5b, P7a, P7b and W15 delta sheets, and the security standing
+guidance bind you. Your lane: close the loop — a message in Slack
+triggers the agent through the inbound bridge, the agent answers back
+into Slack through the governed path, on a real cluster reachable from
+the internet. A Makefile micro-lane (W16) runs in parallel and merges
+first; rebase over it.
+
+SURVEY FIRST: the inbound bridge (P7b) already speaks Slack's signing
+scheme (signed timestamp + HMAC, replay window, delivery id) and takes a
+per-hook secret via `make inbound-secret`; the Slack MCP server (P5a) is
+how the agent posts back. Establish what is genuinely missing for Slack's
+Events API and build only that — expect: the `url_verification`
+challenge handshake (Slack will not enable a subscription without it),
+`X-Slack-Signature`/`X-Slack-Request-Timestamp` verification if the
+existing scheme differs, dedupe on Slack's event id under its retry
+policy, and the event → agent task mapping (`app_mention` in the named
+test channel is the obvious trigger). Record what you found vs built.
+
+Exposure — the whole point, and the whole risk:
+- ONLY the inbound listener is reachable from the internet. The proxy's
+  data/admin ports and the gateway stay cluster-internal; prove it (a
+  scan of the public IP shows one port). The P7a policy is default-deny
+  ingress on the plane's namespace: add exactly the allowance the ingress
+  path needs and nothing wider.
+- TLS is mandatory (Slack requires https). Choose the simplest honest
+  path on AKS (a DNS label on the public IP plus cert-manager /
+  Let's Encrypt, or an Azure-native front door) and say why. No private
+  key or certificate is ever committed.
+- The public FQDN, the DNS label and the public IP are Azure identifiers:
+  parameterise them, redact them from evidence, and extend
+  scripts/check-no-azure-ids.sh so `*.cloudapp.azure.com` and any public
+  IP you used are refused in the tree.
+- Slack app config is outward-facing: the Request URL points at YOUR
+  cluster and the app posts to a real workspace. Post only to the private
+  test channel the user named for P5a; never a public or shared channel.
+  If you need any new bot scope, name it in the PR and keep it minimal.
+- Custody: the signing secret and bot token are captured stdin-only into
+  Secrets (existing scripts); nothing in YAML, argv, env listings, logs.
+
+Lifecycle: you create the AKS cluster with the already-authenticated az
+CLI (W15's script — it provisions Cilium NetworkPolicy, keep it), you
+TEAR IT DOWN at lane end (mandatory; say it is gone; spend estimate),
+and you REMOVE the Request URL / disable the event subscription in the
+Slack app when the cluster goes, so the app never points at an address
+someone else can later own.
+
+Governance stays on: the triggered agent runs on the governed Copilot
+preset (Copilot-only on AKS, D15), its tool calls go through the
+gateway, and its reply into Slack is an approved action (P4c) — a
+bounded grant for the demo, stated in the PR. Every inbound event must
+show in the inbound audit and the ledger.
+
+Deliverables: the handshake/mapping code in plane/internal/inbound with
+tests; manifests for the ingress path (LoadBalancer or ingress
+controller) and the policy allowance; scripts/make targets in the
+established style, including the exposure scan; docs/inbound.md and
+docs/slack.md updated (what is exposed, what is not, how to tear it
+down); docs/aks.md if the provisioning changed. CI stays keyless and
+never touches Azure or Slack: unit-test the handshake and mapping;
+document exactly what only the live run proves.
+
+Verification is real: a redacted transcript of the live loop — the
+Slack message, the inbound audit row, the ledger row, the gateway audit
+if a tool ran, the approval, the reply landing in the channel — plus the
+port scan and the teardown. Branch from current main; PR targets main;
+no stacked bases; lane ends at PR-open-with-checks-green — do not merge.
+Report deviations in the PR.
 ```
 
 ## Delta sheets from finished lanes
