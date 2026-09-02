@@ -37,6 +37,9 @@ func (a *App) Up(step string) error {
 			return fmt.Errorf("unknown step %q — one of: %s", step, strings.Join(UpSteps, ", "))
 		}
 	}
+	if err := a.preflightUp(steps); err != nil {
+		return err
+	}
 
 	action := "bring up the kmx runtime (kind, Ollama, kagent, agents)"
 	command := "kmx up"
@@ -134,6 +137,54 @@ func (a *App) upOverlapped() error {
 		{"agent", func(b *App) error { return b.stepAgent() }},
 		{"tools-agent", func(b *App) error { return b.stepToolsAgent() }},
 	})
+}
+
+func (a *App) preflightUp(steps []string) error {
+	type dependency struct {
+		step, tool, why, install string
+	}
+	dependencies := []dependency{
+		{"cluster", "kind", "to create the local Kubernetes cluster", "https://kind.sigs.k8s.io/docs/user/quick-start/#installation"},
+		{"cluster", "kubectl", "to talk to the cluster", "https://kubernetes.io/docs/tasks/tools/"},
+		{"ollama", "kubectl", "to deploy Ollama", "https://kubernetes.io/docs/tasks/tools/"},
+		{"model", "kubectl", "to pull the model", "https://kubernetes.io/docs/tasks/tools/"},
+		{"kagent", "helm", "to install kagent", "https://helm.sh/docs/intro/install/"},
+		{"kagent", "kubectl", "to wait for kagent", "https://kubernetes.io/docs/tasks/tools/"},
+		{"agent", "kubectl", "to apply the agent", "https://kubernetes.io/docs/tasks/tools/"},
+		{"tools-agent", "kubectl", "to apply the tools agent", "https://kubernetes.io/docs/tasks/tools/"},
+	}
+	wanted := map[string]bool{}
+	for _, step := range steps {
+		wanted[step] = true
+	}
+	var problems []string
+	seen := map[string]bool{}
+	for _, dep := range dependencies {
+		if !wanted[dep.step] || seen[dep.tool] {
+			continue
+		}
+		seen[dep.tool] = true
+		if err := run.MustExist(dep.tool, dep.why, dep.install); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
+	if wanted["cluster"] {
+		engine := a.Cfg.ContainerEngine
+		if err := run.MustExist(engine, "as the selected kind container engine",
+			"https://docs.docker.com/get-docker/ (Docker) or https://podman.io/docs/installation (Podman)"); err != nil {
+			problems = append(problems, err.Error())
+		} else if _, err := a.Run.Capture(engine, "info"); err != nil {
+			problems = append(problems, fmt.Sprintf("%s is installed but unavailable — start it or fix access, then run `%s info`: %v", engine, engine, err))
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	noun := "dependency"
+	if len(problems) != 1 {
+		noun = "dependencies"
+	}
+	return fmt.Errorf("preflight: %d missing or unusable %s:\n\n- %s", len(problems), noun, strings.Join(problems, "\n- "))
 }
 
 // ---- cluster --------------------------------------------------------------
