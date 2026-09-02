@@ -112,7 +112,8 @@ prefix.
 | P8a: the Slack loop live on AKS behind a one-port TLS edge (D20) | W17 worker | PR #35 MERGED; coordinator verified everything reproducible on main + teardown (delta sheet below) | lane closed; the live run is by-design unrepeatable without a new cluster |
 | Docs cleanup (D23): stubs, plans/specs, CLI wording, pycache | coordinator | PR #40 MERGED (6c90468) | lane closed |
 | P8b: approval routing via Slack + per-approver identity (D21) | W18 worker | PR #41 MERGED (109e08d) ahead of the coordinator's pass; verified against main (delta sheet below) | lane closed |
-| P9: run it for real — stateless multi-replica plane, exact budgets, metrics (D24) | W19 worker | GO 2026-09-02 — prompt below, user launches | own kind cluster; touches Makefile/ci.yml/k8s/plane/proxy.yaml and the plane; #37/#42 (owner-handled) touch the Makefile too — second to merge rebases |
+| P9: run it for real — stateless multi-replica plane, exact budgets, metrics (D24) | W19 worker | GO 2026-09-02 — prompt handed to the user; lane running | own kind cluster; touches Makefile/ci.yml/k8s/plane/proxy.yaml and the plane; #37/#42 (owner-handled) touch the Makefile too — second to merge rebases |
+| P10: hosted upstreams — GitHub's hosted MCP server through a hardened dialer (D25) | W20 worker | SHAPED 2026-09-02 — prompt below; launch ONLY after W19 merges (same files) | own kind cluster; the worker's own read-only GitHub token, never in CI |
 | Brand assets + architecture diagram + org/front-door plans | user-run lane (outside the board's prompt set) | PR #33 MERGED (+ kaimahi-agents/.github#1); main CI green | brand validator in the hygiene job |
 | README front door + CONTRIBUTING.md | user-run lane (outside the board's prompt set) | PR #34 MERGED; main CI green | anchored front-door checker in hygiene: section order enforced, no `npx kaimahi create` mention before the quickstart ends — PR #16's README hunk must land under "A scaffolder CLI: considered, not built" (was "Proposed CLI direction" until D23) |
 | CLI decisions + PR #16 review | user + coordinator | D19 ruled; coordinator review rounds done (2026-09-01/02) | not a build lane; parallelises with everything |
@@ -154,6 +155,7 @@ prefix.
 | D22 | 2026-09-02 | The two Slack-side follow-ups from P8a (the app configuration token still valid on Slack's side; Socket Mode) are ACCEPTED as-is; items closed | "i'm not worried about the config token or the socket mode" |
 | D23 | 2026-09-02 | **Docs cleanup**: (1) the nine forwarding stubs (P1–P5B runbooks, GUIDE.md) are DELETED; (2) `docs/superpowers/` (brand/front-door plans + spec) is removed from the TREE only — no history rewrite; (3) the CLI material stays, reworded as considered-and-prototyped-not-built (README section + status row, router line, proposal banner); (4) done as a coordinator PR now, W18 rebases its router edit. Also: tracked `scripts/__pycache__/*.pyc` removed and ignored | user: "i think we also need to do a docs folder cleanup -- there is a bunch of historical runbooks, and other non-current data.  i also think the plans/specs/superpowers docs don't belong in  a public repo" — then ruled via options: "Delete them (Recommended)", "Remove from the tree only (Recommended)", "Keep, reword as considered-not-built (Recommended)", "Coordinator PR now (Recommended)" |
 | D24 | 2026-09-02 | **P9 GO — "run it for real"**: the next phase after P8b is a stateless, multi-replica plane, shaped by four rulings after the coordinator's blind-spot pass: (1) the plane goes to two replicas and **Postgres stays a single replica** (plus `make backup`/`make restore`); HA or a managed database is a later lane; (2) **budget enforcement becomes exact** under concurrency — check-and-record serialized per credential in Postgres, so N replicas cannot overshoot a cap together; (3) **Prometheus `/metrics` on its own cluster-internal port**, no auth, never on any Service the edge or an agent reaches, no identifiers as labels; (4) **proof on kind + CI only** — no AKS run. Chosen over "hosted upstreams" (gateway fronting MCP servers outside the cluster through the hardened dialer/SSRF set), which is sequenced next. Teammate PRs #37 (status/preflight) and #42 (Podman) are handled by their owners — the coordinator posts nothing on them | "Run it for real (Recommended)" — then ruled via options: "Plane stateless, Postgres stays single (Recommended)", "Make it exact (Recommended)", "Prometheus /metrics on its own cluster-internal port (Recommended)", "kind + CI only (Recommended)"; and on #37/#42: "i'll let the owners for 37/42 handle those issues" |
+| D25 | 2026-09-02 | **P10 shaped — hosted upstreams** (the gateway reaching an MCP server on the internet), after the coordinator's blind-spot pass: (1) the demo upstream is **GitHub's hosted MCP server** (bearer token in plane custody like the Copilot token; a governed agent reads issues/PRs through the gateway); (2) **one shared hardened dialer for both seams** — the LLM proxy's Copilot path and the gateway get the same resolve-check-pin dialer; (3) **one opt-in 443-to-public NetworkPolicy for the gateway**, the Copilot allowance's shape, applied only when a hosted upstream is configured; hostname-level (Cilium FQDN) egress rejected for this lane; (4) **proof in CI (synthetic external upstream + refusal cases) plus one manual run on kind** with the worker's own read-only token — no AKS run. W20 prompt below; launches only after W19 (P9) merges | "github mcp is fine"; ruled via options: "One shared dialer for both seams (Recommended)", "One opt-in 443-to-public policy for the gateway (Recommended)", "CI synthetic + one manual run on kind (Recommended)" |
 | D14 | 2026-09-01 | P5 direction: the **undeniable demo** — not a new capability arc but making the built one legible and credible. Rulings: (1) outbound connector platform is **Slack** (via existing MCP servers, no connector code); (2) AKS work goes all the way — cluster portability AND a real AKS deployment with evidence (accepts Azure spend + credentials in a worker session); (3) demos run on the **Copilot** preset while **CI stays keyless on ollama** (public fork-exposed repo — no repo secrets in CI, ever). Rationale on the board: everything governed so far protects an agent that lists ConfigMaps; posting to a channel humans read is the first consequential action, and it makes the approval gate the point rather than the plumbing | "sure, that's undeniable demo makes sense" — then ruled via options: "Slack (Recommended)", "Portability + real AKS run (Recommended)", "Copilot for demo, ollama for CI (Recommended)" |
 | D13 | 2026-09-01 | P4c approval model: TIME-BOXED PERMITS — a denied action files a pending request; approval grants it bounded (expiry by duration and/or use count) and compiles into the existing allowlist/budget rows; deny-and-retry mechanics, no held-open calls. Demo scenarios: tool-access widening (k8s_get_events, read-only) AND budget overage; the P3 tool-server read-only posture stays untouched (write-tool demo deferred) | ruled via options: "Time-boxed permits (Recommended)"; "Widen tool access (Recommended), Budget overage (Recommended)" |
 
@@ -998,10 +1000,9 @@ the Makefile comment for `AKS_NETWORK_POLICY` (W15 deviation 3).
 
 ## Open items after P8b (2026-09-02)
 
-- **P9 is GO (D24, W19 prompt below)** — blind-spot pass done; the four
-  shaping rulings are D24. Sequenced after it: hosted upstreams (gateway
-  fronting MCP servers outside the cluster, hardened dialer + SSRF set),
-  with its own pass.
+- **P9 is GO (D24, W19 prompt)** — running. **P10 is SHAPED (D25, W20
+  prompt)** — hosted upstreams via GitHub's MCP server; launches after
+  W19 merges because both touch network-policy.yaml, ci.yml and main.go.
 - **Teammate PRs #37 and #42** — owner-handled; findings recorded in the
   lane table only. Both rewrite `cluster`/`plane-image`; W19 also touches
   the Makefile — second to merge rebases.
@@ -1566,6 +1567,129 @@ Verification is real: the concurrent runs' actual counts, the replica
 kill, the backup/restore, on your own KIND_CLUSTER, then in CI. Branch
 from current main; PR targets main; no stacked bases; lane ends at
 PR-open-with-checks-green — do not merge. Report deviations in the PR.
+```
+
+### W20 — P10: hosted upstreams — the gateway reaches an MCP server on the internet, safely (UNASSIGNED — paste into a fresh CLI session ONLY AFTER W19 (P9) has merged)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout, remote kaimahi-agents/kaimahi). Read docs/COORDINATION.md
+first — decisions D8, D14, D15, D24 and D25, the P4b, P7a, P8a and P9
+delta sheets, and the security standing guidance bind you. Your lane:
+P10. Today every tool upstream the gateway fronts runs inside the
+cluster, and three docs say why: there is no hardened dialer and no
+SSRF protection, so an internet-facing upstream must not slip in.
+Build that path, and prove it against GitHub's hosted MCP server: a
+governed agent reads issues or pull requests on a repository through
+the gateway, allowlisted and audited, with the GitHub credential in
+plane custody and never in the agent's hands.
+
+Survey first (prime directive): the gateway already forwards to
+exactly one configured URL per upstream, injects a Secret-mounted
+credential per upstream, refuses redirects, and audits every call and
+denial; the LLM proxy already dials the internet for Copilot with the
+same client shape; the Copilot allowance (k8s/egress-copilot.yaml) is
+the committed model of an opt-in internet egress and CI's policy-shape
+check enforces its exact form. Say what you reuse before adding.
+
+Build:
+- ONE hardened dialer (D25), used by BOTH seams — the gateway's tool
+  upstreams and the LLM proxy's hosted upstreams — so the Copilot path
+  is hardened by the same change. It resolves the host, checks EVERY
+  resolved address against the private, link-local, loopback,
+  carrier-NAT, multicast and cloud-metadata ranges (169.254.169.254
+  first of all), and connects to the address it checked — a hostname
+  whose record changes after the check must not get through (DNS
+  rebinding). https only, port 443 only, no redirects (already), bounded
+  connect and response-header timeouts, a response-size cap AND a
+  bounded body lifetime — a stalled upstream body is cut at a deadline
+  and the call fails closed (audited) rather than holding a worker. An
+  optional per-upstream `ca_file` (mounted) lets the CI stand-in
+  present a test certificate; absent, the system roots apply.
+  In-cluster upstreams keep the plain in-cluster dial: the hardened
+  dialer applies to upstreams marked `internet: true` in the table —
+  LLM upstreams included: `upstreams.copilot` gains `internet: true`,
+  and main.go builds the ONE hardened client and injects it into both
+  the proxy's and the gateway's deps, so nothing about Copilot's
+  hardening is implicit (CI asserts the copilot entry carries the
+  marker and that both handlers share the client). An upstream whose
+  URL is not https or whose host resolves private is refused at
+  CONFIG LOAD, loudly, not at first use.
+- The GitHub upstream: `tool_upstreams.github` = GitHub's hosted MCP
+  endpoint, `internet: true`, `credential_file` naming (never carrying)
+  a plane-side Secret. Find out which token the hosted server accepts
+  before choosing the custody script: if the Copilot device-flow token
+  the plane already holds works, reuse scripts/copilot-secret.sh's
+  Secret; otherwise a fine-grained PAT captured stdin-only by a sibling
+  of that script, scoped read-only to one repository. Either way: the
+  token is read per request, redacted in logs, absent from every YAML,
+  argv and env listing, and the agent's Secret holds only its kmh_
+  token — CI asserts the last part the way it does for Slack.
+- Egress (D25): ONE opt-in NetworkPolicy for the gateway, the exact
+  shape of the Copilot allowance (TCP 443 to 0.0.0.0/0 minus the
+  private ranges), applied by the make target that configures a hosted
+  upstream and removed by its inverse; never applied on kind by
+  default. In CI the positive synthetic-upstream step applies it (kind
+  enforces policy, so the gateway cannot reach the stand-in without
+  it), the step after removes it, and the negative step then proves
+  the dial fails closed without it. The doc
+  says the honest sentence: "443 to any public host; the upstream table
+  pins the host, the dialer refuses private addresses" — not "only
+  api.github.com".
+- The governed agent: a `hello-github` agent (or the tools agent with a
+  second RemoteMCPServer) selecting two read tools from the server's
+  list; `make govern-github` issues its credential and sets a
+  READ-ONLY allowlist; a write tool is NOT allowlisted so the P4c cycle
+  applies unchanged (deny → request → bounded grant) — demo that once.
+- Docs: docs/tool-governance.md, docs/README.md's governed table, the
+  README status and governance rows, docs/egress.md's allowance table;
+  a new docs/hosted-upstreams.md (what it is, custody, the dialer's
+  refusals, the egress sentence, how to add another hosted server).
+
+CI stays keyless (D14): unit tests for the dialer — private/loopback/
+link-local/metadata/carrier-NAT/multicast/IPv6-mapped refusals, the
+rebinding case (a resolver that answers public then private), https
+and port enforcement, the size cap; config-load refusals; on kind: a
+SYNTHETIC external upstream: a tiny MCP echo server on the runner host
+serving https with a test certificate, exposed at a PUBLIC-LOOKING
+address the dialer accepts — a DNAT rule inside the kind node (e.g.
+203.0.113.10:443 → the runner's echo port) plus a hostname the cluster
+resolves to that address (a CoreDNS hosts entry); the dialer's refusal
+list is NOT relaxed for it (a documentation range is neither private
+nor routable, which is the point), and the gateway trusts the test CA
+only through that upstream's `ca_file`. Dialed through the gateway
+under a credential with the allowance applied → audited `allowed 200`;
+the same server named by its private runner address, and a
+redirecting stand-in, are refused and audited; then the allowance is
+removed and the negative step proves the dial fails closed; the agent-side
+Secret holds only kmh_; CI's policy-shape check accepts the new file as
+the second 443-only allowance and nothing wider. No GitHub token exists
+in CI.
+
+Then ONE manual run on your own kind cluster with your own read-only
+token (D25 — no AKS): `make up`, `make plane`, the GitHub upstream
+configured, the agent asked "what is open on <repo>?", the answer
+grounded in the tool payload (verify-chat.py's rule), the audit rows,
+the denial of a write tool, then the token Secret deleted. Transcript
+in the PR with the repository, token shape and any identifiers
+redacted; never paste the token or the agent's raw payload.
+
+Guardrails, all hard: no Azure identifiers, no real Slack ids, no
+GitHub token or account identifier in the tree or the PR; every
+mutating command through the context guard; no repo secrets in CI,
+ever; the admin port stays unexposed; the allowance never lands in
+k8s/plane/ (CI refuses that); do not widen the agent's allowlist to
+make the demo pass.
+
+Out of scope: OAuth-based hosted servers (Slack's), hostname-level
+egress (Cilium FQDN), an AKS run, an allow-anything dialer flag, write
+tools on GitHub, more than one hosted upstream.
+
+Verification is real: the dialer refusals, the synthetic upstream, the
+GitHub run. Branch from current main AFTER W19 merges (it touches the
+same files: network-policy.yaml, ci.yml, main.go); PR targets main; no
+stacked bases; lane ends at PR-open-with-checks-green — do not merge.
+Report deviations in the PR.
 ```
 
 ## Delta sheets from finished lanes
