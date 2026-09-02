@@ -1,5 +1,6 @@
 .env
 bin/
+.worktrees/
 # Local-only credential scratch (Slack bot token, channel id). Never committed.
 .env
 

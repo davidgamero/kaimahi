@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Kaimahi compact mark</title>
+  <g id="spirit-crescent" fill="none" stroke="#20D6E8" stroke-linecap="round" stroke-linejoin="round" stroke-width="58">
+    <path d="M287 75c103 16 161 109 143 219-18 109-115 169-225 137"/>
+  </g>
+  <g id="worker-head">
+    <ellipse cx="262" cy="274" rx="126" ry="133" fill="#0D3266"/>
+    <ellipse cx="262" cy="276" rx="99" ry="105" fill="#071521"/>
+    <g id="eyes" fill="#FFB21C">
+      <ellipse cx="226" cy="279" rx="17" ry="29" transform="rotate(-12 226 279)"/>
+      <ellipse cx="299" cy="279" rx="17" ry="29" transform="rotate(12 299 279)"/>
+    </g>
+  </g>
+  <g id="work-cap" fill="#124E96">
+    <path d="M150 172c6-70 58-119 129-119 70 0 119 35 138 99 6 20-8 41-29 42l-207 9c-19 1-33-14-31-31Z"/>
+    <path d="M128 185c8-25 31-41 58-42l172-6c32-1 60 17 71 47-43 29-102 44-176 44-56 0-98-9-125-27-5-4-5-10 0-16Z" fill="#0A3977"/>
+  </g>
+  <g id="lantern">
+    <path d="M82 335c0-34 27-61 61-61s61 27 61 61" fill="none" stroke="#FFB21C" stroke-linecap="round" stroke-width="16"/>
+    <rect x="88" y="324" width="110" height="120" rx="24" fill="#FFB21C"/>
+    <rect x="112" y="347" width="62" height="72" rx="15" fill="#FFF1B3"/>
+    <path d="M119 324h48v120h-48Z" fill="#D67A08" opacity=".34"/>
+    <rect x="73" y="427" width="140" height="20" rx="10" fill="#8A4B09"/>
+  </g>
+</svg>

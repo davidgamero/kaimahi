@@ -20,6 +20,8 @@ jobs:
           test -f LICENSE
           test -f README.md
           test -f docs/COORDINATION.md
+      - name: Brand assets validate
+        run: python3 scripts/check-brand-assets.py
       - name: All YAML parses
         run: |
           python3 - <<'EOF'

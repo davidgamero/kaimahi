@@ -1,0 +1,83 @@
+---
+config:
+  theme: base
+  themeCSS: |
+    .edgeLabels .edgeLabel span,
+    .edgeLabels .edgeLabel p {
+      color: #F7F4E8 !important;
+      fill: #F7F4E8 !important;
+    }
+  layout: elk
+  elk:
+    mergeEdges: false
+    nodePlacementStrategy: SIMPLE
+    nodePlacementAlignment: BALANCED
+    forceNodeModelOrder: true
+    considerModelOrder: NODES_AND_EDGES
+  flowchart:
+    htmlLabels: true
+    nodeSpacing: 24
+    rankSpacing: 36
+    curve: linear
+  themeVariables:
+    background: "#071827"
+    fontFamily: "Arial, Helvetica, sans-serif"
+    fontSize: 20px
+    textColor: "#F7F4E8"
+    titleColor: "#F7F4E8"
+    nodeTextColor: "#F7F4E8"
+    primaryColor: "#F7F4E8"
+    primaryTextColor: "#071827"
+    primaryBorderColor: "#24D6D9"
+    lineColor: "#24D6D9"
+    edgeLabelBackground: "#071827"
+    clusterBkg: "#0D2947"
+    clusterBorder: "#24D6D9"
+---
+flowchart TB
+    accTitle: Kaimahi governance architecture
+    accDescr: A Kubernetes-hosted agent uses Kaimahi's governed model and tool paths, while dashed direct paths are explicitly ungoverned.
+
+    A["Kubernetes-hosted<br/>agent"]
+
+    subgraph K[" "]
+      direction TB
+      H["Kaimahi<br/>governance plane"]
+      P["Bounded approvals<br/>expiry and/or use count"]
+      L["LLM proxy<br/>auth · budgets<br/>credential custody<br/>spend ledger"]
+      T["MCP gateway<br/>request auth · allowlists<br/>upstream bounds · audit<br/>proxy-side credential custody<br/>credential injection<br/>(keyed upstreams only)"]
+      H ~~~ P
+      P -. "temporary grant" .-> L
+      P -. "temporary grant" .-> T
+    end
+
+    subgraph E[" "]
+      direction LR
+      M["Model provider"]
+      X["MCP tool server"]
+    end
+
+    A -->|"governed<br/>model call"| L
+    A -->|"governed<br/>tool call"| T
+    L --> M
+    T --> X
+    A -. "plain preset<br/>ungoverned" .-> M
+    A -. "direct MCP<br/>ungoverned" .-> X
+
+    classDef agent fill:#F7F4E8,color:#071827,stroke:#24D6D9,stroke-width:3px,font-size:22px,font-weight:bold;
+    classDef control fill:#F7F4E8,color:#071827,stroke:#60A5FA,stroke-width:3px,font-size:20px;
+    classDef approval fill:#FFF1B3,color:#071827,stroke:#FFB547,stroke-width:3px,font-size:20px;
+    classDef target fill:#F7F4E8,color:#071827,stroke:#60A5FA,stroke-width:3px,font-size:20px,font-weight:bold;
+    classDef heading fill:transparent,color:#F7F4E8,stroke:transparent,font-size:20px,font-weight:bold;
+    class A agent;
+    class L,T control;
+    class P approval;
+    class H heading;
+    class M,X target;
+    style K fill:#0D2947,stroke:#24D6D9,stroke-width:3px,color:#F7F4E8
+    style E fill:transparent,stroke:transparent
+    linkStyle 0 stroke:transparent,fill:none;
+    linkStyle 1,2 stroke:#FFB547,color:#FFF1B3,stroke-width:3px,stroke-dasharray:7 5;
+    linkStyle 3,4 stroke:#24D6D9,color:#F7F4E8,stroke-width:4px;
+    linkStyle 5,6 stroke:#60A5FA,color:#F7F4E8,stroke-width:4px;
+    linkStyle 7,8 stroke:#FFB547,color:#FFF1B3,stroke-width:3px,stroke-dasharray:9 6;
