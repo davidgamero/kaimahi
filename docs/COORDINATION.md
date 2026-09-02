@@ -112,8 +112,8 @@ prefix.
 | P8a: the Slack loop live on AKS behind a one-port TLS edge (D20) | W17 worker | PR #35 MERGED; coordinator verified everything reproducible on main + teardown (delta sheet below) | lane closed; the live run is by-design unrepeatable without a new cluster |
 | Docs cleanup (D23): stubs, plans/specs, CLI wording, pycache | coordinator | PR #40 MERGED (6c90468) | lane closed |
 | P8b: approval routing via Slack + per-approver identity (D21) | W18 worker | PR #41 MERGED (109e08d) ahead of the coordinator's pass; verified against main (delta sheet below) | lane closed |
-| P9: run it for real — stateless multi-replica plane, exact budgets, metrics (D24) | W19 worker | GO 2026-09-02 — prompt handed to the user; lane running | own kind cluster; touches Makefile/ci.yml/k8s/plane/proxy.yaml and the plane; #37/#42 (owner-handled) touch the Makefile too — second to merge rebases |
-| P10: hosted upstreams — GitHub's hosted MCP server through a hardened dialer (D25) | W20 worker | SHAPED 2026-09-02 — prompt below; launch ONLY after W19 merges (same files) | own kind cluster; the worker's own read-only GitHub token, never in CI |
+| P9: run it for real — stateless multi-replica plane, exact budgets, metrics (D24) | W19 worker | PR #46 MERGED (43fd748) ahead of the coordinator's pass; verified against main (delta sheet below) | own kind cluster; touches Makefile/ci.yml/k8s/plane/proxy.yaml and the plane; #37/#42 (owner-handled) touch the Makefile too — second to merge rebases |
+| P10: hosted upstreams — GitHub's hosted MCP server through a hardened dialer (D25) | W20 worker | GO — W19 has merged; prompt below, user launches | own kind cluster; the worker's own read-only GitHub token, never in CI |
 | Brand assets + architecture diagram + org/front-door plans | user-run lane (outside the board's prompt set) | PR #33 MERGED (+ kaimahi-agents/.github#1); main CI green | brand validator in the hygiene job |
 | README front door + CONTRIBUTING.md | user-run lane (outside the board's prompt set) | PR #34 MERGED; main CI green | anchored front-door checker in hygiene: section order enforced, no `npx kaimahi create` mention before the quickstart ends — PR #16's README hunk must land under "A scaffolder CLI: considered, not built" (was "Proposed CLI direction" until D23) |
 | CLI decisions + PR #16 review | user + coordinator | D19 ruled; coordinator review rounds done (2026-09-01/02) | not a build lane; parallelises with everything |
@@ -1000,9 +1000,12 @@ the Makefile comment for `AKS_NETWORK_POLICY` (W15 deviation 3).
 
 ## Open items after P8b (2026-09-02)
 
-- **P9 is GO (D24, W19 prompt)** — running. **P10 is SHAPED (D25, W20
-  prompt)** — hosted upstreams via GitHub's MCP server; launches after
-  W19 merges because both touch network-policy.yaml, ci.yml and main.go.
+- **P9 DONE (#46, verified below). P10 is GO (D25, W20 prompt)** —
+  hosted upstreams via GitHub's MCP server; nothing blocks it now.
+- **Skipped by ruling (2026-09-02)**: verifying the `azure`/`calico` AKS
+  policy engines ("lets skip that for now").
+- **Coordinator docs PRs**: #45 (scanner in the local check lists,
+  merged), #47 (docs/demo.md — the demo start to finish; open).
 - **Teammate PRs #37 and #42** — owner-handled; findings recorded in the
   lane table only. Both rewrite `cluster`/`plane-image`; W19 also touches
   the Makefile — second to merge rebases.
@@ -1693,6 +1696,92 @@ Report deviations in the PR.
 ```
 
 ## Delta sheets from finished lanes
+
+### P9 — run it for real (PR #46, merged 2026-09-02)
+
+The prompt (W19, D24) required a stateless two-replica plane that agrees
+on every governance decision, exact budgets under concurrency, a
+replica-safe startup, liveness distinct from readiness, backup/restore,
+Prometheus metrics on a cluster-internal port with no identifiers as
+labels, and eight keyless proofs on kind. Delivered, with the survey
+first: grant uses, replay dedupe, filing dedupe, approval immutability
+and credential identity were already DB-exact; the budget check
+(read-then-act, no lock) and startup migrations (no lock) were the two
+real races. Built: `store.AdmitSpend` — one transaction under the
+credential's row lock (`FOR NO KEY UPDATE`) that sweeps expired holds,
+counts ledger + open holds, covers an exceeded cap with a live grant use
+or denies, and inserts a **reservation of the least the call can spend**
+that the ledger write of the same call deletes (migration 00007; a hold
+a crashed replica never released stops counting after 10 min); grant
+consumes moved from `SKIP LOCKED` to the same lock (never over-admits,
+no longer spuriously denies — USES=3 admits exactly 3 of 12); goose's
+Postgres session locker for migrations; an ops listener on **9092**
+with `/metrics`, `/readyz` (Postgres ping) and `/livez` (local faults
+only: data listener not answering on loopback, or a saturated pool with
+no acquire completing for 60 s); NetworkPolicy `kaimahi-proxy-metrics`
+opens 9092 only to `app.kubernetes.io/name: prometheus` pods in a
+`monitoring` namespace (matches nothing on kind); `replicas: 2`,
+RollingUpdate maxUnavailable 0 / maxSurge 1, preferred anti-affinity,
+PDB minAvailable 1, 30 s grace, requests unchanged; `make backup`
+(`pg_dump` inside the Postgres pod over its socket, streamed to a local
+file) and `make restore` (guarded; scales the proxies to zero first,
+`psql --single-transaction`, scales back); metrics by fixed
+vocabularies with ledger totals by credential NAME and `kaimahi_store_up`
+0 with no series when the read fails; per-process state (pre-auth
+bucket, inbound and notifier queues, breakers) kept per replica by
+design and documented as N×. Eight proofs in CI plus a Postgres-outage
+probe; the P7b CI wait loop that could never succeed on the distroless
+image fixed on the way; optional-Secret creators now roll the proxies so
+both pods start with the files present. New dependency:
+`prometheus/client_golang`. `docs/operations.md` added. Image tag `p9`.
+
+Coordinator verification (main at 43fd748, 2026-09-02): `go vet` and
+`go test ./...` clean; the store's concurrency tests run against a
+throwaway local Postgres 16 (`KAIMAHI_TEST_PG_DSN`) — 20-way
+admissions admit exactly one for tokens and for cents, a one-use budget
+grant admits one of ten, USES=1/3 tool grants admit exactly 1/3, replay
+and grant exactness on inbound, one decision per request, one fresh
+filing per subject, two concurrent migrations serialize — hot path
+5.6 ms serial / 3.8 ms amortised at 200-way; scanner self-test + tree
+scan clean; doc links resolve; post-merge main CI green (run
+33670306099). The EIGHT PROOFS REPRODUCED on the coordinator's own
+fresh kind cluster `coord-p9` with its own names (19:03–19:07 UTC):
+(1) readyReplicas 2, both pods expose `kaimahi_build_info` and log the
+migration outcome, goose versions 7|7; (2) credential `coord-race`
+capped at 1 token, 8 concurrent calls split 4/4 across the two pods →
+`admitted=1 denied(429)=7`, ledger 1 allowed + 7 denied rows, zero open
+reservations; (3) USES=1 grant on `k8s_get_events`, 8 concurrent MCP
+sequences → `admitted=1 denied(-32001)=7`, granted-allowed audit rows
+0 → 1; (4) replica deleted: the call on it 200, the next on the
+survivor 200, ledger 0 → 2, back to 2/2 (the drain itself was not
+exercised — the 8-token generation finished before the delete, and the
+probe says so rather than claiming it); (5) Postgres scaled to 0 for
+45 s: every replica not-ready, restart counts 0 → 0, ready again after
+scale-up; (6) both pods deleted together: two new pods log
+`kaimahi-proxy up` and `migrations: nothing to apply`, a governed chat
+answers; (7) `make plane-metrics`: decisions, ledger totals by
+credential name (`coord-race` 38, `hello-world` 473), live grants,
+open reservations, latency buckets, queue depths, `kaimahi_store_up 1`
+(1 line), no token shape in the exposition, Services expose only
+8080/8081/8082/5432; (8) backup 22,285 bytes / 10 tables with no token
+shape, Postgres Deployment + PVC deleted, 0 tables, restore → 11 ledger
+rows back, proxies rolled, a governed chat answers. Cluster deleted
+afterwards.
+
+Rulings — all six deviations accepted: (1) backup over `kubectl exec`
+and the pod socket rather than a port-forward — no password anywhere,
+no local client, strictly better custody; (2) grant consumes on the
+credential lock instead of `SKIP LOCKED` — a permissive-direction change
+to a P4c behaviour that still never over-admits, and the spurious
+denial it removes was the worse property; (3) `prometheus/client_golang`
+— the reference exposition, hand-rolling the format is net-new risk;
+(4) readiness moved to `/readyz` on the ops port with `/healthz` kept
+for the port-forward scripts; (5) a Postgres service container with a
+literal throwaway password in the go-plane job — not a secret, D14
+holds; (6) the first-deploy migration race proven by the store test and
+two Ready pods with a consistent version table rather than first-
+generation log lines. Carried forward (open items): Postgres HA / a
+managed database; nothing scrapes 9092 on kind or AKS yet.
 
 ### P8b — approvals from Slack with the approver's identity (PR #41, merged 2026-09-02)
 
