@@ -113,7 +113,8 @@ prefix.
 | Docs cleanup (D23): stubs, plans/specs, CLI wording, pycache | coordinator | PR #40 MERGED (6c90468) | lane closed |
 | P8b: approval routing via Slack + per-approver identity (D21) | W18 worker | PR #41 MERGED (109e08d) ahead of the coordinator's pass; verified against main (delta sheet below) | lane closed |
 | P9: run it for real — stateless multi-replica plane, exact budgets, metrics (D24) | W19 worker | PR #46 MERGED (43fd748) ahead of the coordinator's pass; verified against main (delta sheet below) | own kind cluster; touches Makefile/ci.yml/k8s/plane/proxy.yaml and the plane; #37/#42 (owner-handled) touch the Makefile too — second to merge rebases |
-| P10: hosted upstreams — GitHub's hosted MCP server through a hardened dialer (D25) | W20 worker | GO — W19 has merged; prompt below, user launches | own kind cluster; the worker's own read-only GitHub token, never in CI |
+| P10: hosted upstreams — GitHub's hosted MCP server through a hardened dialer (D25) | W20 worker | PR #51 MERGED (d79b469) ahead of the coordinator's pass; verified against main (delta sheet below) | lane closed |
+| P11: `kmx` milestone 1 — the developer journey as one Go binary (D27) | W21 worker | GO 2026-09-02 — prompt below, user launches | new root Go module; touches the Makefile, ci.yml, docs; no other lane open |
 | Brand assets + architecture diagram + org/front-door plans | user-run lane (outside the board's prompt set) | PR #33 MERGED (+ kaimahi-agents/.github#1); main CI green | brand validator in the hygiene job |
 | README front door + CONTRIBUTING.md | user-run lane (outside the board's prompt set) | PR #34 MERGED; main CI green | anchored front-door checker in hygiene: section order enforced, no `npx kaimahi create` mention before the quickstart ends — PR #16's README hunk must land under "A scaffolder CLI: considered, not built" (was "Proposed CLI direction" until D23) |
 | CLI decisions + PR #16 review | user + coordinator | D19 ruled; coordinator review rounds done (2026-09-01/02) | not a build lane; parallelises with everything |
@@ -123,7 +124,8 @@ prefix.
 | CLI: `kaimahi agent create` (Tatsinnit, PR #16) | teammate | CLOSED by the author 2026-09-02 (unmerged; checks were green at 6b952fa, conflicts with #32–#35 unresolved). Nothing under `cli/` is on main; D19's rulings stand for whenever the CLI returns | if reopened: rebase (README text under "A scaffolder CLI: considered, not built" (was "Proposed CLI direction" until D23)), add scripts/kube-guard.sh to package.json `files`, `--yes` in scenario-billing, `cli` job into protect-main |
 | Status output + host preflight (davidgamero, PR #37) | teammate | OPEN; owner-handled (D24 note). Coordinator findings, for the record: `KIND ?= kind` shadows `make request KIND=tool\|budget` (usage check passes with "kind", plane answers 400); collides with #42 on `cluster`/`plane-image`; README lines 68/152 stale; PR body is the template | not a board lane |
 | Development guide + Python 3.9 fix (Tatsinnit, PR #38) | teammate | PR #38 MERGED (dde7a76); facts checked against main by the coordinator (ports, `kmh_`, sha256, eight tables, base image, one path per upstream) | not a board lane; hygiene list in the guide and CONTRIBUTING still omits the Azure-id scanner |
-| Podman for the kind path via CONTAINER_ENGINE (Tatsinnit, PR #42) | teammate | OPEN; owner-handled; checks green | not a board lane; same two recipes as #37 |
+| Podman for the kind path via CONTAINER_ENGINE (Tatsinnit, PR #42) | teammate | PR #42 MERGED (506d72b) | not a board lane |
+| Recover restarted Podman kind clusters (sajayantony via Tatsinnit, PR #53; supersedes #50/#52) | teammate | OPEN; owner-handled; e2e red on its first run | not a board lane; Makefile only |
 | Docs: CLI-first framing + naming record | teammate (Tatsinnit) | PR #10 MERGED (ratifies D12) | staleness fixes folded into reconciliation lane |
 | Docs: agent-first scenarios | teammate (Tatsinnit) | PR #11 MERGED (authors' public credit ratified by user merge) | lane closed |
 | Post-merge reconciliation | coordinator | PR #13 MERGED (0ce72ca, main CI green incl. hardened secret scan) | lane closed |
@@ -157,6 +159,7 @@ prefix.
 | D24 | 2026-09-02 | **P9 GO — "run it for real"**: the next phase after P8b is a stateless, multi-replica plane, shaped by four rulings after the coordinator's blind-spot pass: (1) the plane goes to two replicas and **Postgres stays a single replica** (plus `make backup`/`make restore`); HA or a managed database is a later lane; (2) **budget enforcement becomes exact** under concurrency — check-and-record serialized per credential in Postgres, so N replicas cannot overshoot a cap together; (3) **Prometheus `/metrics` on its own cluster-internal port**, no auth, never on any Service the edge or an agent reaches, no identifiers as labels; (4) **proof on kind + CI only** — no AKS run. Chosen over "hosted upstreams" (gateway fronting MCP servers outside the cluster through the hardened dialer/SSRF set), which is sequenced next. Teammate PRs #37 (status/preflight) and #42 (Podman) are handled by their owners — the coordinator posts nothing on them | "Run it for real (Recommended)" — then ruled via options: "Plane stateless, Postgres stays single (Recommended)", "Make it exact (Recommended)", "Prometheus /metrics on its own cluster-internal port (Recommended)", "kind + CI only (Recommended)"; and on #37/#42: "i'll let the owners for 37/42 handle those issues" |
 | D25 | 2026-09-02 | **P10 shaped — hosted upstreams** (the gateway reaching an MCP server on the internet), after the coordinator's blind-spot pass: (1) the demo upstream is **GitHub's hosted MCP server** (bearer token in plane custody like the Copilot token; a governed agent reads issues/PRs through the gateway); (2) **one shared hardened dialer for both seams** — the LLM proxy's Copilot path and the gateway get the same resolve-check-pin dialer; (3) **one opt-in 443-to-public NetworkPolicy for the gateway**, the Copilot allowance's shape, applied only when a hosted upstream is configured; hostname-level (Cilium FQDN) egress rejected for this lane; (4) **proof in CI (synthetic external upstream + refusal cases) plus one manual run on kind** with the worker's own read-only token — no AKS run. W20 prompt below; launches only after W19 (P9) merges | "github mcp is fine"; ruled via options: "One shared dialer for both seams (Recommended)", "One opt-in 443-to-public policy for the gateway (Recommended)", "CI synthetic + one manual run on kind (Recommended)" |
 | D26 | 2026-09-02 | **Naming: run both D9 gates now and keep building under the name.** The cultural read (a te reo Māori speaker with standing to answer whether a project run from outside Aotearoa should use the word, and whether the night-worker mascot sits well beside it) starts first; the trademark search/opinion in parallel; a rename only if the read comes back uncomfortable. The registries (npm, PyPI, domains) are NOT claimed before the read — that is the outward-facing step D9 deferred and claiming first would prejudge the answer. The coordinator drafts the message to the speaker and a one-page brief for counsel; the conversations are the user's | ruled via options: "Run both gates now, keep building (Recommended)" over "Claim the registries now as a placeholder" and "Rename to something with only a trademark gate" |
+| D27 | 2026-09-02 | **`kmx` (leadership proposal) accepted as P11, milestone 1**, on three conditions: (1) ONE implementation — `kmx` implements the developer journey and the Makefile's `up`/`cluster`/`agent`/`chat`/`status`/`down` become thin aliases that call it, so CI keeps proving the code a developer runs; (2) **Go, single static binary, in a NEW root Go module** (`cmd/kmx`; the plane keeps its module under plane/), shelling out to kind/kubectl/helm/kagent as the Makefile does; (3) **no publishing** — no brew tap, no release — until D26's gates clear and `kmx` gets its own clearance (PyPI `kmx` and the GitHub user `kmx` are taken; npm, crates and the brew formula are free; KMX is CarMax's ticker — added to the counsel brief); install is `go install …/cmd/kmx@<sha>` only. Milestone 1 = `ctx`, `up` (RUNTIME ONLY — kind + kagent + Ollama + the agents, no plane), `agent create`, `agent chat`, `status`, `down`; `govern <name>` and the plane are milestone 2; secret capture and the probes stay scripts. Consequence, stated and accepted: milestone-1 `agent create` on a fresh cluster scaffolds the keyless preset with the ungoverned warning; it is governed by default only where the plane's ModelConfigs exist. Supersedes D19(2)(3) (scaffold-only; Makefile owns bring-up) and D19(4) (Node) | leadership's `kmx` proposal, relayed by the user ("interesting proposal from leadership"); ruled via options: "Yes, as P11 with the three conditions (Recommended)", "Go, single static binary (Recommended)", "kmx implements the journey; make becomes a thin alias (Recommended)", "No: runtime only, plane is a later command", "ctx, up, agent create, chat, status, down (Recommended)", "New root Go module with cmd/kmx (Recommended)" |
 | D14 | 2026-09-01 | P5 direction: the **undeniable demo** — not a new capability arc but making the built one legible and credible. Rulings: (1) outbound connector platform is **Slack** (via existing MCP servers, no connector code); (2) AKS work goes all the way — cluster portability AND a real AKS deployment with evidence (accepts Azure spend + credentials in a worker session); (3) demos run on the **Copilot** preset while **CI stays keyless on ollama** (public fork-exposed repo — no repo secrets in CI, ever). Rationale on the board: everything governed so far protects an agent that lists ConfigMaps; posting to a channel humans read is the first consequential action, and it makes the approval gate the point rather than the plumbing | "sure, that's undeniable demo makes sense" — then ruled via options: "Slack (Recommended)", "Portability + real AKS run (Recommended)", "Copilot for demo, ollama for CI (Recommended)" |
 | D13 | 2026-09-01 | P4c approval model: TIME-BOXED PERMITS — a denied action files a pending request; approval grants it bounded (expiry by duration and/or use count) and compiles into the existing allowlist/budget rows; deny-and-retry mechanics, no held-open calls. Demo scenarios: tool-access widening (k8s_get_events, read-only) AND budget overage; the P3 tool-server read-only posture stays untouched (write-tool demo deferred) | ruled via options: "Time-boxed permits (Recommended)"; "Widen tool access (Recommended), Budget overage (Recommended)" |
 
@@ -1001,8 +1004,20 @@ the Makefile comment for `AKS_NETWORK_POLICY` (W15 deviation 3).
 
 ## Open items after P8b (2026-09-02)
 
-- **P9 DONE (#46, verified below). P10 is GO (D25, W20 prompt)** —
-  hosted upstreams via GitHub's MCP server; nothing blocks it now.
+- **P9 and P10 DONE** (#46, #51 — both verified below). **P11 (`kmx`
+  milestone 1) is GO (D27, W21 prompt below).** Still queued behind it:
+  Postgres durability (HA or a managed database on the AKS path),
+  OAuth-based hosted servers (Slack's own), hostname-level egress on AKS
+  (Cilium FQDN), `kmx` milestone 2 (`govern`, the plane), and the
+  P10/P8b carry-forwards below.
+- **Naming (D26)**: the two briefs are with the user; `kmx` is now a
+  second provisional name and rides the same counsel brief.
+- **P10 carry-forward** (reported by the lane, not changed): an egress
+  refusal on `initialize`/`tools/list` is logged but not audited; on the
+  LLM seam a refusal and an unreachable upstream both ledger as 502 with
+  no detail; `Client`/`InternetClient` are bare `*http.Client`s; the
+  GitHub write tool was never exercised under a grant (a real issue on a
+  public repo — deliberately not done).
 - **Skipped by ruling (2026-09-02)**: verifying the `azure`/`calico` AKS
   policy engines ("lets skip that for now").
 - **Coordinator docs PRs**: #45 (scanner in the local check lists,
@@ -1697,7 +1712,207 @@ stacked bases; lane ends at PR-open-with-checks-green — do not merge.
 Report deviations in the PR.
 ```
 
+### W21 — P11: `kmx`, milestone 1 — the developer journey as one Go binary (UNASSIGNED — paste into a fresh CLI session)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout, remote kaimahi-agents/kaimahi). Read docs/COORDINATION.md
+first — decisions D9, D19, D26 and D27, the "Considered and rejected"
+list, docs/CLI-PROPOSAL.md (the survey of kagent's own CLI), and the
+security standing guidance bind you. Your lane: P11, milestone 1 of
+`kmx`, leadership's proposal for one command-line entry point for
+creating and running agents. Today that journey is the Makefile: a
+clone, then `make up`, `make agent`, `make chat`, `make status`,
+`make down`. Ship the same journey as a single Go binary that needs no
+clone, and make the Makefile delegate to it so there is ONE
+implementation and CI keeps proving the code a developer actually runs.
+
+Survey first (prime directive): kagent's CLI already has `init`,
+`install`, `deploy`, `invoke`, `get`; kmx does not duplicate any of
+them — `kmx agent chat` is a passthrough to `kagent invoke`, and kmx
+fetches the pinned, checksum-verified kagent binary the way the
+Makefile does. The Makefile's `cluster`/`ollama`/`model`/`kagent`/
+`agent`/`tools-agent`/`chat`/`status`/`down` recipes and
+scripts/kube-guard.sh are the SPEC: read them line by line and carry
+every wait, every fail-closed check and every message across; say what
+you dropped and why. #16 (closed) is the reference design for `agent
+create`: governed-by-default where a plane exists, allowlist mandatory,
+never accepts a credential, refuses key-shaped output, guard before
+apply, `--out` never clobbers.
+
+Build (milestone 1 is exactly this, D27):
+- A new root Go module (`go.mod` at the repo root, `cmd/kmx`,
+  `internal/kmx/...`); the plane keeps its module under plane/. Single
+  static binary; `go install github.com/kaimahi-agents/kaimahi/cmd/kmx@<sha>`
+  is the ONLY install path this milestone — no brew tap, no release,
+  nothing published (D26, D27). Shell out to kind, kubectl, helm and
+  kagent as the Makefile does; no client-go.
+- `kmx ctx <context>`: select and validate an existing context with the
+  kube-guard rules ported to Go — name AND API-server address must agree
+  for "local kind"; anything else needs explicit confirmation naming the
+  context; fail closed with no TTY and no `KAIMAHI_CONFIRM`. Every
+  mutating command prints where it will land first. scripts/kube-guard.sh
+  stays for the scripts that still use it; kmx's port has the same
+  tests (kube-guard-test.sh's cases, in Go).
+- `kmx up`: runtime only (D27) — kind cluster (own name, `KIND_CLUSTER`
+  semantics; Docker or Podman via the CONTAINER_ENGINE rule #42
+  introduced), Ollama + the pinned model, kagent via helm at the pinned
+  version with k8s/kagent-values.yaml, the two agents, the same
+  readiness waits. The plane is NOT deployed by milestone 1; `kmx up`
+  says so in one line and names `make plane` / `make govern`.
+- `kmx agent create <name>`: scaffold to `agents/<name>.yaml` (reviewable
+  YAML is the artifact), apply it to the active context after the
+  guard, wait for Ready. Defaults: the keyless in-cluster preset on
+  kind; a governed preset when the plane's ModelConfigs exist on the
+  cluster, else the ungoverned warning #16 printed. The generator's
+  safety table from #16 applies in full.
+- `kmx agent chat <name> <message>`: `kagent invoke` through the
+  port-forward the Makefile's `chat` uses, same overridable port, same
+  refused-vs-ambiguous retry classes as the Makefile's `kagent_forward`.
+- `kmx status`: what `make status` prints (#37's shape if it has merged;
+  otherwise the current one).
+- `kmx down`: delete the kind cluster `kmx up` created, with the
+  KIND_CLUSTER/KUBE_CTX consistency check the Makefile has.
+- The Makefile delegates: `up`, `cluster`, `chat`, `status`, `down`
+  and `agent` become one-line recipes that build (or find) kmx and call
+  it; nothing else in the Makefile changes; every other target keeps
+  working. CI's e2e gains one step (build kmx) and otherwise calls the
+  same `make` targets — which now prove kmx.
+
+CI stays keyless (D14): Go unit tests for the guard port, the
+scaffolder (YAML safety, name validation, secret refusal, allowlist
+required, no clobber), the kagent checksum verification, and the
+delegation (a test that each delegating make target invokes kmx with
+the expected arguments); the e2e job runs `make up` through kmx on the
+runner; hygiene gains a check that no Makefile recipe re-implements
+what kmx owns.
+
+Docs: docs/getting-started.md leads with `kmx` (`go install …@<sha>`,
+then the four commands), the Makefile path second; README quickstart
+likewise — the front-door checker's order must still pass, so edit its
+expectations in the same PR if the quickstart's first command changes;
+docs/CLI-PROPOSAL.md gains a status line pointing here; a new
+docs/kmx.md with the command table, what each does, and what is NOT in
+milestone 1 (plane, govern, secrets, AKS, publishing).
+
+Guardrails, all hard: no publishing of any kind (no tap, no release,
+no package); the name `kmx` is provisional like `kaimahi` (D26 counsel
+brief covers it) — do not claim it anywhere; no credentials accepted by
+kmx in any form; every mutation through the guard; no Azure or Slack
+identifiers; no repo secrets in CI.
+
+Out of scope: `kmx govern`, the plane, secret capture, AKS, probes,
+brew/release, a plugin system, anything not in the six commands.
+
+Verification is real: a fresh machine (or a clean container) with only
+Docker/kind/kubectl/helm/Go, `go install …@<your sha>`, then the four
+quick-start commands end to end, transcript in the PR; the delegating
+`make` targets green in CI. Branch from current main; PR targets main;
+no stacked bases; lane ends at PR-open-with-checks-green — do not
+merge. Report deviations in the PR.
+```
+
 ## Delta sheets from finished lanes
+
+### P10 — hosted upstreams (PR #51, merged 2026-09-02)
+
+The prompt (W20, D25) required one hardened dialer for both seams, GitHub's
+hosted MCP server as the demo upstream with the token in plane custody,
+one opt-in 443-to-public allowance for the gateway, keyless CI with a
+synthetic public upstream, and one manual kind run with the worker's own
+read-only token. Delivered, survey first (forwarding, credential
+injection, redirect refusal, audit, the P4c cycle, the Copilot allowance
+and the policy-shape check all reused). Built: `plane/internal/egress` —
+built once in main and injected into both the proxy and the gateway (a
+test asserts the same client); https only, 443 only, only the hosts the
+table names; every resolved address vetted against private, link-local,
+loopback, carrier-NAT, multicast, reserved and cloud-metadata ranges
+(169.254.169.254 first; IPv6, IPv4-mapped, NAT64, 6to4 and Teredo
+embeddings too); the vetted address is what is dialed and every call
+re-resolves (keep-alives off) so a rebinding record cannot get through;
+redirects refused; 10 s connect/handshake, 60 s to first header, 5 min
+body lifetime, 8 MiB cap, a cut body a named error and a clean 502;
+per-upstream `ca_file`. `internet: true` on `upstreams.copilot` and the
+new `tool_upstreams.github` (`https://api.githubcopilot.com/mcp/`); an
+unmarked upstream must be in-cluster-shaped or the config is refused at
+load; a marked host resolving private is refused at boot while the
+serving replicas stay up. Custody: `scripts/github-secret.sh` (stdin-only,
+fine-grained `github_pat_` only, proves it reads the one repository),
+Secret `kaimahi-github-pat` mounted optional, read per request, redacted.
+Egress: `k8s/egress-hosted.yaml`, byte-for-byte the Copilot allowance's
+spec (coordinator-checked), applied by `make github-secret`/`make
+egress-hosted`, removed by `make github-revoke`/`egress-hosted-off`,
+never on kind by default. Agent `hello-github` behind RemoteMCPServer
+`kaimahi-github`; `make govern-github` allowlists `list_issues,
+list_pull_requests`; `issue_write` selected but not allowlisted so the
+P4c cycle applies. CI: unit tests for the refusal table, rebinding,
+scheme/port, size cap, body lifetime, header timeout, `ca_file`, load
+refusals, shared client; on kind `scripts/ci/synthetic-upstream.sh` — an
+https MCP echo server in a sidecar on kind's docker network holding
+203.0.113.10 (documentation range, not refused, not routable) with a
+node host route (NOT DNAT: kube-network-policies evaluates the post-NAT
+address, so the policy is judged on the public-looking one), CoreDNS
+hosts entries, a throwaway CA trusted through `ca_file` only; eleven
+steps from boot-vet to teardown. Manual GitHub run on the worker's own
+kind cluster with a fine-grained token scoped to one public repository:
+the agent listed the open pull requests, grounded in the tool payload
+(verify-chat.py), `issue_write` not projected and denied 403 → request
+filed → bounded grant minted and left to lapse unused (a real write on
+a public repository was deliberately not made); zero token shapes in
+both replicas' logs; `make github-revoke` removed the Secret and the
+allowance. Docs: `docs/hosted-upstreams.md` new; tool-governance,
+egress, slack, README rows. Image tag `p10`.
+
+Coordinator verification (main at d79b469, 2026-09-02): `go vet` and
+`go test ./...` clean (new egress, wire, config_hosted, gateway_hosted,
+handler_hosted and handler_cut tests included); scanner self-test + tree
+scan clean; doc links and README front door pass; post-merge main CI
+green (run 33685925444); `k8s/egress-hosted.yaml`'s spec is identical to
+the Copilot allowance's (checked with a YAML compare, names aside);
+parameters read in `plane/internal/egress`: the refusal table carries
+the metadata endpoint, CGNAT, multicast, link-local, ULA, 6to4, Teredo
+and NAT64 prefixes with IPv4-mapped addresses unmapped first, 443 only,
+10 s connect, 60 s to first header, 8 MiB cap, keep-alives off,
+redirects refused, `ca_file` per host. The ELEVEN kind steps REPRODUCED
+on the coordinator's own fresh cluster `coord-p10` with its own probe
+text (22:00–22:03 UTC): both replicas logged `hosted upstream vetted`
+for the stand-in through `ca_file` and for api.githubcopilot.com through
+system roots; the private-resolving entry was refused at load while
+both serving replicas stayed up; `hello-github` allowlisted to `echo`
+only, agent-side token kmh-shaped; with the allowance applied the probe
+text came back through the gateway (`allowed 200`); `echo_write`
+denied 403 and filed; the redirecting stand-in `allowed 502 tool
+upstream redirected (refused)`; after the rebind to the sidecar's
+172.18.x address `allowed 502 egress refused … private`; after `make
+egress-hosted-off` the allowance was gone and the dial ended `allowed
+502 upstream unreachable … i/o timeout`; teardown restored the table
+and the proxy rolled clean. NOT reproduced: the manual GitHub run — it
+needs a personal fine-grained token, which the coordinator does not
+hold and would not create on the user's account without asking;
+accepted on the transcript, which is consistent with the code (the
+write tool is not projected, the denial files, the grant lapses unused).
+Cluster deleted afterwards.
+
+Rulings — all eleven deviations accepted: (1) a fine-grained PAT rather
+than the Copilot token — the prompt's "if it works, reuse" was answered
+honestly: it works and it is the wrong shape (30-min expiry, public-only
+scope); (2) `internet: true` required on the Copilot entry — a loud
+config-compat change, right; (3) unresolvable-at-boot is a warning, a
+private answer is fatal — an airgapped kind cluster must still boot the
+keyless path and the per-call check is the gate; (4) keep-alives off on
+hosted transports — "every call resolves afresh" holds literally, one
+handshake per call is the price; (5) sidecar + host route instead of
+the prompt's DNAT — measured, and the reason (policy evaluated post-NAT)
+is exactly what the prompt was trying to guarantee; (6) and (10) non-SSE
+bodies buffered before the status is written on both seams — a cut body
+is a clean 502, not a 200 with half a payload; (7) `egress_refused`
+metrics reason; (8) load-refusal proven before the rebind step; (9)
+unmarked two-label https names refused at load — the review pass caught
+`https://github.com/…` taking the plain dial; (11) two older CI greps
+loosened for pre-existing races (P9's "nothing to apply" after a
+first-generation restart; P8b's 502 detail now populated) — both
+explained, neither touches the hosted steps. Carried forward: the five
+"reported, not changed" items (open items).
 
 ### P9 — run it for real (PR #46, merged 2026-09-02)
 
