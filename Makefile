@@ -774,8 +774,7 @@ plane-copilot-secret: guard
 	$(KUBECTL) apply -f k8s/egress-copilot.yaml
 
 status:
-	$(KUBECTL) -n kagent get agents,modelconfigs
-	$(KUBECTL) -n kagent get pods
+	@python3 scripts/status.py --target '$(TARGET)' --context '$(KUBE_CTX)'
 
 ifeq ($(TARGET),kind)
 ## down: delete the local kind cluster

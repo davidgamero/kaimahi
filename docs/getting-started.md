@@ -54,9 +54,14 @@ The tools agent is covered in [tools.md](tools.md), including why its
 prose summary is less reliable than the tool call underneath it.
 
 ```bash
-make status   # agents, modelconfigs, pods
+make status   # environment, agents, models, runtime health, and next commands
 make down     # delete the kind cluster (and everything in it, ledger included)
 ```
+
+`make status` is the human-oriented overview. It identifies the target and
+context, shows which model and tool server each agent uses, explains kagent's
+`Ready` and `Accepted` conditions, summarizes runtime health, and retains the
+pod restart counts needed for troubleshooting.
 
 Coming from the project's old name? The cluster is now `kaimahi-p1` and
 the Copilot login cache moved. See
