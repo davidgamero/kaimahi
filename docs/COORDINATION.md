@@ -114,7 +114,8 @@ prefix.
 | P8b: approval routing via Slack + per-approver identity (D21) | W18 worker | PR #41 MERGED (109e08d) ahead of the coordinator's pass; verified against main (delta sheet below) | lane closed |
 | P9: run it for real — stateless multi-replica plane, exact budgets, metrics (D24) | W19 worker | PR #46 MERGED (43fd748) ahead of the coordinator's pass; verified against main (delta sheet below) | own kind cluster; touches Makefile/ci.yml/k8s/plane/proxy.yaml and the plane; #37/#42 (owner-handled) touch the Makefile too — second to merge rebases |
 | P10: hosted upstreams — GitHub's hosted MCP server through a hardened dialer (D25) | W20 worker | PR #51 MERGED (d79b469) ahead of the coordinator's pass; verified against main (delta sheet below) | lane closed |
-| P11: `kmx` milestone 1 — the developer journey as one Go binary (D27) | W21 worker | GO 2026-09-02 — prompt below, user launches | new root Go module; touches the Makefile, ci.yml, docs; no other lane open |
+| P11: `kmx` milestone 1 — the developer journey as one Go binary (D27) | W21 worker | IN PROGRESS 2026-09-02 (launched by the user) | new root Go module; touches the Makefile, ci.yml, docs; watch for Makefile conflicts with #37/#53 |
+| P11: `kmx` milestone 2 — `kmx govern` and the plane, clone-free (D28) | W22 worker | SHAPED 2026-09-02 — prompt below; launches only after W21 merges | kind only and fully keyless; fetches the plane at kmx's own sha from the Go proxy, embeds `k8s/`, publishes nothing |
 | Brand assets + architecture diagram + org/front-door plans | user-run lane (outside the board's prompt set) | PR #33 MERGED (+ kaimahi-agents/.github#1); main CI green | brand validator in the hygiene job |
 | README front door + CONTRIBUTING.md | user-run lane (outside the board's prompt set) | PR #34 MERGED; main CI green | anchored front-door checker in hygiene: section order enforced, no `npx kaimahi create` mention before the quickstart ends — PR #16's README hunk must land under "A scaffolder CLI: considered, not built" (was "Proposed CLI direction" until D23) |
 | CLI decisions + PR #16 review | user + coordinator | D19 ruled; coordinator review rounds done (2026-09-01/02) | not a build lane; parallelises with everything |
@@ -160,6 +161,7 @@ prefix.
 | D25 | 2026-09-02 | **P10 shaped — hosted upstreams** (the gateway reaching an MCP server on the internet), after the coordinator's blind-spot pass: (1) the demo upstream is **GitHub's hosted MCP server** (bearer token in plane custody like the Copilot token; a governed agent reads issues/PRs through the gateway); (2) **one shared hardened dialer for both seams** — the LLM proxy's Copilot path and the gateway get the same resolve-check-pin dialer; (3) **one opt-in 443-to-public NetworkPolicy for the gateway**, the Copilot allowance's shape, applied only when a hosted upstream is configured; hostname-level (Cilium FQDN) egress rejected for this lane; (4) **proof in CI (synthetic external upstream + refusal cases) plus one manual run on kind** with the worker's own read-only token — no AKS run. W20 prompt below; launches only after W19 (P9) merges | "github mcp is fine"; ruled via options: "One shared dialer for both seams (Recommended)", "One opt-in 443-to-public policy for the gateway (Recommended)", "CI synthetic + one manual run on kind (Recommended)" |
 | D26 | 2026-09-02 | **Naming: run both D9 gates now and keep building under the name.** The cultural read (a te reo Māori speaker with standing to answer whether a project run from outside Aotearoa should use the word, and whether the night-worker mascot sits well beside it) starts first; the trademark search/opinion in parallel; a rename only if the read comes back uncomfortable. The registries (npm, PyPI, domains) are NOT claimed before the read — that is the outward-facing step D9 deferred and claiming first would prejudge the answer. The coordinator drafts the message to the speaker and a one-page brief for counsel; the conversations are the user's | ruled via options: "Run both gates now, keep building (Recommended)" over "Claim the registries now as a placeholder" and "Rename to something with only a trademark gate" |
 | D27 | 2026-09-02 | **`kmx` (leadership proposal) accepted as P11, milestone 1**, on three conditions: (1) ONE implementation — `kmx` implements the developer journey and the Makefile's `up`/`cluster`/`agent`/`chat`/`status`/`down` become thin aliases that call it, so CI keeps proving the code a developer runs; (2) **Go, single static binary, in a NEW root Go module** (`cmd/kmx`; the plane keeps its module under plane/), shelling out to kind/kubectl/helm/kagent as the Makefile does; (3) **no publishing** — no brew tap, no release — until D26's gates clear and `kmx` gets its own clearance (PyPI `kmx` and the GitHub user `kmx` are taken; npm, crates and the brew formula are free; KMX is CarMax's ticker — added to the counsel brief); install is `go install …/cmd/kmx@<sha>` only. Milestone 1 = `ctx`, `up` (RUNTIME ONLY — kind + kagent + Ollama + the agents, no plane), `agent create`, `agent chat`, `status`, `down`; `govern <name>` and the plane are milestone 2; secret capture and the probes stay scripts. Consequence, stated and accepted: milestone-1 `agent create` on a fresh cluster scaffolds the keyless preset with the ungoverned warning; it is governed by default only where the plane's ModelConfigs exist. Supersedes D19(2)(3) (scaffold-only; Makefile owns bring-up) and D19(4) (Node) | leadership's `kmx` proposal, relayed by the user ("interesting proposal from leadership"); ruled via options: "Yes, as P11 with the three conditions (Recommended)", "Go, single static binary (Recommended)", "kmx implements the journey; make becomes a thin alias (Recommended)", "No: runtime only, plane is a later command", "ctx, up, agent create, chat, status, down (Recommended)", "New root Go module with cmd/kmx (Recommended)" |
+| D28 | 2026-09-02 | **P11 milestone 2 shaped — `kmx govern` and the plane, clone-free**, after the coordinator's blind-spot pass (which established, by running them, that `go:embed` cannot cross into `plane/` while it is its own module, and that the plane module nevertheless installs straight from the public Go proxy at any main sha). Four rulings: (1) **the plane image is fetched and built at kmx's own revision** — kmx reads its own sha from its build info, runs `go install …/plane/cmd/kaimahi-proxy@<that sha>` (checksum-verified by Go's sum database), packages the binary into the image locally and side-loads it; `k8s/` is embedded in the binary (it is embeddable — only `plane/` is not); nothing is published, so D26/D27(3) hold unchanged; (2) **CI keeps proving the working tree, and a post-merge job proves the clone-free path** — the Makefile's delegation passes local source so a PR touching `plane/` is still exercised before merge, and a separate run on main installs kmx from the proxy at the merged sha and drives the real user journey end to end; (3) **milestone 2 is `plane` + `govern <name>` + the read-only views** (`ledger`, `grants`, audit reads) — budget, approvals, backup/restore and the Slack/GitHub/inbound families stay in make and scripts; (4) **kind only**, like milestone 1, which keeps milestone 2 entirely keyless (kind governs through `governed-ollama`) so D27's "secret capture stays scripts" holds without a hole; AKS stays a make/scripts path and is documented as such. W22 prompt below; launches only after W21 (milestone 1) merges | ruled via options: "Fetch + build at kmx's own sha (Recommended)", "Local source in CI + a post-merge clone-less run (Recommended)", "plane + govern + read-only views (Recommended)", "kind only (Recommended)" |
 | D14 | 2026-09-01 | P5 direction: the **undeniable demo** — not a new capability arc but making the built one legible and credible. Rulings: (1) outbound connector platform is **Slack** (via existing MCP servers, no connector code); (2) AKS work goes all the way — cluster portability AND a real AKS deployment with evidence (accepts Azure spend + credentials in a worker session); (3) demos run on the **Copilot** preset while **CI stays keyless on ollama** (public fork-exposed repo — no repo secrets in CI, ever). Rationale on the board: everything governed so far protects an agent that lists ConfigMaps; posting to a channel humans read is the first consequential action, and it makes the approval gate the point rather than the plumbing | "sure, that's undeniable demo makes sense" — then ruled via options: "Slack (Recommended)", "Portability + real AKS run (Recommended)", "Copilot for demo, ollama for CI (Recommended)" |
 | D13 | 2026-09-01 | P4c approval model: TIME-BOXED PERMITS — a denied action files a pending request; approval grants it bounded (expiry by duration and/or use count) and compiles into the existing allowlist/budget rows; deny-and-retry mechanics, no held-open calls. Demo scenarios: tool-access widening (k8s_get_events, read-only) AND budget overage; the P3 tool-server read-only posture stays untouched (write-tool demo deferred) | ruled via options: "Time-boxed permits (Recommended)"; "Widen tool access (Recommended), Budget overage (Recommended)" |
 
@@ -1004,12 +1006,35 @@ the Makefile comment for `AKS_NETWORK_POLICY` (W15 deviation 3).
 
 ## Open items after P8b (2026-09-02)
 
-- **P9 and P10 DONE** (#46, #51 — both verified below). **P11 (`kmx`
-  milestone 1) is GO (D27, W21 prompt below).** Still queued behind it:
-  Postgres durability (HA or a managed database on the AKS path),
-  OAuth-based hosted servers (Slack's own), hostname-level egress on AKS
-  (Cilium FQDN), `kmx` milestone 2 (`govern`, the plane), and the
+- **P9 and P10 DONE** (#46, #51 — both verified below). **P11 milestone 1
+  is IN PROGRESS (D27, W21); milestone 2 is SHAPED (D28, W22 prompt
+  below) and launches only after milestone 1 merges.** Still queued
+  behind them: Postgres durability (HA or a managed database on the AKS
+  path), OAuth-based hosted servers (Slack's own), hostname-level egress
+  on AKS (Cilium FQDN), `kmx` milestone 3 (budget, approvals,
+  backup/restore, the connector families — everything D28(3) left in
+  make), the AKS path for `kmx` at all (D28(4) left it in make), and the
   P10/P8b carry-forwards below.
+- **P11 milestone-2 findings** (coordinator blind-spot pass, 2026-09-02 —
+  each verified by running it, not inferred; they bind W22):
+  `go:embed` refuses to cross into `plane/` while it carries its own
+  `go.mod` ("cannot embed directory: in different module"), so kmx can
+  never carry the plane's SOURCE; the plane module nevertheless resolves
+  and builds straight from the public Go proxy at any main sha
+  (`go install …/plane/cmd/kaimahi-proxy@24fdcb3` →
+  `v0.0.0-20260902220545-24fdcb351507`, a working static binary) — the
+  nested module that blocks the first makes the second work.
+  `metrics.Version()` (plane/internal/metrics/metrics.go:213) falls back
+  to `vcs.revision`, which a MODULE-PROXY build does not set — it sets
+  `Main.Version` — so `kaimahi_build_info` silently loses the revision
+  on the kmx path unless the plane also reads `Main.Version`.
+  `go install` REFUSES to cross-compile while `GOBIN` is set (mise sets
+  it), which will bite any contributor on a Mac targeting linux.
+  `scripts/plane-deploy.sh` renders `proxy.yaml` with python3 + PyYAML
+  and reads manifests from the checkout — a Go port removes two host
+  dependencies but must not become a SECOND implementation of the render
+  (D27(1)); the same one-implementation question milestone 1 answers for
+  `kube-guard.sh`.
 - **Naming (D26)**: the two briefs are with the user; `kmx` is now a
   second provisional name and rides the same counsel brief.
 - **P10 carry-forward** (reported by the lane, not changed): an egress
@@ -1020,8 +1045,8 @@ the Makefile comment for `AKS_NETWORK_POLICY` (W15 deviation 3).
   public repo — deliberately not done).
 - **Skipped by ruling (2026-09-02)**: verifying the `azure`/`calico` AKS
   policy engines ("lets skip that for now").
-- **Coordinator docs PRs**: #45 (scanner in the local check lists,
-  merged), #47 (docs/demo.md — the demo start to finish; open).
+- **Coordinator docs PRs**: #45 (scanner in the local check lists) and
+  #47 (docs/demo.md — the demo start to finish) both MERGED.
 - **Teammate PRs #37 and #42** — owner-handled; findings recorded in the
   lane table only. Both rewrite `cluster`/`plane-image`; W19 also touches
   the Makefile — second to merge rebases.
@@ -1810,6 +1835,135 @@ quick-start commands end to end, transcript in the PR; the delegating
 `make` targets green in CI. Branch from current main; PR targets main;
 no stacked bases; lane ends at PR-open-with-checks-green — do not
 merge. Report deviations in the PR.
+```
+
+### W22 — P11: `kmx`, milestone 2 — `kmx govern` and the plane, clone-free (UNASSIGNED — paste into a fresh CLI session ONLY AFTER W21 (milestone 1) has merged)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout, remote kaimahi-agents/kaimahi). Read docs/COORDINATION.md
+first — decisions D9, D19, D26, D27 and especially D28, the "P11
+milestone-2 findings" bullet in the open items, the "Considered and
+rejected" list, and the security standing guidance all bind you. Your
+lane: P11 milestone 2 of `kmx`. Milestone 1 shipped the runtime journey
+as one binary; you add the governance half — standing the plane up and
+governing an agent — WITHOUT a clone, without publishing anything, and
+without a second implementation of anything milestone 1 already owns.
+
+Survey first (prime directive): milestone 1's cmd/kmx and internal/kmx
+as merged are your foundation — reuse its context guard, its kubectl
+plumbing, its output conventions and its tests; do not fork them. The
+Makefile's `plane`, `plane-image`, `plane-secrets`, `govern`, `ledger`
+and `grants` recipes and scripts/plane-deploy.sh, plane-secrets.sh and
+plane-admin.sh are the SPEC: read them line by line and carry every
+wait, every fail-closed check, every custody rule and every message
+across; say what you dropped and why. Three details in those files are
+load-bearing and were each paid for by an incident: `make plane` always
+`rollout restart`s the proxy because a rebuilt image under the same tag
+leaves the spec unchanged; plane-deploy.sh renders on the parsed
+document rather than with sed and REFUSES to apply when it does not
+find exactly one proxy container; `govern` distinguishes a genuine
+NotFound from an unreachable API server so it can never print a
+reassuring NOTE and leave an agent ungoverned.
+
+Build (milestone 2 is exactly this, D28):
+- `kmx plane`: stand the plane up on the active context. The image is
+  fetched and built AT KMX'S OWN REVISION — read your own sha from
+  runtime/debug.ReadBuildInfo() and `go install` (or otherwise build)
+  github.com/kaimahi-agents/kaimahi/plane/cmd/kaimahi-proxy at exactly
+  that version, then package the binary into an image and side-load it
+  into the kind cluster. This is verified to work from the public Go
+  proxy with no clone and no registry, and the sum database checksums
+  it. `k8s/` is embedded in the kmx binary with go:embed — it is
+  embeddable; `plane/` is NOT (it is a separate module and go:embed
+  refuses to cross the boundary), which is precisely why the plane is
+  fetched rather than carried. Nothing is published: no registry, no
+  release, no tap (D26, D27(3), D28(1)).
+- A checkout, when there is one, wins: `kmx plane --source <path>`
+  (auto-detected when kmx runs inside the repo) builds the plane from
+  the working tree instead of the proxy. This is what keeps CI proving
+  the code a PR changes (D28(2)) — get it wrong and a PR touching
+  plane/ proves nothing.
+- Decide, and justify in the PR, how the image is tagged. The committed
+  manifest pins `imagePullPolicy: Never` with a hand-moved tag
+  (kaimahi-proxy:p10) and the kind path applies k8s/plane UNRENDERED on
+  purpose — "kind is unchanged" is a fact plane-deploy.sh works to
+  preserve. Tagging by kmx's own sha is strictly better staleness
+  protection (P4b deviation 6) but forces a render on kind too. Either
+  choice is acceptable; if you render, carry plane-deploy.sh's
+  fail-closed verification across, and keep the `Never` pin — a
+  side-loaded local tag must never fall back to pulling a squattable
+  public name.
+- `kmx govern <name>`: issue the governed credential (the plane's admin
+  port is on no Service — port-forward as plane-admin.sh does, so
+  cluster credentials gate the operation before the admin bearer does),
+  apply the governed presets, and switch the agent, with the same
+  NotFound discrimination the Makefile applies. Token bytes travel only
+  through pipes and 0600 files — never argv, env listings, on-disk
+  YAML, or logs. Go makes this easier than bash did; prove it with a
+  test, not a comment.
+- Read-only views: `kmx ledger`, `kmx grants`, and the audit reads,
+  matching what the make targets print. Unguarded, like `make ledger`.
+- The Makefile delegates: `plane`, `plane-image`, `plane-secrets`,
+  `govern`, `ledger` and `grants` become one-line recipes that call kmx
+  with `--source .`; nothing else in the Makefile changes and every
+  other target keeps working. The scripts stay for the callers that
+  still use them, but there must be ONE implementation of each
+  behaviour (D27(1)) — say in the PR, per script, which one is the
+  implementation and which is a caller, exactly as milestone 1 answered
+  it for kube-guard.sh.
+
+CI (D28(2)), keyless as always (D14): the existing e2e keeps calling
+`make plane` / `make govern` / `make ledger` — which now prove kmx
+against the working tree — plus Go unit tests for the fetch-and-build
+selection (proxy vs --source), the image tag decision, the render's
+fail-closed cases, the govern NotFound discrimination, and credential
+custody. THEN add a separate job that runs on main after merge (not on
+the PR — the proxy only serves pushed commits): `go install
+.../cmd/kmx@<the merged sha>` on a clean runner with no checkout, and
+drive the real user journey end to end — up, agent create, plane,
+govern, chat, ledger. That job is the only proof the path users
+actually take works; treat a failure in it as a release blocker, not a
+flake.
+
+Carry these verified findings (coordinator's blind-spot pass — each was
+run, not inferred):
+- `metrics.Version()` falls back to `vcs.revision`, which a
+  module-proxy build does NOT set (it sets `Main.Version`), so
+  kaimahi_build_info silently loses the revision on the kmx path. Fix
+  it in the plane, with a test.
+- `go install` refuses to cross-compile while `GOBIN` is set (mise sets
+  it). Handle it and say so in the docs, or contributors on a Mac
+  targeting linux hit a bare "cannot install cross-compiled binaries".
+- plane-deploy.sh's render needs python3 + PyYAML on the host. A Go
+  port removes that dependency; see the one-implementation rule above.
+
+Docs: docs/kmx.md gains the governance commands and loses them from its
+"not in milestone 1" list; docs/getting-started.md and the README
+quickstart carry the governed journey through kmx (the front-door
+checker's order must still pass — edit its expectations in the same PR
+if the quickstart's first command changes); docs/operations.md and
+docs/spend.md say which path is kmx and which is still make.
+
+Guardrails, all hard: no publishing of any kind; `kmx` is provisional
+like `kaimahi` (D26) — claim it nowhere; kind only (D28(4)) — do not
+touch the AKS path, and say plainly in the docs that AKS is the
+make/scripts path; no credentials accepted by kmx in any form and no
+secret capture moved into it (D27); every mutation through the guard;
+no client-go — shell out as milestone 1 does; no Azure or Slack
+identifiers; no repo secrets in CI.
+
+Out of scope: budget, approvals (approve/deny/request), backup and
+restore, plane-metrics, the Slack/GitHub/inbound families, AKS, secret
+capture, publishing, anything not listed above. They are milestone 3.
+
+Verification is real: on a clean machine or container with only
+Docker/kind/kubectl/helm/Go and NO checkout, `go install …/cmd/kmx@<your
+sha>`, then up → agent create → plane → govern → chat → ledger end to
+end, transcript in the PR; and the delegating make targets green in the
+existing e2e. Branch from current main; PR targets main; no stacked
+bases; lane ends at PR-open-with-checks-green — do not merge. Report
+deviations in the PR.
 ```
 
 ## Delta sheets from finished lanes
