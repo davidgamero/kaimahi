@@ -215,6 +215,8 @@ jobs:
       # reply.
       - name: Chat verifier self-test (tool-path verdicts)
         run: python3 scripts/verify-chat.py --selftest
+      - name: Interactive chat parser self-test
+        run: python3 scripts/interactive-chat.py --selftest
       # The e2e job short-circuits docs-only changes at STEP level (the job
       # must run and report — it is a required check). A step appended
       # without the guard would run against no cluster on the next

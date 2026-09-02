@@ -50,6 +50,30 @@ make chat TASK="What are you defined in?"
 make chat AGENT=hello-tools TASK="What pods are running in the ollama namespace?"
 ```
 
+For a back-and-forth conversation in one kagent session:
+
+```bash
+make chat INTERACTIVE=1
+make chat INTERACTIVE=1 AGENT=hello-tools
+```
+
+The header shows the active agent and an `Esc to exit` hint. While the agent
+responds, a spinner shows elapsed seconds and retains the same exit hint. Each
+reply stays in the visible transcript, and later messages reuse the session ID
+so the agent retains the conversation. `/exit`, `/quit`, Ctrl-D, and Ctrl-C
+also end the chat. To resume a known kagent context, add `SESSION=<context-id>`.
+Escape stops the local wait, but a tool action already accepted by the agent
+may still have happened; the client therefore never retries that turn.
+
+The interactive view renders streamed agent text and tool call/completion
+events as they arrive. Use `/tools off|summary|verbose` to control tool detail;
+`/sessions`, `/resume <id>`, `/history`, `/session`, and `/new` manage kagent
+sessions. If native kagent HITL pauses a configured `requireApproval` tool, the
+terminal collects an approve/reject decision (or `ask_user` answers) and resumes
+that task. Kaimahi governance denials remain a separate operator boundary: use
+`make approvals` and `make approve`, then type `/retry`; chat never approves its
+own Kaimahi request.
+
 The tools agent is covered in [tools.md](tools.md), including why its
 prose summary is less reliable than the tool call underneath it.
 

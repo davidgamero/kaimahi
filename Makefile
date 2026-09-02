@@ -29,6 +29,8 @@ MODEL          ?= qwen2.5:3b
 AGENT          ?= hello-world
 TASK           ?= Hello! Who are you and where are you running?
 KAGENT         ?= bin/kagent
+SESSION        ?=
+KUBECTL_BIN    ?= kubectl
 
 OS   := $(shell uname -s | tr A-Z a-z)
 ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
@@ -422,10 +424,20 @@ tools-agent: guard
 		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
 		agent/hello-tools --timeout=300s
 
-## chat: one question to an agent via the kagent CLI (override with TASK=...,
-## AGENT=hello-tools for the P3 tools agent)
+## chat: one question by default; INTERACTIVE=1 keeps one kagent session open
+## for back-and-forth messages. Override AGENT=hello-tools for the tools agent.
+chat: export KAIMAHI_CHAT_AGENT=$(AGENT)
+chat: export KAIMAHI_CHAT_CONTEXT=$(KUBE_CTX)
+chat: export KAIMAHI_CHAT_PORT=$(CHAT_PORT)
+chat: export KAIMAHI_CHAT_SESSION=$(SESSION)
+chat: export KAIMAHI_KAGENT=$(KAGENT)
+chat: export KAIMAHI_KUBECTL=$(KUBECTL_BIN)
 chat: $(KAGENT)
+ifeq ($(INTERACTIVE),1)
+	@python3 scripts/interactive-chat.py
+else
 	@$(call kagent_forward,$(AGENT),$(KAGENT_INVOKE) --agent $(AGENT) --task "$(TASK)")
+endif
 
 ## model-secret: store an API key as a K8s Secret, stdin-only (paste, Enter, Ctrl-D).
 # The key never touches argv, env listings, YAML, or logs; tr strips the
