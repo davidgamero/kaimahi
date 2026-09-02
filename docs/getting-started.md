@@ -132,6 +132,17 @@ make chat TASK="What are you defined in?"
 make chat AGENT=hello-tools TASK="What pods are running in the ollama namespace?"
 ```
 
+Keep a back-and-forth session with streamed replies and visible tool activity:
+
+```bash
+INTERACTIVE=1 make chat AGENT=hello-tools
+# or directly: kmx agent chat --interactive hello-tools
+```
+
+The header names the active agent and its available selected tools. Use
+`/sessions` and `/resume <id>` for prior conversations, `/new` for a fresh
+session, and `/exit` to leave. See [kmx.md](kmx.md#interactive-chat).
+
 The tools agent is covered in [tools.md](tools.md), including why its
 prose summary is less reliable than the tool call underneath it.
 

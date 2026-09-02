@@ -73,11 +73,12 @@ swap plus a credential the agent cannot read past.
 |---|---|
 | `kmx ctx` | print the context kmx will act on, where that came from, and its posture |
 | `kmx ctx <context>` | select that context for later commands (recorded in kmx's config directory — `~/.config/kmx/context` on Linux; set `KMX_HOME` to put it elsewhere) |
-| `kmx up` | create the kind cluster, deploy Ollama, pull the pinned model, install kagent by helm, apply both agents, wait for each to be Ready, print status |
+| `kmx up` | preflight all host dependencies, create the kind cluster, deploy Ollama, pull the pinned model, install kagent by helm, apply both agents, wait for each to be Ready, print status |
 | `kmx up --step <step>` | one step only: `cluster`, `ollama`, `model`, `kagent`, `agent`, `tools-agent` |
 | `kmx agent create <name>` | scaffold `agents/<name>.yaml` and apply it |
 | `kmx agent chat <name> [message]` | ask an agent one question, through `kagent invoke` |
 | `kmx agent chat <name> --json` | the raw A2A task instead of the readable view (piped output is always raw) |
+| `kmx agent chat --interactive <name>` | live streamed chat in one session; shows active tools, tool calls/results, and supports session history/resume |
 | `kmx plane` | build the proxy image, bootstrap the plane's secrets, deploy the plane, wait for it to serve |
 | `kmx plane --step <step>` | one step only: `image`, `secrets`, `deploy` |
 | `kmx plane --source <path>` | build the plane from a checkout instead of fetching it (`-` forces the fetch) |
@@ -188,11 +189,34 @@ the guard and waits for Ready.
 | **Won't overwrite** | The manifest is written with an exclusive create, so a file you have edited is never clobbered. There is no `--force`. |
 | **Blast radius is the guard** | Applying goes through the same context guard as every other mutation. |
 | **Preflight on the ModelConfig** | A missing ModelConfig is admitted by the API server and then fails to reconcile in silence — the Agent exists, never goes Ready, and nothing says why. kmx checks first and prints the fix. |
+| **Preflight on tools** | Before apply/dry-run, the referenced RemoteMCPServer must exist, be Accepted, and currently discover every allowlisted tool. A typo cannot become an Agent that silently never reaches Ready. |
 | **Governed by default where a plane exists** | If the plane's governed preset is on the cluster, the new agent is metered, budgeted and ledgered from its first call. On a fresh `kmx up` cluster there is no plane, so the keyless preset is used and the ungoverned warning is printed. |
 
 The reserved names `hello-world` and `hello-tools` are refused: they are
 `kmx up`'s own agents, and scaffolding over one would replace a committed
 artifact that the next `kmx up` would replace right back.
+
+## Interactive chat
+
+```bash
+kmx agent chat --interactive hello-tools
+# from make: INTERACTIVE=1 make chat AGENT=hello-tools
+```
+
+The header names the active agent and shows its effective selected/discovered
+tools, descriptions, and whether each MCP server is direct or Kaimahi-governed.
+Text and correlated tool call/completion events render as kagent streams them.
+The returned context ID is reused for each turn.
+
+Commands: `/session`, `/sessions`, `/resume <id>`, `/new`, `/retry`, `/exit`.
+`--session <id>` resumes a known session and displays its history. If a stream
+closes while a task is still working, kmx polls that exact task ID; it never
+resends the tool call. A Kaimahi governance denial still requires a separate
+operator approval, followed by explicit `/retry`.
+
+Native kagent `requireApproval` pauses are rendered in the terminal and resumed
+with a structured approve/reject response. Kaimahi approvals remain a separate
+security boundary; chat cannot approve its own Kaimahi request.
 
 ## How the plane gets there without a clone
 
