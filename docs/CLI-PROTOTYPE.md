@@ -4,8 +4,9 @@ A first cut of the scaffolder from [CLI-PROPOSAL.md](CLI-PROPOSAL.md), built
 against the billing journey in [SCENARIOS.md](SCENARIOS.md).
 
 **Status: prototype.** It runs, it is tested, and it has been used to stand
-up a real agent on a real cluster. It is not published, the npm name is not
-claimed, and the open decisions in the proposal are still open.
+up a real agent on a real cluster. Per D19 it is **not published to npm** —
+internal use is `npx github:kaimahi-agents/kaimahi` — and `package.json` is
+marked private so an accidental publish fails.
 
 ## What it does
 
@@ -22,6 +23,18 @@ make scenario-billing                          # governed (default)
 make scenario-billing SCENARIO_MODEL=ollama    # ungoverned
 make cli-test                                  # 12 unit tests, no cluster
 ```
+
+From outside a clone, per D19's "internal via npx github:":
+
+```bash
+npx github:kaimahi-agents/kaimahi agent create my-agent --instructions ./my.md
+```
+
+**The manifest lives at the repository root on purpose.** `package.json` sits
+at the top level with `bin` pointing into `cli/`, because npm has no
+subdirectory support for git installs — with the manifest inside `cli/`, the
+`npx github:` invocation D19 mandates fails with ENOENT. CI installs the
+repo into a scratch directory and runs the binary, so that stays true.
 
 ## Grammar: noun-verb
 
@@ -113,9 +126,20 @@ conclusion — it called the roaming charge correct despite the active block.
 Tightening the instructions into explicit steps fixed it. A 3B model is
 doing real reasoning here only because the task was narrowed until it could.
 
+## Settled by D19
+
+The proposal's open decisions have been ruled:
+
+| Decision | Ruling | How this prototype reflects it |
+|---|---|---|
+| Publish to npm? | **Not yet.** Internal use via `npx github:kaimahi-agents/kaimahi`; publishing is a one-line change once D9's naming gates clear | `package.json` is `"private": true` and versioned `0.0.0-prototype`, so an accidental `npm publish` fails |
+| CRUD boundary | **Scaffold-only.** `agent create` is the only command; R/U/D refuse and print the tool that already does the job | as built — `agent list` prints the `kubectl`/`kagent` equivalents |
+| `up` / `install`? | **No.** The Makefile owns cluster bring-up | the CLI has no cluster-provisioning command |
+| Node toolchain | **Accepted**, on condition it stays zero-runtime-dependency, with `make cli-test` in CI | zero dependencies; CI runs the tests and asserts the dependency count is still zero |
+| Sequencing vs P4 | Moot — P4 shipped | the scenario scaffolds governed by default |
+
 ## Still open
 
-Everything the proposal listed: whether to publish to npm (which is a name
-claim), where exactly the CRUD line sits, `up` versus `install`, and Node as
-net-new runtime surface. This prototype does not settle any of them — it
-makes them concrete enough to decide.
+D9's naming gates — the cultural read and trademark counsel — which now
+gate publication. The org move (D16) made them more urgent, not less.
+

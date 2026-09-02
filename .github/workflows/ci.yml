@@ -231,6 +231,66 @@ jobs:
       - name: Test
         run: go test ./...
 
+  # The scaffolder CLI (D19: zero-runtime-dependency Node toolchain accepted
+  # into the repo, with `make cli-test` in CI).
+  cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # The entry point was once silently untracked: the root .gitignore's
+      # unanchored `bin/` matched cli/bin at depth, so package.json shipped
+      # pointing at a file that was not in the repository and `git add -A`
+      # said nothing. Assert the tree, not the working directory.
+      - name: CLI entry point is tracked
+        run: git ls-files --error-unmatch cli/bin/kaimahi.js
+      # D19 mandates internal use via `npx github:kaimahi-agents/kaimahi`.
+      # That only works if the manifest is at the repository ROOT: npm has
+      # no subdirectory support for git installs. Prove the invocation the
+      # ruling names actually resolves, rather than assuming it.
+      - name: Installs and runs the way D19 says it will
+        run: |
+          work=$(mktemp -d)
+          cd "$work" && npm init -y > /dev/null
+          npm install "$GITHUB_WORKSPACE" > /dev/null
+          ./node_modules/.bin/kaimahi agent create ci-probe \
+            --instructions "$GITHUB_WORKSPACE/cli/scenarios/billing-dispute.md" \
+            --model ollama > /dev/null
+      - name: Zero runtime dependencies
+        run: |
+          deps=$(node -e "const p=require('./package.json');console.log(Object.keys({...p.dependencies}).length)")
+          test "$deps" -eq 0 || { echo "cli gained $deps runtime dependency/ies"; exit 1; }
+      - name: Unit tests
+        run: make cli-test
+      # Prove the generator still produces something the CRD schema would
+      # accept, without needing a cluster: it must parse as YAML and carry
+      # the fields the Agent CRD requires.
+      - name: Generated manifest is well-formed
+        run: |
+          node cli/bin/kaimahi.js agent create --scenario billing > /tmp/agent.yaml
+          python3 - <<'EOF'
+          import yaml, sys
+          d = yaml.safe_load(open("/tmp/agent.yaml"))
+          assert d["apiVersion"] == "kagent.dev/v1alpha2", d["apiVersion"]
+          assert d["kind"] == "Agent", d["kind"]
+          assert d["spec"]["declarative"]["modelConfig"], "no modelConfig"
+          assert d["spec"]["declarative"]["systemMessage"].strip(), "empty systemMessage"
+          tools = d["spec"]["declarative"]["tools"]
+          assert tools and tools[0]["mcpServer"]["toolNames"], "tools present but no allowlist"
+          print("generated manifest OK:", d["metadata"]["name"])
+          EOF
+      - name: Refuses to scaffold without a tool allowlist
+        run: |
+          if node cli/bin/kaimahi.js agent create x \
+               --instructions cli/scenarios/billing-dispute.md \
+               --tools kaimahi-tools > /dev/null 2>&1; then
+            echo "CLI accepted a tools spec with no allowlist"; exit 1
+          fi
+
   # The P1 deliverable, verified for real: kind cluster, in-cluster Ollama,
   # kagent via helm, apply k8s/hello-world.yaml, converse via the kagent CLI.
   # Docs-only short-circuit (D17 follow-up): board updates are PRs and the

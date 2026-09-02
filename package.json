@@ -5,18 +5,18 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "kaimahi": "./bin/kaimahi.js"
+    "kaimahi": "cli/bin/kaimahi.js"
   },
   "engines": {
     "node": ">=20.0.0"
   },
   "files": [
-    "bin",
-    "lib",
-    "scenarios"
+    "cli/bin",
+    "cli/lib",
+    "cli/scenarios"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test cli/test/*.test.js"
   },
   "private": true
 }
