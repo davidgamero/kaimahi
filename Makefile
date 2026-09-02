@@ -36,7 +36,7 @@ ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
 # The plane image. The tag moves with the phase so a stale side-loaded
 # image can never satisfy a newer manifest silently (P4b deviation 6).
 PLANE_IMAGE_REPO ?= kaimahi-proxy
-PLANE_IMAGE_TAG  ?= p8
+PLANE_IMAGE_TAG  ?= p8b
 
 # ---- environment-dependent settings --------------------------------------
 # Everything that genuinely differs between kind and a managed cluster is
@@ -102,7 +102,8 @@ SLACK_TOOLNAMES_JSON = $(if $(filter -,$(SLACK_AGENT_TOOLS)),,"$(subst $(comma),
 	slack-post slack-down aks-cluster aks-creds aks-down \
 	netpol-verify egress-copilot egress-copilot-off \
 	inbound-credential inbound-secret inbound-fire inbound-audit \
-	inbound-expose inbound-unexpose exposure-scan
+	inbound-expose inbound-unexpose exposure-scan \
+	slack-approvers notify-slack slack-mention
 
 # guard: the context-safety net every MUTATING target depends on. Prints
 # the target context/namespaces; demands explicit confirmation for
@@ -981,6 +982,40 @@ inbound-fire:
 inbound-audit:
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh inbound-audit \
 		$(if $(filter command line,$(origin HOOK)),$(HOOK),)
+
+## ---- P8b: approvals from Slack (docs/approvals.md, "Deciding from Slack") ----
+#
+# A filed request is announced in the pinned channel by the plane, under
+# the plane's OWN gateway credential; an approver decides it by
+# mentioning the bot; the grant carries their Slack identity. Two
+# Secrets and one credential, all plane-side (kaimahi namespace).
+CRED_PLANE     ?= kaimahi-plane
+SLACK_USER     ?=
+COMMAND        ?=
+
+## slack-approvers: store WHO may approve from Slack — paste Slack user
+## ids (U…), comma- or newline-separated, on stdin. Workspace identifiers:
+## stdin-only, into Secret kaimahi-slack-approvers, never argv or YAML.
+slack-approvers: guard
+	@KUBECTL="$(KUBECTL)" bash scripts/slack-approvers.sh
+
+## notify-slack: issue the PLANE's own gateway credential (kmh_ token into
+## the plane-side Secret kaimahi-notifier-token) and allowlist it to the
+## posting tool only. Configuration, not a grant: the plane is the trust
+## root. The proxy reads the file per post (first projection can lag ~1m).
+notify-slack: guard
+	@KUBECTL="$(KUBECTL)" SECRET_NAMESPACE=kaimahi GOVERNED_SECRET=kaimahi-notifier-token \
+		bash scripts/plane-admin.sh issue $(CRED_PLANE)
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-allow $(CRED_PLANE) "$(SLACK_POST_TOOL)"
+
+## slack-mention: deliver ONE synthetic, correctly signed app_mention to
+## the slack-events hook as Slack would (kind: the keyless stand-in for
+## typing in the channel; CI's tool). Unguarded like inbound-fire.
+##   make slack-mention SLACK_USER=U0EXAMPLE COMMAND='approve <id> uses=1' [EXPECT=200] [WANT='approved request']
+slack-mention:
+	@test -n "$(SLACK_USER)" && test -n "$(COMMAND)" || \
+		{ echo "usage: make slack-mention SLACK_USER=U… COMMAND='approve <id> [uses=N] [ttl=D]' [EXPECT=200] [WANT=...]" >&2; exit 1; }
+	@KUBECTL="$(KUBECTL)" EXPECT="$(EXPECT)" WANT="$(WANT)" bash scripts/slack-mention-probe.sh "$(SLACK_USER)" "$(COMMAND)"
 
 ## ---- P8: the public edge (docs/inbound.md, "Putting it on the internet") ----
 #

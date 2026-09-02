@@ -151,11 +151,13 @@ type event struct {
 }
 
 // slackMention is the part of an app_mention the reply needs: where it
-// was said, and which thread the answer belongs in.
+// was said, who said it, which thread the answer belongs in, and the
+// words themselves (mention tokens stripped) for the command parser.
 type slackMention struct {
 	channel  string
 	user     string
 	threadTS string
+	text     string
 }
 
 // genericEvent takes the text from a JSON object's "text" field when
@@ -251,7 +253,7 @@ func slackEvent(body []byte) (event, bool) {
 			// under the message that asked, not loose in the channel.
 			thread = e.TS
 		}
-		ev.slack = slackMention{channel: e.Channel, user: e.User, threadTS: thread}
+		ev.slack = slackMention{channel: e.Channel, user: e.User, threadTS: thread, text: text}
 		ev.text = slackTask(text, ev.slack)
 		return ev, true
 	}

@@ -751,8 +751,19 @@ jobs:
                   # FILE (the same Secret key that restricts posting); dropping
                   # the key would widen the ingress to the whole workspace.
                   assert h["slack_channels_file"].startswith("/etc/kaimahi/slack/"), (name, h)
-              assert not any(k in h for k in ("secret", "signing_secret", "token", "api_key")), (name, h)
+                  # P8b: who may approve from Slack is a plane-side FILE too —
+                  # the table names it and carries no user id.
+                  assert h["slack_approvers_file"].startswith("/etc/kaimahi/slack/"), (name, h)
+              assert not any(k in h for k in ("secret", "signing_secret", "token", "api_key", "approvers", "users")), (name, h)
           print("inbound hooks:", {k: (v["auth"], v["agent"]) for k, v in hooks.items()})
+          # P8b: the notifier posts THROUGH the gateway's committed slack
+          # upstream under a credential read from plane custody; the block
+          # names files, never values.
+          n = json.load(open("upstreams-inbound.json"))["approval_notifier"]
+          assert n["tool_upstream"] == "slack" and n["tool"] == "conversations_add_message", n
+          assert n["credential_file"].startswith("/etc/kaimahi/notifier/"), n
+          assert n["channel_file"].startswith("/etc/kaimahi/slack/"), n
+          assert set(n) == {"tool_upstream", "tool", "credential_file", "channel_file"}, n
           EOF
           # The ingress Service exposes the bridge only; no Service exposes admin.
           ports=$(kubectl --context kind-kaimahi-p1 -n kaimahi get svc -o jsonpath='{range .items[*]}{.metadata.name}={.spec.ports[*].port} {end}')
@@ -841,7 +852,8 @@ jobs:
           bash scripts/inbound-probe.sh demo 'second use'
           EXPECT=403 bash scripts/inbound-probe.sh demo 'third: grant exhausted'
           make approval-audit | tee approval-audit-inbound.out
-          grep -E 'inbound-demo +inbound +demo +approved +expires=.* uses=2' approval-audit-inbound.out
+          # P8b: the trail now names who decided between the action and the bounds.
+          grep -E 'inbound-demo +inbound +demo +approved +admin +expires=.* uses=2' approval-audit-inbound.out
       - name: "Inbound: bearer hook authenticates the same way and is gated the same way"
         if: steps.changes.outputs.docs_only != 'true'
         run: |
@@ -851,6 +863,129 @@ jobs:
           test "$n" = 1
           AUTH=none EXPECT=401 bash scripts/inbound-probe.sh demo-bearer 'no token'
           AUTH=bearer EXPECT=403 bash scripts/inbound-probe.sh demo-bearer 'authenticated, no grant'
+      # P8b, keyless: approvals FROM Slack, and the plane telling Slack a
+      # request is waiting. Slack cannot reach a kind cluster and CI holds
+      # no Slack token, so the human is a synthetic, correctly SIGNED
+      # app_mention fired at the bridge (scripts/slack-mention-probe.sh,
+      # the way inbound-fire fires the generic hook) with synthetic user
+      # ids (U0CIAPPROVER / U0NOBODY — never a real workspace's), and the
+      # plane's own posts ride the same absent slack upstream the P5a
+      # cycle uses: admitted by the gateway, dialed, 502 — the audit row
+      # under the PLANE's credential is the proof the notification went
+      # through the governed path. What only the live run proves: the
+      # message landing in a channel, a person typing the command, the
+      # reply in the thread.
+      - name: "Approvals from Slack: setup (approver file, the plane's own credential, a signed hook)"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make inbound-credential CRED_INBOUND=inbound-slack
+          make inbound-secret HOOK=slack-events GENERATE=1
+          # The channel the hook is bound to and the notifier posts into:
+          # the bot Secret's channel key only — no bot token exists in CI.
+          kubectl --context kind-kaimahi-p1 -n kaimahi create secret generic kaimahi-slack-bot \
+            --from-literal=SLACK_MCP_ADD_MESSAGE_TOOL=C0CIONLY \
+            --dry-run=client -o yaml | kubectl --context kind-kaimahi-p1 apply -f -
+          printf 'U0CIAPPROVER\n' | make slack-approvers
+          make notify-slack
+          # The plane's credential may post and nothing else — config,
+          # not a grant.
+          make tool-allowlist CRED_TOOLS=kaimahi-plane | tee plane-allowlist.out
+          grep -qx 'kaimahi-plane: conversations_add_message' plane-allowlist.out
+          # Its token is plane-side only (kaimahi namespace, kmh_ shape),
+          # and no Slack id is anywhere in the tree.
+          n=$(kubectl --context kind-kaimahi-p1 -n kaimahi get secret kaimahi-notifier-token \
+            -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
+          test "$n" = 1
+          if kubectl --context kind-kaimahi-p1 -n kagent get secret kaimahi-notifier-token >/dev/null 2>&1; then
+            echo "the plane's own credential must not live in the agent namespace" >&2; exit 1
+          fi
+          # Wait for kubelet to project the Secrets (P5b delta). The proxy
+          # image is distroless (no shell, no cat to exec), so the check
+          # is the plane's own behaviour: a signed mention from a
+          # NON-approver answers 503 while the signing secret, the channel
+          # or the approver list is still missing, and exactly 403 once
+          # all three are readable. The notifier's file is proven by its
+          # audit row in the next step.
+          for _ in $(seq 1 60); do
+            EXPECT=403 bash scripts/slack-mention-probe.sh U0NOBODY "approve 00000000" >/dev/null 2>&1 && break
+            sleep 3
+          done
+          EXPECT=403 bash scripts/slack-mention-probe.sh U0NOBODY "approve 00000000"
+      - name: "Approvals from Slack: a filing is announced through the governed path (allowed 502 under the plane's credential)"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          # A fresh subject, so the filing is not deduped and the notifier
+          # fires: the denial files, the plane posts, the gateway admits
+          # the plane's call by allowlist (no grant), dials the absent
+          # upstream, 502 — same row shape as the P5a cycle, plane's name.
+          bash scripts/tool-denial-probe.sh k8s_get_pods
+          for _ in $(seq 1 30); do
+            KUBECTL="kubectl --context kind-kaimahi-p1" bash scripts/plane-admin.sh tool-audit kaimahi-plane > plane-audit.out 2>/dev/null
+            grep -qE 'kaimahi-plane +slack +tools/call +conversations_add_message +allowed +502' plane-audit.out && break
+            sleep 2
+          done
+          cat plane-audit.out
+          grep -E 'kaimahi-plane +slack +tools/call +conversations_add_message +allowed +502 *$' plane-audit.out
+          # Exactly ONE attempt: the gateway's 502 cannot say whether the
+          # post reached the server (a dial refusal and a reset after
+          # delivery answer alike), so it is recorded and NOT retried —
+          # a notification posted twice is the double-post this repo
+          # avoids. The notification is once per filing.
+          sleep 5
+          KUBECTL="kubectl --context kind-kaimahi-p1" bash scripts/plane-admin.sh tool-audit kaimahi-plane > plane-audit.out
+          test "$(grep -cE 'kaimahi-plane +slack +tools/call +conversations_add_message +allowed +502' plane-audit.out)" = 1
+      - name: "Approvals from Slack: a non-approver is refused 403 and audited; the request stays pending"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make approvals | tee approvals-p8b.out
+          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_events" {print $1}' approvals-p8b.out)
+          test -n "$id"
+          echo "$id" > p8b-request-id
+          EXPECT=403 bash scripts/slack-mention-probe.sh U0NOBODY "approve $id uses=1"
+          make inbound-audit HOOK=slack-events | tee inbound-audit-p8b.out
+          grep -E 'slack-events +inbound-slack +Ev[0-9A-F]+ +denied +403 +.*user U0NOBODY is not an approver' inbound-audit-p8b.out
+          make approvals | grep -q "$id"
+      - name: "Approvals from Slack: an approver's command mints a grant in their name, and enforcement honours it"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          id=$(cat p8b-request-id)
+          # The first block of the id is what a human types.
+          WANT="approved request $id" bash scripts/slack-mention-probe.sh U0CIAPPROVER "approve ${id%%-*} uses=1 ttl=10m"
+          make grants | tee grants-p8b.out
+          grep -E "hello-tools +tool +k8s_get_events +yes .* 0/1 .* slack:U0CIAPPROVER" grants-p8b.out
+          make approval-audit | tee approval-audit-p8b.out
+          grep -E 'hello-tools +tool +k8s_get_events +approved +slack:U0CIAPPROVER +expires=.* uses=1' approval-audit-p8b.out
+          # The grant a Slack approver minted admits the retried action.
+          bash scripts/tool-call-probe.sh k8s_get_events '{"namespace": "default"}'
+          make tool-audit | tee tool-audit-p8b.out
+          grep -E 'hello-tools +kagent-tools +tools/call +k8s_get_events +allowed +200 +granted' tool-audit-p8b.out
+          make inbound-audit HOOK=slack-events | tee inbound-audit-p8b-2.out
+          grep -E "slack-events +inbound-slack +Ev[0-9A-F]+ +command +200 +.*approve ${id%%-*} by slack:U0CIAPPROVER: approved request $id" inbound-audit-p8b-2.out
+          # The same command again: a decided request is immutable.
+          WANT="already approved by slack:U0CIAPPROVER" bash scripts/slack-mention-probe.sh U0CIAPPROVER "approve ${id%%-*} uses=9"
+          # The admin path still records the admin bearer as the decider.
+          grep -E 'hello-tools +tool +k8s_get_events +approved +admin ' approval-audit-p8b.out
+      - name: "Approvals from Slack: deny works and carries the identity"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make approvals | tee approvals-deny.out
+          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_pods" {print $1}' approvals-deny.out)
+          test -n "$id"
+          WANT="denied request $id" bash scripts/slack-mention-probe.sh U0CIAPPROVER "deny $id"
+          make approval-audit | tee approval-audit-deny.out
+          grep -E 'hello-tools +tool +k8s_get_pods +denied +slack:U0CIAPPROVER' approval-audit-deny.out
+          # A command reply also rides the governed path: more plane rows,
+          # still every one an allowed-502 dial of the absent upstream —
+          # never a 200 (CI reached a tool server) and never a denial.
+          KUBECTL="kubectl --context kind-kaimahi-p1" bash scripts/plane-admin.sh tool-audit kaimahi-plane | tee plane-audit-2.out
+          if grep -E 'kaimahi-plane .*(allowed +200|denied)' plane-audit-2.out; then
+            echo "the plane's own post reached a tool server or was denied" >&2; exit 1
+          fi
+          # The admin port is still on no Service.
+          ports=$(kubectl --context kind-kaimahi-p1 -n kaimahi get svc -o jsonpath='{range .items[*]}{.metadata.name}={.spec.ports[*].port} {end}')
+          case "$ports" in
+            *9091*) echo 'admin port exposed by a Service' >&2; exit 1 ;;
+          esac
       - name: Cluster state on failure
         if: failure() && steps.changes.outputs.docs_only != 'true'
         run: |

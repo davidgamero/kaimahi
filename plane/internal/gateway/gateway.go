@@ -405,7 +405,7 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request, name string,
 	// hatch from the committed upstream table.
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		slog.Error("gateway: tool upstream answered a redirect; refusing", "upstream", name, "status", resp.StatusCode)
-		http.Error(w, "tool upstream redirected (refused)", http.StatusBadGateway)
+		http.Error(w, MsgUpstreamRedirected, http.StatusBadGateway)
 		return http.StatusBadGateway
 	}
 	copyResponseHeaders(w.Header(), resp.Header)
@@ -450,7 +450,7 @@ func (h *handler) forwardProjected(w http.ResponseWriter, r *http.Request, cred 
 	}
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		slog.Error("gateway: tool upstream answered a redirect; refusing", "upstream", name, "status", resp.StatusCode)
-		http.Error(w, "tool upstream redirected (refused)", http.StatusBadGateway)
+		http.Error(w, MsgUpstreamRedirected, http.StatusBadGateway)
 		return
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -549,7 +549,7 @@ func (h *handler) terminate(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		slog.Error("gateway: tool upstream answered a redirect; refusing", "upstream", name, "status", resp.StatusCode)
-		http.Error(w, "tool upstream redirected (refused)", http.StatusBadGateway)
+		http.Error(w, MsgUpstreamRedirected, http.StatusBadGateway)
 		return
 	}
 	copyResponseHeaders(w.Header(), resp.Header)
@@ -569,6 +569,11 @@ func (h *handler) do(r *http.Request, up config.ToolUpstream, body []byte) (*htt
 	outReq.ContentLength = int64(len(body))
 	return h.d.client().Do(outReq)
 }
+
+// MsgUpstreamRedirected is the 502 body for a redirect the gateway
+// refused to follow — the one 502 issued before any byte reached the
+// upstream, which the notifier (P8b) may therefore retry.
+const MsgUpstreamRedirected = "tool upstream redirected (refused)"
 
 // errCredentialUnavailable marks a tool upstream whose own credential
 // could not be read. It is NOT an unreachable upstream: the request is

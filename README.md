@@ -94,6 +94,7 @@ port-forwards the controller, and invokes the agent.
 | 5b | Cluster portability + a real managed-cluster run | **demonstrated once** — the plane, a governed Copilot chat, a ledger row, a budget denial and a governed tool call, all on a real AKS cluster, which was then deleted ([docs/aks.md](docs/aks.md)) |
 | 7a | Network policy around the plane | **runs** — default-deny NetworkPolicy in both directions, proven by a probe on every PR ([docs/egress.md](docs/egress.md)) |
 | 7b | Inbound hooks (webhooks → agent), governed | **runs** — auth before any work, budget checked at the door, a bounded grant consumed per event, probed keyless in CI; rate limiter and queue are in-memory, single replica ([docs/inbound.md](docs/inbound.md)) |
+| 8 | Approvals routed to Slack, with the approver's identity | **runs** — a filed request is announced in the channel through the plane's own governed post; `@kaimahi approve <id>` from a listed approver mints the grant in their name, asserted keyless in CI with signed synthetic mentions; live verification on AKS pending ([docs/approvals.md](docs/approvals.md#deciding-from-slack)) |
 | — | `kaimahi agent create` CLI | considered and prototyped, not built — [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) |
 
 **Limitations, stated plainly.** Governance is opt-in per agent: an
@@ -101,7 +102,9 @@ port-forwards the controller, and invokes the agent.
 still acts with no audit. The plane's namespace is default-deny in both
 directions and the Slack pod is the one thing allowed out, on 443 only; the
 `kagent` and `ollama` namespaces are not policed. Internet-facing tool
-upstreams and richer approval routing remain unbuilt.
+upstreams remain unbuilt; Slack is the only chat route for approvals (the
+`make approve` path remains, recording `admin`), and the plane runs as one
+replica.
 
 Cloud-agnostic — it runs on any conformant Kubernetes — with first-class
 attention to the Azure path: **AKS** as the managed target, **Azure AI
@@ -132,6 +135,7 @@ Every control is one make target, and each is asserted in CI.
 | `make govern-tools` | puts the tools agent behind the enforcing MCP gateway — a committed upstream table as the egress rule at that seam, a per-credential tool allowlist projected into what the agent can even see, every call audited | [tool governance](docs/tool-governance.md) |
 | `make approve` | a denial files an approval request; this mints a bounded permit (expiry and/or use count) that widens exactly what was denied, then lapses | [approvals](docs/approvals.md) |
 | `make slack-secret` → `make slack-mcp` → `make govern-slack` | a demo agent behind an in-cluster Slack MCP server (third-party, digest-pinned, deployed by kagent) where **posting is not allowlisted**: denied, requested, granted one bounded use, posted, burned, denied again — all audited | [Slack](docs/slack.md) |
+| `make slack-approvers` → `make notify-slack` | the human, reachable where the demo lives: a filed request is announced in the channel by the plane's own governed post, a listed approver answers `@kaimahi approve <id> uses=1 ttl=15m` in Slack, and the grant and its audit rows carry `slack:<their id>` | [approvals](docs/approvals.md#deciding-from-slack) |
 
 It mounts at seams that already exist — the model `baseUrl` and the MCP
 tool server — rather than forking or wrapping the runtime. Every call through

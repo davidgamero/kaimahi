@@ -11,7 +11,9 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kaimahi-agents/kaimahi/plane/internal/pricing"
 )
@@ -120,6 +122,27 @@ type InboundHook struct {
 	// app is mentioned in, and an ingress that widens because a key was
 	// dropped from the table is the silent failure this file refuses.
 	SlackChannelsFile string `json:"slack_channels_file,omitempty"`
+	// SlackApproversFile (slack auth only, P8b) names a Secret-mounted
+	// file listing the Slack USER ids who may approve or deny an approval
+	// request by mentioning the bot (`@kaimahi approve <id> …`), comma-
+	// or newline-separated, read per request. Channel membership alone
+	// is not authority (D21): the room is where the demo lives, the list
+	// is who may decide. Like the channel file it names a FILE because a
+	// user id is a workspace identifier this public repo never carries.
+	// Unreadable or empty fails a COMMAND closed (503) and leaves every
+	// other mention exactly as it was. Required for slack auth: a hook
+	// that would treat "approve" as a question when the list went
+	// missing is the quiet failure this refuses.
+	SlackApproversFile string `json:"slack_approvers_file,omitempty"`
+	// SlackDefaultUses / SlackDefaultTTL bound a Slack approval that names
+	// no bounds (`@kaimahi approve <id>` alone). Defaults: one use, 15
+	// minutes — the tightest grant that still lets the retried action
+	// through, because an approval typed into a chat is the least
+	// deliberate form an approval takes, and a wider default would make
+	// the tightest grant the one nobody types. Explicit uses=/ttl= win;
+	// the store still refuses a grant with no bound at all.
+	SlackDefaultUses int    `json:"slack_default_uses,omitempty"`
+	SlackDefaultTTL  string `json:"slack_default_ttl,omitempty"`
 	// BudgetCredential is the governed credential the triggered agent
 	// spends under (its governed preset's credential). An event is
 	// refused at the door when that budget is already exhausted, so the
@@ -138,7 +161,33 @@ const (
 	DefaultInboundBurst   = 10
 	maxInboundBody        = 4 << 20
 	maxInboundRate        = 100_000
+	DefaultSlackUses      = 1
+	DefaultSlackTTL       = "15m"
+	maxSlackUses          = 1_000_000
 )
+
+// ApprovalNotifier (P8b) is how the plane tells a human that a request
+// is waiting: a post into the pinned Slack channel, THROUGH the plane's
+// own MCP gateway under the plane's OWN credential — so custody, the
+// allowlist, the channel pin and the tool audit apply to the plane's
+// message exactly as they apply to an agent's. The credential is
+// configuration (the plane is the trust root), issued like an agent's
+// and allowlisted to the one posting tool.
+type ApprovalNotifier struct {
+	// ToolUpstream names the tool_upstreams entry to post through (the
+	// Slack MCP server); Tool is the posting tool on it.
+	ToolUpstream string `json:"tool_upstream"`
+	Tool         string `json:"tool"`
+	// CredentialFile is the Secret-mounted file holding the plane's own
+	// kmh_ token for the gateway, read per post. Unreadable: the post is
+	// not attempted (recorded, and `make approvals` still lists the
+	// request) — a notification is never worth a fail-open.
+	CredentialFile string `json:"credential_file"`
+	// ChannelFile is the channel to post into: the same Secret key that
+	// pins the MCP server's posting tool and bounds the inbound hook
+	// (SLACK_MCP_ADD_MESSAGE_TOOL), so all three agree by construction.
+	ChannelFile string `json:"channel_file"`
+}
 
 type Config struct {
 	Upstreams map[string]Upstream `json:"upstreams"`
@@ -148,6 +197,9 @@ type Config struct {
 	// InboundHooks is the inbound bridge's table (P7b). Optional: absent
 	// means the inbound listener accepts nothing.
 	InboundHooks map[string]InboundHook `json:"inbound_hooks,omitempty"`
+	// ApprovalNotifier (P8b) is optional: absent means nobody is told
+	// when a request is filed, exactly as before.
+	ApprovalNotifier *ApprovalNotifier `json:"approval_notifier,omitempty"`
 }
 
 func Load(path string) (Config, error) {
@@ -221,8 +273,17 @@ func Parse(raw []byte) (Config, error) {
 		if !dnsLabel.MatchString(h.Agent) || !dnsLabel.MatchString(h.AgentNamespace) {
 			return Config{}, fmt.Errorf("config: inbound hook %q: agent and agent_namespace must be lowercase DNS labels", name)
 		}
-		if h.SlackChannelsFile != "" && h.Auth != AuthSlack {
-			return Config{}, fmt.Errorf("config: inbound hook %q: slack_channels_file is meaningless with %s auth", name, h.Auth)
+		if h.Auth != AuthSlack && (h.SlackChannelsFile != "" || h.SlackApproversFile != "" ||
+			h.SlackDefaultUses != 0 || h.SlackDefaultTTL != "") {
+			return Config{}, fmt.Errorf("config: inbound hook %q: slack_* fields are meaningless with %s auth", name, h.Auth)
+		}
+		if h.SlackDefaultUses < 0 || h.SlackDefaultUses > maxSlackUses {
+			return Config{}, fmt.Errorf("config: inbound hook %q: slack_default_uses out of range [0, %d]", name, maxSlackUses)
+		}
+		if h.SlackDefaultTTL != "" {
+			if _, err := ParseTTL(h.SlackDefaultTTL); err != nil {
+				return Config{}, fmt.Errorf("config: inbound hook %q: slack_default_ttl: %v", name, err)
+			}
 		}
 		switch h.Auth {
 		case AuthBearer:
@@ -239,6 +300,9 @@ func Parse(raw []byte) (Config, error) {
 			if h.Auth == AuthSlack && h.SlackChannelsFile == "" {
 				return Config{}, fmt.Errorf("config: inbound hook %q: slack auth requires slack_channels_file (the channel(s) the hook may be triggered from)", name)
 			}
+			if h.Auth == AuthSlack && h.SlackApproversFile == "" {
+				return Config{}, fmt.Errorf("config: inbound hook %q: slack auth requires slack_approvers_file (who may approve from Slack; an empty file means nobody)", name)
+			}
 		default:
 			return Config{}, fmt.Errorf("config: inbound hook %q: auth must be %q, %q or %q", name, AuthBearer, AuthKaimahiHMAC, AuthSlack)
 		}
@@ -249,8 +313,67 @@ func Parse(raw []byte) (Config, error) {
 			return Config{}, fmt.Errorf("config: inbound hook %q: rate_per_minute/burst out of range [0, %d]", name, maxInboundRate)
 		}
 	}
+	if n := c.ApprovalNotifier; n != nil {
+		// The notifier posts through a tool upstream the table names —
+		// nowhere else — with a credential and a channel it reads from
+		// files. Every field is required: a half-configured notifier
+		// would fail at the first filing, silently, in a goroutine.
+		if _, ok := c.ToolUpstreams[n.ToolUpstream]; !ok {
+			return Config{}, fmt.Errorf("config: approval_notifier: tool_upstream %q is not in tool_upstreams", n.ToolUpstream)
+		}
+		if !toolName.MatchString(n.Tool) {
+			return Config{}, fmt.Errorf("config: approval_notifier: invalid tool %q", n.Tool)
+		}
+		if n.CredentialFile == "" || n.ChannelFile == "" {
+			return Config{}, fmt.Errorf("config: approval_notifier: credential_file and channel_file are required")
+		}
+	}
 	return c, nil
 }
+
+// toolName bounds an MCP tool name as the admin surface does.
+var toolName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+// ParseTTL parses a grant lifetime the way the CLI does: an integer with
+// an optional s/m/h/d suffix (bare = seconds). Bounded to a month: a
+// longer grant is a config change in disguise (the admin surface's rule).
+func ParseTTL(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty ttl")
+	}
+	unit := time.Second
+	switch s[len(s)-1] {
+	case 's':
+		s = s[:len(s)-1]
+	case 'm':
+		unit, s = time.Minute, s[:len(s)-1]
+	case 'h':
+		unit, s = time.Hour, s[:len(s)-1]
+	case 'd':
+		unit, s = 24*time.Hour, s[:len(s)-1]
+	}
+	if s == "" || len(s) > 9 {
+		return 0, fmt.Errorf("want e.g. 90, 90s, 5m, 2h, 1d")
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("want e.g. 90, 90s, 5m, 2h, 1d")
+		}
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	// Bound BEFORE multiplying: 999999999d overflows int64 nanoseconds
+	// and could wrap back into range.
+	if n < 1 || n > int64(MaxTTL/unit) {
+		return 0, fmt.Errorf("ttl out of range [1s, 30d]")
+	}
+	return time.Duration(n) * unit, nil
+}
+
+// MaxTTL is the longest grant any path mints.
+const MaxTTL = 30 * 24 * time.Hour
 
 // dnsLabel is the shape shared by credential names (the admin surface's
 // rule), Kubernetes object names, and hook names: interpolated into
@@ -267,6 +390,12 @@ func (h InboundHook) Bounded() InboundHook {
 	}
 	if h.Burst == 0 {
 		h.Burst = DefaultInboundBurst
+	}
+	if h.SlackDefaultUses == 0 {
+		h.SlackDefaultUses = DefaultSlackUses
+	}
+	if h.SlackDefaultTTL == "" {
+		h.SlackDefaultTTL = DefaultSlackTTL
 	}
 	return h
 }

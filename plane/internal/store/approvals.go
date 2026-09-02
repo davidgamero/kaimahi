@@ -35,6 +35,9 @@ type ApprovalRequest struct {
 	Detail         string     `json:"detail"`
 	CreatedAt      time.Time  `json:"created_at"`
 	DecidedAt      *time.Time `json:"decided_at,omitempty"`
+	// DecidedBy names who decided (P8b): DecidedByAdmin for the admin
+	// bearer, "slack:<user id>" for a Slack command; empty while pending.
+	DecidedBy string `json:"decided_by"`
 }
 
 // Grant is one bounded permit. At least one of ExpiresAt/MaxUses is
@@ -50,6 +53,7 @@ type Grant struct {
 	Uses           int32      `json:"uses"`
 	Amount         *int64     `json:"amount,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
+	DecidedBy      string     `json:"decided_by"`
 }
 
 type ApprovalAuditEntry struct {
@@ -59,8 +63,17 @@ type ApprovalAuditEntry struct {
 	Subject        string    `json:"subject"`
 	Action         string    `json:"action"`
 	Bounds         string    `json:"bounds"`
+	DecidedBy      string    `json:"decided_by"`
 	CreatedAt      time.Time `json:"created_at"`
 }
+
+// ErrAmbiguous marks a request-id prefix that matches more than one
+// request.
+var ErrAmbiguous = errors.New("store: request id prefix is ambiguous")
+
+// DecidedByAdmin is the identity the admin path records: the admin
+// bearer is the only writer that port admits, and it is not a person.
+const DecidedByAdmin = "admin"
 
 // grantLive is the one liveness predicate every consuming and listing
 // query shares: not expired, not exhausted — evaluated by Postgres at
@@ -73,12 +86,18 @@ const grantLive = `(expires_at IS NULL OR expires_at > now())
 // pending is a no-op (filed=false). A fresh filing also writes the
 // 'requested' audit row in the same transaction.
 func (s *Store) FileApprovalRequest(ctx context.Context, credential, kind, subject, detail string) (filed bool, err error) {
+	_, filed, err = s.FileRequest(ctx, credential, kind, subject, detail)
+	return filed, err
+}
+
+// FileRequest is FileApprovalRequest returning the fresh request's id as
+// well (P8b: the notifier names it). id is empty when deduped.
+func (s *Store) FileRequest(ctx context.Context, credential, kind, subject, detail string) (id string, filed bool, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var id string
 	err = tx.QueryRow(ctx,
 		`INSERT INTO approval_request (credential_name, kind, subject, detail)
 		 VALUES ($1, $2, $3, $4)
@@ -86,28 +105,56 @@ func (s *Store) FileApprovalRequest(ctx context.Context, credential, kind, subje
 		 RETURNING id`,
 		credential, kind, subject, detail).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil // already pending — deduped
+		return "", false, nil // already pending — deduped
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign_key_violation
-		return false, fmt.Errorf("%w: no such credential", ErrNotFound)
+		return "", false, fmt.Errorf("%w: no such credential", ErrNotFound)
 	}
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO approval_audit (request_id, credential_name, kind, subject, action)
 		 VALUES ($1, $2, $3, $4, 'requested')`,
 		id, credential, kind, subject); err != nil {
-		return false, err
+		return "", false, err
 	}
-	return true, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return "", false, err
+	}
+	return id, true, nil
+}
+
+// RequestByPrefix resolves a request by a prefix of its id (P8b: what a
+// human types in Slack). Among ALL requests, not only pending ones, so a
+// decided request resolves and is reported as decided rather than as
+// unknown. prefix must be hex and dashes only (the caller's parser
+// guarantees it; LIKE then has no metacharacters to escape).
+func (s *Store) RequestByPrefix(ctx context.Context, prefix string) (ApprovalRequest, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, credential_name, kind, subject, status, detail, created_at, decided_at, decided_by
+		 FROM approval_request WHERE id::text LIKE $1 || '%' ORDER BY created_at LIMIT 2`, prefix)
+	if err != nil {
+		return ApprovalRequest{}, err
+	}
+	out, err := scanRequests(rows)
+	if err != nil {
+		return ApprovalRequest{}, err
+	}
+	switch len(out) {
+	case 0:
+		return ApprovalRequest{}, ErrNotFound
+	case 1:
+		return out[0], nil
+	}
+	return ApprovalRequest{}, ErrAmbiguous
 }
 
 // PendingApprovals lists pending requests, oldest first (the queue).
 func (s *Store) PendingApprovals(ctx context.Context) ([]ApprovalRequest, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, credential_name, kind, subject, status, detail, created_at, decided_at
+		`SELECT id, credential_name, kind, subject, status, detail, created_at, decided_at, decided_by
 		 FROM approval_request WHERE status = 'pending' ORDER BY created_at`)
 	if err != nil {
 		return nil, err
@@ -121,7 +168,7 @@ func scanRequests(rows pgx.Rows) ([]ApprovalRequest, error) {
 	for rows.Next() {
 		var r ApprovalRequest
 		if err := rows.Scan(&r.ID, &r.CredentialName, &r.Kind, &r.Subject,
-			&r.Status, &r.Detail, &r.CreatedAt, &r.DecidedAt); err != nil {
+			&r.Status, &r.Detail, &r.CreatedAt, &r.DecidedAt, &r.DecidedBy); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -135,8 +182,13 @@ func scanRequests(rows pgx.Rows) ([]ApprovalRequest, error) {
 // the approval (fail closed, stronger than the breaker contract).
 // Bound validation (at least one of expiresAt/maxUses; amount exactly
 // on budget kinds) is the caller's job and the schema's backstop.
+// decidedBy names the approver (DecidedByAdmin, or "slack:<user id>")
+// and is written onto the request, the grant and the audit row alike.
 func (s *Store) ApproveRequest(ctx context.Context, id string,
-	expiresAt *time.Time, maxUses *int32, amount *int64) (Grant, error) {
+	expiresAt *time.Time, maxUses *int32, amount *int64, decidedBy string) (Grant, error) {
+	if decidedBy == "" {
+		return Grant{}, fmt.Errorf("%w: a decision must name who decided", ErrBounds)
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Grant{}, err
@@ -167,16 +219,17 @@ func (s *Store) ApproveRequest(ctx context.Context, id string,
 		return Grant{}, fmt.Errorf("%w: AMOUNT is required for budget grants and forbidden otherwise", ErrBounds)
 	}
 
-	g := Grant{RequestID: r.ID, CredentialName: r.CredentialName,
-		Kind: r.Kind, Subject: r.Subject, ExpiresAt: expiresAt, MaxUses: maxUses, Amount: amount}
+	g := Grant{RequestID: r.ID, CredentialName: r.CredentialName, Kind: r.Kind, Subject: r.Subject,
+		ExpiresAt: expiresAt, MaxUses: maxUses, Amount: amount, DecidedBy: decidedBy}
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO permit_grant (request_id, credential_name, kind, subject, expires_at, max_uses, amount)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, created_at`,
-		r.ID, r.CredentialName, r.Kind, r.Subject, expiresAt, maxUses, amount).Scan(&g.ID, &g.CreatedAt); err != nil {
+		`INSERT INTO permit_grant (request_id, credential_name, kind, subject, expires_at, max_uses, amount, decided_by)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, created_at`,
+		r.ID, r.CredentialName, r.Kind, r.Subject, expiresAt, maxUses, amount, decidedBy).Scan(&g.ID, &g.CreatedAt); err != nil {
 		return Grant{}, err
 	}
 	if _, err := tx.Exec(ctx,
-		`UPDATE approval_request SET status = 'approved', decided_at = now() WHERE id = $1`, r.ID); err != nil {
+		`UPDATE approval_request SET status = 'approved', decided_at = now(), decided_by = $2 WHERE id = $1`,
+		r.ID, decidedBy); err != nil {
 		return Grant{}, err
 	}
 	bounds := ""
@@ -191,9 +244,9 @@ func (s *Store) ApproveRequest(ctx context.Context, id string,
 	}
 	bounds = strings.TrimSpace(bounds)
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO approval_audit (request_id, credential_name, kind, subject, action, bounds)
-		 VALUES ($1, $2, $3, $4, 'approved', $5)`,
-		r.ID, r.CredentialName, r.Kind, r.Subject, bounds); err != nil {
+		`INSERT INTO approval_audit (request_id, credential_name, kind, subject, action, bounds, decided_by)
+		 VALUES ($1, $2, $3, $4, 'approved', $5, $6)`,
+		r.ID, r.CredentialName, r.Kind, r.Subject, bounds, decidedBy); err != nil {
 		return Grant{}, err
 	}
 	return g, tx.Commit(ctx)
@@ -201,7 +254,11 @@ func (s *Store) ApproveRequest(ctx context.Context, id string,
 
 // DenyApprovalRequest decides a pending request negatively; the request
 // stays on record (denied), and a fresh denial can file a new one.
-func (s *Store) DenyApprovalRequest(ctx context.Context, id string) error {
+// decidedBy as for ApproveRequest.
+func (s *Store) DenyApprovalRequest(ctx context.Context, id string, decidedBy string) error {
+	if decidedBy == "" {
+		return fmt.Errorf("%w: a decision must name who decided", ErrBounds)
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -222,13 +279,14 @@ func (s *Store) DenyApprovalRequest(ctx context.Context, id string) error {
 		return ErrNotPending
 	}
 	if _, err := tx.Exec(ctx,
-		`UPDATE approval_request SET status = 'denied', decided_at = now() WHERE id = $1`, r.ID); err != nil {
+		`UPDATE approval_request SET status = 'denied', decided_at = now(), decided_by = $2 WHERE id = $1`,
+		r.ID, decidedBy); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO approval_audit (request_id, credential_name, kind, subject, action)
-		 VALUES ($1, $2, $3, $4, 'denied')`,
-		r.ID, r.CredentialName, r.Kind, r.Subject); err != nil {
+		`INSERT INTO approval_audit (request_id, credential_name, kind, subject, action, decided_by)
+		 VALUES ($1, $2, $3, $4, 'denied', $5)`,
+		r.ID, r.CredentialName, r.Kind, r.Subject, decidedBy); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -356,7 +414,7 @@ func (s *Store) Grants(ctx context.Context, credential string, limit int) ([]Gra
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, request_id, credential_name, kind, subject, expires_at, max_uses, uses, amount, created_at,
+		`SELECT id, request_id, credential_name, kind, subject, expires_at, max_uses, uses, amount, created_at, decided_by,
 		        `+grantLive+` AS live
 		 FROM permit_grant
 		 WHERE ($1 = '' OR credential_name = $1)
@@ -372,7 +430,7 @@ func (s *Store) Grants(ctx context.Context, credential string, limit int) ([]Gra
 		var g Grant
 		var l bool
 		if err := rows.Scan(&g.ID, &g.RequestID, &g.CredentialName, &g.Kind, &g.Subject,
-			&g.ExpiresAt, &g.MaxUses, &g.Uses, &g.Amount, &g.CreatedAt, &l); err != nil {
+			&g.ExpiresAt, &g.MaxUses, &g.Uses, &g.Amount, &g.CreatedAt, &g.DecidedBy, &l); err != nil {
 			return nil, nil, err
 		}
 		out = append(out, g)
@@ -388,7 +446,7 @@ func (s *Store) ApprovalAudit(ctx context.Context, credential string, limit int)
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT request_id, credential_name, kind, subject, action, bounds, created_at
+		`SELECT request_id, credential_name, kind, subject, action, bounds, decided_by, created_at
 		 FROM approval_audit
 		 WHERE ($1 = '' OR credential_name = $1)
 		 ORDER BY created_at DESC LIMIT $2`,
@@ -401,7 +459,7 @@ func (s *Store) ApprovalAudit(ctx context.Context, credential string, limit int)
 	for rows.Next() {
 		var e ApprovalAuditEntry
 		if err := rows.Scan(&e.RequestID, &e.CredentialName, &e.Kind, &e.Subject,
-			&e.Action, &e.Bounds, &e.CreatedAt); err != nil {
+			&e.Action, &e.Bounds, &e.DecidedBy, &e.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

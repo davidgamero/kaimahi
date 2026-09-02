@@ -177,7 +177,10 @@ func (f *fakeStore) findRequest(id string) *store.ApprovalRequest {
 }
 
 func (f *fakeStore) ApproveRequest(_ context.Context, id string,
-	expiresAt *time.Time, maxUses *int32, amount *int64) (store.Grant, error) {
+	expiresAt *time.Time, maxUses *int32, amount *int64, decidedBy string) (store.Grant, error) {
+	if decidedBy == "" {
+		return store.Grant{}, store.ErrBounds
+	}
 	r := f.findRequest(id)
 	if r == nil {
 		return store.Grant{}, store.ErrNotFound
@@ -191,16 +194,19 @@ func (f *fakeStore) ApproveRequest(_ context.Context, id string,
 	if (r.Kind == "budget") != (amount != nil) {
 		return store.Grant{}, store.ErrBounds
 	}
-	r.Status = "approved"
+	r.Status, r.DecidedBy = "approved", decidedBy
 	g := store.Grant{ID: "g-" + r.ID, RequestID: r.ID, CredentialName: r.CredentialName,
-		Kind: r.Kind, Subject: r.Subject, ExpiresAt: expiresAt, MaxUses: maxUses, Amount: amount}
+		Kind: r.Kind, Subject: r.Subject, ExpiresAt: expiresAt, MaxUses: maxUses, Amount: amount, DecidedBy: decidedBy}
 	f.grants = append(f.grants, g)
 	f.approvalAudits = append(f.approvalAudits, store.ApprovalAuditEntry{RequestID: r.ID,
-		CredentialName: r.CredentialName, Kind: r.Kind, Subject: r.Subject, Action: "approved"})
+		CredentialName: r.CredentialName, Kind: r.Kind, Subject: r.Subject, Action: "approved", DecidedBy: decidedBy})
 	return g, nil
 }
 
-func (f *fakeStore) DenyApprovalRequest(_ context.Context, id string) error {
+func (f *fakeStore) DenyApprovalRequest(_ context.Context, id string, decidedBy string) error {
+	if decidedBy == "" {
+		return store.ErrBounds
+	}
 	r := f.findRequest(id)
 	if r == nil {
 		return store.ErrNotFound
@@ -208,9 +214,9 @@ func (f *fakeStore) DenyApprovalRequest(_ context.Context, id string) error {
 	if r.Status != "pending" {
 		return store.ErrNotPending
 	}
-	r.Status = "denied"
+	r.Status, r.DecidedBy = "denied", decidedBy
 	f.approvalAudits = append(f.approvalAudits, store.ApprovalAuditEntry{RequestID: r.ID,
-		CredentialName: r.CredentialName, Kind: r.Kind, Subject: r.Subject, Action: "denied"})
+		CredentialName: r.CredentialName, Kind: r.Kind, Subject: r.Subject, Action: "denied", DecidedBy: decidedBy})
 	return nil
 }
 

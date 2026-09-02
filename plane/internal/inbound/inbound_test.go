@@ -44,6 +44,10 @@ type fakeStore struct {
 	filed     []string // credential/kind/subject
 	fileErr   error
 	admitCall int
+	// P8b: requests a Slack command may decide, keyed by full id.
+	requests   []*store.ApprovalRequest
+	decideErr  error
+	grantsMade []store.Grant
 }
 
 func newFakeStore() *fakeStore {
@@ -129,6 +133,81 @@ func (f *fakeStore) FileApprovalRequest(_ context.Context, credential, kind, sub
 	}
 	f.filed = append(f.filed, credential+"/"+kind+"/"+subject)
 	return true, nil
+}
+
+func (f *fakeStore) RequestByPrefix(_ context.Context, prefix string) (store.ApprovalRequest, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.decideErr != nil {
+		return store.ApprovalRequest{}, f.decideErr
+	}
+	var hits []*store.ApprovalRequest
+	for _, r := range f.requests {
+		if strings.HasPrefix(r.ID, prefix) {
+			hits = append(hits, r)
+		}
+	}
+	switch len(hits) {
+	case 0:
+		return store.ApprovalRequest{}, store.ErrNotFound
+	case 1:
+		return *hits[0], nil
+	}
+	return store.ApprovalRequest{}, store.ErrAmbiguous
+}
+
+func (f *fakeStore) find(id string) *store.ApprovalRequest {
+	for _, r := range f.requests {
+		if r.ID == id {
+			return r
+		}
+	}
+	return nil
+}
+
+func (f *fakeStore) ApproveRequest(_ context.Context, id string, expiresAt *time.Time, maxUses *int32, amount *int64, decidedBy string) (store.Grant, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if decidedBy == "" {
+		return store.Grant{}, store.ErrBounds
+	}
+	r := f.find(id)
+	if r == nil {
+		return store.Grant{}, store.ErrNotFound
+	}
+	if r.Status != "pending" {
+		return store.Grant{}, store.ErrNotPending
+	}
+	if expiresAt == nil && maxUses == nil {
+		return store.Grant{}, store.ErrBounds
+	}
+	if (r.Kind == "budget") != (amount != nil) {
+		return store.Grant{}, store.ErrBounds
+	}
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	r.Status, r.DecidedBy, r.DecidedAt = "approved", decidedBy, &now
+	g := store.Grant{ID: "g-" + r.ID[:8], RequestID: r.ID, CredentialName: r.CredentialName, Kind: r.Kind,
+		Subject: r.Subject, ExpiresAt: expiresAt, MaxUses: maxUses, Amount: amount, DecidedBy: decidedBy}
+	f.grantsMade = append(f.grantsMade, g)
+	return g, nil
+}
+
+func (f *fakeStore) DenyApprovalRequest(_ context.Context, id string, decidedBy string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if decidedBy == "" {
+		return store.ErrBounds
+	}
+	r := f.find(id)
+	if r == nil {
+		return store.ErrNotFound
+	}
+	if r.Status != "pending" {
+		return store.ErrNotPending
+	}
+	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
+	r.Status, r.DecidedBy, r.DecidedAt = "denied", decidedBy, &now
+	return nil
 }
 
 func (f *fakeStore) decisions(hook string) []string {

@@ -40,7 +40,7 @@ spec:
           # (AKS, private ACR) scripts/plane-deploy.sh renders both from
           # PLANE_IMAGE / PLANE_PULL_POLICY at deploy time, and the kind
           # path applies this document exactly as committed.
-          image: kaimahi-proxy:p8
+          image: kaimahi-proxy:p8b
           imagePullPolicy: Never
           env:
             - name: PGHOST
@@ -82,6 +82,9 @@ spec:
               readOnly: true
             - name: slack-channel
               mountPath: /etc/kaimahi/slack
+              readOnly: true
+            - name: notifier-cred
+              mountPath: /etc/kaimahi/notifier
               readOnly: true
           readinessProbe:
             httpGet:
@@ -147,13 +150,39 @@ spec:
         # token in that Secret never reaches this pod. Optional: without
         # it the slack-events hook fails closed (503 "hook channel
         # allowlist unavailable"); nothing else is affected.
+        #
+        # P8b: next to it, the APPROVERS — the Slack user ids who may
+        # approve or deny a request by mentioning the bot — from their
+        # own Secret (scripts/slack-approvers.sh), so the id list never
+        # rides the bot Secret into the MCP server's environment. A
+        # projected volume puts both files in one directory. Optional:
+        # without it a command fails closed (503 "hook approver list
+        # unavailable") and a question is answered as before.
         - name: slack-channel
+          projected:
+            sources:
+              - secret:
+                  name: kaimahi-slack-bot
+                  optional: true
+                  items:
+                    - key: SLACK_MCP_ADD_MESSAGE_TOOL
+                      path: channel
+              - secret:
+                  name: kaimahi-slack-approvers
+                  optional: true
+                  items:
+                    - key: approvers
+                      path: approvers
+        # P8b: the plane's OWN gateway credential, for telling the
+        # channel a request is waiting and replying to commands — a kmh_
+        # token issued to credential "kaimahi-plane" by `make notify-slack`
+        # and allowlisted to the posting tool only. Plane custody like the
+        # rest; read per post. Optional: without it nothing is posted and
+        # `make approvals` is still the queue.
+        - name: notifier-cred
           secret:
-            secretName: kaimahi-slack-bot
+            secretName: kaimahi-notifier-token
             optional: true
-            items:
-              - key: SLACK_MCP_ADD_MESSAGE_TOOL
-                path: channel
 ---
 apiVersion: v1
 kind: Service

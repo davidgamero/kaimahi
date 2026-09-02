@@ -74,7 +74,7 @@ test -s "$workdir/token" || { echo "$GOVERNED_SECRET missing/empty" >&2; exit 1;
 $KUBECTL -n "$NAMESPACE" port-forward --address 127.0.0.1 \
   svc/kaimahi-mcp-gateway "$GATEWAY_PORT:8081" >/dev/null 2>&1 &
 pf_pid=$!
-for _ in $(seq 1 50); do
+for _ in $(seq 1 150); do
   curl -fsS -o /dev/null "http://127.0.0.1:$GATEWAY_PORT/healthz" 2>/dev/null && break
   sleep 0.2
 done

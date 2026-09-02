@@ -97,13 +97,110 @@ make budget CAP_TOKENS=100      # restore whatever cap you actually want
   requests default to the `hello-tools` credential, budget requests to
   `hello-world`; override with `CRED=`.
 - **Decide**: `make approvals`, then `make approve ID=… [TTL=…] [USES=…]
-  [AMOUNT=…]` or `make deny ID=…`. A decided request is immutable; fresh
+  [AMOUNT=…]` or `make deny ID=…`; or, from Slack, `@kaimahi approve <id>`
+  ([below](#deciding-from-slack)). A decided request is immutable; fresh
   denials file fresh requests.
 - **Inspect**: `make grants` (liveness computed by the same predicate
   enforcement uses) and `make approval-audit` (requested / approved /
-  denied, with bounds: the approvals' own append-only trail). Approve
+  denied, with bounds and **who decided**: `admin` for the CLI, `slack:<user
+  id>` for a Slack command; the approvals' own append-only trail). Approve
   and deny commit the grant, the status change and the audit row in one
   transaction, so a decision that cannot be recorded does not happen.
+
+## Deciding from Slack
+
+The queue is no longer CLI-only. When a request is filed, by any of the
+sites that file one (a gateway tool denial, a budget-cap denial, the
+inbound door, `make request`), the plane posts into the pinned Slack
+channel that a decision is waiting, and an approver decides it from
+Slack, as themselves:
+
+```text
+  hello-slack ──▶ gateway: conversations_add_message DENIED, request filed
+                     │
+                     ▼  (the plane's OWN credential, through its own gateway)
+  #channel  ◀── "Kaimahi approval request `3f1c…`: credential hello-slack was
+                 denied tool conversations_add_message. To decide, mention
+                 the bot: @kaimahi approve 3f1c… [uses=N] [ttl=15m] …"
+  approver  ──▶ "@kaimahi approve 3f1c9a2e uses=1 ttl=15m"
+                     │ signature ✓, channel ✓, approver list ✓
+                     ▼
+  #channel  ◀── (in the thread) "approved request 3f1c…: grant 7b0d… uses=1
+                 expires=…"          make grants → decided by slack:U…
+```
+
+**The notification** goes through the governed posting path. The plane
+holds a credential of its own, `kaimahi-plane`, issued by `make
+notify-slack` the way `make govern-slack` issues the agent's, and
+allowlisted to the posting tool only. That is configuration rather than
+a grant, because the plane is the trust root; what it buys is that the
+plane's own message is authenticated, allowlisted, pinned to the one
+channel (the same Secret key that restricts the MCP server and bounds
+the inbound hook) and **audited** like any agent's: `make tool-audit
+CRED_TOOLS=kaimahi-plane` shows a row per attempt. The message carries
+the request id, the credential, the kind and subject, and the command to
+type. It is asynchronous and a convenience: a post that fails never
+un-files the request. A refusal the plane can see (the gateway refused
+before forwarding, the gateway could not be dialled, Slack said no) is
+retried, three attempts in all; anything that may have happened after
+the post went out (a timeout, a reset, the gateway's own 502, which it
+answers for a dial failure and for a reset after delivery alike) is
+recorded and **not** retried, because a notification posted twice is
+the double-post the rest of this repo is careful to avoid, and `make
+approvals` is always there.
+
+**The command.** `@kaimahi approve <id> [uses=N] [ttl=D] [amount=N]` or
+`@kaimahi deny <id>`, as an `app_mention` on the existing `slack-events`
+hook ([inbound.md](inbound.md#slack-events-the-loop)). `<id>` is the
+request id or its first block (8 characters; a longer prefix if that is
+ambiguous). The command is recognised after Slack's signature and the
+channel allowlist have been checked and *before* the grant gate: deciding
+a request needs no inbound grant (or approving would need an approval),
+runs no agent, and spends nothing. Bounds omitted get the hook's defaults,
+**one use and fifteen minutes** (`slack_default_uses` /
+`slack_default_ttl` in the hook table): an approval typed into a chat is
+the least deliberate form an approval takes, so its default is the
+tightest grant that still lets the retried action through. `uses=` or
+`ttl=` on the command wins; a budget request needs `amount=`; the store
+still refuses a grant with no bound at all. A decided request is
+immutable: the same command again answers "already approved by
+slack:U… at …". The outcome is posted back in the mention's thread
+through the same governed path.
+
+**Who may decide** is a Secret-mounted file of Slack user ids,
+`make slack-approvers` (stdin only: a user id is a workspace identifier
+and never lands in this repo), named in the hook table as
+`slack_approvers_file` next to the channel file and read per command.
+Channel membership is not authority: anyone in the room can ask the
+agent a question; only a listed user can decide. A command from anyone
+else is refused (403) and audited with their id; a list that is missing,
+empty or malformed fails every command closed (503) and changes nothing
+about questions. A bot-authored command, including the plane's own
+notification arriving back as an event, is ignored by the loop guard
+before it is ever parsed.
+
+**Identity.** `decided_by` is on the request, the grant and the audit
+row: `admin` for the CLI (the admin bearer, the only writer that port
+admits) and `slack:<user id>` for Slack. `make grants` and `make
+approval-audit` show it.
+
+```sh
+make slack-approvers          # paste the approver ids on stdin
+make notify-slack             # the plane's own credential, posting tool only
+# then, in the channel, after a denial has been announced:
+#   @kaimahi approve 3f1c9a2e uses=1 ttl=15m
+make grants                   # decided by slack:U…
+make approval-audit
+make inbound-audit HOOK=slack-events   # the command row, and any refused ones
+```
+
+On a kind cluster there is no Slack to type into; `make slack-mention
+SLACK_USER=U0EXAMPLE COMMAND='approve 3f1c9a2e'` fires a correctly signed
+synthetic mention at the hook the way `make inbound-fire` does, which is
+how CI asserts the whole path keyless. The notification's post then
+answers 502 (the Slack upstream does not exist there), once, and its
+audit row under `kaimahi-plane` is the proof it went through the
+governed path.
 
 ## Operational notes
 
@@ -120,10 +217,14 @@ make budget CAP_TOKENS=100      # restore whatever cap you actually want
 
 ## Limitations
 
-- **The queue is CLI-only.** No routing to Slack, email or a ticket;
-  nobody is notified that a request is waiting.
-- **"Who approved" is the admin bearer token, not a person.** There is
-  no per-approver identity.
+- **Routing is Slack only.** No email or ticket routing; a request is
+  announced in one pinned channel, and only when `make notify-slack` has
+  issued the plane's credential. The notification is best-effort by
+  design (a known refusal retried three times, an ambiguous failure
+  recorded and left); `make approvals` is the queue of record.
+- **Identity is a Slack user id, not a name.** `decided_by` records
+  `slack:<user id>`; display names are not resolved, and the CLI path
+  records `admin`, since the admin bearer is not a person.
 - **A grant does not widen the agent's own `toolNames`.** For a kagent
   agent, a granted tool becomes usable through discovery, and what the
   agent *sees* lags: enforcement is immediate, but the agent's

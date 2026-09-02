@@ -235,6 +235,13 @@ an `inbound` grant for the hook and the tool grant for the post. Nothing
 in this document changes for that; the bot's reply is just an approved
 post whose author happens to be a Slack user rather than `make slack-post`.
 
+The same mention hook carries one more verb: an approver can decide a
+pending request from the channel, and the plane announces filed
+requests there under a credential of its own, through this same
+gateway and posting tool ([approvals.md](approvals.md#deciding-from-slack)).
+Step 3 of the demo above can therefore be typed in Slack instead of the
+terminal.
+
 ## Why the agent is never the one denied
 
 Measured, not assumed: kagent wires an agent only to tools it
@@ -390,9 +397,13 @@ to this path:
 - **The Slack MCP server's own endpoint auth is not effective**
   (v1.3.0, http transport). The plane injects a credential the server
   does not check.
-- **Approval routing is not built.** The queue is CLI-only; the approver
-  identity is the admin bearer, not a person. The agent posts to Slack
-  and can be triggered from Slack; approvals are not routed there.
+- **Slack is the only chat route for approvals** (the CLI path, `make
+  approve`, remains and records `admin`). A filed request
+  is announced in the pinned channel by the plane's own governed post
+  (credential `kaimahi-plane`, allowlisted to the posting tool), and a
+  listed approver decides it with `@kaimahi approve <id>`; the grant
+  records `slack:<user id>` ([approvals.md](approvals.md#deciding-from-slack)).
+  Channel membership alone decides nothing.
 - **What the agent sees lags a grant** until kagent's next reconcile.
   Enforcement does not lag.
 - **A spent grant is not a delivered message** when the upstream

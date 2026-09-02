@@ -31,6 +31,7 @@ import (
 	"github.com/kaimahi-agents/kaimahi/plane/internal/gateway"
 	"github.com/kaimahi-agents/kaimahi/plane/internal/inbound"
 	"github.com/kaimahi-agents/kaimahi/plane/internal/meter"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/notify"
 	"github.com/kaimahi-agents/kaimahi/plane/internal/proxy"
 	"github.com/kaimahi-agents/kaimahi/plane/internal/redact"
 	"github.com/kaimahi-agents/kaimahi/plane/internal/store"
@@ -126,8 +127,29 @@ func main() {
 
 	st := store.New(pool)
 	mtr := &meter.Meter{Usage: st, Grants: st, Headroom: st}
+
+	// P8b: the approval notifier and the Slack command replier are one
+	// poster: a governed post through the plane's OWN gateway listener
+	// (loopback) under the plane's own credential. Optional — without
+	// the config block nobody is told, exactly as before. Every data
+	// path gets the store wrapped so the ONE filing function notifies
+	// once per fresh filing, whichever site filed it; with no notifier
+	// the wrapper is the store.
+	filing := notify.Store{Store: st, Filer: st}
+	var poster *notify.Poster
+	gatewayURL := "http://127.0.0.1" + portOf(mcpAddr)
+	if n := cfg.ApprovalNotifier; n != nil {
+		poster = notify.New(notify.Deps{
+			GatewayURL:     gatewayURL,
+			Upstream:       n.ToolUpstream,
+			Tool:           n.Tool,
+			CredentialFile: n.CredentialFile,
+			ChannelFile:    n.ChannelFile,
+		})
+		filing.N = poster
+	}
 	deps := proxy.Deps{
-		Store:  st,
+		Store:  filing,
 		Meter:  mtr,
 		Config: cfg,
 	}
@@ -138,14 +160,28 @@ func main() {
 	// The P4b MCP gateway shares this process (and its pool, redactor,
 	// and fail-closed machinery); its listener gets its own Service so
 	// the tool seam has its own address.
-	gwDeps := gateway.Deps{Store: st, Upstreams: cfg.ToolUpstreams}
+	gwDeps := gateway.Deps{Store: filing, Upstreams: cfg.ToolUpstreams}
 	// The P7b inbound bridge: same process, same pool and fail-closed
 	// machinery, its own Service. Its workers invoke agents asynchronously
 	// and run until shutdown.
-	bridge := inbound.New(inbound.Deps{Store: st, Meter: mtr, Hooks: cfg.InboundHooks, A2ABase: a2aBase})
+	bridgeDeps := inbound.Deps{Store: filing, Meter: mtr, Hooks: cfg.InboundHooks, A2ABase: a2aBase}
+	if poster != nil {
+		bridgeDeps.Replier = poster
+	}
+	bridge := inbound.New(bridgeDeps)
 	bridgeCtx, stopBridge := context.WithCancel(context.Background())
 	bridgeDone := make(chan struct{})
 	go func() { bridge.Run(bridgeCtx); close(bridgeDone) }()
+	// The poster outlives the bridge: a filing during the servers' drain
+	// still gets its post, and shutdown then bounds the poster like it
+	// bounds the bridge.
+	posterCtx, stopPoster := context.WithCancel(context.Background())
+	posterDone := make(chan struct{})
+	if poster != nil {
+		go func() { poster.Run(posterCtx); close(posterDone) }()
+	} else {
+		close(posterDone)
+	}
 
 	dataSrv := &http.Server{Addr: dataAddr, Handler: proxy.NewDataMux(deps),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 2 * time.Minute, IdleTimeout: 2 * time.Minute}
@@ -164,7 +200,8 @@ func main() {
 	go func() { errCh <- inboundSrv.ListenAndServe() }()
 	go func() { errCh <- adminSrv.ListenAndServe() }()
 	slog.Info("kaimahi-proxy up", "data", dataAddr, "mcp", mcpAddr, "inbound", inboundAddr, "admin", adminAddr,
-		"upstreams", len(cfg.Upstreams), "tool_upstreams", len(cfg.ToolUpstreams), "inbound_hooks", len(cfg.InboundHooks))
+		"upstreams", len(cfg.Upstreams), "tool_upstreams", len(cfg.ToolUpstreams), "inbound_hooks", len(cfg.InboundHooks),
+		"approval_notifier", cfg.ApprovalNotifier != nil, "notifier_gateway", gatewayURL)
 
 	select {
 	case <-ctx.Done():
@@ -182,6 +219,13 @@ func main() {
 		case <-shutdownCtx.Done():
 			slog.Warn("inbound workers did not drain before shutdown; queued events are lost (their admitted rows stand without an outcome)")
 		}
+		if poster != nil {
+			if n := poster.Drain(shutdownCtx); n > 0 {
+				slog.Warn("notifier did not drain before shutdown; queued posts are lost (the requests stay filed)", "queued", n)
+			}
+		}
+		stopPoster()
+		<-posterDone
 	case err := <-errCh:
 		// Any listener stopping before a shutdown signal is abnormal —
 		// even ErrServerClosed — so exit nonzero and let Kubernetes
@@ -221,4 +265,13 @@ func connectOnce(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 		return nil, err
 	}
 	return db.NewPool(ctx, dsn)
+}
+
+// portOf returns the ":port" part of a listen address such as ":8081" or
+// "0.0.0.0:8081" — the loopback origin the notifier dials.
+func portOf(addr string) string {
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		return addr[i:]
+	}
+	return ":" + addr
 }

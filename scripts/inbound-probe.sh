@@ -111,7 +111,7 @@ esac
 $KUBECTL -n "$NAMESPACE" port-forward --address 127.0.0.1 \
   svc/kaimahi-inbound "$INBOUND_PORT:8082" >/dev/null 2>&1 &
 pf_pid=$!
-for _ in $(seq 1 50); do
+for _ in $(seq 1 150); do
   curl -fsS -o /dev/null "http://127.0.0.1:$INBOUND_PORT/healthz" 2>/dev/null && break
   sleep 0.2
 done

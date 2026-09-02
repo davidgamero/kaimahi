@@ -38,7 +38,7 @@ under `inbound_hooks`. Three ship:
 |---|---|---|---|
 | `demo` | Kaimahi signed webhook (`kaimahi-hmac`) | `hello-world` | the generic primitive; CI drives it end to end |
 | `demo-bearer` | bearer token (`bearer`) | `hello-world` | for a source that can set a header but cannot sign |
-| `slack-events` | Slack request signing (`slack`) | `hello-slack` | the one named source; `app_mention` only, from one channel; live-verified on AKS, see below |
+| `slack-events` | Slack request signing (`slack`) | `hello-slack` | the one named source; `app_mention` only, from one channel; also carries the approval commands (`approve`/`deny`) from listed approvers (asserted keyless in CI; live verification pending); live-verified on AKS as the loop, see below |
 
 Each hook names the plane credential it is bound to, how the caller
 proves it, the agent it triggers, and `budget_credential`: the credential
@@ -307,6 +307,25 @@ call at all. A `denied 403` row appears there only when discovery is
 stale (a grant that just expired, before kagent's next reconcile) or a
 direct MCP client tries. Either way the second gate held.
 
+**Both approvals can be given from Slack.** The same hook carries a
+second verb: a mention whose words are `approve <id> [uses=N] [ttl=D] [amount=N]`
+or `deny <id>` is an approval command, recognised after the signature
+and the channel allowlist and *before* the grant gate, so deciding a
+request needs no inbound grant and never runs the agent. Only a Slack
+user in the hook's `slack_approvers_file` (a Secret-mounted list, `make
+slack-approvers`; membership of the channel is not enough) may give one:
+anyone else is refused 403 and audited, and a missing or empty list
+fails commands closed (503) while questions keep working. The plane
+also announces every filed request in the channel, through this same
+posting path under its own credential (`make notify-slack`), so the
+denial that filed the `inbound` request above shows up in the channel
+with the command to type. The whole model, the defaults (one use,
+fifteen minutes when the command names no bounds) and the identity the
+grant records (`slack:<user id>`) are in
+[approvals.md](approvals.md#deciding-from-slack). `make inbound-audit
+HOOK=slack-events` shows commands as `command 200` rows with the outcome
+in the detail, next to the mentions that ran the agent.
+
 ### Run it
 
 On an AKS cluster with the plane, the Copilot Secret and
@@ -316,6 +335,8 @@ On an AKS cluster with the plane, the Copilot Secret and
 ```sh
 TARGET=aks make inbound-credential CRED_INBOUND=inbound-slack   # the hook's identity
 TARGET=aks make inbound-secret HOOK=slack-events                # paste the app's Signing Secret (stdin)
+TARGET=aks make slack-approvers                                 # paste the approvers' Slack user ids (stdin)
+TARGET=aks make notify-slack                                    # the plane's own posting credential
 TARGET=aks make inbound-expose KAIMAHI_DNS_LABEL=<unique-label> # prints the Request URL
 TARGET=aks make exposure-scan                                   # exactly one port, one IP
 ```
@@ -330,11 +351,13 @@ reinstall the app; the token does not change). Mention the bot in the
 private test channel:
 
 ```sh
-make inbound-audit HOOK=slack-events   # denied 403, request filed
-make approvals && make approve ID=<uuid> USES=3 TTL=30m
+make inbound-audit HOOK=slack-events   # denied 403, request filed — and announced in the channel
+# in the channel: @kaimahi approve <id> uses=3 ttl=30m   (or: make approve ID=<uuid> USES=3 TTL=30m)
+make grants                            # decided by slack:U…
 # mention again → admitted 202 → completed, with the agent's token counts
 make ledger                            # the governed Copilot turn the mention caused
 make slack-audit                       # the post: denied until the tool grant, then allowed 200 granted <id>
+make tool-audit CRED_TOOLS=kaimahi-plane   # the plane's own announcements and replies, audited
 ```
 
 ### What the live run proved, and what CI proves
@@ -378,9 +401,17 @@ window, the `app_mention`-only rule and the bot/self guard, the channel
 allowlist failing closed, the mention → task mapping (stripped mention,
 quoted text, `channel_id` + `thread_ts`), the `X-Slack-No-Retry`
 policy, and replay by `event_id`. The generic signed hook is still what
-CI drives end to end on kind. Only the live run proves Slack's real
-signatures, the challenge over a real Request URL, the retry behaviour
-of a real Slack, the certificate, and the reply landing.
+CI drives end to end on kind. The approval commands are driven end to
+end on kind too, with synthetic signed mentions (`make slack-mention`,
+synthetic user ids): a non-approver refused and audited, an approver's
+command minting a grant in their name that the gateway then honours,
+the same command again answered "already decided", a denial, and the
+plane's own announcement admitted through the gateway (an `allowed 502`
+row under `kaimahi-plane`, the upstream being absent there). Only the
+live run proves Slack's real signatures, the challenge over a real
+Request URL, the retry behaviour of a real Slack, the certificate, the
+reply landing, the announcement landing, and a person typing the
+command.
 
 ## Putting it on the internet
 

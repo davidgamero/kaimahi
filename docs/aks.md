@@ -291,6 +291,7 @@ choose. It is opt-in, AKS-only, and documented in
 make slack-secret SLACK_CHANNEL=C0XXXXXXXXX && make slack-mcp && make govern-slack
 make inbound-credential CRED_INBOUND=inbound-slack
 make inbound-secret HOOK=slack-events                  # the app's Signing Secret, stdin
+make slack-approvers && make notify-slack              # who may approve from Slack; the plane's own posting credential
 make inbound-expose KAIMAHI_DNS_LABEL=<unique-label>   # prints the Request URL
 make exposure-scan                                     # one IP, one port: 443
 ```

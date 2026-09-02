@@ -135,7 +135,9 @@ func (h *handler) approve(w http.ResponseWriter, r *http.Request) {
 		t := time.Now().Add(time.Duration(*req.TTLSeconds) * time.Second)
 		expiresAt = &t
 	}
-	g, err := h.d.Store.ApproveRequest(r.Context(), id, expiresAt, req.MaxUses, req.Amount)
+	// The admin bearer is the identity this port admits (P8b: the Slack
+	// path records the person instead).
+	g, err := h.d.Store.ApproveRequest(r.Context(), id, expiresAt, req.MaxUses, req.Amount, store.DecidedByAdmin)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		http.Error(w, "no such request", http.StatusNotFound)
@@ -162,7 +164,7 @@ func (h *handler) denyRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "request id must be a UUID (see /admin/approvals)", http.StatusBadRequest)
 		return
 	}
-	err := h.d.Store.DenyApprovalRequest(r.Context(), id)
+	err := h.d.Store.DenyApprovalRequest(r.Context(), id, store.DecidedByAdmin)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		http.Error(w, "no such request", http.StatusNotFound)

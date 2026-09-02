@@ -75,7 +75,7 @@ test -s "$workdir/token" || { echo "kaimahi-admin secret missing/empty (run make
 $KUBECTL -n "$NAMESPACE" port-forward --address 127.0.0.1 \
   deploy/kaimahi-proxy "$ADMIN_PORT:9091" >/dev/null 2>&1 &
 pf_pid=$!
-for _ in $(seq 1 50); do
+for _ in $(seq 1 150); do
   curl -fsS -o /dev/null "http://127.0.0.1:$ADMIN_PORT/healthz" 2>/dev/null && break
   sleep 0.2
 done
@@ -335,16 +335,16 @@ d = json.load(open(sys.argv[1]))
 rows = d.get("grants") or []
 if not rows:
     print("no grants")
-fmt = "%-36s %-12s %-8s %-18s %-6s %-22s %-9s %-8s %s"
+fmt = "%-36s %-12s %-8s %-18s %-6s %-22s %-9s %-8s %-19s %s"
 if rows:
-    print(fmt % ("id", "credential", "kind", "subject", "live", "expires (UTC)", "uses", "amount", "created (UTC)"))
+    print(fmt % ("id", "credential", "kind", "subject", "live", "expires (UTC)", "uses", "amount", "created (UTC)", "decided by"))
 for g in rows:
     uses = str(g["uses"]) + ("/" + str(g["max_uses"]) if g.get("max_uses") is not None else "")
     print(fmt % (g["id"], g["credential"], g["kind"], g["subject"],
                  "yes" if g["live"] else "no",
                  (g.get("expires_at") or "-")[:19], uses,
                  g.get("amount") if g.get("amount") is not None else "-",
-                 g["created_at"][:19]))
+                 g["created_at"][:19], g.get("decided_by") or "-"))
 EOF
     ;;
   approval-audit)
@@ -356,10 +356,11 @@ EOF
 import json, sys
 d = json.load(open(sys.argv[1]))
 rows = d.get("entries") or []
-fmt = "%-19s %-12s %-8s %-18s %-10s %s"
-print(fmt % ("created (UTC)", "credential", "kind", "subject", "action", "bounds"))
+fmt = "%-19s %-12s %-8s %-18s %-10s %-18s %s"
+print(fmt % ("created (UTC)", "credential", "kind", "subject", "action", "decided by", "bounds"))
 for e in rows:
-    print(fmt % (e["created_at"][:19], e["credential"], e["kind"], e["subject"], e["action"], e["bounds"]))
+    print(fmt % (e["created_at"][:19], e["credential"], e["kind"], e["subject"], e["action"],
+                 e.get("decided_by") or "-", e["bounds"]))
 EOF
     ;;
   inbound-audit)

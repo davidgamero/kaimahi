@@ -38,8 +38,8 @@ type Store interface {
 	// surface (admin).
 	FileApprovalRequest(ctx context.Context, credential, kind, subject, detail string) (filed bool, err error)
 	PendingApprovals(ctx context.Context) ([]store.ApprovalRequest, error)
-	ApproveRequest(ctx context.Context, id string, expiresAt *time.Time, maxUses *int32, amount *int64) (store.Grant, error)
-	DenyApprovalRequest(ctx context.Context, id string) error
+	ApproveRequest(ctx context.Context, id string, expiresAt *time.Time, maxUses *int32, amount *int64, decidedBy string) (store.Grant, error)
+	DenyApprovalRequest(ctx context.Context, id string, decidedBy string) error
 	Grants(ctx context.Context, credential string, limit int) ([]store.Grant, []bool, error)
 	ApprovalAudit(ctx context.Context, credential string, limit int) ([]store.ApprovalAuditEntry, error)
 	// P7b inbound: the audit trail read (admin); the bridge's own data

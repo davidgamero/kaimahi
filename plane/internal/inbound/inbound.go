@@ -60,6 +60,18 @@ type Store interface {
 	RecordInboundAudit(ctx context.Context, e store.InboundAuditEntry) error
 	AdmitInboundEvent(ctx context.Context, hook, credential, delivery, agent string) (eventID, grantID string, err error)
 	FileApprovalRequest(ctx context.Context, credential, kind, subject, detail string) (filed bool, err error)
+	// P8b: approval commands from Slack decide requests here, with the
+	// approver's identity.
+	RequestByPrefix(ctx context.Context, prefix string) (store.ApprovalRequest, error)
+	ApproveRequest(ctx context.Context, id string, expiresAt *time.Time, maxUses *int32, amount *int64, decidedBy string) (store.Grant, error)
+	DenyApprovalRequest(ctx context.Context, id string, decidedBy string) error
+}
+
+// Replier posts a Slack command's outcome back into the thread it was
+// typed in, through the governed posting path (notify.Poster). Nil
+// means outcomes are logged, not posted.
+type Replier interface {
+	Reply(text, threadTS string)
 }
 
 // Meter previews the target budget without consuming. *meter.Meter
@@ -88,6 +100,7 @@ type Deps struct {
 	// InvokeTimeout bounds one agent turn (default 5 minutes).
 	InvokeTimeout time.Duration
 	Now           func() time.Time // nil = time.Now
+	Replier       Replier
 }
 
 const (
@@ -339,6 +352,18 @@ func (b *Bridge) receive(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// P8b: an approval command (`approve <id> …` / `deny <id>`) is the
+	// second verb on this boundary. Recognised here — after the signature
+	// and the channel, before the budget and the grant — because deciding
+	// a request must not itself need a grant, and never runs the agent.
+	// Anything that is not a command continues exactly as before.
+	if h.Auth == config.AuthSlack {
+		if c, ok := parseCommand(ev.slack.text); ok {
+			b.handleCommand(w, r, name, h, delivery, cred, ev, c)
+			return
+		}
+	}
+
 	// Budget preview on the credential the triggered agent spends under.
 	// A target whose credential does not exist is not governed, and an
 	// ungoverned agent is not triggerable from outside.
@@ -420,6 +445,11 @@ func (b *Bridge) receive(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"event_id": eventID, "hook": name, "agent": agentRef(h), "grant": grantID, "status": "admitted"})
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // authenticate resolves the hook's credential by the hook's proof mode
