@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 /**
  * Manifests reach kubectl over stdin, never a temp file. Nothing this tool
@@ -46,11 +47,47 @@ export async function currentContext() {
 }
 
 /**
- * kind contexts are named `kind-<cluster>`. Everything else is treated as
- * potentially real infrastructure and needs an explicit yes.
+ * Delegate the apply-time safety decision to scripts/kube-guard.sh.
+ *
+ * The CLI used to decide this itself by matching `kind-` on the context
+ * name. That is exactly the check kube-guard.sh warns against: a context
+ * name is cosmetic, and anyone can call an AKS context `kind-prod`. The
+ * script does the substantive thing — it also resolves the API server
+ * address and requires both to agree — prints where the action will land,
+ * and fails closed when it cannot tell.
+ *
+ * Reusing it also keeps one definition of "is this safe to write to" for
+ * make targets, the probe scripts, and this tool.
  */
-export function isLocalContext(context) {
-  return /^kind-/.test(context) || context === "minikube" || context === "docker-desktop";
+export function guard(context, action, { namespace = "kagent", confirm = false } = {}) {
+  const script = fileURLToPath(new URL("../../scripts/kube-guard.sh", import.meta.url));
+  return new Promise((resolve, reject) => {
+    const child = spawn("bash", [script, action], {
+      // stdin inherited so the script can ask for confirmation; stdout and
+      // stderr inherited so its banner reaches the user unbuffered.
+      stdio: "inherit",
+      // --yes maps onto the guard's own non-interactive contract rather
+      // than adding a second way to say yes.
+      env: {
+        ...process.env,
+        KUBE_CTX: context,
+        KUBE_NS: namespace,
+        ...(confirm ? { KAIMAHI_CONFIRM: context } : {}),
+      },
+    });
+    child.on("error", (err) =>
+      reject(
+        err.code === "ENOENT"
+          ? new Error(`cannot run the context guard at ${script}`)
+          : err,
+      ),
+    );
+    child.on("close", (code) =>
+      code === 0
+        ? resolve()
+        : reject(new Error("refused by the context guard — nothing was applied")),
+    );
+  });
 }
 
 export async function serverDryRun(manifest, context) {

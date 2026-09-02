@@ -23,31 +23,36 @@ over SSH, pipes into other commands, and can be read in a code review. Every
 step of the journey — provision, deploy, converse, switch models, add tools,
 tear down — is one.
 
-**Where this is going.** One command that does the heavy lifting, run
-without cloning anything:
+**The front door.** One command that does the heavy lifting, run without
+cloning anything:
 
 ```bash
-npx kaimahi create agent support-triage \
-  --model anthropic \
+npx github:kaimahi-agents/kaimahi agent create support-triage \
   --instructions ./triage.md \
-  --tools kagent-tool-server:k8s_get_resources \
+  --tools kaimahi-tools:k8s_get_resources \
   --out k8s/
 ```
 
-It generates the agent-as-code YAML — Agent, ModelConfig, tool wiring, and
-the Secret *references* to go with them — validates it (server-side dry-run
-when a cluster is reachable), and prints the next command. You get a
-reviewable file, not a black box: the artifact is the same YAML you would
-have hand-written, and it is yours from that point on.
+It generates the agent-as-code YAML — Agent, model preset reference, tool
+wiring with a mandatory allowlist, and Secret *references* rather than
+secrets — validates it (server-side dry run when a cluster is reachable),
+and prints the next command. You get a reviewable file, not a black box: the
+artifact is the same YAML you would have hand-written, and it is yours from
+that point on.
+
+With no `--model` it defaults to a **governed** preset, so a scaffolded agent
+is metered, budgeted and audited from its first call.
 
 That is the whole reason to build a CLI at all. A Makefile requires a clone;
 `npx` does not. Consumption without a clone is the property being chased.
 
-> **`kaimahi create` is proposed, not built.** No package is published and
-> the name is unclaimed. The design, a survey of what already exists, and
-> the security model are in [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) —
-> including the honest case *against* building it. Everything below this
-> line works today.
+> **Built, not published.** Per D19 the CLI is internal for now — run it
+> straight from the repo as above; publishing to npm waits on D9's naming
+> gates. `agent create` is the only command: reading, updating and deleting
+> agents stay with `kubectl` and the kagent CLI. Design, survey and security
+> model in [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md); what it does and
+> what is verified in [docs/CLI-PROTOTYPE.md](docs/CLI-PROTOTYPE.md).
+
 
 **Where it is now.** The same journey, from a clone, via make:
 

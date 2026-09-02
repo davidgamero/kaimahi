@@ -77,7 +77,7 @@ test("renderAgent emits the tools block with the allowlist", () => {
     instructions: "x",
     tools: [{ server: "kagent-tool-server", tools: ["k8s_get_resources"] }],
   });
-  assert.match(y, /toolNames:\n\s+- k8s_get_resources/);
+  assert.match(y, /toolNames:\n\s+- 'k8s_get_resources'/);
 });
 
 test("a hostile description is refused, not sanitised", () => {
@@ -104,4 +104,30 @@ test("hostile instructions stay inside the block scalar", () => {
   // Present as literal text, indented into the scalar — never as a sibling key.
   assert.ok(y.includes("      spec:"));
   assert.ok(!/^spec:\n  evil/m.test(y));
+});
+
+test("a tool name cannot break out of the YAML list (CWE-74)", () => {
+  // Reported on PR #16: tool values were trimmed but not validated, so a
+  // newline could close the sequence and append an entry nobody reviewed.
+  assert.throws(
+    () => parseToolSpec("srv:ok\n            - secret_tool"),
+    /not a valid tool name/,
+  );
+  assert.throws(() => parseToolSpec("srv:ok,bad name"), /not a valid tool name/);
+  assert.throws(() => parseToolSpec("srv:ok,'quoted'"), /not a valid tool name/);
+  assert.throws(() => parseToolSpec("srv:a:b"), /not a valid tool name/);
+  assert.deepEqual(parseToolSpec("srv:k8s_get_resources,helm.list-1"), {
+    server: "srv",
+    tools: ["k8s_get_resources", "helm.list-1"],
+  });
+});
+
+test("emitted tool names are quoted, so validation is not the only defence", () => {
+  const y = renderAgent({
+    name: "a1",
+    modelConfig: "ollama",
+    instructions: "x",
+    tools: [{ server: "srv", tools: ["k8s_get_resources"] }],
+  });
+  assert.ok(y.includes("- 'k8s_get_resources'"));
 });

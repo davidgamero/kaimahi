@@ -77,9 +77,9 @@ WARNING: tool server 'kagent-tool-server' is ungoverned — calls are not
 |---|---|
 | **Never accepts a credential** — no flag, env var, or file | The generator emits Secret *references*. A scaffolder that can take a key is a scaffolder that can leak one into a file you are about to commit. |
 | **Refuses key-shaped output** | Fail closed: if anything matching a known key shape reaches the manifest, writing stops. |
-| **Tool allowlist is mandatory** | `--tools server` is refused; you must write `server:tool1,tool2`. An agent is never wired to every tool a server offers. |
+| **Tool allowlist is mandatory, and validated** | `--tools server` is refused; you must write `server:tool1,tool2`. Names must be identifiers and are quoted on emission, so a newline cannot close the YAML sequence and append a tool nobody reviewed (CWE-74, found in review). |
 | **Generate, don't mutate** | Default is stdout. `--apply` is opt-in. |
-| **Non-local contexts need confirmation** | Applying to a non-kind context prompts unless `--yes`. |
+| **Blast radius is `scripts/kube-guard.sh`'s call** | `--apply` delegates to the repo's existing guard, which checks the API server address as well as the context name and fails closed. The CLI used to match `kind-` on the name — cosmetic, and a context called `kind-prod` sailed through. `--yes` maps onto the guard's own `KAIMAHI_CONFIRM`. |
 | **Won't overwrite** | `--out` uses an exclusive create, so an edited file is never clobbered. |
 | **Preflight on ModelConfig** | A missing ModelConfig is admitted by the API server and then fails to reconcile silently. The CLI checks first and prints the fix. |
 | **Zero runtime dependencies** | `npx` executes remote code; the smallest dependency tree is the smallest supply chain. YAML is emitted by a hand-audited 80-line module rather than a library. |

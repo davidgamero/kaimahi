@@ -14,7 +14,7 @@ import { resolve, join } from "node:path";
 import { renderAgent, parseToolSpec } from "../lib/agent.js";
 import { DEFAULT_PRESET, presetNames, lookupPreset, toolServerIsGoverned } from "../lib/presets.js";
 import { loadScenario, scenarioNames } from "../lib/scenarios.js";
-import { currentContext, isLocalContext, serverDryRun, apply, modelConfigExists } from "../lib/cluster.js";
+import { currentContext, guard, serverDryRun, apply, modelConfigExists } from "../lib/cluster.js";
 
 const USAGE = `kaimahi — scaffold governed agent-as-code onto Kubernetes
 
@@ -36,7 +36,8 @@ Options:
   --dry-run               validate against the cluster's live CRDs
   --apply                 apply to the current context
   --context <ctx>         kube context to use
-  --yes                   do not prompt
+  --yes                   confirm the target context non-interactively
+                          (equivalent to KAIMAHI_CONFIRM=<context>)
   -h, --help              this text
 
 The tool never accepts a credential. Agents reference Secrets by name; key
@@ -45,16 +46,6 @@ material stays in the cluster, or in the governance plane.`;
 function fail(message, code = 1) {
   process.stderr.write(`kaimahi: ${message}\n`);
   process.exit(code);
-}
-
-async function confirm(question) {
-  if (!process.stdin.isTTY) return false;
-  process.stderr.write(`${question} [y/N] `);
-  const answer = await new Promise((res) => {
-    process.stdin.setEncoding("utf8");
-    process.stdin.once("data", (d) => res(String(d).trim().toLowerCase()));
-  });
-  return answer === "y" || answer === "yes";
 }
 
 async function agentCreate(argv) {
@@ -167,6 +158,22 @@ async function agentCreate(argv) {
 
   const context = opts.context ?? (opts["dry-run"] || opts.apply ? await currentContext() : null);
 
+  // Guard FIRST, before any call against the cluster. The preflight below
+  // is only a read, so it is not a safety problem — but running it first
+  // meant someone aiming at production got "ModelConfig not found" instead
+  // of the guard's banner naming the cluster they were about to write to.
+  // Say where the action is going before doing anything with it.
+  if (opts.apply) {
+    try {
+      await guard(context, `kaimahi agent create ${name} --apply`, {
+        namespace: opts.namespace,
+        confirm: opts.yes,
+      });
+    } catch (err) {
+      fail(err.message, 2);
+    }
+  }
+
   // Fail closed before touching the cluster: an Agent whose ModelConfig is
   // missing is admitted and then quietly fails to reconcile.
   if (opts["dry-run"] || opts.apply) {
@@ -191,14 +198,6 @@ async function agentCreate(argv) {
   }
 
   if (opts.apply) {
-    // Blast radius: applying to something that is not a local dev cluster is
-    // the obvious foot-gun, so it needs an explicit yes.
-    if (!isLocalContext(context) && !opts.yes) {
-      const ok = await confirm(
-        `Context '${context}' is not a local kind/minikube cluster. Apply anyway?`,
-      );
-      if (!ok) fail("aborted — no changes made", 2);
-    }
     try {
       const out = await apply(manifest, context);
       process.stderr.write(`${out}\n`);
@@ -223,7 +222,7 @@ async function agentCreate(argv) {
       );
     }
   }
-  if (!preset.keyless && preset.secret) {
+  if (preset.secretSource === "model-secret") {
     notes.push(
       `this preset expects Secret '${preset.secret}' in namespace ${opts.namespace}; ` +
         `create it with make model-secret NAME=${preset.secret} (stdin only).`,
@@ -232,7 +231,8 @@ async function agentCreate(argv) {
   if (preset.governed) {
     notes.push(
       `governed: ensure the plane is deployed (make plane) and a credential issued ` +
-        `(make govern CRED=${name}), then cap it with make budget CRED=${name} CAP_CENTS=<n>.`,
+        `(make govern CRED=${name}) — that also creates Secret '${preset.secret}'. ` +
+        `Cap it with make budget CRED=${name} CAP_CENTS=<n>.`,
     );
   }
   if (!opts.apply) {

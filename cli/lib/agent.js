@@ -9,9 +9,23 @@ import { lookupPreset } from "./presets.js";
  * scaffolder that can silently widen an agent's reach is a liability, and the
  * whole point of the tools block is that the surface is enumerated in the
  * YAML where a reviewer can see it.
+ *
+ * Tool names are validated, not just trimmed. Emitted as a bare YAML scalar,
+ * a name containing a newline could close the sequence and open new keys —
+ * `--tools 'srv:ok\n            - secret_tool'` would grant a capability
+ * nobody reviewed. MCP tool names are identifiers, so the safe set is small
+ * and an exact match is cheap.
  */
+const TOOL_NAME = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/;
+
 export function parseToolSpec(spec) {
-  const [server, list] = String(spec).split(":");
+  const raw = String(spec);
+  // Split on the FIRST colon only: a stray colon later is part of the list
+  // and will fail tool-name validation rather than being silently dropped.
+  const sep = raw.indexOf(":");
+  const server = sep === -1 ? raw : raw.slice(0, sep);
+  const list = sep === -1 ? undefined : raw.slice(sep + 1);
+
   if (!server || !isValidName(server)) {
     throw new Error(`--tools: '${spec}' does not start with a valid server name`);
   }
@@ -24,6 +38,14 @@ export function parseToolSpec(spec) {
   const tools = list.split(",").map((t) => t.trim()).filter(Boolean);
   if (tools.length === 0) {
     throw new Error(`--tools: '${spec}' has an empty tool allowlist`);
+  }
+  for (const t of tools) {
+    if (!TOOL_NAME.test(t)) {
+      throw new Error(
+        `--tools: '${t}' is not a valid tool name. Expected an identifier ` +
+          `(letters, digits, '_', '.', '-'), so a name cannot break out of the YAML list.`,
+      );
+    }
   }
   return { server, tools };
 }
@@ -92,7 +114,10 @@ export function renderAgent({
         `          kind: RemoteMCPServer`,
         `          name: ${server}`,
         `          toolNames:`,
-        ...allow.map((t) => `            - ${t}`),
+        // Quoted as well as validated. Validation is the real defence; the
+        // quotes mean a future loosening of TOOL_NAME cannot silently become
+        // a YAML-injection bug.
+        ...allow.map((t) => `            - ${quote(t)}`),
       );
     }
   }

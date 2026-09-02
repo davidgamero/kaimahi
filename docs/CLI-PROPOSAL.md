@@ -92,8 +92,12 @@ D9 says needs explicit approval and two ungated reviews first.
 
 Scaffold-only. Everything kagent already does is delegated, not wrapped.
 
+> Built as specified, with one change ruled later: the grammar is
+> **noun-verb** (`agent create`), not `create agent`, so resources group as
+> the surface grows. Shipped shape and flags: `docs/CLI-PROTOTYPE.md`.
+
 ```bash
-npx kaimahi create agent <name> [--options]
+npx github:kaimahi-agents/kaimahi agent create <name> [--options]
 ```
 
 | Flag | Purpose |
@@ -153,8 +157,10 @@ credential-adjacent tool. Both need answering before code, not after.
   `npx --ignore-scripts` as safe.
 - Pin and lock transitive dependencies; prefer a near-zero-dependency
   implementation. A scaffolder that emits YAML does not need a large tree.
-- Document a pinned invocation (`npx kaimahi@<version>`); bare `npx` always
-  resolves to latest, which is a mutable remote-code channel.
+- Document a pinned invocation. While unpublished (D19) that means a git
+  ref — `npx github:kaimahi-agents/kaimahi#<tag>` — because a bare branch
+  reference, like a bare `npx` on a published package, is a mutable
+  remote-code channel.
 - Any binary the CLI fetches (e.g. the kagent CLI) must be checksum-verified
   before execution — the Makefile already does this and the CLI must not
   regress it.
@@ -188,22 +194,24 @@ governance, is a real risk the CLI introduces. Until P4, the CLI should
 default to the keyless Ollama preset and print the ungoverned-spend warning
 whenever a hosted preset is selected.
 
-## Open decisions for ruling
+## Decided — D19 (2026-09-01)
 
-1. **Publish or not.** The `npx` case requires npm publication, which is an
-   outward-facing name claim needing explicit approval, and D9's cultural
-   read and trademark counsel are still open. Without publication, use
-   `npx github:kaimahi-agents/kaimahi` for dev and treat the CLI as internal.
-2. **The CRUD line** (deferred above).
-3. **`up` vs. `install`** — build the cluster-zero command, or leave that to
-   the Makefile and ship only `create agent`?
-4. **Sequencing.** P3 has merged, so the contention for `k8s/` and the
-   Makefile is gone — but P4 (governance) is now the next lane, and it
-   mounts at the same seams a CLI would scaffold. Building the CLI first
-   risks scaffolding a shape P4 then has to change; building it after means
-   it can generate governed agents from day one.
-5. **Language/runtime.** `npx` implies Node; the rest of the repo is YAML +
-   shell + a little Python. A Node dependency is net-new surface.
+All five are ruled; kept here so the reasoning above still reads against its
+outcome. The prototype is `docs/CLI-PROTOTYPE.md`.
+
+1. **Publish or not** → **not yet.** Internal use is
+   `npx github:kaimahi-agents/kaimahi`; publishing waits on D9's cultural
+   read and trademark counsel, and is a one-line change once they clear.
+   The manifest is `private: true` so an accidental publish fails.
+2. **The CRUD line** → **scaffold-only.** `agent create` is the only
+   command; read, update and delete are refused and print the `kubectl` or
+   `kagent` command that already does the job.
+3. **`up` vs `install`** → **neither.** The Makefile owns cluster bring-up.
+4. **Sequencing** → moot: P4 shipped first, so the CLI scaffolds governed
+   agents by default, which is the outcome this section hoped for.
+5. **Language/runtime** → **Node accepted**, conditional on a
+   zero-runtime-dependency tree, with `make cli-test` in CI. CI asserts the
+   dependency count is still zero.
 
 ## Explicitly not proposed
 

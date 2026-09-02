@@ -73,7 +73,10 @@ PLANE_PULL_POLICY ?= IfNotPresent
 KUBECTL        := kubectl --context $(KUBE_CTX)
 CRED           ?= hello-world
 CRED_TOOLS     ?= hello-tools
-SCENARIO_MODEL ?= governed-ollama
+# Follows the environment: governed-ollama on kind, governed-copilot on
+# AKS (D15 deploys no Ollama there). Hardcoding the ollama preset made
+# scenario-billing reference a ModelConfig that cannot exist on AKS.
+SCENARIO_MODEL ?= $(GOVERNED_PRESET)
 TOOLS          ?= k8s_get_resources
 # P5a: the Slack seam has its own credential, agent and allowlist. The
 # read-only tool is allowlisted from the start; POSTING is not — it is
@@ -103,7 +106,7 @@ SLACK_TOOLNAMES_JSON = $(if $(filter -,$(SLACK_AGENT_TOOLS)),,"$(subst $(comma),
 	slack-post slack-down aks-cluster aks-creds aks-down \
 	netpol-verify egress-copilot egress-copilot-off \
 	inbound-credential inbound-secret inbound-fire inbound-audit \
-	scenario-billing cli-test
+	scenario-billing scenario-model cli-test
 
 # guard: the context-safety net every MUTATING target depends on. Prints
 # the target context/namespaces; demands explicit confirmation for
@@ -637,12 +640,31 @@ plane-copilot-secret: guard
 
 ## ---- CLI prototype: kaimahi agent create (docs/CLI-PROTOTYPE.md) ----
 
+## scenario-model: make sure the ModelConfig scenario-billing needs exists.
+## An ungoverned preset is just a committed manifest, so apply it. A
+## governed one is minted by `make govern` together with its Kaimahi token
+## Secret, and `make up` does NOT run govern on kind — so say that rather
+## than applying a ModelConfig whose Secret will never arrive and leaving
+## an Agent stuck short of Ready.
+scenario-model: guard
+	@if $(KUBECTL) -n kagent get modelconfig $(SCENARIO_MODEL) >/dev/null 2>&1; then \
+		echo "modelconfig/$(SCENARIO_MODEL) present"; \
+	elif [ -f k8s/models/$(SCENARIO_MODEL).yaml ] && \
+	     ! case '$(SCENARIO_MODEL)' in governed-*) true;; *) false;; esac; then \
+		$(KUBECTL) apply -f k8s/models/$(SCENARIO_MODEL).yaml; \
+	else \
+		echo "modelconfig/$(SCENARIO_MODEL) is missing and is governed." >&2; \
+		echo "  run:  make plane && make govern" >&2; \
+		echo "  or:   make scenario-billing SCENARIO_MODEL=ollama" >&2; \
+		exit 1; \
+	fi
+
 ## scenario-billing: stand up the SCENARIOS.md billing journey — fixtures as
 ## ConfigMaps, then scaffold the agent with the CLI and apply it.
 ## Governed by default; SCENARIO_MODEL=ollama for the ungoverned path.
 # Guarded: it applies fixtures and an Agent, so it must not inherit a
 # context the caller did not mean to aim at.
-scenario-billing: guard
+scenario-billing: guard scenario-model
 	$(KUBECTL) apply -f k8s/scenarios/billing-demo.yaml
 	node cli/bin/kaimahi.js agent create --scenario billing \
 		--model $(SCENARIO_MODEL) --apply --context $(KUBE_CTX)

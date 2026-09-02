@@ -1,5 +1,13 @@
 // The model presets the generator knows about, mirroring k8s/models/*.yaml.
 //
+// `secret` is the Secret the committed manifest references, and
+// `secretSource` says who creates it: `govern` for a Kaimahi-ISSUED token
+// (`make govern`), `model-secret` for a real upstream key captured from
+// stdin. There is deliberately no "keyless" flag: governed-ollama needs no
+// upstream key yet still references a Secret, because the token exists so
+// the proxy can attribute and enforce. Conflating those two ideas produced
+// a wrong hint telling people to create a Secret that `make govern` owns.
+//
 // `governed` marks a preset whose baseUrl is the Kaimahi proxy rather than the
 // provider: every call through it is authenticated, budget-checked, and
 // ledgered, and the agent-side Secret holds a Kaimahi-issued token instead of
@@ -10,31 +18,31 @@
 export const PRESETS = {
   "governed-ollama": {
     governed: true,
-    keyless: true,
     secret: "kaimahi-governed-token",
+    secretSource: "govern",
     summary: "in-cluster Ollama through the Kaimahi proxy (metered, budgeted)",
   },
   "governed-copilot": {
     governed: true,
-    keyless: false,
     secret: "kaimahi-governed-token",
+    secretSource: "govern",
     summary: "Copilot models through the Kaimahi proxy (real key stays in the plane)",
   },
   ollama: {
     governed: false,
-    keyless: true,
     secret: null,
+    secretSource: null,
     summary: "in-cluster Ollama, direct — no metering, no budget",
   },
-  anthropic: { governed: false, keyless: false, secret: "anthropic-api-key", summary: "Anthropic API, direct" },
-  openai: { governed: false, keyless: false, secret: "openai-api-key", summary: "OpenAI API, direct" },
-  openrouter: { governed: false, keyless: false, secret: "openrouter-api-key", summary: "OpenRouter, direct" },
-  "github-copilot": { governed: false, keyless: false, secret: "github-copilot-token", summary: "Copilot API, direct" },
-  "azure-foundry": { governed: false, keyless: false, secret: "azure-foundry-api-key", summary: "Azure AI Foundry, direct" },
+  anthropic: { governed: false, secret: "anthropic-api-key", secretSource: "model-secret", summary: "Anthropic API, direct" },
+  openai: { governed: false, secret: "openai-api-key", secretSource: "model-secret", summary: "OpenAI API, direct" },
+  openrouter: { governed: false, secret: "openrouter-api-key", secretSource: "model-secret", summary: "OpenRouter, direct" },
+  "github-copilot": { governed: false, secret: "github-copilot-token", secretSource: "model-secret", summary: "Copilot API, direct" },
+  "azure-foundry": { governed: false, secret: "azure-foundry-api-key", secretSource: "model-secret", summary: "Azure AI Foundry, direct" },
   "openai-compatible": {
     governed: false,
-    keyless: false,
     secret: "openai-compatible-api-key",
+    secretSource: "model-secret",
     summary: "any OpenAI-compatible base URL, direct",
   },
 };
