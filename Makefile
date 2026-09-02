@@ -22,6 +22,27 @@ TARGET         ?= kind
 # print a banner and exit 0 — a no-op that looks like a successful run.
 .DEFAULT_GOAL := up
 
+# Container engine for the kind path. Explicit rather than auto-detected:
+# which engine built an image is exactly the kind of thing that should be
+# visible in the command, not inferred from what happens to be installed.
+#   make up   CONTAINER_ENGINE=podman
+# kind talks to podman only when KIND_EXPERIMENTAL_PROVIDER says so, so the
+# two are set together and can never disagree — a cluster created under one
+# engine is invisible to the other, which otherwise reads as "kind is
+# broken".
+CONTAINER_ENGINE ?= docker
+ifeq ($(CONTAINER_ENGINE),podman)
+KIND_ENV := KIND_EXPERIMENTAL_PROVIDER=podman
+else ifeq ($(CONTAINER_ENGINE),docker)
+KIND_ENV :=
+else
+$(error unknown CONTAINER_ENGINE '$(CONTAINER_ENGINE)' — expected 'docker' or 'podman')
+endif
+# NOT named KIND: that is already a user-facing parameter for
+# `make request KIND=tool|budget`. Shadowing it would have made the usage
+# check pass with "kind" and filed a nonsense approval request.
+KIND_CMD       := $(KIND_ENV) kind
+
 KIND_CLUSTER   ?= kaimahi-p1
 AKS_CLUSTER    ?= kaimahi
 KAGENT_VERSION ?= 0.9.12
@@ -306,8 +327,8 @@ up: $(UP_STEPS)
 
 ifeq ($(TARGET),kind)
 cluster: guard
-	kind get clusters 2>/dev/null | grep -qx '$(KIND_CLUSTER)' || \
-		kind create cluster --name $(KIND_CLUSTER)
+	@$(KIND_CMD) get clusters 2>/dev/null | grep -qx '$(KIND_CLUSTER)' || \
+		$(KIND_CMD) create cluster --name $(KIND_CLUSTER)
 else
 ## cluster (TARGET=aks): resource group + private ACR + AKS, via the az CLI
 cluster: aks-cluster
@@ -591,9 +612,23 @@ plane: guard plane-image plane-secrets
 	$(KUBECTL) -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
 
 ifeq ($(TARGET),kind)
+# `kind load docker-image` does not work against podman here: kind reports
+# "image not present locally" for images podman demonstrably has (verified
+# with podman 5.8.1 / kind 0.27.0 — even `alpine` was invisible to it).
+# Piping an archive is the engine-agnostic path and is what kind documents
+# for non-docker providers, so podman saves and kind loads the archive.
+# Docker keeps the direct load: it works, and it skips writing a ~19MB
+# tarball on every build.
 plane-image:
-	docker build --build-arg VERSION=$(PLANE_VERSION) -t $(PLANE_IMAGE) plane/
-	kind load docker-image $(PLANE_IMAGE) --name $(KIND_CLUSTER)
+	$(CONTAINER_ENGINE) build --build-arg VERSION=$(PLANE_VERSION) -t $(PLANE_IMAGE) plane/
+ifeq ($(CONTAINER_ENGINE),podman)
+	@tar=$$(mktemp -t kaimahi-plane-XXXXXX); \
+	trap 'rm -f "$$tar"' EXIT; \
+	podman save -o "$$tar" $(PLANE_IMAGE) && \
+	$(KIND_CMD) load image-archive "$$tar" --name $(KIND_CLUSTER)
+else
+	$(KIND_CMD) load docker-image $(PLANE_IMAGE) --name $(KIND_CLUSTER)
+endif
 else
 ## plane-image (TARGET=aks): build IN Azure with ACR Tasks. No local docker
 ## build and no `docker push`: the source is uploaded and built by the
@@ -790,7 +825,7 @@ down: guard
 		echo 'delete kind cluster "$(KIND_CLUSTER)" (context kind-$(KIND_CLUSTER)).' >&2; \
 		echo 'Set KIND_CLUSTER and KUBE_CTX consistently, or just KIND_CLUSTER.' >&2; \
 		exit 1; }
-	kind delete cluster --name $(KIND_CLUSTER)
+	$(KIND_CMD) delete cluster --name $(KIND_CLUSTER)
 else
 ## down (TARGET=aks): delete the whole ephemeral resource group
 down: aks-down

@@ -83,6 +83,13 @@ make ledger KIND_CLUSTER=<your-name>
 make down KIND_CLUSTER=<your-name>
 ```
 
+Podman works too — pass `CONTAINER_ENGINE=podman` to every target for that
+cluster (see
+[getting-started.md](getting-started.md#using-podman-instead-of-docker)).
+The Makefile derives `KIND_EXPERIMENTAL_PROVIDER` from it, and swaps the
+image load to `podman save` + `kind load image-archive`, because `kind load
+docker-image` cannot see podman's images.
+
 **Always pass your own `KIND_CLUSTER`.** `kaimahi-p1` is the shared demo
 cluster and lanes have collided over it before. The board records this as a
 rule, not a suggestion.
@@ -234,6 +241,21 @@ expensive way.
   reason; do the same when the claim is "both replicas".
 - **A bare `wait` in a script waits on the port-forwards too**, which
   never exit. Collect worker PIDs and `wait` on those.
+- **A container engine's clusters are invisible to the other engine.** `kind
+  get clusters` under docker will not list a podman cluster, so the Makefile
+  cheerfully tries to create one that already exists. Keep
+  `CONTAINER_ENGINE` consistent for a given `KIND_CLUSTER`.
+- **Restarting the podman machine stops kind's node container.** The cluster
+  looks broken and `kubectl` hangs on it; `podman start
+  <cluster>-control-plane` brings it back.
+- **First `make up` on podman can fail at the ollama rollout.** Pulling the
+  ~1.9GB image through the podman VM took 5m04s here, past the target's
+  300s `rollout status` timeout, so make stops even though the pull
+  succeeds. Re-run `make up`; it is idempotent and continues.
+- **A podman machine with no volume mounts cannot read your checkout**, so
+  `podman build` fails with `faccessat <path>: connection refused`. Volumes
+  are fixed at `podman machine init` time — `podman machine set` has no flag
+  for them — so the machine has to be recreated.
 
 ## Where to look when something is wrong
 

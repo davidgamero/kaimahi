@@ -15,11 +15,48 @@ substance and different wording.
 
 | Tool | Why | Install |
 |------|-----|---------|
-| Docker | kind runs Kubernetes in containers | <https://docs.docker.com/get-docker/> |
+| Docker **or** Podman | kind runs Kubernetes in containers | <https://docs.docker.com/get-docker/> · <https://podman.io/docs/installation> |
 | kind | local Kubernetes cluster | <https://kind.sigs.k8s.io/docs/user/quick-start/#installation> |
 | kubectl | cluster interaction | <https://kubernetes.io/docs/tasks/tools/> |
 | Helm | installs kagent | <https://helm.sh/docs/intro/install/> |
 | make, curl | glue | your package manager |
+
+### Using Podman instead of Docker
+
+Pass `CONTAINER_ENGINE=podman` to any target. It is explicit rather than
+auto-detected, so the engine that built an image is always visible in the
+command:
+
+```bash
+make up   KIND_CLUSTER=<your-name> CONTAINER_ENGINE=podman
+make plane KIND_CLUSTER=<your-name> CONTAINER_ENGINE=podman
+make down KIND_CLUSTER=<your-name> CONTAINER_ENGINE=podman
+```
+
+Set it once per shell with `export CONTAINER_ENGINE=podman` if you never use
+Docker. **Pass it to every target for a given cluster** — kind reaches a
+podman cluster only with `KIND_EXPERIMENTAL_PROVIDER=podman`, which the
+Makefile sets from this variable, so a cluster created with one engine is
+invisible to the other and looks like "kind lost my cluster".
+
+On macOS the podman machine must be able to read your checkout. Machines
+created with the defaults mount `/Users`, `/private` and `/var/folders`; a
+machine created without them fails the build with
+`faccessat <path>: connection refused`. Check with:
+
+```bash
+podman machine inspect --format '{{.Name}}'
+podman run --rm -v "$HOME":/h:ro alpine ls /h   # must list your home directory
+```
+
+Volumes can only be set when the machine is created, so a machine missing
+them has to be recreated:
+
+```bash
+podman machine rm <name>
+podman machine init --volume "$HOME:$HOME"
+podman machine start
+```
 
 No API key is needed anywhere: the default model is an in-cluster
 [Ollama](https://ollama.com) server running `qwen2.5:3b` (free, local,
