@@ -1,0 +1,40 @@
+# Contributing to Kaimahi
+
+Kaimahi is an incubation project. Focus contributions on fixes, documentation
+corrections, tests, and small capability changes. Start with the organization
+[contribution expectations](https://github.com/kaimahi-agents/.github/blob/main/CONTRIBUTING.md).
+
+## Before building something new
+
+Kaimahi builds on kagent, Kubernetes, and existing MCP servers. Check those
+projects first. In the pull request, explain why configuration or integration
+cannot provide the requested behavior.
+
+## Local verification
+
+Run the checks relevant to your change:
+
+```bash
+python3 scripts/check-doc-links.py
+python3 scripts/check-readme-front-door.py
+python3 scripts/check-brand-assets.py
+bash scripts/kube-guard-test.sh
+(cd plane && test -z "$(gofmt -l .)" && go vet ./... && go test ./...)
+```
+
+For cluster changes, use the documented kind path and a dedicated `KIND_CLUSTER`
+name when another lane owns the shared cluster. See
+[`docs/COORDINATION.md`](docs/COORDINATION.md) for the process and
+[`docs/getting-started.md`](docs/getting-started.md) for prerequisites.
+
+## Pull requests
+
+- Keep each pull request focused on a user problem.
+- List exact verification commands and results.
+- Label behavior as continuously tested, demonstrated once, schema-valid,
+  proposed, or unbuilt.
+- Update the capability documentation and status language with the code.
+- Never include API keys, tokens, private endpoints, tenant/subscription IDs,
+  registry names, cluster addresses, or unsanitized user data.
+
+Every change lands through a pull request with required checks green.
