@@ -9,6 +9,13 @@ same name) cannot satisfy the check. The proposed CLI may be mentioned only
 after the Status section begins: the working path and the honest status
 come first.
 """
+# PEP 604 annotations (`str | None`) are evaluated at import time on
+# Python 3.9, which is what macOS still ships as `python3` — the script
+# died with a TypeError before running a single check. CONTRIBUTING.md
+# tells contributors to run this locally, so it has to work on the
+# interpreter they actually have, not just CI's.
+from __future__ import annotations
+
 import re
 import sys
 from pathlib import Path

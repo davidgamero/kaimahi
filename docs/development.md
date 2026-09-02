@@ -1,0 +1,207 @@
+# Development
+
+For engineers working **on** Kaimahi. If you want to *use* it, start at
+[README.md](README.md) and [getting-started.md](getting-started.md); this
+page assumes you are changing code.
+
+Contribution process and PR expectations live in
+[../CONTRIBUTING.md](../CONTRIBUTING.md). This page is the mental model, the
+build, and the traps.
+
+## The one-paragraph model
+
+kagent runs the agents. Kaimahi does not replace it, wrap it, or fork it —
+it **sits in two seams kagent already has** and makes the traffic through
+them accountable:
+
+- an agent's `ModelConfig.baseUrl` can point anywhere, so Kaimahi points it
+  at its own proxy → every model call is authenticated, budget-checked and
+  ledgered;
+- an agent's tools come from an MCP server URL, so Kaimahi points it at its
+  own gateway → every tool call is authenticated, allowlisted and audited.
+
+Nothing else changes. The agent is still a plain kagent `Agent` CRD, and
+pointing it back at the direct URLs makes it ungoverned again. **Governance
+is opt-in per agent, and that is a deliberate property, not an oversight** —
+it is also the first thing to state honestly in any doc you write.
+
+## Repository layout
+
+| Path | What it is |
+|---|---|
+| `plane/` | The Go governance plane. The only compiled artifact in the repo. |
+| `plane/cmd/kaimahi-proxy/` | One binary, four listeners (below). |
+| `plane/internal/` | `proxy` (LLM data path + admin), `gateway` (MCP), `inbound` (webhooks), `meter` (budgets), `pricing` (tokens→cents), `store`/`db` (Postgres + migrations), `config` (upstream table), `redact` (log scrubbing). |
+| `k8s/` | Everything applied to a cluster: agents, model presets, the plane, network policy, scenario fixtures. |
+| `k8s/models/` | One `ModelConfig` per preset. `governed-*` point at the proxy; the rest go direct. |
+| `scripts/` | Key-handling and check scripts. Anything touching a credential lives here, never in a make recipe. |
+| `docs/` | User docs by capability, plus the board (`COORDINATION.md`). |
+| `Makefile` | The operator interface. Every mutating target depends on `guard`. |
+
+## Build and verify
+
+Everything below is runnable from a clean checkout with no cluster.
+
+```bash
+# Go plane — the only thing that compiles.
+# `gofmt -l` LISTS unformatted files but still exits 0, so it has to be
+# wrapped to actually fail the chain — the same trap as `! grep` below.
+cd plane && test -z "$(gofmt -l .)" && go vet ./... && go build ./... && go test ./...
+
+# Repository checks (these are the CI hygiene job)
+python3 scripts/check-doc-links.py
+python3 scripts/check-readme-front-door.py
+python3 scripts/check-readme-front-door-test.py
+python3 scripts/check-brand-assets.py
+bash   scripts/kube-guard-test.sh
+
+# Container image
+docker build -t kaimahi-proxy:dev plane/
+```
+
+The image is ~18 MB: a static binary on `distroless/static-debian12:nonroot`
+— no shell, no package manager, non-root by default.
+
+### The local loop
+
+```bash
+make up KIND_CLUSTER=<your-name>      # kind + Ollama + kagent + agents
+make plane KIND_CLUSTER=<your-name>   # build, load, deploy the plane + Postgres
+make govern KIND_CLUSTER=<your-name>  # issue a credential, switch the agent onto it
+make chat KIND_CLUSTER=<your-name> AGENT=hello-world TASK="..."
+make ledger KIND_CLUSTER=<your-name>
+make down KIND_CLUSTER=<your-name>
+```
+
+**Always pass your own `KIND_CLUSTER`.** `kaimahi-p1` is the shared demo
+cluster and lanes have collided over it before. The board records this as a
+rule, not a suggestion.
+
+A full `make up` is 5–10 minutes, most of it pulling the model. Expect a
+laptop node to be CPU-bound once Ollama, kagent, Postgres and the plane are
+all running: a 3B model on a saturated single node can exceed the kagent
+controller's A2A timeout even though the governed calls themselves succeed.
+If a chat times out, check `make ledger` before assuming the plane is broken.
+
+## How the plane actually works
+
+One binary, four HTTP listeners, one Postgres:
+
+| Port | Listener | Carries |
+|---|---|---|
+| 8080 | **data** | OpenAI-compatible model traffic from agents |
+| 8081 | **MCP gateway** | JSON-RPC tool traffic from agents |
+| 8082 | **inbound** | authenticated webhooks from outside |
+| 9091 | **admin** | issuing credentials, budgets, approvals — bearer-token, cluster-internal |
+
+The admin port is deliberately separate from every data path. `make budget`,
+`make approve` and friends reach it through a port-forward in
+`scripts/plane-admin.sh`; it is not exposed.
+
+### The credential is the unit of governance
+
+Every governed call carries a Kaimahi-issued opaque token (`kmh_…`), not a
+provider key. The plane stores only its SHA-256. That one token is what a
+budget is attached to, what a tool allowlist is attached to, and what shows
+up in the ledger and audit rows.
+
+The property worth protecting: **the agent never holds a real upstream
+credential.** For a governed Copilot preset the agent's Secret holds a `kmh_`
+token; the real Copilot token is mounted only into the proxy pod. Breaking
+that is the most serious kind of regression in this repo.
+
+### Where the durable state lives
+
+Postgres, migrated from `plane/internal/db/migrations/`:
+
+| Table | Holds |
+|---|---|
+| `credential` | issued tokens (hashed), their budgets |
+| `ledger_entry` | one row per billed model call — tokens, cents, status |
+| `tool_allowlist` | which tools a credential may call |
+| `tool_audit` | every tool call, allowed **and denied** |
+| `approval_request`, `permit_grant`, `approval_audit` | the deny → approve → bounded grant cycle |
+| `inbound_audit` | append-only, and doubles as the webhook replay guard |
+
+### What is configuration, not code
+
+`k8s/plane/upstreams.yaml` is the upstream table: base URL plus **exactly
+one** allowed forwarded path per upstream, for models and for MCP servers.
+
+`k8s/plane/network-policy.yaml` is a **complementary** control, not the same
+rule restated. They constrain different things and neither substitutes for
+the other:
+
+| | Enforces | Cannot see |
+|---|---|---|
+| `upstreams.yaml` | which base URL, and the one permitted path on it | anything below the process — a pod can still open sockets the table never mentions |
+| `network-policy.yaml` | which pods, namespaces, IP blocks and ports are reachable at all | URLs, paths, or HTTP at all — it is L3/L4 |
+
+So the policy stops the pod reaching a host that is not allowed; the
+upstream table stops the proxy forwarding to a path that is not allowed on a
+host it *can* reach. If you are adding a destination you are editing both —
+and writing neither a new client nor a new egress path.
+
+## Invariants
+
+These are the things that get a PR sent back. Most were learned the
+expensive way.
+
+1. **Do not rebuild what kagent ships.** Agent runtime, CRDs, CLI,
+   dashboard, MCP servers. Net-new components need a written survey in the
+   PR justifying them. Ignoring this caused a full project restart once.
+2. **Fail closed.** A verify path accepts only a well-formed positive. WAFs
+   return HTML with a 200; gateway-style services return 200 with an error
+   envelope for a bad key. `! grep` is not a gate — distinguish "no match"
+   from "the scanner failed to run".
+3. **Keys come from stdin, and go into a Secret.** Never argv, env listings,
+   YAML, ConfigMaps, or logs. Key-bearing steps live in `scripts/` with
+   `set -euo pipefail`, never in a make recipe — make runs recipes without
+   pipefail, and a failed pipe stage can fail *open*. That exact bug once
+   stored an empty Secret after a failed token exchange.
+4. **Record spend before honouring a failure.** A billed call gets a ledger
+   row even when the surrounding operation errors.
+5. **Never infer that something is free.** Free is an explicit
+   classification in the upstream table, not a guess from a URL.
+6. **Mutating make targets depend on `guard`.** `scripts/kube-guard.sh`
+   checks the context name *and* the API server address, because a context
+   named `kind-prod` can point at production. Confirm non-interactively with
+   `KAIMAHI_CONFIRM=$KUBE_CTX`.
+7. **Say what is actually verified.** The repo's status vocabulary is
+   continuously tested / demonstrated once / schema-valid / proposed /
+   unbuilt. "It should work" is not one of them.
+
+## Traps
+
+- **`.gitignore` rules are unanchored by default.** `bin/` matches at every
+  depth. A tracked-looking file can be silently skipped by `git add -A`,
+  and you will not be told. Verify the committed tree
+  (`git ls-files --error-unmatch <path>`), not the working directory.
+- **macOS ships Python 3.9.** Repo scripts must not use PEP 604 (`str |
+  None`) at import time without `from __future__ import annotations`, or
+  they die before running a single check on a contributor's laptop while
+  passing in CI.
+- **`git stash -u` will take files that were ignored a moment ago.** Change
+  an ignore rule, stash, and the newly-visible file goes with it.
+- **A missing `ModelConfig` is admitted, then fails to reconcile.** The
+  Agent reports `Accepted=False` in a status condition you only see if you
+  look. Check conditions, not just `READY`.
+- **`make up` does not run `govern` on kind.** A fresh cluster has no
+  governed presets until you ask for them.
+- **Re-running `make up` re-applies the agent** and can quietly drop it back
+  onto an ungoverned preset.
+
+## Where to look when something is wrong
+
+```bash
+kubectl -n kagent get agents                        # Accepted / Ready
+kubectl -n kagent describe agent <name>             # the real error
+kubectl -n kagent logs deploy/<agent> --tail=50     # what it called
+kubectl -n kaimahi logs deploy/kaimahi-proxy        # governance decisions
+make ledger    CRED=<name>                          # was the call metered?
+make tool-audit CRED_TOOLS=<name>                   # was the tool allowed?
+```
+
+The ledger and the audit are the source of truth for "did governance
+actually happen". A passing conversation proves nothing on its own — the
+rows do.

@@ -10,6 +10,9 @@ Kaimahi builds on kagent, Kubernetes, and existing MCP servers. Check those
 projects first. In the pull request, explain why configuration or integration
 cannot provide the requested behavior.
 
+New to the codebase? [`docs/development.md`](docs/development.md) covers the
+architecture, the build, and the mistakes that are easy to make here.
+
 ## Local verification
 
 Run the checks relevant to your change:
@@ -17,6 +20,7 @@ Run the checks relevant to your change:
 ```bash
 python3 scripts/check-doc-links.py
 python3 scripts/check-readme-front-door.py
+python3 scripts/check-readme-front-door-test.py
 python3 scripts/check-brand-assets.py
 bash scripts/kube-guard-test.sh
 (cd plane && test -z "$(gofmt -l .)" && go vet ./... && go test ./...)

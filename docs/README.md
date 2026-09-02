@@ -91,6 +91,9 @@ runbook, that is a bug in the restructure, not a decision. File it.
 
 ## Project docs, not user docs
 
+- [development.md](development.md): for engineers changing the code — the
+  mental model, the build, how the plane is put together, the invariants,
+  and the traps.
 - [COORDINATION.md](COORDINATION.md): the coordination board, decisions,
   and delta sheets. Owned by the coordinator session.
 - [CLI-PROPOSAL.md](CLI-PROPOSAL.md): the `kaimahi agent create`
