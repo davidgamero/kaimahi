@@ -48,6 +48,14 @@ var ChatRetryable = regexp.MustCompile(`(?m)` + chatErrorLine + `(` + chatRefuse
 // what a future non-idempotent kmx command must use.
 var ChatRetryableSafe = regexp.MustCompile(`(?m)` + chatErrorLine + `(` + chatRefused + `)$`)
 
+// ChatOptions selects one-shot or session-preserving chat behavior.
+type ChatOptions struct {
+	Agent       string
+	Task        string
+	Interactive bool
+	Session     string
+}
+
 // Chat asks one question of an agent through the kagent CLI.
 //
 // Unguarded, like the Makefile's `chat`. Calling it "read-only" would be
@@ -62,10 +70,16 @@ var ChatRetryableSafe = regexp.MustCompile(`(?m)` + chatErrorLine + `(` + chatRe
 func (a *App) ChatJSON(v bool) { a.chatJSON = v }
 
 func (a *App) Chat(agent, task string) error {
+	return a.ChatWithOptions(ChatOptions{Agent: agent, Task: task})
+}
+
+// ChatWithOptions asks one question or starts an interactive session.
+func (a *App) ChatWithOptions(opt ChatOptions) error {
+	agent, task := opt.Agent, opt.Task
 	if agent == "" {
 		agent = config.DefaultAgent
 	}
-	if task == "" {
+	if task == "" && !opt.Interactive {
 		task = config.DefaultTask
 	}
 
@@ -82,6 +96,9 @@ func (a *App) Chat(agent, task string) error {
 	if err != nil {
 		return err
 	}
+	if opt.Interactive {
+		return a.interactiveChat(kagent, agent, task, opt.Session)
+	}
 
 	if err := a.waitServable(agent); err != nil {
 		return err
@@ -97,6 +114,9 @@ func (a *App) Chat(agent, task string) error {
 	// The CLI defaults to localhost:8083; name the port we actually opened
 	// so it can never fall back to someone else's.
 	args := []string{"--kagent-url", url, "invoke", "--agent", agent, "--task", task}
+	if opt.Session != "" {
+		args = append(args, "--session", opt.Session)
+	}
 	fmt.Fprintf(a.Err, "%s %s\n", kagent, "invoke --agent "+agent)
 
 	var out string

@@ -51,6 +51,8 @@ TASK           ?= Hello! Who are you and where are you running?
 KAGENT         ?= bin/kagent
 STATUS_OUTPUT  ?= table
 export KMX_STATUS_OUTPUT := $(STATUS_OUTPUT)
+SESSION        ?=
+export KMX_CHAT_SESSION := $(SESSION)
 
 # ---- kmx (P11, D27) -------------------------------------------------------
 # The developer journey — cluster, model, kagent, the agents, a conversation,
@@ -536,8 +538,8 @@ tools-agent: guard
 		agent/hello-tools --timeout=300s
 endif
 
-## chat: one question to an agent via the kagent CLI (override with TASK=...,
-## AGENT=hello-tools for the P3 tools agent)
+## chat: one question by default; INTERACTIVE=1 keeps a session open.
+## Override AGENT=hello-tools for the P3 tools agent; SESSION=<id> resumes.
 #
 # Delegated on every TARGET: kmx's `agent chat` is this recipe's
 # `kagent_forward` — the servable-through-the-Service check, the waited-for
@@ -545,7 +547,9 @@ endif
 # define itself stays because `slack-post` and `github-ask` still use it,
 # with the narrower refused-only class a non-idempotent action needs.
 chat: $(KMX) $(KAGENT)
-	@$(KMX_ENV) $(KMX) agent chat $(AGENT) "$(TASK)"
+	@$(KMX_ENV) $(KMX) agent chat $(if $(filter 1,$(INTERACTIVE)),--interactive,) \
+		$(if $(SESSION),--session "$$KMX_CHAT_SESSION",) $(AGENT) \
+		$(if $(filter 1,$(INTERACTIVE)),$(if $(filter command line environment override,$(origin TASK)),"$(TASK)",),"$(TASK)")
 
 ## model-secret: store an API key as a K8s Secret, stdin-only (paste, Enter, Ctrl-D).
 # The key never touches argv, env listings, YAML, or logs; tr strips the

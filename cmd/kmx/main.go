@@ -39,7 +39,7 @@ COMMANDS
   agent create <name>          scaffold agents/<name>.yaml and apply it
   agent chat <name> [message]  ask an agent one question (via ` + "`kagent invoke`" + `)
                                add --json for the raw A2A task; piped output
-                               is always raw
+                               is always raw; --interactive keeps a session open
   plane                        deploy the governance plane (proxy + ledger)
   govern [<credential>]        issue the credential and put an agent behind the plane
   ledger [<credential>]        the spend ledger and month-to-date totals
@@ -243,6 +243,8 @@ func agentCommand(a *app.App, args []string) error {
 	case "chat":
 		fs := newFlagSet("agent chat")
 		asJSON := fs.Bool("json", false, "print the raw A2A task instead of the readable view")
+		interactive := fs.Bool("interactive", false, "keep one session open for back-and-forth chat")
+		session := fs.String("session", "", "resume this kagent session")
 		// parseInterspersed, not fs.Parse: flag stops at the first
 		// non-flag argument, so `agent chat a "hi" --json` would silently
 		// append "--json" to the QUESTION and print the readable view
@@ -252,7 +254,7 @@ func agentCommand(a *app.App, args []string) error {
 			return err
 		}
 		if len(rest) == 0 {
-			return errors.New("usage: kmx agent chat <name> [message] [--json]")
+			return errors.New("usage: kmx agent chat [--json] [--interactive] [--session <id>] <name> [message]")
 		}
 		name := rest[0]
 		message := ""
@@ -260,7 +262,7 @@ func agentCommand(a *app.App, args []string) error {
 			message = joinArgs(rest[1:])
 		}
 		a.ChatJSON(*asJSON)
-		return a.Chat(name, message)
+		return a.ChatWithOptions(app.ChatOptions{Agent: name, Task: message, Interactive: *interactive, Session: *session})
 	default:
 		return app.RefuseUnknownAgentVerb(args[0], a.Cfg.KubeContext)
 	}

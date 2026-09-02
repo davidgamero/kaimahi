@@ -13,6 +13,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
 )
 
 func dryRun(t *testing.T, args ...string) string {
@@ -140,6 +142,36 @@ func TestChatHandsKmxTheCheckoutsKagentBinary(t *testing.T) {
 	out := dryRun(t, "chat")
 	if !strings.Contains(out, "KAGENT='bin/kagent'") {
 		t.Errorf("chat does not hand kmx bin/kagent:\n%s", out)
+	}
+}
+
+func TestChatPassesInteractiveSettings(t *testing.T) {
+	out := dryRun(t, "chat", "INTERACTIVE=1", "SESSION=session-1", "AGENT=hello-tools")
+	for _, want := range []string{"agent chat --interactive", "--session 'session-1'", "hello-tools"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("interactive chat does not pass %s:\n%s", want, out)
+		}
+	}
+}
+
+func TestChatSessionIsNotInterpolatedIntoShellSource(t *testing.T) {
+	out := dryRun(t, "chat", "INTERACTIVE=1", "SESSION=x' ; touch /tmp/pwn ; : '")
+	if strings.Contains(out, "touch /tmp/pwn") {
+		t.Fatalf("session value was interpolated into shell source:\n%s", out)
+	}
+	if !strings.Contains(out, `--session "$KMX_CHAT_SESSION"`) {
+		t.Fatalf("session is not read from the exported environment:\n%s", out)
+	}
+}
+
+func TestInteractiveChatDoesNotSendTheDefaultTask(t *testing.T) {
+	out := dryRun(t, "chat", "INTERACTIVE=1")
+	if strings.Contains(out, config.DefaultTask) {
+		t.Fatalf("interactive chat sent the default one-shot task:\n%s", out)
+	}
+	out = dryRun(t, "chat", "INTERACTIVE=1", "TASK=explicit first turn")
+	if !strings.Contains(out, `"explicit first turn"`) {
+		t.Fatalf("interactive chat dropped an explicit task:\n%s", out)
 	}
 }
 
