@@ -22,6 +22,7 @@ python3 scripts/check-doc-links.py
 python3 scripts/check-readme-front-door.py
 python3 scripts/check-readme-front-door-test.py
 python3 scripts/check-brand-assets.py
+bash scripts/check-no-azure-ids-test.sh && bash scripts/check-no-azure-ids.sh
 bash scripts/kube-guard-test.sh
 (cd plane && test -z "$(gofmt -l .)" && go vet ./... && go test ./...)
 ```

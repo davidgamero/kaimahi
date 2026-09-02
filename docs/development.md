@@ -53,6 +53,16 @@ python3 scripts/check-doc-links.py
 python3 scripts/check-readme-front-door.py
 python3 scripts/check-readme-front-door-test.py
 python3 scripts/check-brand-assets.py
+# Azure identifiers, by SHAPE: GUIDs (subscription/tenant), AKS API-server
+# hostnames, literal container-registry login servers, literal public
+# load-balancer DNS labels, public IPv4 addresses. The self-test runs
+# first. With no arguments it scans what git would commit
+# (tracked + unignored files), so a transcript you are about to paste
+# into a PR must be saved to a file and passed by path. A bare resource
+# group or cluster NAME is just a string and is not detected: read for
+# those yourself before pasting.
+bash   scripts/check-no-azure-ids-test.sh && bash scripts/check-no-azure-ids.sh
+bash   scripts/check-no-azure-ids.sh path/to/transcript.txt
 bash   scripts/kube-guard-test.sh
 
 # Container image
