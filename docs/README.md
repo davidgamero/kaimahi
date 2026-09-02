@@ -29,6 +29,7 @@ what `make up` actually does, the agent YAML, and how to talk to it.
 | Have a human approve a denied action with a bounded, expiring grant | [approvals.md](approvals.md) | `make approvals`, `make approve`, `make grants` |
 | Let the agent post to Slack, one approved message at a time | [slack.md](slack.md) | `make slack-secret`, `make slack-mcp`, `make govern-slack`, `make slack-post` |
 | Let the outside world trigger an agent (webhooks), governed | [inbound.md](inbound.md) | `make inbound-credential`, `make inbound-secret`, `make inbound-audit` |
+| Close the Slack loop: a mention triggers the agent, the agent answers in the thread (AKS) | [inbound.md](inbound.md#slack-events-the-loop) | `make inbound-expose`, `make exposure-scan`, `make inbound-unexpose` |
 | See what the plane's pods can and cannot reach, and prove it | [egress.md](egress.md) | `make netpol-verify`, `make egress-copilot`, `make egress-copilot-off` |
 | Run all of this on a real cluster (AKS) instead of kind | [aks.md](aks.md) | `TARGET=aks`, `make aks-cluster`, `make aks-down` |
 | Fix something that went wrong | [FAQ.md](FAQ.md) | |
@@ -57,7 +58,8 @@ the plane covers, kept in one place so it cannot drift between docs.
 | Internet-facing *gateway* upstreams | **Not built.** Every committed tool upstream is in-cluster; going internet-facing needs a hardened dialer and SSRF protection that do not exist yet |
 | Approval routing (Slack, email, per-approver identity) | **Not built.** The queue is CLI-only, and "who approved" is the admin bearer token, not a person |
 | What an agent *sees* after a grant | **Lagging, not wrong.** Enforcement is immediate; the agent's discovered tool list updates on kagent's next RemoteMCPServer reconcile ([slack.md](slack.md#why-the-agent-is-never-the-one-denied)) |
-| AKS | **Demonstrated once, not maintained.** One verified run on 2026-09-01, then deleted. CI stays on kind and keyless ([aks.md](aks.md)) |
+| AKS | **Demonstrated, not maintained.** Three verified runs on 2026-09-01/02 (the plane, NetworkPolicy enforcement, the Slack loop through a public edge), each deleted the same day. CI stays on kind and keyless ([aks.md](aks.md)) |
+| Public exposure | **One opt-in edge, one port.** Only the inbound edge (`make inbound-expose`, AKS) is internet-reachable: TLS on 443, one path, proven by `make exposure-scan`. Everything else stays cluster-internal ([inbound.md](inbound.md#putting-it-on-the-internet)) |
 
 ## How these docs are organised
 

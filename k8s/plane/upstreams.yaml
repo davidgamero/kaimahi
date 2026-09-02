@@ -43,13 +43,21 @@
 #                   but cannot sign. Weaker (the proof travels with every
 #                   request); present so the generic path serves both.
 #   - slack-events: the one NAMED source, Slack's Events API request
-#                   signing (v0). NOT live-verified: Slack must reach a
-#                   public HTTPS URL, which a kind cluster does not have,
-#                   and enabling event subscriptions is a workspace-side
-#                   change. The signature and envelope handling are
-#                   unit-tested against Slack's documented scheme.
+#                   signing (v0). Only a human's app_mention triggers
+#                   (every other subscribed event is acknowledged and
+#                   audited 'ignored'), and only from the channel(s) in
+#                   slack_channels_file. Live-verified on AKS through
+#                   the public edge (docs/inbound.md); CI covers the
+#                   handshake and mapping by unit test, since Slack
+#                   cannot reach a kind cluster.
 # signing_secret_file names (never carries) a key of the
 # kaimahi-inbound-signing Secret (scripts/inbound-secret.sh).
+# slack_channels_file names (never carries) the channel the bot may be
+# triggered from: the SLACK_MCP_ADD_MESSAGE_TOOL key of kaimahi-slack-bot
+# (scripts/slack-secret.sh), projected read-only into the proxy — the
+# same value that restricts where the MCP server may post, so the
+# private test channel has one source of truth in both directions and
+# a channel ID never appears in this file.
 # budget_credential is the credential the target agent's governed preset
 # carries: hello-world's governed presets and the Slack demo agent's
 # governed-copilot preset all mount kaimahi-governed-token, issued to
@@ -108,6 +116,7 @@ data:
           "credential": "inbound-slack",
           "auth": "slack",
           "signing_secret_file": "/etc/kaimahi/inbound/slack-events",
+          "slack_channels_file": "/etc/kaimahi/slack/channel",
           "agent_namespace": "kagent",
           "agent": "hello-slack",
           "budget_credential": "hello-world"

@@ -78,8 +78,10 @@ spec:
 #
 # Not opened here: the inbound port (8082) from outside the cluster. On
 # kind the demo reaches it by port-forward (kubelet traffic, which this
-# policy does not see); exposing it publicly is the operator's Ingress or
-# LoadBalancer step and needs its own ingress allowance, stated then.
+# policy does not see). The public path is opt-in (P8, `make
+# inbound-expose` on TARGET=aks): k8s/inbound-edge.yaml carries the edge
+# and the one allowance it needs, kaimahi-proxy-ingress-edge (the edge
+# pod, 8082, nothing else).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

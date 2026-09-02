@@ -277,6 +277,31 @@ plane's namespace that must reach **nothing**. On `TARGET=aks` the probe
 expects the proxy to reach the internet on 443, because the Copilot
 allowance from step 3 is always applied there.
 
+### 6b. Optional: the Slack loop, through a public edge
+
+The one internet-reachable thing this repo can put on a cluster is the
+inbound edge for the Slack Events hook: a Caddy pod with a Let's Encrypt
+certificate on a load balancer whose public IP carries a DNS label you
+choose. It is opt-in, AKS-only, and documented in
+[inbound.md](inbound.md#putting-it-on-the-internet); the Slack side
+(`make slack-secret`, `make slack-mcp`, `make govern-slack`) is
+[slack.md](slack.md). In short:
+
+```bash
+make slack-secret SLACK_CHANNEL=C0XXXXXXXXX && make slack-mcp && make govern-slack
+make inbound-credential CRED_INBOUND=inbound-slack
+make inbound-secret HOOK=slack-events                  # the app's Signing Secret, stdin
+make inbound-expose KAIMAHI_DNS_LABEL=<unique-label>   # prints the Request URL
+make exposure-scan                                     # one IP, one port: 443
+```
+
+`KAIMAHI_DNS_LABEL` becomes `<label>.<region>.cloudapp.azure.com`. It
+and the public IP are Azure identifiers like the others: never commit
+them, redact them from evidence (`scripts/check-no-azure-ids.sh` now
+refuses both shapes). When the cluster goes, the label is free for
+anyone to claim: remove the Request URL from the Slack app when you
+tear down.
+
 Or the whole journey in one command, once the exports from step 1 are set:
 
 ```bash
@@ -324,6 +349,8 @@ Measured choices, not guesses (Azure retail prices API, 2026-09-01):
 | Region | **`westus3`** | Ties the cheapest US price for this SKU (westus2 is identical; southcentralus is ~20% more) and had the most regional-vCPU headroom in the subscription used. |
 | Registry | **ACR Basic** | ~$0.167/day; supports ACR Tasks, which is what `az acr build` needs |
 | Load balancer | AKS default (Standard) | ~$0.025/hr; created for egress even with no `LoadBalancer` Service |
+| Public IP (edge, optional) | Standard static, with a DNS label | ~$0.004/hr; only while `make inbound-expose` is up |
+| Edge certificate volume (optional) | 1 GiB PVC | provisioned on the default StorageClass and billed at the smallest disk tier (E1, 4 GiB, a few cents a day); deleted with the edge |
 | Disks | 32 GiB OS disk + the 1 Gi Postgres PVC | rounded up to Azure's minimum billable sizes |
 
 A run of a few hours is **well under US$2**. The first verified run
@@ -436,18 +463,38 @@ that shipped it):
   239 0 unpriced 200`);
 - teardown, re-checked gone.
 
-The multi-node caveat in [egress.md](egress.md) was not exercised: both
+Verified live on a third AKS cluster on 2026-09-02 (Kubernetes 1.35.7,
+Cilium 1.18, 1 × `Standard_B4ms`, westus3, about three hours, roughly
+US$0.70), the Slack loop through the public edge
+([inbound.md](inbound.md#slack-events-the-loop)):
+
+- `make inbound-expose`: a Let's Encrypt certificate by TLS-ALPN-01 on a
+  DNS-labelled public IP; `make exposure-scan`: exactly one open port
+  (443) on one public IP, none on the cluster's other public IP, one
+  LoadBalancer Service cluster-wide;
+- Slack's challenge answered; a real `app_mention` refused 403 and
+  filed; approved bounded; the next mention admitted, the agent's reply
+  posted in the thread through the gateway under a tool grant; every
+  step in the inbound audit, the ledger, the tool audit and the approval
+  audit;
+- `make netpol-verify` with the edge's policies present: boundary
+  enforced as written;
+- the Slack app un-pointed (Request URL and subscription removed) before
+  the edge and the resource group were deleted, re-checked gone.
+
+
+The multi-node caveat in [egress.md](egress.md) was not exercised: all
 runs were single-node, which is the script's default.
 
 Also verified: `aks-down` **refuses** a resource group that lacks the tag
 `aks-up.sh` sets, even when given a correct confirmation. Tested against a
 throwaway untagged group, which survived.
 
-**Not** verified on AKS: the Slack path (deliberate, above), Ollama
-(deliberate), the `azure` and `calico` policy engines (accepted by the
-script, never run), and anything about durability, upgrades, node
-replacement or multi-node scheduling. Each cluster existed for well
-under an hour and was deleted.
+**Not** verified on AKS: Ollama (deliberate), the `azure` and `calico`
+policy engines (accepted by the script, never run), certificate renewal
+(the edge lived hours; Let's Encrypt renews at day 60), and anything
+about durability, upgrades, node replacement or multi-node scheduling.
+Each cluster existed for well under a day and was deleted.
 
 ## Limitations
 
@@ -455,10 +502,15 @@ The full governed-vs-ungoverned table is in
 [README.md](README.md#what-is-governed-today-and-what-is-not). Specific
 to this path:
 
-- **Demonstrated once, not maintained.** Nothing re-proves the cloud
+- **Demonstrated, not maintained.** Nothing re-proves the cloud
   run; only the portability logic runs in CI.
 - **Copilot only.** No keyless model on AKS, so no free tier there.
-- **Slack is not deployed on AKS**, by choice.
+- **Slack on AKS is the inbound-loop demo only**, on a cluster deleted
+  the same day; the workspace token is not meant to live in a cloud
+  cluster longer than that.
+- **The edge is the only public surface, and it is opt-in.** Nothing
+  in `make up` or `make plane` creates a LoadBalancer; `make
+  exposure-scan` is how you check that stayed true.
 - **The AKS cluster is not hardened** beyond a private registry, a
   tagged, ephemeral resource group, and the plane's NetworkPolicy
   boundary: default node SSH access, no durability story, and the

@@ -57,6 +57,11 @@ jobs:
       # must never land in the tree — every Azure identifier is supplied by
       # the operator at run time. The same script is what the operator runs
       # locally while writing up an AKS run.
+      # The scanner is itself a gate that can fail open (a regex that
+      # matches nothing passes everything): prove it still catches each
+      # identifier class before trusting its verdict on the tree.
+      - name: Azure identifier scanner still catches every class
+        run: bash scripts/check-no-azure-ids-test.sh
       - name: No Azure identifiers in tree
         run: bash scripts/check-no-azure-ids.sh
       # The docs are organised by capability, with the old phase-named
@@ -157,7 +162,30 @@ jobs:
           private = {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
                      "169.254.0.0/16", "100.64.0.0/10", "127.0.0.0/8"}
           copilot = yaml.safe_load(pathlib.Path("k8s/egress-copilot.yaml").read_text())
-          for p in pols + [copilot]:
+          # P8: the public edge's policies live outside k8s/plane/ (they are
+          # an opt-in exposure, never deployed on kind) but obey the same
+          # egress rule, and their ingress is bounded here too.
+          edge = [d for d in yaml.safe_load_all(pathlib.Path("k8s/inbound-edge.yaml").read_text())
+                  if d and d.get("kind") == "NetworkPolicy"]
+          assert {p["metadata"]["name"] for p in edge} == {"kaimahi-inbound-edge", "kaimahi-proxy-ingress-edge"}, "edge policies renamed"
+          assert all(p["metadata"]["namespace"] == "kaimahi" for p in edge), "edge policy outside kaimahi"
+          for p in pols + [copilot] + edge:
+              for rule in p["spec"].get("ingress") or []:
+                  ports = {(x.get("protocol", "TCP"), x["port"]) for x in rule.get("ports") or []}
+                  # A rule with no `from` admits every source; refuse it like a `to`-less egress.
+                  assert rule.get("from"), f'{p["metadata"]["name"]}: ingress rule without `from` (admits all sources)'
+                  for peer in rule["from"]:
+                      if "ipBlock" in peer:
+                          # The ONE internet-facing ingress in the repo, wherever a policy lives:
+                          # the edge's TLS port, nothing else.
+                          assert p["metadata"]["name"] == "kaimahi-inbound-edge" and ports == {("TCP", 8443)}, \
+                              f'{p["metadata"]["name"]}: internet ingress on {ports}'
+                      elif p in edge:
+                          # The plane-side allowance: the edge may reach the proxy on the inbound port only.
+                          assert p["metadata"]["name"] == "kaimahi-proxy-ingress-edge" and ports == {("TCP", 8082)} \
+                              and peer.get("podSelector", {}).get("matchLabels") == {"app": "kaimahi-inbound-edge"}, \
+                              f'{p["metadata"]["name"]}: unexpected ingress peer {peer} on {ports}'
+          for p in pols + [copilot] + edge:
               name = p["metadata"]["name"]
               for rule in p["spec"].get("egress") or []:
                   # A rule with no `to` allows its ports to EVERY destination,
@@ -177,7 +205,8 @@ jobs:
                       ports = {(x.get("protocol", "TCP"), x["port"]) for x in rule.get("ports") or []}
                       assert ports == {("TCP", 443)}, f"{name}: internet rule ports {ports} != 443 only"
           assert copilot["metadata"]["name"] not in {p["metadata"]["name"] for p in pols}, "Copilot allowance leaked into k8s/plane/"
-          print(f"{len(pols)} plane policies; internet allowances are 443-only with private ranges excluded")
+          assert not ({p["metadata"]["name"] for p in edge} & {p["metadata"]["name"] for p in pols}), "edge policy leaked into k8s/plane/"
+          print(f"{len(pols)} plane policies + {len(edge)} edge policies; internet allowances are 443-only with private ranges excluded; internet ingress is the edge's 8443 only")
           EOF
 
       # CI flake class 2: the chat verifier's verdicts on the PR #24 task
@@ -717,6 +746,11 @@ jobs:
               assert h["budget_credential"] == "hello-world", (name, h)
               if h["auth"] != "bearer":
                   assert h["signing_secret_file"].startswith("/etc/kaimahi/inbound/"), (name, h)
+              if h["auth"] == "slack":
+                  # P8: a Slack hook is bound to the channel(s) in a plane-side
+                  # FILE (the same Secret key that restricts posting); dropping
+                  # the key would widen the ingress to the whole workspace.
+                  assert h["slack_channels_file"].startswith("/etc/kaimahi/slack/"), (name, h)
               assert not any(k in h for k in ("secret", "signing_secret", "token", "api_key")), (name, h)
           print("inbound hooks:", {k: (v["auth"], v["agent"]) for k, v in hooks.items()})
           EOF

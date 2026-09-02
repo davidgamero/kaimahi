@@ -19,6 +19,14 @@
 #   - *.azmk8s.io  (an AKS API-server FQDN is per-cluster and per-tenant)
 #   - a LITERAL <name>.azurecr.io — registry login servers must always be
 #     built from a variable or an obvious placeholder, never a real name
+#   - a LITERAL <label>.<region>.cloudapp.azure.com (P8: the public edge's
+#     DNS label names a load balancer someone can later own — same rule,
+#     variable or placeholder only)
+#   - a public IPv4 address (P8: the edge's public IP). Private, loopback,
+#     link-local, CGNAT, multicast/reserved, the unspecified/broadcast
+#     addresses and the RFC 5737 documentation ranges are not
+#     identifiers; a short allowlist of well-known public resolvers
+#     (1.1.1.1 is the egress probe's control target) is kept explicit.
 #
 # Scope: what is actually IN the repo — tracked files plus untracked ones
 # git would accept. "In the tree" is the claim being checked, and a
@@ -65,13 +73,37 @@ AKS_FQDN = re.compile(r"[A-Za-z0-9-]+\.[a-z0-9-]+\.azmk8s\.io")
 # single quote of its own, which would otherwise have to be escaped out
 # of the surrounding shell quoting and become unreadable.
 ACR = re.compile(r"(?P<name>[^\s\"\x27`/=]*)\.azurecr\.io")
+CLOUDAPP = re.compile(r"(?P<name>[^\s\"\x27`/=]*)\.[a-z0-9<>$(){}_-]*\.cloudapp\.azure\.com")
+# Trailing: not a word char, and not ".<digit>" (a fifth component means a
+# five-component version string); a sentence-final "." after a real address
+# still matches.
+IPV4 = re.compile(r"(?<![\w.])(?P<ip>(?:\d{1,3}\.){3}\d{1,3})(?!\w)(?!\.\d)")
+WELL_KNOWN_IPS = {"1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9"}
 PLACEHOLDER = re.compile(r"""(
       \$\(?\{?[A-Za-z_][A-Za-z0-9_]*\}?\)?   # $ACR, ${ACR}, $(ACR_NAME)
     | <[^>]*>                                 # <your-registry>
     | ^$                                      # bare ".azurecr.io"
 )$""", re.X)
 
-import pathlib
+import ipaddress, pathlib
+
+def public_ip(s):
+    """True for a syntactically valid IPv4 address that could name live
+    internet infrastructure. Anything ipaddress classifies as private,
+    loopback, link-local, multicast, reserved or unspecified is not an
+    identifier; nor are the documentation ranges or the well-known
+    resolvers above."""
+    try:
+        ip = ipaddress.IPv4Address(s)
+    except ValueError:
+        return False  # 999.1.1.1 and friends: not an address
+    if s in WELL_KNOWN_IPS or not ip.is_global or ip.is_multicast:
+        return False
+    for doc in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24"):
+        if ip in ipaddress.IPv4Network(doc):
+            return False
+    return True
+
 findings = []
 for raw in open(sys.argv[1], "rb").read().split(b"\0"):
     if not raw:
@@ -102,6 +134,12 @@ for raw in open(sys.argv[1], "rb").read().split(b"\0"):
         for m in ACR.finditer(line):
             if not PLACEHOLDER.match(m.group("name")):
                 findings.append((p, n, "literal ACR login server", m.group(0)))
+        for m in CLOUDAPP.finditer(line):
+            if not PLACEHOLDER.match(m.group("name").lstrip("(")):
+                findings.append((p, n, "literal public DNS label (cloudapp.azure.com)", m.group(0)))
+        for m in IPV4.finditer(line):
+            if public_ip(m.group("ip")):
+                findings.append((p, n, "public IPv4 address", m.group(0)))
 
 for path, n, why, what in findings:
     print(f"{path}:{n}: {why}: {what}")

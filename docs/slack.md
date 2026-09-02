@@ -224,6 +224,17 @@ point is that a human said yes to one post, for fifteen minutes, once.
 `make slack-down` removes the agent, the seam and the server. The
 Secrets survive; delete them to revoke.
 
+## The other direction: Slack triggers the agent
+
+Everything above is the agent posting *out*. The inbound bridge
+([inbound.md](inbound.md#slack-events-the-loop)) closes the loop: an
+`app_mention` in the same private channel, delivered by Slack's Events
+API to a public HTTPS edge on AKS, triggers `hello-slack`, which answers
+in the thread through this same governed path. Two approvals gate it:
+an `inbound` grant for the hook and the tool grant for the post. Nothing
+in this document changes for that; the bot's reply is just an approved
+post whose author happens to be a Slack user rather than `make slack-post`.
+
 ## Why the agent is never the one denied
 
 Measured, not assumed: kagent wires an agent only to tools it
@@ -358,9 +369,14 @@ cluster with a real bot token, and nowhere else.
   server reads its env at start). The gateway key is generated once and
   kept, since rotating it under a running server would break injected
   calls until both sides roll.
-- This path is not deployed on AKS ([aks.md](aks.md)): putting a real
-  workspace token into a temporary cloud cluster is credential exposure
-  for little added proof.
+- On AKS this path is deployed only for the inbound loop
+  ([inbound.md](inbound.md#slack-events-the-loop)), on a cluster that is
+  created for it and deleted the same day. Putting a real workspace
+  token into a temporary cloud cluster is still credential exposure;
+  the loop is the added proof that justifies it, and the token, like
+  the cluster, is meant to be gone within hours (`make aks-down` deletes
+  the Secret with everything else; rotate the token in Slack afterwards
+  if you want to be sure).
 
 ## Limitations
 
@@ -375,8 +391,8 @@ to this path:
   (v1.3.0, http transport). The plane injects a credential the server
   does not check.
 - **Approval routing is not built.** The queue is CLI-only; the approver
-  identity is the admin bearer, not a person. The agent posts to Slack;
-  approvals are not routed there.
+  identity is the admin bearer, not a person. The agent posts to Slack
+  and can be triggered from Slack; approvals are not routed there.
 - **What the agent sees lags a grant** until kagent's next reconcile.
   Enforcement does not lag.
 - **A spent grant is not a delivered message** when the upstream

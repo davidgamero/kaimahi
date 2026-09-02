@@ -36,7 +36,7 @@ ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
 # The plane image. The tag moves with the phase so a stale side-loaded
 # image can never satisfy a newer manifest silently (P4b deviation 6).
 PLANE_IMAGE_REPO ?= kaimahi-proxy
-PLANE_IMAGE_TAG  ?= p7b
+PLANE_IMAGE_TAG  ?= p8
 
 # ---- environment-dependent settings --------------------------------------
 # Everything that genuinely differs between kind and a managed cluster is
@@ -101,7 +101,8 @@ SLACK_TOOLNAMES_JSON = $(if $(filter -,$(SLACK_AGENT_TOOLS)),,"$(subst $(comma),
 	slack-secret slack-mcp govern-slack slack-allow slack-audit \
 	slack-post slack-down aks-cluster aks-creds aks-down \
 	netpol-verify egress-copilot egress-copilot-off \
-	inbound-credential inbound-secret inbound-fire inbound-audit
+	inbound-credential inbound-secret inbound-fire inbound-audit \
+	inbound-expose inbound-unexpose exposure-scan
 
 # guard: the context-safety net every MUTATING target depends on. Prints
 # the target context/namespaces; demands explicit confirmation for
@@ -980,3 +981,39 @@ inbound-fire:
 inbound-audit:
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh inbound-audit \
 		$(if $(filter command line,$(origin HOOK)),$(HOOK),)
+
+## ---- P8: the public edge (docs/inbound.md, "Putting it on the internet") ----
+#
+# The ONLY internet-reachable thing in this repo: a TLS edge in front of
+# the inbound bridge, on TARGET=aks only. kind has no public path and
+# these targets refuse there rather than pretend. KAIMAHI_DNS_LABEL is an
+# Azure identifier (it becomes <label>.<region>.cloudapp.azure.com) and is
+# never committed; neither is the public IP the scan reports.
+ifeq ($(TARGET),aks)
+## inbound-expose: put the inbound bridge on the internet — Caddy edge,
+## Let's Encrypt via TLS-ALPN-01, one port. Prints the Slack Request URL.
+##   TARGET=aks make inbound-expose KAIMAHI_DNS_LABEL=<unique-label>
+inbound-expose: guard
+	@KUBECTL="$(KUBECTL)" KAIMAHI_DNS_LABEL='$(KAIMAHI_DNS_LABEL)' AKS_LOCATION='$(AKS_LOCATION)' \
+		AKS_RESOURCE_GROUP='$(AKS_RESOURCE_GROUP)' AKS_CLUSTER='$(AKS_CLUSTER)' \
+		bash scripts/inbound-expose.sh
+
+## inbound-unexpose: take the edge down (Deployment, Service + public IP,
+## the certificate's volume, and the policy allowance). REMOVE the Slack
+## app's Request URL too — the name this frees can be claimed by anyone.
+inbound-unexpose: guard
+	$(KUBECTL) delete -f k8s/inbound-edge.yaml --ignore-not-found
+	@echo 'edge removed. Now remove the Request URL / disable Event Subscriptions in the Slack app.' >&2
+
+## exposure-scan: prove the internet-facing surface is exactly the edge
+## on 443 — every public IP in the cluster's node resource group is
+## connect-scanned on all 65535 TCP ports (IPs masked; REVEAL_IPS=1).
+exposure-scan:
+	@KUBECTL="$(KUBECTL)" AKS_RESOURCE_GROUP='$(AKS_RESOURCE_GROUP)' AKS_CLUSTER='$(AKS_CLUSTER)' \
+		bash scripts/exposure-scan.sh
+else
+inbound-expose inbound-unexpose exposure-scan:
+	@echo 'the public edge exists only on TARGET=aks — a kind cluster has no internet-reachable address,' >&2
+	@echo 'and the inbound bridge there is reached by port-forward only (docs/inbound.md).' >&2
+	@exit 1
+endif

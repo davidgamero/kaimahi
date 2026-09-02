@@ -142,5 +142,12 @@ fi
 kubectl config delete-context "$CLUSTER" >/dev/null 2>&1 || true
 kubectl config delete-cluster "$CLUSTER" >/dev/null 2>&1 || true
 kubectl config delete-user "clusterUser_${RG}_${CLUSTER}" >/dev/null 2>&1 || true
+# `az aks get-credentials` made this cluster the current context, and
+# delete-context leaves that pointer dangling (P8 finding). Unset it so
+# a bare kubectl says "no current context" rather than naming a cluster
+# that no longer exists — and never re-point it at something else.
+if [ "$(kubectl config current-context 2>/dev/null || true)" = "$CLUSTER" ]; then
+  kubectl config unset current-context >/dev/null 2>&1 || true
+fi
 
 echo "aks-down: resource group '$RG' deleted; kubeconfig entries removed." >&2

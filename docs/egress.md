@@ -28,6 +28,9 @@ section below says exactly what that does and does not constrain.
 | Slack MCP server | CoreDNS | 53 | to resolve api.slack.com |
 | Slack MCP server | public addresses | 443 | Slack's API. See the caveat below |
 | proxy | public addresses | 443 | **opt-in only**, for Copilot. See below |
+| internet | inbound edge | 8443 (443 on the load balancer) | **opt-in only**, AKS, `make inbound-expose`: the one internet ingress in the repo ([inbound.md](inbound.md#putting-it-on-the-internet)) |
+| inbound edge | proxy | 8082 | the edge forwards Slack events to the bridge; besides CoreDNS, the only in-cluster peer it may reach |
+| inbound edge | CoreDNS, public addresses | 53, 443 | to reach Let's Encrypt for its certificate |
 
 Everything not in the table is denied. In particular:
 

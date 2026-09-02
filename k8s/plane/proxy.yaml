@@ -40,7 +40,7 @@ spec:
           # (AKS, private ACR) scripts/plane-deploy.sh renders both from
           # PLANE_IMAGE / PLANE_PULL_POLICY at deploy time, and the kind
           # path applies this document exactly as committed.
-          image: kaimahi-proxy:p7b
+          image: kaimahi-proxy:p8
           imagePullPolicy: Never
           env:
             - name: PGHOST
@@ -80,6 +80,9 @@ spec:
             - name: inbound-signing
               mountPath: /etc/kaimahi/inbound
               readOnly: true
+            - name: slack-channel
+              mountPath: /etc/kaimahi/slack
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /healthz
@@ -118,9 +121,10 @@ spec:
             # closed (503 upstream credential unavailable).
             optional: true
         # P5a: the Slack MCP server's OWN bearer credential — the gateway
-        # injects it upstream (plane custody, like the Copilot key). This
-        # pod deliberately does NOT mount kaimahi-slack-bot: the Slack
-        # workspace token belongs to the MCP server pod alone.
+        # injects it upstream (plane custody, like the Copilot key). The
+        # Slack workspace token belongs to the MCP server pod alone: the
+        # only key of kaimahi-slack-bot this pod projects is the channel
+        # restriction below, never SLACK_MCP_XOXB_TOKEN.
         - name: slack-mcp-cred
           secret:
             secretName: kaimahi-slack-mcp-key
@@ -137,6 +141,19 @@ spec:
           secret:
             secretName: kaimahi-inbound-signing
             optional: true
+        # P8: the channel the Slack Events hook may be triggered from —
+        # ONE key of the Slack bot Secret (the same value that restricts
+        # the MCP server's posting), projected by name so the workspace
+        # token in that Secret never reaches this pod. Optional: without
+        # it the slack-events hook fails closed (503 "hook channel
+        # allowlist unavailable"); nothing else is affected.
+        - name: slack-channel
+          secret:
+            secretName: kaimahi-slack-bot
+            optional: true
+            items:
+              - key: SLACK_MCP_ADD_MESSAGE_TOOL
+                path: channel
 ---
 apiVersion: v1
 kind: Service
@@ -175,8 +192,9 @@ spec:
 # zero extra CPU requests), its own Service so the ingress seam is
 # addressable on its own name and can be exposed on its own terms. It is
 # a ClusterIP: on kind the demo reaches it via port-forward; exposing it
-# beyond the cluster (an Ingress/LoadBalancer with TLS) is the operator's
-# step and is documented, not committed. The admin port stays off it.
+# beyond the cluster is an opt-in step, `make inbound-expose` on
+# TARGET=aks (k8s/inbound-edge.yaml), never a side effect of `make plane`.
+# The admin port stays off it.
 apiVersion: v1
 kind: Service
 metadata:

@@ -107,6 +107,19 @@ type InboundHook struct {
 	// AgentNamespace/Agent name the kagent Agent the event triggers.
 	AgentNamespace string `json:"agent_namespace"`
 	Agent          string `json:"agent"`
+	// SlackChannelsFile (slack auth only, P8) names a Secret-mounted file
+	// listing the channel IDs whose mentions may trigger this hook —
+	// comma- or newline-separated, read per request. The committed table
+	// names the FILE because a channel ID is a workspace identifier this
+	// public repo never carries; the demo mounts the same Secret key
+	// that restricts where the Slack MCP server may post
+	// (SLACK_MCP_ADD_MESSAGE_TOOL), so "the private test channel" has one
+	// source of truth for both directions. Unreadable, empty, or a
+	// server-side "anywhere" value fails the hook closed (503). Required
+	// for slack auth: a hook without it would trigger from any room the
+	// app is mentioned in, and an ingress that widens because a key was
+	// dropped from the table is the silent failure this file refuses.
+	SlackChannelsFile string `json:"slack_channels_file,omitempty"`
 	// BudgetCredential is the governed credential the triggered agent
 	// spends under (its governed preset's credential). An event is
 	// refused at the door when that budget is already exhausted, so the
@@ -208,6 +221,9 @@ func Parse(raw []byte) (Config, error) {
 		if !dnsLabel.MatchString(h.Agent) || !dnsLabel.MatchString(h.AgentNamespace) {
 			return Config{}, fmt.Errorf("config: inbound hook %q: agent and agent_namespace must be lowercase DNS labels", name)
 		}
+		if h.SlackChannelsFile != "" && h.Auth != AuthSlack {
+			return Config{}, fmt.Errorf("config: inbound hook %q: slack_channels_file is meaningless with %s auth", name, h.Auth)
+		}
 		switch h.Auth {
 		case AuthBearer:
 			if h.SigningSecretFile != "" {
@@ -219,6 +235,9 @@ func Parse(raw []byte) (Config, error) {
 			// the mistake is loud at rollout, not silent at first event.
 			if h.SigningSecretFile == "" {
 				return Config{}, fmt.Errorf("config: inbound hook %q: %s auth requires signing_secret_file", name, h.Auth)
+			}
+			if h.Auth == AuthSlack && h.SlackChannelsFile == "" {
+				return Config{}, fmt.Errorf("config: inbound hook %q: slack auth requires slack_channels_file (the channel(s) the hook may be triggered from)", name)
 			}
 		default:
 			return Config{}, fmt.Errorf("config: inbound hook %q: auth must be %q, %q or %q", name, AuthBearer, AuthKaimahiHMAC, AuthSlack)

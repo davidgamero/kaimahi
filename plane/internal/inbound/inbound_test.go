@@ -589,14 +589,15 @@ func TestSlackURLVerificationEchoesWithoutTriggering(t *testing.T) {
 func TestSlackEventCallbackTriggersByEventID(t *testing.T) {
 	fs := newFakeStore()
 	f := newFixture(t, fs, &fakeMeter{})
-	body := `{"type":"event_callback","event_id":"Ev0123456789","event":{"type":"app_mention","text":"<@U1> what is the weather"}}`
+	body := `{"type":"event_callback","event_id":"Ev0123456789","event":{"type":"app_mention","user":"U2",` +
+		`"text":"<@U1> what is the weather","channel":"C0TEST","ts":"1725.0001"}}`
 	rec := f.post("slack", body, f.slackSigned(body))
 	require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
 	out := f.waitOutcome(t, "slack")
 	require.Equal(t, "Ev0123456789", out.DeliveryID)
 	require.Equal(t, "kagent/hello-slack", out.Agent)
 	parts := f.a2a.bodies[0]["params"].(map[string]any)["message"].(map[string]any)["parts"].([]any)
-	require.Equal(t, "<@U1> what is the weather", parts[0].(map[string]any)["text"])
+	require.Contains(t, parts[0].(map[string]any)["text"], `"what is the weather"`)
 	// Slack's retry of the same event_id is a replay once admitted.
 	require.Equal(t, http.StatusConflict, f.post("slack", body, f.slackSigned(body)).Code)
 	// Other envelope types are not prompts.
