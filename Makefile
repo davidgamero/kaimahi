@@ -159,9 +159,9 @@ KAGENT_INVOKE = $(KAGENT) --kagent-url http://127.0.0.1:$(CHAT_PORT) invoke
 #
 # Before invoking, prove the agent is actually SERVABLE — do not infer it.
 #
-# `use` already waits twice (`rollout status`, then the Agent's Ready
-# condition) and neither is sufficient during a preset-switch rollout:
-# CI failed here twice with
+# `use` already waits (`wait_switched`: kagent reconcile, `rollout status`,
+# the single-pod wait; then the Agent's Ready condition) and none of it
+# is sufficient during a preset-switch rollout: CI failed here twice with
 #   dial tcp <clusterIP>:8080: connect: connection refused
 # because at the moment of the call the Service had no ready backend (the
 # old pod removed, the new one not yet propagated) — kube-proxy REJECTs
@@ -441,15 +441,123 @@ model-secret: guard
 copilot-secret: guard
 	@KUBECTL="$(KUBECTL)" bash scripts/copilot-secret.sh
 
+# Wait until an agent's switch has fully landed: kagent has reconciled the
+# Agent's current generation, the Deployment has rolled, and it is served
+# by EXACTLY ONE pod carrying the current pod-template-hash. $(1) is the
+# agent name. Replaces the bare `rollout status` every switch used to do.
+#
+# Three waits, because each of the obvious signals is wrong on its own:
+#
+# 1. kagent reconciles the Agent ASYNCHRONOUSLY. Straight after the patch,
+#    `rollout status` can run before the controller has rewritten the
+#    Deployment and report "successfully rolled out" about the OLD
+#    template. So first wait for status.observedGeneration to reach the
+#    Agent's generation. (The Ready condition is useless here: it stays
+#    True, at the old observedGeneration, for the whole rollout.)
+# 2. `rollout status` is then the right rollout signal, but with maxSurge
+#    1 / maxUnavailable 0 it returns the moment the NEW pod is Ready —
+#    while the OLD pod, still on the previous ModelConfig, is Terminating
+#    (the ReplicaSet controller stops counting a pod as soon as it has a
+#    deletionTimestamp, so the rollout looks complete). A chat in that
+#    window can land on the old pod: a governed chat once completed with
+#    an EMPTY ledger because the ungoverned pod answered it. "Governed"
+#    must mean the ungoverned pod is gone, not outnumbered.
+# 3. So finally wait for the pod set. The current hash is read from the
+#    ReplicaSet whose revision matches the Deployment's (kagent stamps a
+#    config-hash on the pod template, so a ModelConfig switch that changes
+#    anything cuts a new ReplicaSet; one that changes nothing — e.g.
+#    hello-world-model → ollama, identical specs — rolls nothing and
+#    passes straight through). The pod listing is compared as a whole: it
+#    equals the hash only when there is one pod and it is that pod.
+#    Terminating pods still list, which is the point.
+#
+# Bounded: after `rollout status` the remaining work is the old pod's
+# termination grace, so 120s is generous; on timeout the pod list is
+# printed and the target fails rather than handing a half-switched agent
+# to the next step. Wait 1 keys on the AGENT's generation, so a switch
+# that changes only a referenced object's content (the preset's YAML
+# edited, the agent already on it) passes it at once; `use` covers that
+# case itself, before calling here — see the recipe.
+define wait_switched
+gen=$$($(KUBECTL) -n kagent get agent/$(1) -o jsonpath='{.metadata.generation}') \
+	&& [ -n "$$gen" ] || { echo "cannot read agent/$(1)'s generation" >&2; exit 1; }; \
+$(KUBECTL) -n kagent wait --for=jsonpath='{.status.observedGeneration}'=$$gen \
+	agent/$(1) --timeout=120s >/dev/null || exit 1; \
+$(KUBECTL) -n kagent rollout status deploy/$(1) --timeout=180s || exit 1; \
+rev=$$($(KUBECTL) -n kagent get deploy/$(1) \
+	-o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}') \
+	&& [ -n "$$rev" ] || { echo "cannot read deploy/$(1)'s revision" >&2; exit 1; }; \
+hash=$$($(KUBECTL) -n kagent get rs -l kagent=$(1) \
+	-o jsonpath='{range .items[*]}{.metadata.annotations.deployment\.kubernetes\.io/revision} {.metadata.labels.pod-template-hash}{"\n"}{end}' \
+	| awk -v r="$$rev" '$$1==r{print $$2}'); \
+[ -n "$$hash" ] || { echo "no ReplicaSet at revision $$rev for deploy/$(1)" >&2; exit 1; }; \
+single=; \
+for _ in $$(seq 1 60); do \
+	pods=$$($(KUBECTL) -n kagent get pods -l kagent=$(1) \
+		-o jsonpath='{range .items[*]}{.metadata.labels.pod-template-hash}{"\n"}{end}') || exit 1; \
+	if [ "$$pods" = "$$hash" ]; then single=1; break; fi; \
+	sleep 2; \
+done; \
+if [ -z "$$single" ]; then \
+	echo "deploy/$(1): still not exactly one pod on template $$hash after 120s:" >&2; \
+	$(KUBECTL) -n kagent get pods -l kagent=$(1) -o wide >&2; \
+	exit 1; \
+fi
+endef
+
 ## use: switch the hello-world agent to a model preset from k8s/models/
 # (e.g. make use PRESET=anthropic). Hosted presets need their Secret first
 # (make model-secret) — and remember: P2 spend is ungoverned until P4.
+#
+# One shell for apply + patch, because the wait that follows needs three
+# values from BEFORE them. `wait_switched` keys its reconcile wait on the
+# Agent's generation, which only moves when the Agent's spec does. Two
+# switches leave it still and yet must roll the pods:
+#   - the preset's YAML changed and hello-world is already on it (the
+#     patch is a no-op; kagent rolls on the ModelConfig change alone);
+#   - the preset was just CREATED under a name the Agent already carried.
+# Verified 2026-09-02: a content-only ModelConfig change bumps its
+# generation and kagent cuts a new Deployment revision within a second —
+# without an Agent generation change. So when the ModelConfig's
+# generation moved and the Agent's did not, wait (bounded, loud) for the
+# Deployment's revision to advance past what it was before the apply;
+# only then is `wait_switched`'s rollout/pod check looking at the new
+# template. Identical content ("unchanged") moves neither generation and
+# takes the fast path. Only a genuine NotFound may leave the "before"
+# generation empty; any other read failure aborts.
 use: guard
 	@test -n "$(PRESET)" || { echo 'usage: make use PRESET=<name from k8s/models/>' >&2; exit 1; }
-	$(KUBECTL) apply -f k8s/models/$(PRESET).yaml
+	@mc0=""; \
+	if out=$$($(KUBECTL) -n kagent get modelconfig/$(PRESET) -o jsonpath='{.metadata.generation}' 2>&1); then \
+		mc0=$$out; \
+	elif ! printf '%s' "$$out" | grep -q 'NotFound'; then \
+		echo "cannot read modelconfig/$(PRESET): $$out" >&2; exit 1; \
+	fi; \
+	agent0=$$($(KUBECTL) -n kagent get agent/hello-world -o jsonpath='{.metadata.generation}') || exit 1; \
+	rev0=$$($(KUBECTL) -n kagent get deploy/hello-world \
+		-o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}') || exit 1; \
+	echo "$(KUBECTL) apply -f k8s/models/$(PRESET).yaml"; \
+	$(KUBECTL) apply -f k8s/models/$(PRESET).yaml || exit 1; \
+	echo "$(KUBECTL) -n kagent patch agent hello-world (modelConfig: $(PRESET))"; \
 	$(KUBECTL) -n kagent patch agent hello-world --type merge \
-		-p '{"spec":{"declarative":{"modelConfig":"$(PRESET)"}}}'
-	$(KUBECTL) -n kagent rollout status deploy/hello-world --timeout=180s
+		-p '{"spec":{"declarative":{"modelConfig":"$(PRESET)"}}}' || exit 1; \
+	mc1=$$($(KUBECTL) -n kagent get modelconfig/$(PRESET) -o jsonpath='{.metadata.generation}') || exit 1; \
+	agent1=$$($(KUBECTL) -n kagent get agent/hello-world -o jsonpath='{.metadata.generation}') || exit 1; \
+	if [ "$$agent1" = "$$agent0" ] && [ "$$mc1" != "$$mc0" ]; then \
+		echo "NOTE: preset '$(PRESET)' changed while hello-world was already on it — waiting for kagent to cut a new revision (was $$rev0)" >&2; \
+		rolled=; \
+		for _ in $$(seq 1 60); do \
+			rev=$$($(KUBECTL) -n kagent get deploy/hello-world \
+				-o jsonpath='{.metadata.annotations.deployment\.kubernetes\.io/revision}') || exit 1; \
+			if [ -n "$$rev" ] && [ "$$rev" -gt "$${rev0:-0}" ]; then rolled=1; break; fi; \
+			sleep 2; \
+		done; \
+		if [ -z "$$rolled" ]; then \
+			echo "deploy/hello-world: revision still $$rev0 after 120s — kagent did not roll for the changed preset; refusing to call it switched" >&2; \
+			exit 1; \
+		fi; \
+	fi
+	@$(call wait_switched,hello-world)
 	$(KUBECTL) -n kagent wait \
 		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
 		agent/hello-world --timeout=300s
@@ -551,7 +659,7 @@ govern-tools: guard
 		remotemcpserver/kaimahi-tools --timeout=300s
 	$(KUBECTL) -n kagent patch agent hello-tools --type merge \
 		-p '{"spec":{"declarative":{"tools":[{"type":"McpServer","mcpServer":{"apiGroup":"kagent.dev","kind":"RemoteMCPServer","name":"kaimahi-tools","toolNames":[$(TOOLNAMES_JSON)]}}]}}}'
-	$(KUBECTL) -n kagent rollout status deploy/hello-tools --timeout=180s
+	@$(call wait_switched,hello-tools)
 	$(KUBECTL) -n kagent wait \
 		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
 		agent/hello-tools --timeout=300s
@@ -560,7 +668,7 @@ govern-tools: guard
 ## tool server, ungoverned) by re-applying the committed Agent YAML
 ungovern-tools: guard
 	$(KUBECTL) apply -f k8s/tools-agent.yaml
-	$(KUBECTL) -n kagent rollout status deploy/hello-tools --timeout=180s
+	@$(call wait_switched,hello-tools)
 
 ## tool-allow: replace the tools credential's allowlist, e.g.
 ##   make tool-allow TOOLS=k8s_get_resources,k8s_get_events
@@ -665,6 +773,15 @@ endif
 #   AKS_LOCATION        optional   default westus3
 #   AKS_NODE_SIZE       optional   default Standard_B4ms
 #   AKS_NODE_COUNT      optional   default 1
+#   AKS_NETWORK_POLICY  optional   cilium (default) | azure | calico — the
+#                                  policy engine; scripts/aks-up.sh refuses
+#                                  a cluster without one (P7a's policies
+#                                  would be inert). Set it on the make
+#                                  command line or export it in the shell;
+#                                  it is deliberately NOT in the recipe's
+#                                  explicit list below, because that would
+#                                  turn "unset" into an explicit empty
+#                                  string, which the script refuses.
 # See docs/aks.md for why those defaults, and what a run costs.
 
 ## aks-cluster: create the resource group, the PRIVATE ACR, and the AKS
