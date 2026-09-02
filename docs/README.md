@@ -32,6 +32,7 @@ what `make up` actually does, the agent YAML, and how to talk to it.
 | Close the Slack loop: a mention triggers the agent, the agent answers in the thread (AKS) | [inbound.md](inbound.md#slack-events-the-loop) | `make inbound-expose`, `make exposure-scan`, `make inbound-unexpose` |
 | Be told in Slack that a request is waiting, and approve or deny it from Slack as yourself | [approvals.md](approvals.md#deciding-from-slack) | `make slack-approvers`, `make notify-slack`, `make slack-mention` |
 | See what the plane's pods can and cannot reach, and prove it | [egress.md](egress.md) | `make netpol-verify`, `make egress-copilot`, `make egress-copilot-off` |
+| Give the demo, start to finish, in about thirty minutes | [demo.md](demo.md) | the order of the steps above and what each should print |
 | Run the plane for real: replicas, probes, metrics, back up and restore the ledger | [operations.md](operations.md) | `make backup`, `make restore`, `make plane-metrics` |
 | Run all of this on a real cluster (AKS) instead of kind | [aks.md](aks.md) | `TARGET=aks`, `make aks-cluster`, `make aks-down` |
 | Fix something that went wrong | [FAQ.md](FAQ.md) | |

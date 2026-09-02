@@ -120,8 +120,9 @@ registry render) on every PR rather than the cloud itself.
 
 ## Documentation
 
-[docs/README.md](docs/README.md) routes by what you want to do, and holds
-the one table of what is governed today and what is not:
+[docs/demo.md](docs/demo.md) is the demo start to finish, with what each
+step should print. [docs/README.md](docs/README.md) routes by what you want
+to do, and holds the one table of what is governed today and what is not:
 [getting started](docs/getting-started.md), [hosted models](docs/models.md),
 [tools](docs/tools.md), [spend](docs/spend.md),
 [tool governance](docs/tool-governance.md), [approvals](docs/approvals.md),
