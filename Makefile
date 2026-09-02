@@ -36,7 +36,10 @@ ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
 # The plane image. The tag moves with the phase so a stale side-loaded
 # image can never satisfy a newer manifest silently (P4b deviation 6).
 PLANE_IMAGE_REPO ?= kaimahi-proxy
-PLANE_IMAGE_TAG  ?= p8b
+PLANE_IMAGE_TAG  ?= p9
+# The revision stamped into the binary for kaimahi_build_info (P9); the
+# image build context carries no .git. "unknown" outside a checkout.
+PLANE_VERSION    ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 
 # ---- environment-dependent settings --------------------------------------
 # Everything that genuinely differs between kind and a managed cluster is
@@ -103,7 +106,8 @@ SLACK_TOOLNAMES_JSON = $(if $(filter -,$(SLACK_AGENT_TOOLS)),,"$(subst $(comma),
 	netpol-verify egress-copilot egress-copilot-off \
 	inbound-credential inbound-secret inbound-fire inbound-audit \
 	inbound-expose inbound-unexpose exposure-scan \
-	slack-approvers notify-slack slack-mention
+	slack-approvers notify-slack slack-mention \
+	backup restore plane-metrics
 
 # guard: the context-safety net every MUTATING target depends on. Prints
 # the target context/namespaces; demands explicit confirmation for
@@ -588,7 +592,7 @@ plane: guard plane-image plane-secrets
 
 ifeq ($(TARGET),kind)
 plane-image:
-	docker build -t $(PLANE_IMAGE) plane/
+	docker build --build-arg VERSION=$(PLANE_VERSION) -t $(PLANE_IMAGE) plane/
 	kind load docker-image $(PLANE_IMAGE) --name $(KIND_CLUSTER)
 else
 ## plane-image (TARGET=aks): build IN Azure with ACR Tasks. No local docker
@@ -598,7 +602,7 @@ else
 plane-image:
 	@test -n "$(ACR_NAME)" || \
 		{ echo 'ACR_NAME is required for TARGET=aks (see docs/aks.md)' >&2; exit 1; }
-	az acr build --registry $(ACR_NAME) \
+	az acr build --registry $(ACR_NAME) --build-arg VERSION=$(PLANE_VERSION) \
 		--image $(PLANE_IMAGE_REPO):$(PLANE_IMAGE_TAG) plane/
 endif
 
@@ -643,6 +647,32 @@ budget: guard
 ## ledger: show the spend ledger (newest first) + month-to-date totals
 ledger:
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh ledger $(CRED)
+
+## ---- P9: running it for real (docs/operations.md) ----
+
+## backup: pg_dump the plane's database to a local file (default
+## backups/kaimahi-<UTC timestamp>.sql). Streams through kubectl exec
+## over the Postgres pod's unix socket — no password leaves the pod, no
+## local client needed. The dump holds credential HASHES and audit
+## trails, never a token or an upstream key; keep it as you would the
+## database. Reads only; unguarded like `ledger`.
+##   make backup [FILE=path]
+backup:
+	@KUBECTL="$(KUBECTL)" FILE='$(FILE)' bash scripts/plane-backup.sh
+
+## restore: load a backup into the running plane's database, REPLACING
+## its contents (the dump drops and recreates every table). Proven on a
+## fresh cluster in CI. Guarded: this rewrites the ledger.
+##   make restore FILE=backups/kaimahi-....sql
+restore: guard
+	@test -n "$(FILE)" || { echo 'restore: FILE=<backup.sql> is required' >&2; exit 1; }
+	@KUBECTL="$(KUBECTL)" FILE='$(FILE)' bash scripts/plane-restore.sh
+
+## plane-metrics: print one replica's Prometheus text (port-forward to a
+## pod's ops port; the port is on no Service). POD=<name> picks a
+## replica; default is the first.
+plane-metrics:
+	@KUBECTL="$(KUBECTL)" POD='$(POD)' bash scripts/plane-metrics.sh
 
 ## ---- P4b: the enforcing MCP gateway (docs/tool-governance.md) ----
 

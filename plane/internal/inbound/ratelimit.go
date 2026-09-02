@@ -5,11 +5,13 @@ import (
 	"time"
 )
 
-// limiter is a per-hook token bucket. In-memory on purpose: the plane
-// runs one replica (k8s/plane/proxy.yaml), and a bucket that survives a
-// restart would be a store write per event — which is exactly the
-// amplification the limiter exists to bound. Documented limitation: a
-// multi-replica plane would need a shared limiter.
+// limiter is a per-hook token bucket. In-memory and PER REPLICA on
+// purpose (P9): it is a flood guard, not a governance decision, and it
+// runs before authentication — a bucket shared through the store would
+// be a store write per event, which is exactly the amplification the
+// limiter exists to bound. The effective ceiling is therefore replicas ×
+// the configured rate (docs/operations.md); every limit that IS a
+// governance decision is exact in Postgres.
 type limiter struct {
 	mu      sync.Mutex
 	buckets map[string]*bucket

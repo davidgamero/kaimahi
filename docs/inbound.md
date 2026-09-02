@@ -52,9 +52,15 @@ Over the rate is a 429 before the plane reads anything. The rate limiter
 runs before authentication on purpose: every later refusal writes an
 audit row, and the bucket is what stops an unauthenticated flood from
 turning into a database flood. The trade is that a flood starves its
-hook rather than the plane. The limiter and the invocation queue are
-in-memory, which is right for the single replica the plane runs as and
-wrong for more than one.
+hook rather than the plane. The limiter is per replica on purpose: it
+is a flood guard, not a governance decision, and a bucket shared
+through the database would be a store write per event — exactly the
+amplification it exists to bound. With the plane's two replicas the
+effective ceiling is therefore 2 × `rate_per_minute` (N × for N
+replicas). The invocation queue is per replica and bounded too. Every
+limit that IS a governance decision — the target's budget, the grant
+use, the replay guard — is decided in Postgres and is exact across
+replicas ([operations.md](operations.md)).
 
 ## How a caller proves itself
 
@@ -466,9 +472,12 @@ workspace's traffic — to whoever owns the name later.
 
 ## What this does not do
 
-- No durable queue: the plane runs one replica, admitted-but-not-yet-run
-  events die with a restart, and their `admitted` rows say so.
-- The rate limiter is per replica, in memory.
+- No durable queue: the invocation queue is per replica and bounded,
+  so admitted-but-not-yet-run events die with that replica (a rolling
+  restart drains them first; a crash does not), and their `admitted`
+  rows without an outcome row say so.
+- The rate limiter is per replica, in memory: the ceiling is N × the
+  configured rate for N replicas ([operations.md](operations.md)).
 - Sessions on the kagent side are attributed to the hook
   (`x-user-id: kaimahi-inbound/<hook>`), not to whoever sent the event.
 - The plane's egress to the kagent controller on 8083 is allowed

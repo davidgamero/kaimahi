@@ -32,6 +32,8 @@ import (
 	"time"
 
 	"github.com/kaimahi-agents/kaimahi/plane/internal/gateway"
+
+	"github.com/kaimahi-agents/kaimahi/plane/internal/metrics"
 )
 
 // Deps configures the Poster.
@@ -111,6 +113,9 @@ func New(d Deps) *Poster {
 			},
 		}
 	}
+	// Expose the queue series from the start (an idle replica shows 0,
+	// not nothing).
+	metrics.SetQueue(metrics.QueueNotifier, 0, d.QueueSize)
 	return &Poster{d: d, jobs: make(chan Post, d.QueueSize)}
 }
 
@@ -119,6 +124,11 @@ func New(d Deps) *Poster {
 func (p *Poster) Enqueue(post Post) bool {
 	select {
 	case p.jobs <- post:
+		depth := len(p.jobs)
+		if p.inflight.Load() {
+			depth++ // queued plus the post being sent right now
+		}
+		metrics.SetQueue(metrics.QueueNotifier, depth, cap(p.jobs))
 		return true
 	default:
 		slog.Error("notify: queue full; post dropped (the request stays filed — run 'make approvals')",
@@ -137,8 +147,10 @@ func (p *Poster) Run(ctx context.Context) {
 			return
 		case post := <-p.jobs:
 			p.inflight.Store(true)
+			metrics.SetQueue(metrics.QueueNotifier, len(p.jobs)+1, cap(p.jobs))
 			p.send(ctx, post)
 			p.inflight.Store(false)
+			metrics.SetQueue(metrics.QueueNotifier, len(p.jobs), cap(p.jobs))
 		}
 	}
 }

@@ -18,13 +18,16 @@ import (
 	"time"
 
 	"github.com/kaimahi-agents/kaimahi/plane/internal/config"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/meter"
 	"github.com/kaimahi-agents/kaimahi/plane/internal/store"
 )
 
 // Store is what the proxy needs from Postgres. *store.Store satisfies it.
 type Store interface {
 	CredentialByTokenHash(ctx context.Context, tokenHash []byte) (store.Credential, error)
-	RecordLedger(ctx context.Context, e store.LedgerEntry) error
+	// RecordLedger appends the row and consumes the call's reservation
+	// (P9; empty when the call held nothing).
+	RecordLedger(ctx context.Context, e store.LedgerEntry, reservationID string) error
 	CreateCredential(ctx context.Context, name string, tokenHash []byte) error
 	SetBudget(ctx context.Context, name string, capCents, capTokens *int64) error
 	Ledger(ctx context.Context, credentialName string, limit int) ([]store.LedgerEntry, error)
@@ -47,10 +50,11 @@ type Store interface {
 	InboundAudit(ctx context.Context, hook string, limit int) ([]store.InboundAuditEntry, error)
 }
 
-// Meter admits or denies a request under the credential's budget caps.
-// *meter.Meter satisfies it.
+// Meter admits or denies a request under the credential's budget caps,
+// exactly (P9): an admitted call under a cap holds a reservation until
+// its ledger write. *meter.Meter satisfies it.
 type Meter interface {
-	Check(ctx context.Context, cred store.Credential) error
+	Reserve(ctx context.Context, cred store.Credential, priced bool) (meter.Reservation, error)
 }
 
 type Deps struct {

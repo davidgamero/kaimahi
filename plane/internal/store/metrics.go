@@ -1,0 +1,55 @@
+package store
+
+// P9: the replica-independent reads the metrics collector makes at
+// scrape time. Names only — a credential's name is public in the repo
+// and printed by every audit command; nothing here returns a token, an
+// id, or free text.
+
+import (
+	"context"
+	"time"
+
+	"github.com/kaimahi-agents/kaimahi/plane/internal/metrics"
+)
+
+// LedgerMonthTotals sums the ledger per credential name since
+// monthStart (rows only — an in-flight hold is not spend).
+func (s *Store) LedgerMonthTotals(ctx context.Context, monthStart time.Time) ([]metrics.LedgerTotal, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT credential_name, COALESCE(SUM(cost_cents), 0), COALESCE(SUM(input_tokens + output_tokens), 0)
+		 FROM ledger_entry WHERE created_at >= $1 GROUP BY credential_name ORDER BY credential_name`, monthStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []metrics.LedgerTotal
+	for rows.Next() {
+		var t metrics.LedgerTotal
+		if err := rows.Scan(&t.Credential, &t.Cents, &t.Tokens); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// LiveGrantCounts counts grants that are live right now, by kind, with
+// the same predicate every consumer uses.
+func (s *Store) LiveGrantCounts(ctx context.Context) (map[string]int64, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT kind, COUNT(*) FROM permit_grant WHERE `+grantLive+` GROUP BY kind`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var kind string
+		var n int64
+		if err := rows.Scan(&kind, &n); err != nil {
+			return nil, err
+		}
+		out[kind] = n
+	}
+	return out, rows.Err()
+}

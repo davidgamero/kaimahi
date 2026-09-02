@@ -14,3 +14,7 @@ bin/
 # rule was missing.
 __pycache__/
 *.pyc
+
+# `make backup` output: a pg_dump of the plane's database (credential
+# hashes, the ledger, audit trails). Operator data, never source.
+backups/

@@ -30,8 +30,8 @@ it is also the first thing to state honestly in any doc you write.
 | Path | What it is |
 |---|---|
 | `plane/` | The Go governance plane. The only compiled artifact in the repo. |
-| `plane/cmd/kaimahi-proxy/` | One binary, four listeners (below). |
-| `plane/internal/` | `proxy` (LLM data path + admin), `gateway` (MCP), `inbound` (webhooks), `meter` (budgets), `pricing` (tokens→cents), `store`/`db` (Postgres + migrations), `config` (upstream table), `redact` (log scrubbing). |
+| `plane/cmd/kaimahi-proxy/` | One binary, five listeners (below). |
+| `plane/internal/` | `proxy` (LLM data path + admin), `gateway` (MCP), `inbound` (webhooks), `meter` (budgets), `pricing` (tokens→cents), `store`/`db` (Postgres + migrations), `config` (upstream table), `redact` (log scrubbing), `metrics` (Prometheus, fixed label vocabularies), `ops` (metrics listener + probes). |
 | `k8s/` | Everything applied to a cluster: agents, model presets, the plane, network policy, scenario fixtures. |
 | `k8s/models/` | One `ModelConfig` per preset. `governed-*` point at the proxy; the rest go direct. |
 | `scripts/` | Key-handling and check scripts. Anything touching a credential lives here, never in a make recipe. |
@@ -95,7 +95,7 @@ If a chat times out, check `make ledger` before assuming the plane is broken.
 
 ## How the plane actually works
 
-One binary, four HTTP listeners, one Postgres:
+One binary (two replicas), five HTTP listeners, one Postgres:
 
 | Port | Listener | Carries |
 |---|---|---|
@@ -103,10 +103,21 @@ One binary, four HTTP listeners, one Postgres:
 | 8081 | **MCP gateway** | JSON-RPC tool traffic from agents |
 | 8082 | **inbound** | authenticated webhooks from outside |
 | 9091 | **admin** | issuing credentials, budgets, approvals — bearer-token, cluster-internal |
+| 9092 | **ops** | Prometheus `/metrics`, `/readyz`, `/livez` — no auth, on no Service ([operations.md](operations.md)) |
 
 The admin port is deliberately separate from every data path. `make budget`,
 `make approve` and friends reach it through a port-forward in
-`scripts/plane-admin.sh`; it is not exposed.
+`scripts/plane-admin.sh`; it is not exposed. The ops port is on no
+Service either; kubelet probes it, `make plane-metrics` port-forwards to
+a pod, and a scraper gets in only through the NetworkPolicy allowance.
+
+The process holds no governance state. Every decision that must be
+exact — a budget admission, a grant use, a replay check, a filing, an
+approval — is one Postgres transaction under a lock on the credential's
+row (`lockCredential` in `store/`), so the replicas agree by
+construction; what stays per replica (the pre-auth rate limiter, the
+bounded queues, the fail-closed breakers) is listed in
+[operations.md](operations.md) with the reason.
 
 ### The credential is the unit of governance
 
@@ -128,6 +139,7 @@ Postgres, migrated from `plane/internal/db/migrations/`:
 |---|---|
 | `credential` | issued tokens (hashed), their budgets |
 | `ledger_entry` | one row per billed model call — tokens, cents, status |
+| `spend_reservation` | calls admitted under a cap whose ledger row has not landed yet — the hold that makes budgets exact under concurrency; the ledger write deletes it |
 | `tool_allowlist` | which tools a credential may call |
 | `tool_audit` | every tool call, allowed **and denied** |
 | `approval_request`, `permit_grant`, `approval_audit` | the deny → approve → bounded grant cycle |
@@ -180,6 +192,17 @@ expensive way.
 7. **Say what is actually verified.** The repo's status vocabulary is
    continuously tested / demonstrated once / schema-valid / proposed /
    unbuilt. "It should work" is not one of them.
+8. **A governance decision is a Postgres transaction under the credential
+   lock, never a read-then-act in Go.** The plane runs two replicas that
+   share nothing but the database; anything decided from an unlocked read
+   or from process memory is a race between them. New limits get a
+   concurrent test in `store_pg_test.go` (real Postgres, goroutines
+   racing the real SQL), not an argument.
+9. **No identifier is a metric label.** Label values come from the fixed
+   vocabularies in `plane/internal/metrics` or the two public name shapes
+   (credential name, upstream name); the label-set test fails on anything
+   else. A token, a channel, a user, a request or a delivery id never
+   becomes a series.
 
 ## Traps
 
@@ -200,6 +223,17 @@ expensive way.
   governed presets until you ask for them.
 - **Re-running `make up` re-applies the agent** and can quietly drop it back
   onto an ungoverned preset.
+- **The proxy image is distroless: there is no shell and no `cat` to
+  `kubectl exec`.** A wait loop built on `exec … cat` never succeeds; it
+  burns its full timeout and moves on (CI carried one for two phases).
+  Wait on the plane's own behaviour, or restart the Deployment so pods
+  start with a freshly created Secret already projected.
+- **`kubectl port-forward svc/…` sticks to one pod.** With two replicas,
+  a probe through a Service exercises whichever pod it happened to pick.
+  The race and kill probes port-forward each `pod/` separately for that
+  reason; do the same when the claim is "both replicas".
+- **A bare `wait` in a script waits on the port-forwards too**, which
+  never exit. Collect worker PIDs and `wait` on those.
 
 ## Where to look when something is wrong
 
@@ -207,9 +241,10 @@ expensive way.
 kubectl -n kagent get agents                        # Accepted / Ready
 kubectl -n kagent describe agent <name>             # the real error
 kubectl -n kagent logs deploy/<agent> --tail=50     # what it called
-kubectl -n kaimahi logs deploy/kaimahi-proxy        # governance decisions
+kubectl -n kaimahi logs -l app=kaimahi-proxy --prefix   # governance decisions, both replicas
 make ledger    CRED=<name>                          # was the call metered?
 make tool-audit CRED_TOOLS=<name>                   # was the tool allowed?
+make plane-metrics                                  # one replica's counters, queue depths, breakers
 ```
 
 The ledger and the audit are the source of truth for "did governance

@@ -167,6 +167,39 @@ spec:
         - protocol: TCP
           port: 53
 ---
+# 2b. The operations port (P9). The proxy's metrics, readiness and
+#     liveness live on 9092, on NO Service: kubelet's probes are
+#     node-originated and need no rule, and nothing in the agent
+#     namespace or behind the edge can reach it (rule 2 opens 8080 and
+#     8081 to agents and nothing else). A scraper gets exactly this:
+#     pods labelled as Prometheus in a namespace called `monitoring`,
+#     on 9092, nothing more. Nothing scrapes in CI and no such namespace
+#     exists on kind — the rule matches nothing until an operator
+#     creates one, and an operator with a different scraper edits the
+#     two selectors here (docs/operations.md). No auth on the port, so
+#     the allowance IS the access control.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kaimahi-proxy-metrics
+  namespace: kaimahi
+spec:
+  podSelector:
+    matchLabels:
+      app: kaimahi-proxy
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9092
+---
 # 3. The ledger. In: the proxy, on 5432. Out: NOTHING — Egress is listed
 #    with no rules on purpose, so this pod's zero egress is stated here
 #    and not merely inherited. It does not even get DNS: it has no one

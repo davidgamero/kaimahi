@@ -293,32 +293,47 @@ func (s *Store) DenyApprovalRequest(ctx context.Context, id string, decidedBy st
 }
 
 // ConsumeToolGrant admits one tool call under a live grant, consuming
-// one use atomically. FOR UPDATE SKIP LOCKED makes concurrent consumers
-// skip a row another transaction holds — the loser denies (a spurious
-// denial under contention, never a double-spent use; the liveness
-// predicate is evaluated on the locked row). ok=false means no
-// consumable grant — the caller denies.
+// one use atomically. P9: the consume runs under the credential's row
+// lock (lockCredential), so concurrent consumers — on one replica or
+// across replicas — take turns and each sees the previous one's commit:
+// a grant with N uses left admits exactly N concurrent calls, never
+// N+1 and (unlike the P4c FOR UPDATE SKIP LOCKED it replaces) never
+// fewer. ok=false means no consumable grant — the caller denies.
 func (s *Store) ConsumeToolGrant(ctx context.Context, credential, tool string) (grantID string, ok bool, err error) {
-	return consumeGrant(ctx, s.pool, credential, "tool", tool)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := lockCredential(ctx, tx, credential); err != nil {
+		return "", false, err
+	}
+	grantID, ok, err = consumeGrantLocked(ctx, tx, credential, "tool", tool)
+	if err != nil {
+		return "", false, err
+	}
+	return grantID, ok, tx.Commit(ctx)
 }
 
-// rowQuerier is the one method consumeGrant needs, satisfied by both the
-// pool and a transaction (P7b admits inbound events inside one).
+// rowQuerier is the one method the shared queries need, satisfied by
+// both the pool and a transaction.
 type rowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// consumeGrant is the shared use-consuming consume for amount-less grant
-// kinds ('tool', 'inbound'): one use from the oldest live grant matching
-// (credential, kind, subject), or ok=false when none is consumable.
-func consumeGrant(ctx context.Context, q rowQuerier, credential, kind, subject string) (grantID string, ok bool, err error) {
-	err = q.QueryRow(ctx,
+// consumeGrantLocked is the shared use-consuming step for every grant
+// kind: one use from the oldest live grant matching (credential, kind,
+// subject), or ok=false when none is consumable. The caller holds the
+// credential lock (lockCredential in the same tx), which is what makes
+// the plain read-then-update exact: no other consumer for this
+// credential can be between the SELECT and the UPDATE.
+func consumeGrantLocked(ctx context.Context, tx pgx.Tx, credential, kind, subject string) (grantID string, ok bool, err error) {
+	err = tx.QueryRow(ctx,
 		`UPDATE permit_grant SET uses = uses + 1
 		 WHERE id = (
 		   SELECT id FROM permit_grant
 		   WHERE credential_name = $1 AND kind = $2 AND subject = $3 AND `+grantLive+`
 		   ORDER BY created_at LIMIT 1
-		   FOR UPDATE SKIP LOCKED
 		 ) RETURNING id`,
 		credential, kind, subject).Scan(&grantID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -353,57 +368,12 @@ func (s *Store) LiveToolGrantSubjects(ctx context.Context, credential string) ([
 	return out, rows.Err()
 }
 
-// BudgetNeed is one exceeded cap a request must cover via grants.
+// BudgetNeed is one exceeded cap an admission must cover via grants
+// (AdmitSpend, spend.go).
 type BudgetNeed struct {
 	Subject string // "tokens" or "cents"
 	Used    int64
 	Cap     int64
-}
-
-// ConsumeBudgetGrants admits one over-cap request when live budget
-// grants cover EVERY exceeded cap: per need, admitted iff
-// used < cap + SUM(live amounts), consuming one use from the oldest
-// live grant — all needs in ONE transaction, so a request denied on any
-// cap burns no uses on the others. failedSubject names the first
-// uncovered cap ("" = admitted).
-func (s *Store) ConsumeBudgetGrants(ctx context.Context, credential string, needs []BudgetNeed) (failedSubject string, err error) {
-	if len(needs) == 0 {
-		return "", nil
-	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return needs[0].Subject, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	for _, n := range needs {
-		var extra int64
-		if err := tx.QueryRow(ctx,
-			`SELECT COALESCE(SUM(amount), 0) FROM permit_grant
-			 WHERE credential_name = $1 AND kind = 'budget' AND subject = $2 AND `+grantLive,
-			credential, n.Subject).Scan(&extra); err != nil {
-			return n.Subject, err
-		}
-		if extra <= 0 || n.Used >= n.Cap+extra {
-			return n.Subject, nil
-		}
-		var grantID string
-		err = tx.QueryRow(ctx,
-			`UPDATE permit_grant SET uses = uses + 1
-			 WHERE id = (
-			   SELECT id FROM permit_grant
-			   WHERE credential_name = $1 AND kind = 'budget' AND subject = $2 AND `+grantLive+`
-			   ORDER BY created_at LIMIT 1
-			   FOR UPDATE SKIP LOCKED
-			 ) RETURNING id`,
-			credential, n.Subject).Scan(&grantID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return n.Subject, nil // raced away between SUM and consume — deny
-		}
-		if err != nil {
-			return n.Subject, err
-		}
-	}
-	return "", tx.Commit(ctx)
 }
 
 // Grants lists a credential's grants (all credentials when empty),

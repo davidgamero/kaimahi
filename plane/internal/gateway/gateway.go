@@ -42,6 +42,7 @@ import (
 	"time"
 
 	"github.com/kaimahi-agents/kaimahi/plane/internal/config"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/metrics"
 	"github.com/kaimahi-agents/kaimahi/plane/internal/store"
 )
 
@@ -124,11 +125,39 @@ func (h *handler) audit(r *http.Request, e store.ToolAuditEntry) {
 	defer cancel()
 	if err := h.d.Store.RecordToolAudit(ctx, e); err != nil {
 		h.auditDegraded.Store(true)
+		metrics.SetDegraded(metrics.SeamGateway, true)
 		slog.Error("gateway: audit append failed; denying tool traffic until a write succeeds",
 			"credential", e.CredentialName, "upstream", e.Upstream, "method", e.Method, "err", err)
 		return
 	}
 	h.auditDegraded.Store(false)
+	metrics.SetDegraded(metrics.SeamGateway, false)
+}
+
+// reasonFor classifies a refusal for the decisions metric — a fixed
+// vocabulary keyed on the messages this package writes, never the
+// message itself.
+func reasonFor(status int, msg string) metrics.Reason {
+	switch {
+	case strings.HasPrefix(msg, "unknown tool upstream"):
+		return metrics.ReasonRoute
+	case strings.HasPrefix(msg, "tool audit unavailable"):
+		return metrics.ReasonAuditDegraded
+	case strings.HasPrefix(msg, "request body"), strings.HasPrefix(msg, "JSON-RPC batches"),
+		strings.HasPrefix(msg, "tools/call params"), strings.HasPrefix(msg, "upstream tool listing"):
+		return metrics.ReasonBadRequest
+	case strings.HasPrefix(msg, "grant check unavailable"):
+		return metrics.ReasonGrantCheck
+	case strings.HasPrefix(msg, "tool allowlist unavailable"):
+		return metrics.ReasonCredentialStore
+	case strings.HasPrefix(msg, "tool not permitted"):
+		return metrics.ReasonAllowlist
+	case strings.HasPrefix(msg, "method not relayed"):
+		return metrics.ReasonMethod
+	case status == http.StatusUnauthorized:
+		return metrics.ReasonUnauthorized
+	}
+	return metrics.ReasonOther
 }
 
 // httpDeny refuses pre-protocol (plain HTTP status), audited.
@@ -136,6 +165,7 @@ func (h *handler) httpDeny(w http.ResponseWriter, r *http.Request, cred store.Cr
 	upstream, method, tool string, status int, msg string) {
 	h.audit(r, store.ToolAuditEntry{CredentialName: cred.Name, Upstream: upstream,
 		Method: method, Tool: tool, Decision: "denied", Status: status, Detail: msg})
+	metrics.Decide(metrics.SeamGateway, metrics.Denied, reasonFor(status, msg))
 	http.Error(w, msg, status)
 }
 
@@ -146,6 +176,7 @@ func (h *handler) rpcDeny(w http.ResponseWriter, r *http.Request, cred store.Cre
 	upstream, method, tool string, id json.RawMessage, code int, msg string) {
 	h.audit(r, store.ToolAuditEntry{CredentialName: cred.Name, Upstream: upstream,
 		Method: method, Tool: tool, Decision: "denied", Status: http.StatusForbidden, Detail: msg})
+	metrics.Decide(metrics.SeamGateway, metrics.Denied, reasonFor(http.StatusForbidden, msg))
 	if len(id) == 0 {
 		w.WriteHeader(http.StatusAccepted)
 		return
@@ -172,17 +203,20 @@ func (h *handler) authenticate(w http.ResponseWriter, r *http.Request) (store.Cr
 		token = after
 	}
 	if token == "" {
+		metrics.Decide(metrics.SeamGateway, metrics.Denied, metrics.ReasonUnauthorized)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return store.Credential{}, false
 	}
 	hash := sha256.Sum256([]byte(token))
 	cred, err := h.d.Store.CredentialByTokenHash(r.Context(), hash[:])
 	if errors.Is(err, store.ErrNotFound) {
+		metrics.Decide(metrics.SeamGateway, metrics.Denied, metrics.ReasonUnauthorized)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return store.Credential{}, false
 	}
 	if err != nil {
 		slog.Error("gateway: credential lookup failed", "err", err)
+		metrics.Decide(metrics.SeamGateway, metrics.Denied, metrics.ReasonCredentialStore)
 		http.Error(w, "credential store unavailable", http.StatusServiceUnavailable)
 		return store.Credential{}, false
 	}
@@ -301,7 +335,19 @@ func (h *handler) relay(w http.ResponseWriter, r *http.Request) {
 			}
 			detail = "granted " + grantID
 		}
+		started := time.Now()
 		status := h.forward(w, r, name, up, body)
+		metrics.ObserveUpstream(metrics.SeamGateway, name, time.Since(started))
+		switch {
+		case detail != "":
+			metrics.Decide(metrics.SeamGateway, metrics.Granted, metrics.ReasonGrant)
+		case status >= 200 && status < 300:
+			metrics.Decide(metrics.SeamGateway, metrics.Allowed, metrics.ReasonAllowlist)
+		case status == http.StatusBadGateway:
+			metrics.Decide(metrics.SeamGateway, metrics.Allowed, metrics.ReasonUpstreamUnreachable)
+		default:
+			metrics.Decide(metrics.SeamGateway, metrics.Allowed, metrics.ReasonUpstreamError)
+		}
 		h.audit(r, store.ToolAuditEntry{CredentialName: cred.Name, Upstream: name,
 			Method: msg.Method, Tool: params.Name, Decision: "allowed", Status: status, Detail: detail})
 

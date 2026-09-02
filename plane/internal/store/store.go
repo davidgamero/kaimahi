@@ -86,14 +86,31 @@ func (s *Store) SetBudget(ctx context.Context, name string, capCents, capTokens 
 	return nil
 }
 
-// RecordLedger appends one spend row. Append-only by construction: there
-// is no update or delete path in this package.
-func (s *Store) RecordLedger(ctx context.Context, e LedgerEntry) error {
-	_, err := s.pool.Exec(ctx,
+// RecordLedger appends one spend row and, in the same transaction,
+// consumes the reservation the call was admitted under (P9: the row
+// replaces the hold; empty when the call held nothing — a denial, or a
+// credential with no caps). The ledger stays append-only: the one
+// delete here is of a reservation, never of a row. A reservation that
+// already expired and was swept is simply gone; the row still lands.
+func (s *Store) RecordLedger(ctx context.Context, e LedgerEntry, reservationID string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx,
 		`INSERT INTO ledger_entry (credential_name, upstream, model, input_tokens, output_tokens, cost_cents, cost_source, status)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		e.CredentialName, e.Upstream, e.Model, e.InputTokens, e.OutputTokens, e.CostCents, e.CostSource, e.Status)
-	return err
+		e.CredentialName, e.Upstream, e.Model, e.InputTokens, e.OutputTokens, e.CostCents, e.CostSource, e.Status); err != nil {
+		return err
+	}
+	if reservationID != "" {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM spend_reservation WHERE id = $1`, reservationID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // ToolAuditEntry is one append-only tool-governance row: what the MCP

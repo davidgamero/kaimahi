@@ -22,7 +22,7 @@ func adminMux(t *testing.T, f *fakeStore) (http.Handler, string) {
 	t.Helper()
 	tokenFile := filepath.Join(t.TempDir(), "admin-token")
 	require.NoError(t, os.WriteFile(tokenFile, []byte("admin-secret\n"), 0o600))
-	d := proxy.Deps{Store: f, Meter: &meter.Meter{Usage: f}, Config: config.Config{}}
+	d := proxy.Deps{Store: f, Meter: &meter.Meter{Store: f}, Config: config.Config{}}
 	return proxy.NewAdminMux(d, tokenFile), "admin-secret"
 }
 
@@ -43,7 +43,7 @@ func TestAdminRequiresToken(t *testing.T) {
 }
 
 func TestAdminFailsClosedWithoutTokenFile(t *testing.T) {
-	d := proxy.Deps{Store: newFakeStore(), Meter: &meter.Meter{Usage: newFakeStore()}}
+	d := proxy.Deps{Store: newFakeStore(), Meter: &meter.Meter{Store: newFakeStore()}}
 	mux := proxy.NewAdminMux(d, "/nonexistent/token")
 	require.Equal(t, 503, adminDo(mux, "POST", "/admin/credentials", "any", `{"name": "a"}`).Code)
 }
@@ -60,7 +60,7 @@ func TestIssueCredentialRoundTrip(t *testing.T) {
 	require.Len(t, resp.Token, 4+64)
 
 	// The issued token authenticates on the data plane.
-	dataMux := proxy.NewDataMux(proxy.Deps{Store: f, Meter: &meter.Meter{Usage: f},
+	dataMux := proxy.NewDataMux(proxy.Deps{Store: f, Meter: &meter.Meter{Store: f},
 		Config: config.Config{Upstreams: map[string]config.Upstream{}}})
 	require.Equal(t, 403, doChat(t, dataMux, resp.Token, "/upstream/x/y", chatBody).Code,
 		"known token reaches authorization (403 unknown upstream), not 401")

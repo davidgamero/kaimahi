@@ -42,10 +42,98 @@ type fakeStore struct {
 	fileErr        error
 	// P7b inbound audit trail (admin read only in this package).
 	inboundAudits []store.InboundAuditEntry
+	// P9 reservations: open holds and the ids RecordLedger consumed.
+	open     map[string]store.SpendHold
+	consumed []string
+	admitErr error
+	nextRes  int
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{creds: map[string]store.Credential{}, allowlists: map[string][]string{}}
+	return &fakeStore{creds: map[string]store.Credential{}, allowlists: map[string][]string{},
+		open: map[string]store.SpendHold{}}
+}
+
+func (f *fakeStore) credByName(name string) (store.Credential, bool) {
+	for _, c := range f.creds {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return store.Credential{}, false
+}
+
+// AdmitSpend mirrors the store's locked admission in memory: committed
+// = month sums + open holds; an exceeded cap is covered by a live
+// budget grant (one use) or denied; an admitted call under a cap holds.
+func (f *fakeStore) AdmitSpend(_ context.Context, credential string, hold store.SpendHold, _ time.Time, _ time.Duration) (store.Admission, error) {
+	if f.admitErr != nil {
+		return store.Admission{}, f.admitErr
+	}
+	if f.monthErr != nil {
+		return store.Admission{}, f.monthErr
+	}
+	c, ok := f.credByName(credential)
+	if !ok {
+		return store.Admission{}, store.ErrNotFound
+	}
+	if c.CapCents == nil && c.CapTokens == nil {
+		return store.Admission{}, nil
+	}
+	cents, tokens := f.monthCents, f.monthToks
+	for _, h := range f.open {
+		cents += h.Cents
+		tokens += h.Tokens
+	}
+	var needs []store.BudgetNeed
+	if c.CapCents != nil && cents >= *c.CapCents {
+		needs = append(needs, store.BudgetNeed{Subject: "cents", Used: cents, Cap: *c.CapCents})
+	}
+	if c.CapTokens != nil && tokens >= *c.CapTokens {
+		needs = append(needs, store.BudgetNeed{Subject: "tokens", Used: tokens, Cap: *c.CapTokens})
+	}
+	var picked []int
+	for _, n := range needs {
+		found := -1
+		for i, g := range f.grants {
+			if g.CredentialName != credential || g.Kind != "budget" || g.Subject != n.Subject || g.Amount == nil {
+				continue
+			}
+			if g.MaxUses != nil && g.Uses >= *g.MaxUses {
+				continue
+			}
+			if n.Used < n.Cap+*g.Amount {
+				found = i
+				break
+			}
+		}
+		if found < 0 {
+			return store.Admission{Denied: true, Subject: n.Subject}, nil
+		}
+		picked = append(picked, found)
+	}
+	for _, i := range picked {
+		f.grants[i].Uses++
+	}
+	f.nextRes++
+	id := fmt.Sprintf("res-%d", f.nextRes)
+	f.open[id] = hold
+	return store.Admission{ReservationID: id, Granted: len(needs) > 0}, nil
+}
+
+func (f *fakeStore) MonthCommitted(_ context.Context, _ string, _ time.Time) (int64, int64, error) {
+	return f.monthCents, f.monthToks, f.monthErr
+}
+
+func (f *fakeStore) LiveBudgetGrantSum(_ context.Context, credential, subject string) (int64, error) {
+	var sum int64
+	for _, g := range f.grants {
+		if g.CredentialName == credential && g.Kind == "budget" && g.Subject == subject && g.Amount != nil &&
+			(g.MaxUses == nil || g.Uses < *g.MaxUses) {
+			sum += *g.Amount
+		}
+	}
+	return sum, nil
 }
 
 func (f *fakeStore) addToken(token string, c store.Credential) {
@@ -64,11 +152,15 @@ func (f *fakeStore) CredentialByTokenHash(_ context.Context, hash []byte) (store
 	return c, nil
 }
 
-func (f *fakeStore) RecordLedger(_ context.Context, e store.LedgerEntry) error {
+func (f *fakeStore) RecordLedger(_ context.Context, e store.LedgerEntry, reservation string) error {
 	if f.ledgerErr != nil {
 		return f.ledgerErr
 	}
 	f.ledger = append(f.ledger, e)
+	if reservation != "" {
+		f.consumed = append(f.consumed, reservation)
+		delete(f.open, reservation)
+	}
 	return nil
 }
 
@@ -252,35 +344,6 @@ func (f *fakeStore) ApprovalAudit(_ context.Context, name string, _ int) ([]stor
 	return out, nil
 }
 
-// ConsumeBudgetGrants satisfies meter.Grants for handler tests that
-// wire the fake as the grant source; all-or-nothing like the store.
-func (f *fakeStore) ConsumeBudgetGrants(_ context.Context, credential string, needs []store.BudgetNeed) (string, error) {
-	var picked []int
-	for _, n := range needs {
-		found := -1
-		for i, g := range f.grants {
-			if g.CredentialName != credential || g.Kind != "budget" || g.Subject != n.Subject || g.Amount == nil {
-				continue
-			}
-			if g.MaxUses != nil && g.Uses >= *g.MaxUses {
-				continue
-			}
-			if n.Used < n.Cap+*g.Amount {
-				found = i
-				break
-			}
-		}
-		if found < 0 {
-			return n.Subject, nil
-		}
-		picked = append(picked, found)
-	}
-	for _, i := range picked {
-		f.grants[i].Uses++
-	}
-	return "", nil
-}
-
 func i64(v int64) *int64 { return &v }
 
 const chatBody = `{"model": "test-model", "messages": [{"role": "user", "content": "hi"}]}`
@@ -304,7 +367,7 @@ func newUpstream(t *testing.T) (*httptest.Server, *http.Request, *[]byte) {
 func testDeps(f *fakeStore, upstreams map[string]config.Upstream) proxy.Deps {
 	return proxy.Deps{
 		Store:  f,
-		Meter:  &meter.Meter{Usage: f},
+		Meter:  &meter.Meter{Store: f},
 		Config: config.Config{Upstreams: upstreams},
 	}
 }
@@ -547,7 +610,7 @@ func TestBudgetDenialFilesApprovalRequestDeduped(t *testing.T) {
 	deps := testDeps(f, map[string]config.Upstream{
 		"ollama": {BaseURL: up.URL, Path: "v1/chat/completions", Classification: config.ClassFree},
 	})
-	deps.Meter = &meter.Meter{Usage: f, Grants: f}
+	deps.Meter = &meter.Meter{Store: f}
 	mux := proxy.NewDataMux(deps)
 
 	w := doChat(t, mux, "tok", "/upstream/ollama/v1/chat/completions", chatBody)
@@ -577,7 +640,7 @@ func TestBudgetGrantAdmitsOverCapChat(t *testing.T) {
 	deps := testDeps(f, map[string]config.Upstream{
 		"ollama": {BaseURL: up.URL, Path: "v1/chat/completions", Classification: config.ClassFree},
 	})
-	deps.Meter = &meter.Meter{Usage: f, Grants: f}
+	deps.Meter = &meter.Meter{Store: f}
 	mux := proxy.NewDataMux(deps)
 
 	// The grant covers the overage: the chat is admitted and the use
@@ -603,4 +666,33 @@ func TestOnlyPostChatRouteExists(t *testing.T) {
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 	require.Equal(t, 405, w.Code)
+}
+
+func TestAdmittedCallHoldsUntilItsLedgerWrite(t *testing.T) {
+	// P9: under a cap the admission leaves a reservation; the ledger
+	// write of the SAME call consumes it — on success and on a refusal
+	// taken after admission alike — so nothing stays held once the call
+	// is recorded, and a credential with no caps never holds.
+	f := newFakeStore()
+	f.addToken("tok", store.Credential{Name: "hello", CapTokens: i64(10)})
+	f.addToken("free", store.Credential{Name: "uncapped"})
+	up, _, _ := newUpstream(t)
+	mux := proxy.NewDataMux(testDeps(f, map[string]config.Upstream{
+		"ollama": {BaseURL: up.URL, Path: "v1/chat/completions", Classification: config.ClassFree},
+		"copilot": {BaseURL: up.URL, Path: "v1/chat/completions", Classification: config.ClassMetered,
+			CredentialFile: "/nonexistent/cred"},
+	}))
+	require.Equal(t, 200, doChat(t, mux, "tok", "/upstream/ollama/v1/chat/completions", chatBody).Code)
+	require.Equal(t, []string{"res-1"}, f.consumed, "the allowed call's row consumed its hold")
+	require.Empty(t, f.open)
+
+	// Admitted, then refused because the upstream credential is missing:
+	// the denied row releases the hold.
+	require.Equal(t, 503, doChat(t, mux, "tok", "/upstream/copilot/v1/chat/completions", chatBody).Code)
+	require.Equal(t, []string{"res-1", "res-2"}, f.consumed)
+	require.Empty(t, f.open)
+
+	// No caps: nothing reserved, nothing consumed.
+	require.Equal(t, 200, doChat(t, mux, "free", "/upstream/ollama/v1/chat/completions", chatBody).Code)
+	require.Len(t, f.consumed, 2)
 }

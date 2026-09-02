@@ -4,10 +4,18 @@
 // split survive; identity moved from tenant/run to the Kaimahi-issued
 // credential, and token caps joined cents caps (the free ollama tier costs
 // $0 by classification, so only a token cap can ever exhaust there).
+//
+// P9 (D24): the decision itself moved into the store. Reserve is one
+// transaction under the credential's row lock that counts the ledger
+// plus the calls already in flight, consumes grant uses, and leaves a
+// reservation the ledger write consumes — exact across replicas. This
+// package keeps the policy edges: what a call holds, the month window,
+// and how a verdict maps onto the wire.
 package meter
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -28,30 +36,34 @@ type Denial struct {
 
 func (d Denial) Error() string { return d.Msg }
 
-type UsageSource interface {
-	MonthUsage(ctx context.Context, credentialName string, monthStart time.Time) (cents, tokens int64, err error)
-}
-
-// Grants admits one over-cap request under live budget grants (P4c),
-// consuming one use per exceeded cap — all caps in one transaction, so
-// a denial burns no uses. *store.Store satisfies it; nil disables
-// grants (caps enforce exactly as before).
-type Grants interface {
-	ConsumeBudgetGrants(ctx context.Context, credential string, needs []store.BudgetNeed) (failedSubject string, err error)
-}
-
-// Headroom is the read-only view of live budget grants (P7b): how much a
-// cap is currently raised by, consuming nothing. *store.Store satisfies
-// it; nil disables previews' grant credit (caps preview exactly).
-type Headroom interface {
+// Store is what the meter needs from Postgres. *store.Store satisfies it.
+type Store interface {
+	// AdmitSpend is the locked, exact decision (store/spend.go).
+	AdmitSpend(ctx context.Context, credential string, hold store.SpendHold, monthStart time.Time, ttl time.Duration) (store.Admission, error)
+	// MonthCommitted and LiveBudgetGrantSum are the unlocked reads a
+	// preview is made of.
+	MonthCommitted(ctx context.Context, credential string, monthStart time.Time) (cents, tokens int64, err error)
 	LiveBudgetGrantSum(ctx context.Context, credential, subject string) (int64, error)
 }
 
+// Reservation is what an admitted call carries to its ledger write. ID
+// is empty when the credential has no caps (nothing was held); Granted
+// says a live budget grant admitted an over-cap call.
+type Reservation struct {
+	ID      string
+	Granted bool
+}
+
+// DefaultHoldTTL bounds a reservation a crashed replica never consumed.
+// Longer than any call the proxy allows (the upstream client's 5-minute
+// timeout plus the ledger write's), so a live call never loses its hold;
+// after it, the hold stops counting and the next admission sweeps it.
+const DefaultHoldTTL = 10 * time.Minute
+
 type Meter struct {
-	Usage    UsageSource
-	Grants   Grants
-	Headroom Headroom
-	Now      func() time.Time // nil = time.Now
+	Store   Store
+	Now     func() time.Time // nil = time.Now
+	HoldTTL time.Duration    // zero = DefaultHoldTTL
 }
 
 func (m *Meter) now() time.Time {
@@ -61,71 +73,67 @@ func (m *Meter) now() time.Time {
 	return time.Now()
 }
 
+func (m *Meter) holdTTL() time.Duration {
+	if m.HoldTTL > 0 {
+		return m.HoldTTL
+	}
+	return DefaultHoldTTL
+}
+
 // MonthStartUTC is ported verbatim from tomte-old.
 func MonthStartUTC(now time.Time) time.Time {
 	u := now.UTC()
 	return time.Date(u.Year(), u.Month(), 1, 0, 0, 0, 0, time.UTC)
 }
 
-// Check denies when either monthly cap is already reached. Fail closed:
-// if spend cannot be read, the request is denied — and logged, so
-// operators can tell "store down" from "cap reached".
-func (m *Meter) Check(ctx context.Context, cred store.Credential) error {
-	needs, err := m.exceeded(ctx, cred)
-	if err != nil || len(needs) == 0 {
-		return err
+// Hold is what one admitted call commits until its ledger row lands:
+// the LEAST it can spend, never an estimate. Every call that reaches an
+// upstream spends at least one token; it spends at least one cent only
+// when the model is priced (cents cost on a free or unpriced upstream
+// is zero by classification, and a zero hold is honest there).
+func Hold(priced bool) store.SpendHold {
+	h := store.SpendHold{Tokens: 1}
+	if priced {
+		h.Cents = 1
 	}
-	if failed := m.grantsFail(ctx, cred.Name, needs); failed != "" {
-		return capDenial(failed)
-	}
-	return nil
+	return h
 }
 
-// Preview answers "would Check admit a call right now?" WITHOUT
-// consuming a grant use (P7b: the inbound door refuses an event whose
-// spend the proxy could not admit, and leaves the actual consumption to
-// the proxy — one use per admitted call, never two per event). Same
-// fail-closed contract as Check; a missing Headroom credits nothing.
-func (m *Meter) Preview(ctx context.Context, cred store.Credential) error {
-	needs, err := m.exceeded(ctx, cred)
-	if err != nil || len(needs) == 0 {
-		return err
+// Reserve admits or denies one call, exactly, and — when admitted under
+// a cap — reserves its hold until RecordLedger consumes it. Fail closed:
+// a store error, or a credential the lock cannot find, denies. The
+// credential passed in only names the row; caps are read from the
+// locked row itself, so a `make budget` lands on the very next call.
+func (m *Meter) Reserve(ctx context.Context, cred store.Credential, priced bool) (Reservation, error) {
+	a, err := m.Store.AdmitSpend(ctx, cred.Name, Hold(priced), MonthStartUTC(m.now()), m.holdTTL())
+	if errors.Is(err, store.ErrNotFound) {
+		slog.Error("meter: credential vanished before admission, denying", "credential", cred.Name)
+		return Reservation{}, Denial{Status: http.StatusForbidden, Msg: "metering unavailable"}
 	}
-	// The store satisfies both Grants and Headroom; a Meter wired with
-	// only Grants (the pre-P7b shape) previews with the same grants it
-	// consumes, rather than silently stricter than Check.
-	headroom := m.Headroom
-	if headroom == nil {
-		headroom, _ = m.Grants.(Headroom)
-	}
-	for _, n := range needs {
-		var extra int64
-		if headroom != nil {
-			extra, err = headroom.LiveBudgetGrantSum(ctx, cred.Name, n.Subject)
-			if err != nil {
-				slog.Error("meter: budget headroom check failed, denying", "credential", cred.Name, "err", err)
-				return capDenial(n.Subject)
-			}
-		}
-		if extra <= 0 || n.Used >= n.Cap+extra {
-			return capDenial(n.Subject)
-		}
-	}
-	return nil
-}
-
-// exceeded reads month-to-date usage and collects EVERY exceeded cap:
-// grants must cover all of them in one transaction, or none is consumed
-// (a denial burns no uses).
-func (m *Meter) exceeded(ctx context.Context, cred store.Credential) ([]store.BudgetNeed, error) {
-	if cred.CapCents == nil && cred.CapTokens == nil {
-		return nil, nil
-	}
-	cents, tokens, err := m.Usage.MonthUsage(ctx, cred.Name, MonthStartUTC(m.now()))
 	if err != nil {
-		slog.Error("meter: spend check failed, denying request",
-			"credential", cred.Name, "err", err)
-		return nil, Denial{Status: http.StatusForbidden, Msg: "metering unavailable"}
+		slog.Error("meter: spend admission failed, denying request", "credential", cred.Name, "err", err)
+		return Reservation{}, Denial{Status: http.StatusForbidden, Msg: "metering unavailable"}
+	}
+	if a.Denied {
+		return Reservation{}, capDenial(a.Subject)
+	}
+	return Reservation{ID: a.ReservationID, Granted: a.Granted}, nil
+}
+
+// Preview answers "would Reserve admit a call right now?" WITHOUT
+// consuming a grant use or holding anything (P7b: the inbound door
+// refuses an event whose spend the proxy could not admit, and leaves
+// the actual admission to the proxy — one use per admitted call, never
+// two per event). Same fail-closed contract as Reserve. Unlocked and
+// therefore advisory: the proxy's own admission is the decision.
+func (m *Meter) Preview(ctx context.Context, cred store.Credential) error {
+	if cred.CapCents == nil && cred.CapTokens == nil {
+		return nil
+	}
+	cents, tokens, err := m.Store.MonthCommitted(ctx, cred.Name, MonthStartUTC(m.now()))
+	if err != nil {
+		slog.Error("meter: spend check failed, denying request", "credential", cred.Name, "err", err)
+		return Denial{Status: http.StatusForbidden, Msg: "metering unavailable"}
 	}
 	var needs []store.BudgetNeed
 	if cred.CapCents != nil && cents >= *cred.CapCents {
@@ -134,7 +142,20 @@ func (m *Meter) exceeded(ctx context.Context, cred store.Credential) ([]store.Bu
 	if cred.CapTokens != nil && tokens >= *cred.CapTokens {
 		needs = append(needs, store.BudgetNeed{Subject: "tokens", Used: tokens, Cap: *cred.CapTokens})
 	}
-	return needs, nil
+	for _, n := range needs {
+		extra, err := m.Store.LiveBudgetGrantSum(ctx, cred.Name, n.Subject)
+		if err != nil {
+			// A store outage, not a cap: the same classification Reserve
+			// gives a failed admission (no BudgetSubject, so the caller
+			// files no budget request for what is not a budget event).
+			slog.Error("meter: budget headroom check failed, denying", "credential", cred.Name, "err", err)
+			return Denial{Status: http.StatusForbidden, Msg: "metering unavailable"}
+		}
+		if extra <= 0 || n.Used >= n.Cap+extra {
+			return capDenial(n.Subject)
+		}
+	}
+	return nil
 }
 
 func capDenial(subject string) Denial {
@@ -143,24 +164,4 @@ func capDenial(subject string) Denial {
 		msg = "monthly token budget reached"
 	}
 	return Denial{Status: http.StatusTooManyRequests, Msg: msg, BudgetSubject: subject}
-}
-
-// grantsFail asks the grant store to admit one over-cap request,
-// consuming one use per exceeded cap atomically; it returns the first
-// uncovered subject ("" = admitted). Fail closed: no grant machinery or
-// a store error denies on the first exceeded cap. Grants are evaluated
-// in the store at call time (expiry and use count in SQL), never from a
-// cached copy.
-func (m *Meter) grantsFail(ctx context.Context, credential string, needs []store.BudgetNeed) string {
-	if m.Grants == nil {
-		return needs[0].Subject
-	}
-	failed, err := m.Grants.ConsumeBudgetGrants(ctx, credential, needs)
-	if err != nil {
-		slog.Error("meter: budget grant check failed, denying", "credential", credential, "err", err)
-		if failed == "" {
-			failed = needs[0].Subject
-		}
-	}
-	return failed
 }

@@ -93,8 +93,9 @@ port-forwards the controller, and invokes the agent.
 | 5a | Governed Slack outbound — posting is an approved action | **runs** — `make govern-slack`; the deny → approve → post → burn cycle asserted keyless in CI ([docs/slack.md](docs/slack.md)) |
 | 5b | Cluster portability + a real managed-cluster run | **demonstrated once** — the plane, a governed Copilot chat, a ledger row, a budget denial and a governed tool call, all on a real AKS cluster, which was then deleted ([docs/aks.md](docs/aks.md)) |
 | 7a | Network policy around the plane | **runs** — default-deny NetworkPolicy in both directions, proven by a probe on every PR ([docs/egress.md](docs/egress.md)) |
-| 7b | Inbound hooks (webhooks → agent), governed | **runs** — auth before any work, budget checked at the door, a bounded grant consumed per event, probed keyless in CI; rate limiter and queue are in-memory, single replica ([docs/inbound.md](docs/inbound.md)) |
+| 7b | Inbound hooks (webhooks → agent), governed | **runs** — auth before any work, budget checked at the door, a bounded grant consumed per event, probed keyless in CI; the pre-auth rate limiter and the queue are per replica by design ([docs/inbound.md](docs/inbound.md)) |
 | 8 | Approvals routed to Slack, with the approver's identity | **runs** — a filed request is announced in the channel through the plane's own governed post; `@kaimahi approve <id>` from a listed approver mints the grant in their name, asserted keyless in CI with signed synthetic mentions; live verification on AKS pending ([docs/approvals.md](docs/approvals.md#deciding-from-slack)) |
+| 9 | Run it for real: two stateless replicas, exact budgets, metrics | **runs** — two replicas behind every seam, every budget and grant decision serialized per credential in Postgres (N concurrent calls against a cap with room for one admit exactly one, asserted across both replicas in CI), a replica killed mid-cycle and Postgres restarted without a proxy restart, migrations under a lock, Prometheus on its own port, `make backup` / `make restore` ([docs/operations.md](docs/operations.md)) |
 | — | `kaimahi agent create` CLI | considered and prototyped, not built — [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) |
 
 **Limitations, stated plainly.** Governance is opt-in per agent: an
@@ -103,8 +104,10 @@ still acts with no audit. The plane's namespace is default-deny in both
 directions and the Slack pod is the one thing allowed out, on 443 only; the
 `kagent` and `ollama` namespaces are not policed. Internet-facing tool
 upstreams remain unbuilt; Slack is the only chat route for approvals (the
-`make approve` path remains, recording `admin`), and the plane runs as one
-replica.
+`make approve` path remains, recording `admin`). The plane runs as two
+stateless replicas that agree on every decision in Postgres; Postgres
+itself is one replica with `make backup` / `make restore`, not a highly
+available database ([docs/operations.md](docs/operations.md)).
 
 Cloud-agnostic — it runs on any conformant Kubernetes — with first-class
 attention to the Azure path: **AKS** as the managed target, **Azure AI

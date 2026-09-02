@@ -50,6 +50,7 @@ import (
 
 	"github.com/kaimahi-agents/kaimahi/plane/internal/config"
 	"github.com/kaimahi-agents/kaimahi/plane/internal/meter"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/metrics"
 	"github.com/kaimahi-agents/kaimahi/plane/internal/store"
 )
 
@@ -172,6 +173,9 @@ func New(d Deps) *Bridge {
 	// One clock: the limiter borrows the bridge's, so a test (or a
 	// future injected clock) has a single thing to set.
 	b.limiter = newLimiter(func() time.Time { return b.d.Now() })
+	// Expose the queue series from the start (an idle replica shows 0,
+	// not nothing).
+	b.publishQueue()
 	return b
 }
 
@@ -203,6 +207,7 @@ func (b *Bridge) Run(ctx context.Context) {
 				case j := <-b.jobs:
 					b.process(j)
 					<-b.slots
+					b.publishQueue()
 				}
 			}
 		}()
@@ -219,12 +224,64 @@ func (b *Bridge) audit(ctx context.Context, e store.InboundAuditEntry) bool {
 	defer cancel()
 	if err := b.d.Store.RecordInboundAudit(ctx, e); err != nil {
 		b.auditDegraded.Store(true)
+		metrics.SetDegraded(metrics.SeamInbound, true)
 		slog.Error("inbound: audit append failed; denying events until a write succeeds",
 			"hook", e.Hook, "decision", e.Decision, "err", err)
 		return false
 	}
 	b.auditDegraded.Store(false)
+	metrics.SetDegraded(metrics.SeamInbound, false)
+	switch e.Decision {
+	case "challenge":
+		metrics.Decide(metrics.SeamInbound, metrics.Allowed, metrics.ReasonChallenge)
+	case "ignored":
+		metrics.Decide(metrics.SeamInbound, metrics.Allowed, metrics.ReasonIgnored)
+	case "command":
+		metrics.Decide(metrics.SeamInbound, metrics.Allowed, metrics.ReasonCommand)
+	}
 	return true
+}
+
+// reasonFor classifies a refusal for the decisions metric — a fixed
+// vocabulary keyed on the messages this package writes, never the
+// message itself.
+func reasonFor(status int, msg string) metrics.Reason {
+	switch {
+	case strings.HasPrefix(msg, "target budget"):
+		return metrics.ReasonBudget
+	case strings.Contains(msg, "no live grant"):
+		return metrics.ReasonGrant
+	case strings.Contains(msg, "is not an approver"):
+		return metrics.ReasonNotApprover
+	case strings.HasPrefix(msg, "replay"):
+		return metrics.ReasonReplay
+	case strings.HasPrefix(msg, "inbound queue full"):
+		return metrics.ReasonQueueFull
+	case strings.HasPrefix(msg, "inbound audit unavailable"):
+		return metrics.ReasonAuditDegraded
+	case strings.HasPrefix(msg, "inbound admission unavailable"):
+		return metrics.ReasonAdmission
+	case strings.HasPrefix(msg, "credential store unavailable"):
+		return metrics.ReasonCredentialStore
+	case strings.HasPrefix(msg, "hook "):
+		return metrics.ReasonHookConfig
+	case strings.HasPrefix(msg, "unauthorized"), strings.HasPrefix(msg, "credential is not bound"),
+		strings.Contains(msg, "not an allowed channel"), strings.Contains(msg, "channel"):
+		return metrics.ReasonUnauthorized
+	case status == http.StatusRequestEntityTooLarge:
+		return metrics.ReasonTooLarge
+	case status == http.StatusBadRequest:
+		return metrics.ReasonBadRequest
+	case status == http.StatusUnauthorized, status == http.StatusForbidden:
+		return metrics.ReasonUnauthorized
+	}
+	return metrics.ReasonOther
+}
+
+// publishQueue reports the bounded queue's occupancy (queued plus in
+// flight) — per replica, like the queue itself.
+func (b *Bridge) publishQueue() {
+	metrics.SetQueue(metrics.QueueInbound, len(b.slots), cap(b.slots))
 }
 
 // deny is the single exit for every attributable refusal: audited
@@ -233,6 +290,7 @@ func (b *Bridge) deny(w http.ResponseWriter, r *http.Request, name string, h con
 	delivery string, status int, msg string) {
 	b.audit(r.Context(), store.InboundAuditEntry{Hook: name, CredentialName: h.Credential,
 		DeliveryID: delivery, Decision: "denied", Status: status, Detail: msg, Agent: agentRef(h)})
+	metrics.Decide(metrics.SeamInbound, metrics.Denied, reasonFor(status, msg))
 	slackRetryPolicy(w, h, status)
 	http.Error(w, msg, status)
 }
@@ -273,6 +331,7 @@ func (b *Bridge) receive(w http.ResponseWriter, r *http.Request) {
 	// deliberate — a flood starves its hook, not the database.
 	if !b.limiter.allow(name, h.RatePerMinute, h.Burst) {
 		slog.Warn("inbound: rate limit exceeded", "hook", name)
+		metrics.Decide(metrics.SeamInbound, metrics.Denied, metrics.ReasonRateLimit)
 		slackRetryPolicy(w, h, http.StatusTooManyRequests)
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
@@ -404,11 +463,12 @@ func (b *Bridge) receive(w http.ResponseWriter, r *http.Request) {
 	// burning a grant use or recording an admission it cannot honour.
 	select {
 	case b.slots <- struct{}{}:
+		b.publishQueue()
 	default:
 		b.deny(w, r, name, h, delivery, http.StatusServiceUnavailable, "inbound queue full — retry later")
 		return
 	}
-	release := func() { <-b.slots }
+	release := func() { <-b.slots; b.publishQueue() }
 
 	// Admit: the audit row (replay guard) and the grant use, atomically —
 	// on a cancel-free context: webhook sources hang up fast, and a
@@ -438,6 +498,7 @@ func (b *Bridge) receive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	metrics.Decide(metrics.SeamInbound, metrics.Granted, metrics.ReasonGrant)
 	// The slot is held; the queue has at least that much room by
 	// construction, so this send cannot block.
 	b.jobs <- job{eventID: eventID, hook: name, h: h, delivery: delivery, text: ev.text}

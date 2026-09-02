@@ -120,7 +120,10 @@ no. The agent surfaces it as a failed task with the message text.
 - **429 too many requests** — "monthly budget reached" / "monthly token
   budget reached". The cap is monthly (UTC). Raise or clear it with
   `make budget`. In our runs each attempt left three denied rows in the
-  ledger, because the agent runtime retried the call.
+  ledger, because the agent runtime retried the call. The decision is
+  exact across the plane's two replicas: calls that arrive together
+  against a cap with room for one get one 200 and the rest 429, never
+  two 200s ([spend.md](spend.md#enforcement-properties)).
 - **503 service unavailable** — the plane protecting its own guarantees:
   the credential store or spend ledger is unreachable (nothing is admitted
   while spend can't be recorded), or "upstream credential unavailable" —

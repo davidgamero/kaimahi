@@ -67,7 +67,7 @@ func (s *Store) RecordInboundAudit(ctx context.Context, e InboundAuditEntry) err
 // AdmitInboundEvent admits one delivery under a live 'inbound' grant for
 // the hook's credential, atomically: the admitted audit row (whose
 // partial unique index rejects a replay) and the grant use (the same
-// FOR UPDATE SKIP LOCKED consume the tool path uses) commit together.
+// credential-locked consume the tool path uses) commit together.
 // Ordering matters: the row is inserted FIRST, so a replay fails on the
 // index before any use could be burned, and a missing grant rolls the
 // row back so nothing is recorded as admitted that was not.
@@ -88,7 +88,12 @@ func (s *Store) AdmitInboundEvent(ctx context.Context, hook, credential, deliver
 	if err != nil {
 		return "", "", err
 	}
-	grantID, ok, err := consumeGrant(ctx, tx, credential, "inbound", hook)
+	// P9: the use is consumed under the credential lock like every other
+	// grant consume, so concurrent events on one hook take turns.
+	if _, err := lockCredential(ctx, tx, credential); err != nil {
+		return "", "", err
+	}
+	grantID, ok, err := consumeGrantLocked(ctx, tx, credential, "inbound", hook)
 	if err != nil {
 		return "", "", err
 	}
@@ -130,7 +135,7 @@ func (s *Store) InboundAudit(ctx context.Context, hook string, limit int) ([]Inb
 	return out, rows.Err()
 }
 
-// LiveBudgetGrantSum is the read-only half of ConsumeBudgetGrants: the
+// LiveBudgetGrantSum is the read-only half of AdmitSpend's grant step: the
 // headroom live budget grants add to a cap right now, consuming nothing.
 // The inbound door uses it to refuse an event whose spend could not be
 // admitted at the proxy anyway, while leaving the consumption to the

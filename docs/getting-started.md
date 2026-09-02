@@ -198,3 +198,6 @@ bin/kagent dashboard                    # kagent's web UI
   [tools.md](tools.md).
 - Budgets, a ledger, and keeping real API keys away from the agent:
   [spend.md](spend.md).
+- Running the plane for real — two replicas, probes, metrics, backup and
+  restore, and what is still not highly available:
+  [operations.md](operations.md).

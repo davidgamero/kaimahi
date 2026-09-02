@@ -169,6 +169,20 @@ All unit-tested and live-verified:
 
 - An exhausted budget denies with **429** and a clear error before any
   upstream contact; the agent surfaces it as a failed task.
+- The check is **exact under concurrency**, across replicas. Admission
+  is one Postgres transaction under a lock on the credential's row: it
+  counts the ledger *plus the calls already admitted but not yet
+  recorded* (each holds the least it can spend — one token, one cent if
+  the model is priced — until its own ledger write lands), so N
+  concurrent calls against a cap with room for one admit exactly one,
+  whichever replicas they land on. CI fires eight at both replicas at
+  once and asserts one 200 and seven 429s. The hold bounds *admissions*,
+  not overshoot: what remains is the accepted soft stop — every call
+  admitted while the cap had room for its hold may still finish above
+  the cap by its own usage, so with plenty of headroom several in-flight
+  calls can each end over it. A hold that a crashed replica never
+  released stops counting after ten minutes (longer than any call the
+  proxy allows).
 - If the ledger store is unreadable, budgeted credentials are denied
   (**403 "metering unavailable"**): no spend visibility, no spend. A
   credential with no caps skips the budget read, but a failed ledger
@@ -222,8 +236,13 @@ in the [FAQ](FAQ.md#what-the-planes-status-codes-mean).
 - Re-run `make plane` after editing `upstreams.yaml`: the config is read
   at boot (the ConfigMap mounts via subPath, which never live-updates).
 - Postgres data survives pod restarts via the PVC; `make down` destroys
-  it. The ledger is demo-durable, not backup-managed
-  ([FAQ](FAQ.md#where-did-my-ledger-go)).
+  it. `make backup` writes a `pg_dump` of the whole plane database to a
+  local file and `make restore FILE=…` loads it back, proven on a fresh
+  cluster in CI ([operations.md](operations.md#backup-and-restore),
+  [FAQ](FAQ.md#where-did-my-ledger-go)).
+- The proxy runs as two replicas; `make plane` rolls them one at a time
+  and neither the ledger nor a budget decision depends on which one a
+  call lands on ([operations.md](operations.md)).
 
 ## Limitations
 
@@ -233,6 +252,10 @@ in the [FAQ](FAQ.md#what-the-planes-status-codes-mean).
   *through the plane*, but pod-level network egress is not enforced by
   the plane.
 - No Copilot price is bundled, so Copilot can only be capped by tokens.
+- Postgres is one replica. The plane is stateless and survives a
+  replica loss; the database is durable (PVC, backup, restore) but not
+  highly available — while it restarts, every replica drops readiness
+  and nothing is admitted ([operations.md](operations.md)).
 
 The single table of what is and is not governed across the whole plane
 is in [README.md](README.md#what-is-governed-today-and-what-is-not).
