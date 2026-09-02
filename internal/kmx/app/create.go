@@ -1,9 +1,12 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/scaffold"
@@ -24,6 +27,13 @@ type CreateOptions struct {
 	Out          string // empty: agents/<name>.yaml
 	NoApply      bool
 	DryRun       bool
+}
+
+type serverCondition struct {
+	Type               string `json:"type"`
+	Status             string `json:"status"`
+	Message            string `json:"message"`
+	ObservedGeneration int64  `json:"observedGeneration"`
 }
 
 // CreateAgent scaffolds an agent, then applies it.
@@ -113,6 +123,9 @@ func (a *App) CreateAgent(opt CreateOptions) error {
 	if err := a.preflightModelConfig(modelConfig, namespace); err != nil {
 		return err
 	}
+	if err := a.preflightTools(tools, namespace); err != nil {
+		return err
+	}
 	if opt.DryRun {
 		return a.kubectlRun("apply", "--dry-run=server", "-f", path)
 	}
@@ -120,6 +133,81 @@ func (a *App) CreateAgent(opt CreateOptions) error {
 		return err
 	}
 	return a.waitAgentReady(opt.Name)
+}
+
+func (a *App) preflightTools(tools *scaffold.ToolWiring, namespace string) error {
+	if tools == nil {
+		return nil
+	}
+	raw, err := a.kubectlCapture("-n", namespace, "get", "remotemcpserver", tools.Server, "-o", "json")
+	if err != nil {
+		return fmt.Errorf("cannot read RemoteMCPServer %q in namespace %s: %w", tools.Server, namespace, err)
+	}
+	var server struct {
+		Metadata struct {
+			Generation int64 `json:"generation"`
+		} `json:"metadata"`
+		Status struct {
+			ObservedGeneration int64             `json:"observedGeneration"`
+			Conditions         []serverCondition `json:"conditions"`
+			DiscoveredTools    []struct {
+				Name string `json:"name"`
+			} `json:"discoveredTools"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(raw), &server); err != nil {
+		return fmt.Errorf("RemoteMCPServer %q returned invalid JSON: %w", tools.Server, err)
+	}
+	discovered := map[string]bool{}
+	for _, tool := range server.Status.DiscoveredTools {
+		discovered[tool.Name] = true
+	}
+	return validateToolServer(tools, server.Metadata.Generation, server.Status.ObservedGeneration,
+		server.Status.Conditions, discovered)
+}
+
+func validateToolServer(tools *scaffold.ToolWiring, generation, observed int64, conditions []serverCondition, discovered map[string]bool) error {
+	if generation == 0 || observed != generation {
+		return fmt.Errorf("RemoteMCPServer %q is still reconciling (generation %d, observed %d)", tools.Server, generation, observed)
+	}
+	accepted := false
+	message := ""
+	for _, condition := range conditions {
+		if condition.Type == "Accepted" {
+			if condition.ObservedGeneration != generation {
+				continue
+			}
+			accepted = condition.Status == "True"
+			message = condition.Message
+		}
+	}
+	if !accepted {
+		detail := ""
+		if message != "" {
+			detail = ": " + message
+		}
+		return fmt.Errorf("RemoteMCPServer %q is not Accepted%s", tools.Server, detail)
+	}
+	var missing []string
+	for _, tool := range tools.Tools {
+		if !discovered[tool] {
+			missing = append(missing, tool)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("RemoteMCPServer %q has not discovered allowlisted tool(s): %s\n  Available tools: %s",
+			tools.Server, strings.Join(missing, ", "), strings.Join(sortedKeys(discovered), ", "))
+	}
+	return nil
+}
+
+func sortedKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // resolveModelConfig decides what the agent thinks with.
