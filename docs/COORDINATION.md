@@ -108,11 +108,15 @@ prefix.
 | CI hygiene: verifier reads function_response; docs-only e2e short-circuit | W14 worker | PR #29 MERGED; verified (delta sheet below) — this board PR is the first live docs-only test of the short-circuit | lane closed |
 | AKS NetworkPolicy enforcement (P7a finding) | W15 worker | PR #30 MERGED; verified incl. teardown (delta sheet below) | lane closed |
 | Post-P7a/P7b reconciliation | coordinator | PR #28 MERGED | lane closed |
-| CLI decisions + PR #16 review | user + coordinator | awaiting the user's five CLI-PROPOSAL rulings | not a build lane; parallelises with everything |
+| W16: `use` returns only when one pod, on the new template, remains (flake class 3); `AKS_NETWORK_POLICY` comment | W16 worker | PR #32 MERGED; coordinator verified on the lane's cluster (delta sheet below) | lane closed; flake class 3 RESOLVED |
+| P8a: the Slack loop live on AKS behind a one-port TLS edge (D20) | W17 worker | PR #35 MERGED; coordinator verified everything reproducible on main + teardown (delta sheet below) | lane closed; the live run is by-design unrepeatable without a new cluster |
+| Brand assets + architecture diagram + org/front-door plans | user-run lane (outside the board's prompt set) | PR #33 MERGED (+ kaimahi-agents/.github#1); main CI green | brand validator in the hygiene job |
+| README front door + CONTRIBUTING.md | user-run lane (outside the board's prompt set) | PR #34 MERGED; main CI green | anchored front-door checker in hygiene: section order enforced, no `npx kaimahi create` mention before the quickstart ends — PR #16's README hunk must land under "Proposed CLI direction" |
+| CLI decisions + PR #16 review | user + coordinator | D19 ruled; coordinator review rounds done (2026-09-01/02) | not a build lane; parallelises with everything |
 | CI flake: agent-readiness race (P5b finding) | coordinator — PR #20 MERGED (73917e9) after a review round: retry anchored to the controller's whole error line; slack-post retries only unambiguous failures | User ruling 2026-09-01: fold into the next phase rather than a standalone micro-lane — as its **FIRST commit, before feature work**, so the lane's own CI is not reddened by someone else's race | retry predicate covers `connection refused` but not `EOF`; main went red once then green on re-run. Widen narrowly (EOF, connection-reset) so it cannot mask a real outage — see P5b delta sheet |
-| NetworkPolicy egress (promoted 2026-09-01) | — | candidate, not GO | P5a put a deliberate internet-egress pod in the cluster; three non-network layers bound blast radius today. Strongest-argument-yet per P5a's own accounting |
-| P6: inbound connectors (webhooks/user APIs) | — | parked candidate; own blindspot pass when reached | genuine net-new surface: ingress auth, replay, rate limits, every event causes spend |
-| CLI: `kaimahi agent create` (Tatsinnit, PR #16) | teammate | D19 ruled; coordinator review in progress (security posture, scope, tests, CI) | not published; internal via npx github: |
+| ~~NetworkPolicy egress (promoted 2026-09-01)~~ | — | BUILT as P7a (PR #23) and enforced on AKS by W15 (PR #30) | row kept for the promotion record |
+| ~~P6: inbound connectors (webhooks/user APIs)~~ | — | BUILT as P7b (PR #24); public edge + Slack loop as P8a (PR #35) | row kept for the sequencing record |
+| CLI: `kaimahi agent create` (Tatsinnit, PR #16) | teammate | checks green at 6b952fa, every review point addressed; NOT mergeable — conflicts with #32–#35 in ci.yml/.gitignore/Makefile/README; one coordinator finding outstanding (see open items) | not published; internal via pinned npx github: |
 | Docs: CLI-first framing + naming record | teammate (Tatsinnit) | PR #10 MERGED (ratifies D12) | staleness fixes folded into reconciliation lane |
 | Docs: agent-first scenarios | teammate (Tatsinnit) | PR #11 MERGED (authors' public credit ratified by user merge) | lane closed |
 | Post-merge reconciliation | coordinator | PR #13 MERGED (0ce72ca, main CI green incl. hardened secret scan) | lane closed |
@@ -139,6 +143,7 @@ prefix.
 | D17 | 2026-09-01 | Board updates go through PULL REQUESTS from now on — supersedes D4. Context: the org move brought the `protect-main` ruleset (PR required + hygiene/go-plane/e2e as required checks; admins may bypass), and the coordinator's direct board pushes were landing via that bypass. The coordinator remains the board's single WRITER; the change is that every board edit is a PR the user merges. Practical consequence: each board PR waits on the full e2e (~11 min) — a docs-only short-circuit for the e2e job is a small CI follow-up so a doc-only PR still reports all three required checks without booting a cluster. This row is itself the first board PR | "i think we should start doing PRs for board updates." |
 | D18 | 2026-09-01 | The Slack app's `chat:write.public` scope (bot may post to any public channel uninvited — flagged by P5a, recommended for removal) is ACCEPTED as-is; item closed | "i'm not worried about the slack permissions" |
 | D19 | 2026-09-01 | CLI rulings (the five open decisions in docs/CLI-PROPOSAL.md; sequencing is moot now P4 shipped): (1) **do NOT publish to npm yet** — internal use via `npx github:kaimahi-agents/kaimahi`; publishing is a one-line decision once D9's gates clear; (2) **scaffold-only** — `agent create` is the only command, R/U/D refused by printing the kubectl/kagent command that already does the job; (3) **the Makefile owns cluster bring-up** — no `kaimahi up`/`install`; (4) **a zero-runtime-dependency Node toolchain is accepted** into the repo (`cli/`, with `make cli-test` in CI). PR #16 moves from parked prototype to coordinator review against these | ruled via options: "Not yet — internal via npx github: (Recommended)", "Scaffold-only, as built (Recommended)", "Makefile owns bring-up (Recommended)", "Yes, zero-dependency Node (Recommended)" |
+| D20 | 2026-09-01 | **P8a GO — the Slack loop live end to end on AKS** behind a public LoadBalancer with TLS: only the inbound port exposed, with a port-scan proof; the edge gets the one P7a policy allowance it needs; the public FQDN/IP are Azure identifiers, so the scanner is extended to refuse them; the Slack Request URL is removed at teardown; the turn runs on governed Copilot and the reply goes out under an approved tool grant; teardown and a spend figure are mandatory. Sequencing: W16 (Makefile micro-lane: `use` waits until only the new-hash pod remains + the `AKS_NETWORK_POLICY` comment) merges first; **approval routing via Slack** is the next candidate after P8a; every other P8 candidate stays parked. Coordinator note: the W16/W17 prompts were pasted to the workers from the coordinator session but never landed on the board (this row records the ruling after the fact; both lanes are merged and verified below) | ruled via the coordinator's options in the 2026-09-01 session; the quote was not captured verbatim (recorded from the coordinator's running state, as D8 was); ratified by the user's merges of PRs #32 and #35 |
 | D14 | 2026-09-01 | P5 direction: the **undeniable demo** — not a new capability arc but making the built one legible and credible. Rulings: (1) outbound connector platform is **Slack** (via existing MCP servers, no connector code); (2) AKS work goes all the way — cluster portability AND a real AKS deployment with evidence (accepts Azure spend + credentials in a worker session); (3) demos run on the **Copilot** preset while **CI stays keyless on ollama** (public fork-exposed repo — no repo secrets in CI, ever). Rationale on the board: everything governed so far protects an agent that lists ConfigMaps; posting to a channel humans read is the first consequential action, and it makes the approval gate the point rather than the plumbing | "sure, that's undeniable demo makes sense" — then ruled via options: "Slack (Recommended)", "Portability + real AKS run (Recommended)", "Copilot for demo, ollama for CI (Recommended)" |
 | D13 | 2026-09-01 | P4c approval model: TIME-BOXED PERMITS — a denied action files a pending request; approval grants it bounded (expiry by duration and/or use count) and compiles into the existing allowlist/budget rows; deny-and-retry mechanics, no held-open calls. Demo scenarios: tool-access widening (k8s_get_events, read-only) AND budget overage; the P3 tool-server read-only posture stays untouched (write-tool demo deferred) | ruled via options: "Time-boxed permits (Recommended)"; "Widen tool access (Recommended), Budget overage (Recommended)" |
 
@@ -953,7 +958,18 @@ Requiring a 3B model to copy an unguessable string verbatim tests the
 model, not the tool path. Until then: re-run the job when this shape
 appears; do not hold lanes for it.
 
-## CI flake class 3 — the old pod answers after `use` (recorded 2026-09-01)
+## CI flake class 3 — the old pod answers after `use` (recorded 2026-09-01) — RESOLVED by #32 (W16)
+
+Resolution: `wait_switched` (Makefile) — after the Agent's
+`observedGeneration` catches up and `rollout status` returns, `use`,
+`govern`, `govern-tools` and `ungovern-tools` poll until the pod list for
+the agent equals exactly the pod-template-hash of the ReplicaSet at the
+Deployment's current revision (Terminating pods still list), bounded
+120s, loud on timeout. The hypothesis below was confirmed on the lane's
+cluster (old pod Ready + Terminating after "successfully rolled out")
+and two facts were added: kagent reconciles the Agent asynchronously, so
+`rollout status` can report on the OLD template; and the Agent's Ready
+condition never flips during a switch. Delta sheet below.
 
 Docs-only board PR #27 went red at "Assert the ledger recorded the
 governed chat": the governed chat COMPLETED, the ledger had zero rows.
@@ -970,21 +986,53 @@ return only when exactly one pod with the new template hash remains, so
 "governed" means the ungoverned pod is gone, not outnumbered. Bundle with
 the Makefile comment for `AKS_NETWORK_POLICY` (W15 deviation 3).
 
-## Open items after the second parallel set (2026-09-01)
+## Open items after P8a (2026-09-02)
 
-- **#16 (Tatsinnit's CLI)** — rulings given on the PR; blocking fix is the
-  uncommitted `cli/bin/kaimahi.js` (root `.gitignore` `bin/`). Waiting on
-  the author.
-- **D9 naming gates** — cultural read + trademark counsel, now more urgent
-  (org exists; npm publish deferred until they clear).
-- **Makefile micro-lane**: `use` waits for the old pod to be gone (flake
-  class 3); `AKS_NETWORK_POLICY` in the AKS variable comment block.
+- **#16 (Tatsinnit's CLI)** — checks green at 6b952fa and every review
+  point addressed (entry point committed, `.gitignore` anchored, root
+  `package.json`, guard delegated to `scripts/kube-guard.sh`, presets test
+  reads `k8s/models/`, CWE-74 tool-name validation, pinned `npx github:`
+  invocations + CI gate, `SCENARIO_MODEL` follows `GOVERNED_PRESET`,
+  `scenario-model` prerequisite). Coordinator re-verified on the PR head:
+  28 tests pass locally against main's `k8s/models/` (no drift since the
+  branch base), `npm pack` carries zero dependencies, `private: true`.
+  Outstanding before merge: (1) conflicts with #32–#35 in ci.yml,
+  .gitignore, Makefile, README — and #34's front-door checker now pins the
+  README's section order, so the CLI text must land under "Proposed CLI
+  direction"; (2) coordinator finding: `package.json`'s `files` omits
+  `scripts/kube-guard.sh`, so from the D19 `npx github:` install `--apply`
+  can only ever print "refused by the context guard" (fails closed, but
+  the documented invocation cannot apply) — add the script to `files` and
+  make the CI install step exercise the guard; (3) minor: `scenario-billing`
+  runs make's guard and then the CLI's, so off-kind it asks twice unless
+  `KAIMAHI_CONFIRM` is exported — pass `--yes` in the recipe the way `govern`
+  hands the confirmation down to `use`; (4) user/admin: add the `cli` job to
+  the `protect-main` required checks so D19(4) is enforced, not advisory;
+  (5) one CodeRabbit thread open (the `#<commit-sha>` placeholder in
+  copy-paste examples) — cosmetic, the text already says to substitute a
+  reviewed SHA.
+- **D9 naming gates** — cultural read + trademark counsel; npm publish and
+  the `cli` package name wait on them (org exists → more urgent).
+- **User-side Slack follow-ups from P8a**: the app configuration token used
+  to export/update the manifest is still valid on Slack's side (revoke it);
+  the app now carries `app_mentions:read`; Socket Mode must stay OFF for the
+  Events path (docs/inbound.md records the symptom).
+- **Next candidate (not GO)**: approval routing via Slack + per-approver
+  identity (P8b) — needs its own blindspot pass and shaping questions
+  before a prompt is written.
+- **W16 carry-forward**: `agent` / `tools-agent` (re-apply of committed
+  YAML, may roll pods) never did `rollout status` and are not covered by
+  `wait_switched`; `govern-tools` does not cover a content-only
+  RemoteMCPServer change the way `use` now covers a content-only preset
+  change.
 - **Unverified engines**: `azure`/`calico` on AKS; multi-node AKS with the
   probe's single-node caveat.
-- **P8 candidates** (not GO): Slack Events live end to end (needs a public
-  ingress); approval routing + per-approver identity; shared limiter/queue
-  for a multi-replica plane; internet-facing gateway upstreams with the
-  hardened dialer/SSRF set; retiring the phase-runbook stubs.
+- **Parked P8 candidates**: shared limiter/queue for a multi-replica plane;
+  internet-facing gateway upstreams with the hardened dialer/SSRF set;
+  retiring the phase-runbook stubs.
+- **Local clusters on the coordinator box**: `kaimahi-p1` (demo),
+  `netpol-verify` (P7a's), `use-verify` (W16's — deleted after the
+  coordinator's verification), `tomte-p1` (pre-rename, user's call).
 
 ## Parallel set rules (P7a / P7b / P7c, 2026-09-01)
 
@@ -1326,6 +1374,107 @@ targets main; no stacked bases; lane ends at PR-open-with-checks-green
 ```
 
 ## Delta sheets from finished lanes
+
+### P8a — the Slack loop live on AKS (PR #35, merged 2026-09-02)
+
+The prompt required: Slack Events live end to end on a real AKS cluster
+behind a public LoadBalancer with TLS; only the inbound port exposed and a
+port-scan proof of it; the P7a policy allowance for the edge and nothing
+wider; FQDN/IP treated as Azure identifiers (scanner extended); the Slack
+Request URL removed at teardown; governed Copilot turn + approved reply;
+mandatory teardown + spend. Delivered (survey first — nothing about
+signing, the challenge, replay or the hook table was rebuilt):
+**app_mention-only** event→task mapping with a loop guard (a `message`,
+a `bot_id` mention or an empty mention is acked 200 and audited
+`ignored`, migration 00005 widens the CHECK); a **required**
+`slack_channels_file` for `slack` auth, read per request from the same
+Secret key that restricts the MCP server's posting (unreadable/empty/`true`
+→ 503, another channel → 403); `X-Slack-No-Retry: 1` on 4xx except 429,
+nothing on 5xx; an ack the audit trail cannot record is withheld (503);
+`k8s/inbound-edge.yaml` = Caddy 2.11.4 (digest-pinned) terminating TLS by
+**TLS-ALPN-01** on a DNS-labelled public IP — one public port, no port
+80, no ingress controller, no cert-manager, key on a PVC that never
+leaves the pod, forwards exactly `POST /hook/slack-events` ≤ 64 KiB; the
+edge's own policy (in: 8443 from anywhere; out: DNS, proxy:8082, 443
+non-private) plus `kaimahi-proxy-ingress-edge` (proxy admits the edge
+pod on 8082 only); `make exposure-scan` sweeps every public IP in the
+node resource group on tcp/1-65535 with the edge's 443 as positive
+control, an egress control on a non-443 port, and abort-on-local-error;
+`check-no-azure-ids.sh` refuses `*.cloudapp.azure.com` and public IPv4
+literals with a class-asserting self-test in CI; CI's policy-shape check
+covers the edge file and the hook-table check asserts the channel file.
+Live run (PR transcript, redacted): cluster `kaimahi-p8` 00:22–03:20 UTC
+2026-09-02, ≈US$0.65; scan = exactly {443} on the edge IP, nothing on the
+SNAT IP; 401 (mis-pasted secret) → 200 challenge → 403 + approval filed →
+approved `USES=3 TTL=30m` → 202 admitted → completed; governed
+`gpt-5-mini` turn in the ledger (two calls, the tool round trip); reply
+posted under the tool grant into the private test channel's thread;
+grants `1/3` and `1/2` afterwards.
+
+Coordinator verification (on main at 30fdad8, 2026-09-02): `go vet` and
+`go test ./...` clean; scanner self-test passes and the tree scan is
+clean; `az group list` shows NO `kaimahi*` resource group (teardown
+confirmed); `kubectl config current-context` is unset (deviation 5
+observed); parameters read in the code, not just the mechanisms —
+`verify.go` admits only `app_mention` with no `bot_id`/`bot_message` and
+non-empty text; `config.go` refuses a `slack` hook without
+`slack_channels_file` and refuses the field on any other auth;
+`slackRetryPolicy` sets the header for 400–499 except 429 only; the
+edge manifest's two policies and the Caddyfile match the PR's description
+line for line (8443 listener, redirects and HTTP-01 disabled, 64 KiB
+body, 404 for everything but the hook path, `drop: [ALL]` +
+`add: [NET_BIND_SERVICE]`); the Socket Mode symptom is recorded in
+docs/inbound.md. NOT reproduced: the live loop itself — the cluster was
+torn down as the prompt required, and re-running it means a new cluster,
+spend and the user's Slack app; accepted on the transcript, whose audit,
+approval, ledger and Slack rows are mutually consistent to the second.
+Post-merge main CI run 33588168733 (30fdad8): hygiene, go-plane and
+e2e all green.
+
+Rulings — all eight deviations accepted: (1) docs/slack.md's "Slack is
+not deployed on AKS" is now "for the loop demo only, on a same-day
+cluster" — correct, since the prompt required it; (2) `slack_channels_file`
+required — a config-compat change (an old `slack` hook config fails to
+LOAD, loudly) and the right failure; (3) Socket Mode: the hour lost is
+recorded where the next person looks first; the app configuration token
+the user created is a **user follow-up** (revoke); (4) `NET_BIND_SERVICE`
+is the whole concession and is commented; (5) `aks-down` unsets a
+dangling `current-context`; (6) the 35-character paste is an operator
+error the shape check catches — no code; (7) rebased clean over W16 and
+the README/board commits; (8) naming the `payload` argument in the task
+is prompt engineering for a one-argument tool, not a governance change.
+Carried forward: the Slack-side user actions and the P8b candidate (open
+items).
+
+### W16 — `use` waits for the single new-template pod (PR #32, merged 2026-09-02)
+
+Makefile only. `wait_switched` (three waits: Agent `observedGeneration`
+== `generation`, `rollout status`, then poll until the agent's pod list
+equals exactly the pod-template-hash of the ReplicaSet at the
+Deployment's current revision; 120s bound, pod list on failure) replaces
+the bare `rollout status` in `use` (and through it `govern`/`use-ollama`),
+`govern-tools` and `ungovern-tools`; `use` additionally captures the
+ModelConfig generation and Deployment revision before the apply and, when
+the preset's content changed while the agent was already on it, waits for
+the revision to advance before calling the helper (review round 1).
+`AKS_NETWORK_POLICY` documented in the AKS variable block (and kept OUT
+of `aks-cluster`'s explicit env list, where unset would become an
+explicit empty that aks-up.sh refuses).
+
+Coordinator verification on the lane's own cluster `use-verify`
+(2026-09-02 03:49–03:53 UTC, main's Makefile): `make use PRESET=ollama`
+→ immediately after, exactly one pod (`676b9f55`, no deletionTimestamp);
+`make govern` → one pod (`5ff7f786c5`); `make chat` with probe
+`kmh-probe-035108` → the ledger's newest row is that chat (380 in / 12
+out, matching the task's own usage metadata) — the governed chat is
+metered on the first try, which is the flake-class-3 symptom gone;
+`make use PRESET=ollama` → one pod; `make govern` → one pod. Cluster
+deleted afterwards. Findings accepted as recorded (kagent's reconcile is
+asynchronous; the Agent's Ready condition never flips on a switch;
+`hello-world-model` and `ollama` are byte-identical so CI's switch rolls
+nothing). Deviations accepted: `agent`/`tools-agent` untouched (never did
+`rollout status`; prompt was switch-only) and `govern-tools`'s
+content-only case uncovered — both carried forward in open items.
 
 ### W13 — post-move Go module path + owner references (PR #26, merged 2026-09-01)
 
