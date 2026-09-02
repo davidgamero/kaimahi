@@ -18,6 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from unittest import mock
 
 
 class ExitChat(Exception):
@@ -179,6 +180,7 @@ class StreamView:
         self.agent = agent
         self.tool_mode = tool_mode
         self.context = None
+        self.task_id = None
         self.state = None
         self.reply = ""
         self.approval = None
@@ -195,6 +197,8 @@ class StreamView:
     def consume(self, event):
         if event.get("contextId"):
             self.context = event["contextId"]
+        if event.get("taskId"):
+            self.task_id = event["taskId"]
         status = event.get("status") or {}
         if status.get("state"):
             self.state = status["state"]
@@ -255,6 +259,26 @@ class StreamView:
                 print(f"{self.agent}: {artifact_text}", end="", flush=True)
                 self.reply = artifact_text
                 self.started_reply = True
+
+    def finish_task(self, task):
+        self.context = task.get("contextId") or self.context
+        self.task_id = task.get("id") or self.task_id
+        self.state = (task.get("status") or {}).get("state") or self.state
+        text = "".join(
+            safe_text(part.get("text", ""))
+            for artifact in task.get("artifacts") or []
+            for part in parts(artifact)
+            if part.get("kind") == "text"
+        )
+        if text:
+            addition = text[len(self.reply):] if text.startswith(self.reply) else text
+            if addition:
+                self.clear_spinner()
+                if not self.started_reply:
+                    print(f"{self.agent}: ", end="", flush=True)
+                    self.started_reply = True
+                print(addition, end="", flush=True)
+                self.reply += addition
 
 
 def read_stream(process, view):
@@ -352,11 +376,7 @@ def read_stream(process, view):
         raise RuntimeError(stderr or f"kagent exited {process.returncode}")
     if view.started_reply:
         print()
-    if view.state == "input-required" and view.approval:
-        return view
-    if view.state != "completed" or not view.reply:
-        detail = f": {stderr}" if stderr else ""
-        raise RuntimeError(f"task did not complete with a reply (state {view.state!r}){detail}")
+    view.stderr = stderr
     return view
 
 
@@ -365,18 +385,72 @@ def invoke(kagent, url, agent, message, session, tool_mode="summary"):
     if session:
         command.extend(["--session", session])
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
-    return read_stream(process, StreamView(agent, tool_mode))
+    view = read_stream(process, StreamView(agent, tool_mode))
+    if view.state in {"submitted", "working"} and view.task_id:
+        view = wait_for_task(url, agent, view)
+    if view.state == "input-required" and view.approval:
+        return view
+    if view.state != "completed" or not view.reply:
+        detail = f": {view.stderr}" if getattr(view, "stderr", "") else ""
+        raise RuntimeError(f"task did not complete with a reply (state {view.state!r}){detail}")
+    return view
 
 
 def api_json(url, method="GET", body=None):
     data = json.dumps(body).encode() if body is not None else None
     request = urllib.request.Request(url, data=data, method=method,
-                                     headers={"Content-Type": "application/json"})
+                                     headers={"Content-Type": "application/json",
+                                              "x-user-id": "admin@kagent.dev"})
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             return json.load(response)
     except (urllib.error.URLError, json.JSONDecodeError) as error:
         raise RuntimeError(f"controller API request failed: {error}") from error
+
+
+def get_task(base, agent, task_id):
+    request_id = str(uuid.uuid4())
+    envelope = api_json(
+        base + f"/api/a2a/kagent/{urllib.parse.quote(agent, safe='')}/",
+        method="POST",
+        body={"jsonrpc": "2.0", "id": request_id, "method": "tasks/get", "params": {"id": task_id}},
+    )
+    if envelope.get("error"):
+        raise RuntimeError("tasks/get failed: " + safe_text(json.dumps(envelope["error"])))
+    task = envelope.get("result")
+    if not isinstance(task, dict):
+        raise RuntimeError("tasks/get returned no task")
+    return task
+
+
+def wait_for_task(base, agent, view, timeout=300):
+    """Poll an already-created task after an early stream close; never resend."""
+    deadline = time.monotonic() + timeout
+    tty_input = sys.stdin.isatty() and sys.stdout.isatty()
+    fd = sys.stdin.fileno() if tty_input else None
+    previous = termios.tcgetattr(fd) if tty_input else None
+    try:
+        if tty_input:
+            tty.setcbreak(fd)
+        while time.monotonic() < deadline:
+            if tty_input:
+                print(f"\r{view.agent}: still working... (Esc to exit)", end="", flush=True)
+                ready, _, _ = select.select([fd], [], [], 0)
+                if ready and os.read(fd, 1) == b"\x1b":
+                    raise ExitChat
+            task = get_task(base, agent, view.task_id)
+            state = (task.get("status") or {}).get("state")
+            if state not in {"submitted", "working"}:
+                view.finish_task(task)
+                if view.started_reply:
+                    print()
+                return view
+            time.sleep(1)
+    finally:
+        if tty_input:
+            termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+            view.clear_spinner()
+    raise RuntimeError(f"task {view.task_id} remained {view.state!r} for {timeout}s")
 
 
 def sessions(base):
@@ -693,6 +767,23 @@ def selftest():
         "role": "agent", "messageId": "complete", "metadata": {"kagent_adk_partial": None},
         "parts": [{"kind": "text", "text": "Hello, world"}]}}})
     assert chunks.reply == "Hello, world"
+    unfinished = StreamView("agent")
+    unfinished.consume({"kind": "status-update", "taskId": "task-1", "contextId": "s3",
+                        "status": {"state": "working"}})
+    unfinished.finish_task({"kind": "task", "id": "task-1", "contextId": "s3",
+                            "status": {"state": "completed"},
+                            "artifacts": [{"parts": [{"kind": "text", "text": "finished"}]}]})
+    assert unfinished.state == "completed" and unfinished.reply == "finished"
+    polled = StreamView("agent")
+    polled.consume({"kind": "status-update", "taskId": "task-2", "contextId": "s4",
+                    "status": {"state": "working"}})
+    with mock.patch(__name__ + ".get_task", return_value={
+        "kind": "task", "id": "task-2", "contextId": "s4", "status": {"state": "completed"},
+        "artifacts": [{"parts": [{"kind": "text", "text": "polled"}]}],
+    }) as task_get:
+        wait_for_task("http://unused", "agent", polled, timeout=1)
+        task_get.assert_called_once_with("http://unused", "agent", "task-2")
+    assert polled.reply == "polled"
     denied = StreamView("agent")
     denied.consume({"kind": "status-update", "status": {"state": "working", "message": {
         "parts": [{"kind": "data", "metadata": {"kagent_type": "function_response"},
