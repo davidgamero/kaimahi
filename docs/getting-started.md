@@ -19,7 +19,10 @@ substance and different wording.
 | kind | local Kubernetes cluster | <https://kind.sigs.k8s.io/docs/user/quick-start/#installation> |
 | kubectl | cluster interaction | <https://kubernetes.io/docs/tasks/tools/> |
 | Helm | installs kagent | <https://helm.sh/docs/intro/install/> |
-| make, curl | glue | your package manager |
+| Bash | runs the fail-closed operational scripts | <https://www.gnu.org/software/bash/> |
+| Python 3 | status, guards, and manifest checks | <https://www.python.org/downloads/> |
+| make | orchestration | <https://www.gnu.org/software/make/> |
+| curl | downloads the pinned kagent CLI and calls APIs | <https://curl.se/download.html> |
 
 No API key is needed anywhere: the default model is an in-cluster
 [Ollama](https://ollama.com) server running `qwen2.5:3b` (free, local,
@@ -31,6 +34,13 @@ keyless). Hosted models are in [models.md](models.md).
 make up     # kind cluster + Ollama + model pull + kagent + two agents (first run ~5-10 min)
 make chat   # ask the default question
 ```
+
+On the local kind path, `make up` first runs a host preflight: `kind`,
+`kubectl`, Bash, Python 3, curl, and Helm must be executable, and the Docker
+daemon must be reachable by the current user. It reports all missing or
+unusable dependencies together before the context guard or cluster creation.
+The preflight validates these tools; it does not install or modify them.
+`KIND_CMD`, `DOCKER`, and `HELM` may be set to non-default executable paths.
 
 `make chat` prints the raw A2A task JSON. Buried in it is the reply,
 from a real run:
@@ -96,7 +106,7 @@ Switching models patches the live Agent resource, not the YAML.
 
 ## What `make up` does, step by step
 
-The `up` target on kind runs `cluster`, `ollama`, `model`, `kagent`,
+The `up` target on kind runs `preflight-kind`, `cluster`, `ollama`, `model`, `kagent`,
 `agent`, `tools-agent`, then `status`. In plain commands:
 
 ```bash

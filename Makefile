@@ -29,6 +29,9 @@ MODEL          ?= qwen2.5:3b
 AGENT          ?= hello-world
 TASK           ?= Hello! Who are you and where are you running?
 KAGENT         ?= bin/kagent
+KIND_CMD       ?= kind
+DOCKER         ?= docker
+HELM           ?= helm
 
 OS   := $(shell uname -s | tr A-Z a-z)
 ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
@@ -96,7 +99,7 @@ comma          := ,
 TOOLNAMES_JSON  = $(if $(filter -,$(TOOLS)),,"$(subst $(comma),"$(comma)",$(TOOLS))")
 SLACK_TOOLNAMES_JSON = $(if $(filter -,$(SLACK_AGENT_TOOLS)),,"$(subst $(comma),"$(comma)",$(SLACK_AGENT_TOOLS))")
 
-.PHONY: up cluster ollama model kagent agent tools-agent chat down status guard \
+.PHONY: up preflight-kind cluster ollama model kagent agent tools-agent chat down status guard \
 	model-secret copilot-secret use use-ollama \
 	plane plane-image plane-secrets govern budget ledger plane-copilot-secret \
 	govern-tools ungovern-tools tool-allow tool-allowlist tool-audit \
@@ -277,7 +280,7 @@ endef
 # BEFORE the agents do, because the agents go straight onto the governed
 # Copilot preset — there is no keyless model for them to start on.
 ifeq ($(TARGET),kind)
-UP_STEPS := cluster ollama model kagent agent tools-agent status
+UP_STEPS := preflight-kind cluster ollama model kagent agent tools-agent status
 else
 # The Copilot credential is minted BEFORE the plane is deployed, not
 # after. The proxy mounts kaimahi-copilot-token as an OPTIONAL secret
@@ -305,9 +308,51 @@ endif
 up: $(UP_STEPS)
 
 ifeq ($(TARGET),kind)
-cluster: guard
-	kind get clusters 2>/dev/null | grep -qx '$(KIND_CLUSTER)' || \
-		kind create cluster --name $(KIND_CLUSTER)
+# Fail before the context guard or any provisioning. Report every missing or
+# unusable host dependency together so a new user can fix them in one pass.
+preflight-kind:
+	@problems=0; names=""; details=$$(mktemp); \
+	trap 'rm -f "$$details"' EXIT; \
+	problem() { \
+		problems=$$((problems + 1)); \
+		names="$${names}$${names:+ }$$1"; \
+		shift; \
+		printf '%s\n' "$$@" >>"$$details"; \
+	}; \
+	check() { \
+		name=$$1; cmd=$$2; probe=$$3; url=$$4; \
+		path=$$(command -v "$$cmd" 2>/dev/null || true); \
+		if [ -z "$$path" ]; then \
+			problem "$$name" "- $$name: not installed or not on PATH (command: $$cmd)" "  install: $$url"; \
+		elif [ ! -f "$$path" ] || [ ! -x "$$path" ]; then \
+			problem "$$name" "- $$name: not an executable file: $$path" "  install: $$url"; \
+		elif [ -n "$$probe" ] && ! sh -c "\"$$cmd\" $$probe" >/dev/null 2>&1; then \
+			problem "$$name" "- $$name: found but cannot execute: $$path" "  install: $$url"; \
+		fi; \
+	}; \
+	check kind '$(KIND_CMD)' version https://kind.sigs.k8s.io/docs/user/quick-start/#installation; \
+	check kubectl kubectl 'version --client' https://kubernetes.io/docs/tasks/tools/; \
+	check bash bash '--version' https://www.gnu.org/software/bash/; \
+	check python3 python3 '--version' https://www.python.org/downloads/; \
+	check curl curl '--version' https://curl.se/download.html; \
+	check helm '$(HELM)' version https://helm.sh/docs/intro/install/; \
+	check docker '$(DOCKER)' info https://docs.docker.com/get-docker/; \
+	if [ "$$problems" -ne 0 ]; then \
+		if [ "$$problems" -eq 1 ]; then noun="dependency"; else noun="dependencies"; fi; \
+		echo "preflight: $$problems missing or unusable $$noun: $$names" >&2; \
+		printf '\n' >&2; \
+		cat "$$details" >&2; \
+		exit 1; \
+	fi
+
+cluster: preflight-kind guard
+	@clusters=$$('$(KIND_CMD)' get clusters) || { \
+		echo "kind could not enumerate clusters; refusing to treat that as an absent cluster" >&2; \
+		exit 1; \
+	}; \
+	if ! printf '%s\n' "$$clusters" | grep -qx '$(KIND_CLUSTER)'; then \
+		'$(KIND_CMD)' create cluster --name '$(KIND_CLUSTER)'; \
+	fi
 else
 ## cluster (TARGET=aks): resource group + private ACR + AKS, via the az CLI
 cluster: aks-cluster
@@ -341,11 +386,11 @@ model:
 endif
 
 kagent: guard
-	helm upgrade --install kagent-crds \
+	$(HELM) upgrade --install kagent-crds \
 		oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds \
 		--version $(KAGENT_VERSION) --namespace kagent --create-namespace \
 		--kube-context $(KUBE_CTX)
-	helm upgrade --install kagent \
+	$(HELM) upgrade --install kagent \
 		oci://ghcr.io/kagent-dev/kagent/helm/kagent \
 		--version $(KAGENT_VERSION) --namespace kagent \
 		--kube-context $(KUBE_CTX) -f k8s/kagent-values.yaml
@@ -592,8 +637,8 @@ plane: guard plane-image plane-secrets
 
 ifeq ($(TARGET),kind)
 plane-image:
-	docker build --build-arg VERSION=$(PLANE_VERSION) -t $(PLANE_IMAGE) plane/
-	kind load docker-image $(PLANE_IMAGE) --name $(KIND_CLUSTER)
+	$(DOCKER) build --build-arg VERSION=$(PLANE_VERSION) -t $(PLANE_IMAGE) plane/
+	$(KIND_CMD) load docker-image $(PLANE_IMAGE) --name $(KIND_CLUSTER)
 else
 ## plane-image (TARGET=aks): build IN Azure with ACR Tasks. No local docker
 ## build and no `docker push`: the source is uploaded and built by the
@@ -789,7 +834,7 @@ down: guard
 		echo 'delete kind cluster "$(KIND_CLUSTER)" (context kind-$(KIND_CLUSTER)).' >&2; \
 		echo 'Set KIND_CLUSTER and KUBE_CTX consistently, or just KIND_CLUSTER.' >&2; \
 		exit 1; }
-	kind delete cluster --name $(KIND_CLUSTER)
+	$(KIND_CMD) delete cluster --name $(KIND_CLUSTER)
 else
 ## down (TARGET=aks): delete the whole ephemeral resource group
 down: aks-down

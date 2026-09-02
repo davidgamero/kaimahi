@@ -5,16 +5,23 @@ import argparse
 import json
 import subprocess
 import sys
+from unittest import mock
 
 
 def kubectl(command, *args, required=True):
-    proc = subprocess.run(
-        [*command, *args, "-o", "json"],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    """Return a Kubernetes list, failing clearly when kubectl hangs or fails."""
+    try:
+        proc = subprocess.run(
+            [*command, *args, "-o", "json"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        print("status: kubectl query timed out after 15s", file=sys.stderr)
+        raise SystemExit(1)
     if proc.returncode != 0:
         if required:
             print(proc.stderr.rstrip(), file=sys.stderr)
@@ -24,6 +31,7 @@ def kubectl(command, *args, required=True):
 
 
 def condition(resource, name):
+    """Map one Kubernetes condition to yes, no, or absent."""
     conditions = resource.get("status", {}).get("conditions", [])
     match = next((item for item in conditions if item.get("type") == name), None)
     if match is None:
@@ -32,6 +40,7 @@ def condition(resource, name):
 
 
 def table(headers, rows):
+    """Print aligned rows without external formatting dependencies."""
     widths = [len(header) for header in headers]
     for row in rows:
         for index, value in enumerate(row):
@@ -42,12 +51,13 @@ def table(headers, rows):
 
 
 def pod_summary(pods):
+    """Summarize Pod Ready conditions, phases, and container restarts."""
     ready = 0
     restarts = 0
     rows = []
     for pod in sorted(pods, key=lambda item: item["metadata"]["name"]):
         statuses = pod.get("status", {}).get("containerStatuses", [])
-        is_ready = bool(statuses) and all(item.get("ready", False) for item in statuses)
+        is_ready = condition(pod, "Ready") == "yes"
         pod_restarts = sum(item.get("restartCount", 0) for item in statuses)
         ready += int(is_ready)
         restarts += pod_restarts
@@ -63,6 +73,7 @@ def pod_summary(pods):
 
 
 def main():
+    """Query the selected cluster and print its user-oriented status."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--context", required=True)
     parser.add_argument("--target", required=True)
@@ -158,5 +169,30 @@ def main():
         print(f"  kubectl --context {args.context} -n kagent describe agent <name>")
 
 
+def selftest():
+    """Exercise readiness-gate and timeout behavior without a cluster."""
+    pod = {
+        "metadata": {"name": "gated"},
+        "status": {
+            "phase": "Running",
+            "conditions": [{"type": "Ready", "status": "False"}],
+            "containerStatuses": [{"ready": True, "restartCount": 0}],
+        },
+    }
+    ready, _, rows = pod_summary([pod])
+    assert ready == 0 and rows[0][1] == "no"
+    with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("kubectl", 15)):
+        try:
+            kubectl(["kubectl"], "get", "pods")
+        except SystemExit as error:
+            assert error.code == 1
+        else:
+            raise AssertionError("kubectl timeout did not fail")
+    print("status: self-test passed")
+
+
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--selftest"]:
+        selftest()
+    else:
+        main()
