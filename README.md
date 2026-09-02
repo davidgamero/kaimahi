@@ -96,6 +96,7 @@ port-forwards the controller, and invokes the agent.
 | 7b | Inbound hooks (webhooks → agent), governed | **runs** — auth before any work, budget checked at the door, a bounded grant consumed per event, probed keyless in CI; the pre-auth rate limiter and the queue are per replica by design ([docs/inbound.md](docs/inbound.md)) |
 | 8 | Approvals routed to Slack, with the approver's identity | **runs** — a filed request is announced in the channel through the plane's own governed post; `@kaimahi approve <id>` from a listed approver mints the grant in their name, asserted keyless in CI with signed synthetic mentions; live verification on AKS pending ([docs/approvals.md](docs/approvals.md#deciding-from-slack)) |
 | 9 | Run it for real: two stateless replicas, exact budgets, metrics | **runs** — two replicas behind every seam, every budget and grant decision serialized per credential in Postgres (N concurrent calls against a cap with room for one admit exactly one, asserted across both replicas in CI), a replica killed mid-cycle and Postgres restarted without a proxy restart, migrations under a lock, Prometheus on its own port, `make backup` / `make restore` ([docs/operations.md](docs/operations.md)) |
+| 10 | Hosted tool upstreams — the gateway reaches GitHub's MCP server on the internet through one hardened dialer | **runs** — `make github-secret` → `make govern-github`; the dialer's refusals, a synthetic public upstream, the opt-in allowance and the fail-closed negative asserted keyless in CI; GitHub itself verified once on kind ([docs/hosted-upstreams.md](docs/hosted-upstreams.md)) |
 | — | `kaimahi agent create` CLI | considered and prototyped, not built — [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) |
 
 **Limitations, stated plainly.** Governance is opt-in per agent: an
@@ -127,7 +128,7 @@ to do, and holds the one table of what is governed today and what is not:
 [tools](docs/tools.md), [spend](docs/spend.md),
 [tool governance](docs/tool-governance.md), [approvals](docs/approvals.md),
 [Slack](docs/slack.md), [egress](docs/egress.md), [inbound](docs/inbound.md),
-[AKS](docs/aks.md).
+[hosted upstreams](docs/hosted-upstreams.md), [AKS](docs/aks.md).
 
 ## Governance in practice
 
@@ -140,6 +141,7 @@ Every control is one make target, and each is asserted in CI.
 | `make approve` | a denial files an approval request; this mints a bounded permit (expiry and/or use count) that widens exactly what was denied, then lapses | [approvals](docs/approvals.md) |
 | `make slack-secret` → `make slack-mcp` → `make govern-slack` | a demo agent behind an in-cluster Slack MCP server (third-party, digest-pinned, deployed by kagent) where **posting is not allowlisted**: denied, requested, granted one bounded use, posted, burned, denied again — all audited | [Slack](docs/slack.md) |
 | `make slack-approvers` → `make notify-slack` | the human, reachable where the demo lives: a filed request is announced in the channel by the plane's own governed post, a listed approver answers `@kaimahi approve <id> uses=1 ttl=15m` in Slack, and the grant and its audit rows carry `slack:<their id>` | [approvals](docs/approvals.md#deciding-from-slack) |
+| `make github-secret` → `make govern-github` | a demo agent behind GitHub's **hosted** MCP server — the first tool upstream outside the cluster — through one hardened dialer (host pinned, every address checked, the checked address dialed, no redirects, bounded and capped) that the Copilot path shares; the token is plane custody and read-only, the allowlist names read tools only, the network allowance is opt-in | [hosted upstreams](docs/hosted-upstreams.md) |
 
 It mounts at seams that already exist — the model `baseUrl` and the MCP
 tool server — rather than forking or wrapping the runtime. Every call through

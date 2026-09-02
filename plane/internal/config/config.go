@@ -8,6 +8,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaimahi-agents/kaimahi/plane/internal/egress"
 	"github.com/kaimahi-agents/kaimahi/plane/internal/pricing"
 )
 
@@ -48,6 +50,17 @@ type Upstream struct {
 	// Prices maps model name -> configured price. Only meaningful on
 	// metered upstreams.
 	Prices map[string]pricing.Price `json:"prices,omitempty"`
+	// Internet marks an upstream that lives outside the cluster (P10):
+	// it is reached ONLY through the hardened dialer (internal/egress —
+	// https, port 443, every resolved address vetted, the checked address
+	// dialed, bounded and capped). Without the marker an upstream must be
+	// in-cluster-shaped (see hostedShape) and keeps the plain in-cluster
+	// dial. Copilot carries it, so nothing about its hardening is implicit.
+	Internet bool `json:"internet,omitempty"`
+	// CAFile, internet upstreams only, is a mounted PEM bundle that
+	// replaces the system roots for THIS host — how CI's synthetic
+	// upstream presents a test certificate. Absent, the system roots apply.
+	CAFile string `json:"ca_file,omitempty"`
 }
 
 // ToolUpstream is one MCP tool server the gateway may relay to. The
@@ -69,6 +82,11 @@ type ToolUpstream struct {
 	// CredentialHeader is the header the credential is injected into.
 	// "authorization" (the default) sends "Authorization: Bearer <v>".
 	CredentialHeader string `json:"credential_header,omitempty"`
+	// Internet and CAFile: exactly as on Upstream (P10). A hosted MCP
+	// server is reached only through the hardened dialer; an unmarked
+	// entry must be in-cluster-shaped.
+	Internet bool   `json:"internet,omitempty"`
+	CAFile   string `json:"ca_file,omitempty"`
 }
 
 // Inbound authentication modes. Every mode binds the caller to the hook's
@@ -225,6 +243,9 @@ func Parse(raw []byte) (Config, error) {
 		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 			return Config{}, fmt.Errorf("config: upstream %q: invalid base_url %q", name, u.BaseURL)
 		}
+		if err := hostedShape(parsed, u.Internet, u.CAFile); err != nil {
+			return Config{}, fmt.Errorf("config: upstream %q: %w", name, err)
+		}
 		if u.Path == "" || strings.HasPrefix(u.Path, "/") {
 			return Config{}, fmt.Errorf("config: upstream %q: path must be non-empty with no leading slash", name)
 		}
@@ -252,6 +273,9 @@ func Parse(raw []byte) (Config, error) {
 		parsed, err := url.Parse(t.URL)
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 			return Config{}, fmt.Errorf("config: tool upstream %q: invalid url %q (want absolute http(s))", name, t.URL)
+		}
+		if err := hostedShape(parsed, t.Internet, t.CAFile); err != nil {
+			return Config{}, fmt.Errorf("config: tool upstream %q: %w", name, err)
 		}
 		// A credential header without a credential file (or the reverse
 		// via a bare header name) is a misconfiguration that would fail
@@ -329,6 +353,126 @@ func Parse(raw []byte) (Config, error) {
 		}
 	}
 	return c, nil
+}
+
+// hostedShape is the load-time half of the egress rule (P10). An
+// upstream marked internet must be https on port 443 with no userinfo —
+// what the hardened dialer will accept at call time, refused here so the
+// mistake is loud at rollout, not at first use. An upstream NOT marked
+// internet must look in-cluster: a private IP literal, a bare Service
+// name, `service.namespace`, or a name under the cluster suffix. A
+// public hostname without the marker (api.githubcopilot.com, say) is
+// refused: it would otherwise take the plain in-cluster dial, and the
+// hardening of a hosted upstream must never be implicit. ca_file is an
+// internet-only field. The other half — every resolved address vetted —
+// runs in main at boot (egress.Vet) and on every call.
+func hostedShape(u *url.URL, internet bool, caFile string) error {
+	host := u.Hostname()
+	if internet {
+		if u.Scheme != "https" {
+			return fmt.Errorf("internet upstream must be https, got %q", u.Scheme)
+		}
+		if p := u.Port(); p != "" && p != "443" {
+			return fmt.Errorf("internet upstream must use port 443, got %q", p)
+		}
+		if u.User != nil {
+			return fmt.Errorf("internet upstream url must not carry userinfo")
+		}
+		if ip, err := netip.ParseAddr(host); err == nil {
+			if why := egress.Refused(ip); why != "" {
+				return fmt.Errorf("internet upstream address %s is %s", host, why)
+			}
+		}
+		return nil
+	}
+	if caFile != "" {
+		return fmt.Errorf("ca_file is only meaningful with internet: true")
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		if egress.Refused(ip) == "" {
+			return fmt.Errorf("host %s is a public address; mark the upstream internet: true", host)
+		}
+		return nil
+	}
+	h := strings.TrimSuffix(strings.ToLower(host), ".")
+	if strings.HasSuffix(h, ".svc.cluster.local") || strings.HasSuffix(h, ".svc") || !strings.Contains(h, ".") {
+		return nil
+	}
+	if strings.Count(h, ".") == 1 {
+		// `service.namespace` — but `github.com` has the same shape. An
+		// in-cluster Service here is plain http; https to a two-label name
+		// is what a public host looks like, so it must be marked (or use
+		// the full .svc.cluster.local name). The boot-time vet is the
+		// second layer: an unmarked name that resolves public is refused.
+		if u.Scheme == "https" {
+			return fmt.Errorf("host %q over https does not look in-cluster (use the .svc.cluster.local name, or mark the upstream internet: true)", host)
+		}
+		return nil
+	}
+	return fmt.Errorf("host %q does not look in-cluster (service, service.namespace, or a .svc.cluster.local name); a hosted upstream must be marked internet: true", host)
+}
+
+// InClusterHosts lists the hosts of every UNMARKED upstream, both tables,
+// for the boot-time check that none of them resolves to a public address
+// (the second layer under hostedShape's static rule).
+func (c Config) InClusterHosts() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(raw string) {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return
+		}
+		name := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, u := range c.Upstreams {
+		if !u.Internet {
+			add(u.BaseURL)
+		}
+	}
+	for _, t := range c.ToolUpstreams {
+		if !t.Internet {
+			add(t.URL)
+		}
+	}
+	return out
+}
+
+// InternetHosts lists every hostname the hardened dialer must know, LLM
+// and tool upstreams alike, with the trust anchor each configures. The
+// same host under two different ca_files is a contradiction the client
+// refuses (duplicate host).
+func (c Config) InternetHosts() []egress.Host {
+	seen := map[string]string{}
+	var out []egress.Host
+	add := func(raw, caFile string) {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return
+		}
+		name := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+		if prev, ok := seen[name]; ok && prev == caFile {
+			return
+		}
+		seen[name] = caFile
+		out = append(out, egress.Host{Name: name, CAFile: caFile})
+	}
+	for _, u := range c.Upstreams {
+		if u.Internet {
+			add(u.BaseURL, u.CAFile)
+		}
+	}
+	for _, t := range c.ToolUpstreams {
+		if t.Internet {
+			add(t.URL, t.CAFile)
+		}
+	}
+	return out
 }
 
 // toolName bounds an MCP tool name as the admin surface does.

@@ -54,7 +54,7 @@ documentation alone:
 
 | Candidate | Verdict |
 |---|---|
-| Slack's own hosted MCP server (`https://mcp.slack.com/mcp`, [docs](https://docs.slack.dev/ai/slack-mcp-server/)) | **Rejected.** Not self-hostable, and it authenticates with confidential OAuth 2.0 **user** tokens from a registered Slack app. A headless agent posting as a bot is not the shape it serves, and a hosted endpoint would make the *gateway's* upstream internet-facing, which needs the hardened dialer that does not exist yet. Revisit if approval routing ever needs to act as a person. |
+| Slack's own hosted MCP server (`https://mcp.slack.com/mcp`, [docs](https://docs.slack.dev/ai/slack-mcp-server/)) | **Rejected.** Not self-hostable, and it authenticates with confidential OAuth 2.0 **user** tokens from a registered Slack app. A headless agent posting as a bot is not the shape it serves. The gateway can now reach a hosted server through its hardened dialer ([hosted-upstreams.md](hosted-upstreams.md)), but an OAuth user-token flow is still out of scope. Revisit if approval routing ever needs to act as a person. |
 | [`@modelcontextprotocol/server-slack`](https://www.npmjs.com/package/@modelcontextprotocol/server-slack) (the reference server) | **Rejected.** Repo archived 2025-05-29; npm marks it *"Package no longer supported"*, last publish 2025-04-25. A deprecated package is not something to hand a workspace token. |
 | `@zencoderai/slack-mcp-server`, `ubie-oss/slack-mcp-server`, assorted `@mseep/*` forks | **Rejected.** Forks of the archived lineage: a single `0.0.1` publish, or GitHub-registry-only publishing that needs a PAT. None is maintained enough to hold a workspace token. |
 | [`korotovsky/slack-mcp-server`](https://github.com/korotovsky/slack-mcp-server) | **Chosen.** MIT, ~1.8k stars, actively maintained (npm `1.3.0`, 2026-05-14). Runs as a long-lived container serving **streamable HTTP**, verified in-cluster, so the gateway relays to it with no `npx` fetch at pod start. Multi-arch image on GHCR. |
@@ -105,8 +105,8 @@ namespace kagent                          namespace kaimahi
                               └──────────────────┘  │ pinned, xoxb token   │
                                                      │ via envFrom Secret   │
                                                      └──────────┬───────────┘
-  BOTH tool upstreams stay in-cluster, so the gateway            │ INTERNET
-  itself never dials the internet.                               ▼
+  Both Slack-path upstreams are in-cluster; the gateway           │ INTERNET
+  reaches the internet only for `internet: true` entries.         ▼
   This POD, however, talks to the internet.              api.slack.com
 ```
 
@@ -116,9 +116,11 @@ namespace kagent                          namespace kaimahi
   Copilot key in `kaimahi`, and `kagent` holds nothing but opaque `kmh_`
   tokens.
 - **Upstream table**: `k8s/plane/upstreams.yaml` has a second
-  `tool_upstreams` entry, `slack`. CI asserts both entries resolve to
-  in-cluster hostnames. An internet-facing *gateway upstream* would need
-  the missing SSRF protections and must not slip in silently.
+  `tool_upstreams` entry, `slack`, in-cluster. CI asserts every entry
+  not marked `internet: true` resolves to an in-cluster hostname; the
+  one marked entry (GitHub's hosted server) is reached only through the
+  hardened dialer ([hosted-upstreams.md](hosted-upstreams.md)), so an
+  internet-facing upstream cannot slip in silently.
 - **No ungoverned Slack path is *shipped*.** The tools docs keep an
   ungoverned wiring for contrast; this path ships none, so the only route
   this repo wires is through the gateway. That is a statement about the
@@ -280,9 +282,11 @@ where it becomes visible in the demo path.
 `kaimahi-slack-mcp` opens connections to `api.slack.com`. That is a
 first for this repo, and it is worth stating plainly rather than burying:
 
-- **The gateway's own reach is unchanged.** Both `tool_upstreams` entries
-  are in-cluster Services, so the gateway still never dials the internet,
-  and CI asserts it keeps not doing so.
+- **The gateway's own reach to Slack is in-cluster.** Both Slack-path
+  `tool_upstreams` entries are in-cluster Services; the gateway dials the
+  internet only for entries marked `internet: true`, through its hardened
+  dialer ([hosted-upstreams.md](hosted-upstreams.md)), and CI asserts
+  every unmarked entry stays in-cluster.
 - **The pod's egress is bounded by NetworkPolicy** ([egress.md](egress.md)):
   DNS plus TCP 443 to non-private addresses, nothing else, and only the
   proxy may connect to it. What that does *not* constrain: an IP/port

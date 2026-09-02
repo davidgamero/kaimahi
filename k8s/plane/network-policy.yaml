@@ -29,12 +29,17 @@
 #     kind (measured) and on every CNI this repo knows of. So the admin
 #     plane keeps its existing gate: cluster credentials, then the
 #     bearer token. Nothing in the pod network can reach 9091.
-#   - Copilot. The proxy's committed upstream table names
-#     api.githubcopilot.com, but nothing in THIS file lets the proxy
-#     leave the cluster. That allowance is k8s/egress-copilot.yaml,
-#     applied by `make plane-copilot-secret` — the moment Copilot is
-#     enabled is the moment the proxy needs the internet, and not
-#     before. On kind and in CI the proxy is provably internet-free.
+#   - Copilot, and hosted tool upstreams. The proxy's committed upstream
+#     table names api.githubcopilot.com (twice: the Copilot LLM path and,
+#     P10, GitHub's hosted MCP server), but nothing in THIS file lets the
+#     proxy leave the cluster. Those allowances are k8s/egress-copilot.yaml
+#     (applied by `make plane-copilot-secret`) and k8s/egress-hosted.yaml
+#     (applied by `make github-secret`) — the moment a hosted upstream is
+#     enabled is the moment the proxy needs the internet, and not before.
+#     Both are the same shape (443 to public addresses) and CI refuses
+#     either under k8s/plane/. On kind and in CI the proxy is provably
+#     internet-free, and the hosted path is proven with a synthetic
+#     stand-in (docs/hosted-upstreams.md).
 #   - IPv6. kind is IPv4-only by default; the ipBlock rules are IPv4.
 #     A dual-stack cluster needs a matching ::/0-with-exceptions rule.
 #   - The kagent and ollama namespaces. This boundary is the plane's.
@@ -71,10 +76,11 @@ spec:
 # controller on 8083 (P7b: the inbound bridge invokes agents through its
 # A2A endpoint), and DNS. Each upstream is pinned to its POD by label, in
 # its namespace, on its port — not to the Service, because policy is
-# evaluated on the post-NAT pod address. A new entry in
+# evaluated on the post-NAT pod address. A new in-cluster entry in
 # k8s/plane/upstreams.yaml needs a matching rule here, or the gateway's
 # 502 (or an inbound event's 'failed … agent unreachable' outcome row)
-# will say so.
+# will say so; a hosted entry (`internet: true`) needs the opt-in
+# allowance instead (see above).
 #
 # Not opened here: the inbound port (8082) from outside the cluster. On
 # kind the demo reaches it by port-forward (kubelet traffic, which this

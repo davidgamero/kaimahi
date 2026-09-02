@@ -60,19 +60,24 @@ const (
 	ReasonUpstreamCredential  Reason = "upstream_credential"
 	ReasonUpstreamError       Reason = "upstream_error"
 	ReasonUpstreamUnreachable Reason = "upstream_unreachable"
-	ReasonMethod              Reason = "method"
-	ReasonGrantCheck          Reason = "grant_check"
-	ReasonRateLimit           Reason = "rate_limit"
-	ReasonTooLarge            Reason = "too_large"
-	ReasonReplay              Reason = "replay"
-	ReasonQueueFull           Reason = "queue_full"
-	ReasonHookConfig          Reason = "hook_config"
-	ReasonAdmission           Reason = "admission"
-	ReasonNotApprover         Reason = "not_approver"
-	ReasonIgnored             Reason = "ignored"
-	ReasonChallenge           Reason = "challenge"
-	ReasonCommand             Reason = "command"
-	ReasonOther               Reason = "other"
+	// ReasonEgressRefused (P10): the egress policy refused the upstream
+	// before any byte left — a private/metadata answer, a forbidden port
+	// or scheme, no hardened client — as distinct from an upstream that
+	// was dialed and did not answer (a cut body counts as upstream_error).
+	ReasonEgressRefused Reason = "egress_refused"
+	ReasonMethod        Reason = "method"
+	ReasonGrantCheck    Reason = "grant_check"
+	ReasonRateLimit     Reason = "rate_limit"
+	ReasonTooLarge      Reason = "too_large"
+	ReasonReplay        Reason = "replay"
+	ReasonQueueFull     Reason = "queue_full"
+	ReasonHookConfig    Reason = "hook_config"
+	ReasonAdmission     Reason = "admission"
+	ReasonNotApprover   Reason = "not_approver"
+	ReasonIgnored       Reason = "ignored"
+	ReasonChallenge     Reason = "challenge"
+	ReasonCommand       Reason = "command"
+	ReasonOther         Reason = "other"
 )
 
 // Queue names a bounded per-replica queue.
@@ -92,7 +97,7 @@ var Vocabulary = map[string][]string{
 	"reason": {string(ReasonOK), string(ReasonBudget), string(ReasonAllowlist), string(ReasonGrant),
 		string(ReasonUnauthorized), string(ReasonCredentialStore), string(ReasonRoute), string(ReasonBadRequest),
 		string(ReasonUnpricedModel), string(ReasonAuditDegraded), string(ReasonMetering), string(ReasonUpstreamCredential),
-		string(ReasonUpstreamError), string(ReasonUpstreamUnreachable), string(ReasonMethod), string(ReasonGrantCheck),
+		string(ReasonUpstreamError), string(ReasonUpstreamUnreachable), string(ReasonEgressRefused), string(ReasonMethod), string(ReasonGrantCheck),
 		string(ReasonRateLimit), string(ReasonTooLarge), string(ReasonReplay), string(ReasonQueueFull),
 		string(ReasonHookConfig), string(ReasonAdmission), string(ReasonNotApprover), string(ReasonIgnored),
 		string(ReasonChallenge), string(ReasonCommand), string(ReasonOther)},

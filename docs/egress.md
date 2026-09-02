@@ -28,6 +28,7 @@ section below says exactly what that does and does not constrain.
 | Slack MCP server | CoreDNS | 53 | to resolve api.slack.com |
 | Slack MCP server | public addresses | 443 | Slack's API. See the caveat below |
 | proxy | public addresses | 443 | **opt-in only**, for Copilot. See below |
+| proxy (the gateway lives in it) | public addresses | 443 | **opt-in only**, for a hosted tool upstream (GitHub's MCP server): `k8s/egress-hosted.yaml`, the same shape as Copilot's, applied by `make github-secret`, removed by `make github-revoke` ([hosted-upstreams.md](hosted-upstreams.md#the-egress-sentence)) |
 | internet | inbound edge | 8443 (443 on the load balancer) | **opt-in only**, AKS, `make inbound-expose`: the one internet ingress in the repo ([inbound.md](inbound.md#putting-it-on-the-internet)) |
 | inbound edge | proxy | 8082 | the edge forwards Slack events to the bridge; besides CoreDNS, the only in-cluster peer it may reach |
 | inbound edge | CoreDNS, public addresses | 53, 443 | to reach Let's Encrypt for its certificate |
@@ -204,7 +205,10 @@ not a phrasing problem, and this file will say so until it is closed.
 - **IPv6.** kind is IPv4-only by default and the rules are IPv4. A
   dual-stack cluster needs a matching `::/0`-with-exceptions rule or
   the internet allowances silently do not apply to v6.
-- **Adding an upstream.** A new entry in `k8s/plane/upstreams.yaml`
-  needs a matching egress rule for the proxy, pinned to the upstream's
-  pod labels and port. Without one the gateway answers 502, which is
-  the boundary doing its job, and the probe will not know to check it.
+- **Adding an upstream.** A new in-cluster entry in
+  `k8s/plane/upstreams.yaml` needs a matching egress rule for the proxy,
+  pinned to the upstream's pod labels and port. Without one the gateway
+  answers 502, which is the boundary doing its job, and the probe will
+  not know to check it. A hosted entry (`internet: true`) needs the
+  opt-in 443 allowance instead, and goes through the hardened dialer
+  ([hosted-upstreams.md](hosted-upstreams.md)).

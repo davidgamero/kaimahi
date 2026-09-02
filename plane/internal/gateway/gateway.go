@@ -42,6 +42,7 @@ import (
 	"time"
 
 	"github.com/kaimahi-agents/kaimahi/plane/internal/config"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/egress"
 	"github.com/kaimahi-agents/kaimahi/plane/internal/metrics"
 	"github.com/kaimahi-agents/kaimahi/plane/internal/store"
 )
@@ -75,22 +76,34 @@ type Store interface {
 type Deps struct {
 	Store     Store
 	Upstreams map[string]config.ToolUpstream
-	// Client makes upstream calls. Nil gets a default that never FOLLOWS
-	// a redirect (standing guidance); the relay paths then refuse the
-	// 3xx itself with a 502. Calls are bounded at 5 minutes.
+	// Client makes IN-CLUSTER upstream calls. Nil gets a default that
+	// never FOLLOWS a redirect (standing guidance); the relay paths then
+	// refuse the 3xx itself with a 502. Calls are bounded at 5 minutes.
 	Client *http.Client
+	// InternetClient (P10) makes every call to an upstream marked
+	// `internet: true`: the ONE hardened client main builds
+	// (internal/egress) and shares with the LLM proxy. Nil means no
+	// hosted upstream can be reached — such a call fails closed (502,
+	// audited) rather than falling back to the plain client.
+	InternetClient *http.Client
 }
 
-func (d Deps) client() *http.Client {
+func (d Deps) clientFor(up config.ToolUpstream) (*http.Client, error) {
+	if up.Internet {
+		if d.InternetClient == nil {
+			return nil, egress.ErrNoClient
+		}
+		return d.InternetClient, nil
+	}
 	if d.Client != nil {
-		return d.Client
+		return d.Client, nil
 	}
 	return &http.Client{
 		Timeout: 5 * time.Minute,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-	}
+	}, nil
 }
 
 type handler struct {
@@ -336,20 +349,31 @@ func (h *handler) relay(w http.ResponseWriter, r *http.Request) {
 			detail = "granted " + grantID
 		}
 		started := time.Now()
-		status := h.forward(w, r, name, up, body)
+		out := h.forward(w, r, name, up, body)
 		metrics.ObserveUpstream(metrics.SeamGateway, name, time.Since(started))
 		switch {
 		case detail != "":
 			metrics.Decide(metrics.SeamGateway, metrics.Granted, metrics.ReasonGrant)
-		case status >= 200 && status < 300:
+		case out.refused:
+			metrics.Decide(metrics.SeamGateway, metrics.Allowed, metrics.ReasonEgressRefused)
+		case out.status >= 200 && out.status < 300:
 			metrics.Decide(metrics.SeamGateway, metrics.Allowed, metrics.ReasonAllowlist)
-		case status == http.StatusBadGateway:
+		case out.status == http.StatusBadGateway:
 			metrics.Decide(metrics.SeamGateway, metrics.Allowed, metrics.ReasonUpstreamUnreachable)
 		default:
 			metrics.Decide(metrics.SeamGateway, metrics.Allowed, metrics.ReasonUpstreamError)
 		}
+		// The audit row carries the grant (if any) AND what became of the
+		// forward — an egress refusal or a cut body is recorded on the
+		// row of the call it happened to, not only in a log line.
+		if out.note != "" {
+			if detail != "" {
+				detail += "; "
+			}
+			detail += out.note
+		}
 		h.audit(r, store.ToolAuditEntry{CredentialName: cred.Name, Upstream: name,
-			Method: msg.Method, Tool: params.Name, Decision: "allowed", Status: status, Detail: detail})
+			Method: msg.Method, Tool: params.Name, Decision: "allowed", Status: out.status, Detail: detail})
 
 	default:
 		h.rpcDeny(w, r, cred, name, msg.Method, "", msg.ID,
@@ -430,40 +454,83 @@ func (h *handler) fileRequest(r *http.Request, credential, kind, subject, detail
 	return true
 }
 
-// forward relays one message upstream byte-faithfully (SSE responses
-// stream through with per-line flushes) and reports the upstream HTTP
-// status (502 when unreachable) for the caller's audit row.
+// outcome is what a forward reports for the audit row: the status the
+// client was answered with, a note when something other than the
+// upstream's own answer decided it (an egress refusal, a redirect, a cut
+// body), and whether the egress policy refused the dial before any byte
+// left.
+type outcome struct {
+	status  int
+	note    string
+	refused bool
+}
+
+// MsgUpstreamRefused is the 502 body for a call the hardened dialer
+// refused to make (docs/hosted-upstreams.md).
+const MsgUpstreamRefused = "tool upstream refused by the egress policy"
+
+// forward relays one message upstream byte-faithfully and reports the
+// outcome for the caller's audit row. SSE responses stream through with
+// per-line flushes; any other body is buffered (bounded) BEFORE the
+// status goes to the client, so a body the hardened client cuts — too
+// large, or stalled past its lifetime — fails closed as a 502 rather
+// than a 200 with a truncated payload. A stream that is cut mid-way
+// ends, and the row says so.
 func (h *handler) forward(w http.ResponseWriter, r *http.Request, name string,
-	up config.ToolUpstream, body []byte) int {
+	up config.ToolUpstream, body []byte) outcome {
 	resp, err := h.do(r, up, body)
 	if errors.Is(err, errCredentialUnavailable) {
 		http.Error(w, "tool upstream credential unavailable", http.StatusServiceUnavailable)
-		return http.StatusServiceUnavailable
+		return outcome{status: http.StatusServiceUnavailable}
+	}
+	if egress.IsRefusal(err) {
+		slog.Error("gateway: tool upstream refused by the egress policy", "upstream", name, "err", err)
+		http.Error(w, MsgUpstreamRefused, http.StatusBadGateway)
+		return outcome{status: http.StatusBadGateway, note: "egress refused: " + err.Error(), refused: true}
 	}
 	if err != nil {
 		slog.Error("gateway: tool upstream call failed", "upstream", name, "err", err)
 		http.Error(w, "tool upstream unreachable", http.StatusBadGateway)
-		return http.StatusBadGateway
+		return outcome{status: http.StatusBadGateway, note: "upstream unreachable: " + err.Error()}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	// A redirect is refused, not relayed: the client never followed it
-	// (see Deps.client), and a Location header must not leak an escape
+	// (see Deps.clientFor), and a Location header must not leak an escape
 	// hatch from the committed upstream table.
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		slog.Error("gateway: tool upstream answered a redirect; refusing", "upstream", name, "status", resp.StatusCode)
 		http.Error(w, MsgUpstreamRedirected, http.StatusBadGateway)
-		return http.StatusBadGateway
+		return outcome{status: http.StatusBadGateway, note: MsgUpstreamRedirected}
+	}
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		if err := relayStream(w, resp.Body); err != nil {
+			slog.Error("gateway: relaying stream", "upstream", name, "err", err)
+			return outcome{status: resp.StatusCode, note: "upstream stream cut: " + err.Error()}
+		}
+		return outcome{status: resp.StatusCode}
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBufferedResp+1))
+	if err == nil && int64(len(raw)) > maxBufferedResp {
+		err = egress.ErrResponseTooLarge
+	}
+	if err != nil {
+		slog.Error("gateway: tool upstream response cut; failing closed", "upstream", name, "err", err)
+		msg := "tool upstream response cut"
+		if egress.IsBodyCut(err) {
+			msg = "tool upstream response cut by the egress policy"
+		}
+		http.Error(w, msg, http.StatusBadGateway)
+		return outcome{status: http.StatusBadGateway, note: "upstream body cut: " + err.Error()}
 	}
 	copyResponseHeaders(w.Header(), resp.Header)
+	w.Header().Del("Content-Length")
 	w.WriteHeader(resp.StatusCode)
-	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		relayStream(w, resp.Body)
-	} else {
-		if _, err := io.Copy(w, resp.Body); err != nil {
-			slog.Error("gateway: relaying tool response", "upstream", name, "err", err)
-		}
+	if _, err := w.Write(raw); err != nil {
+		slog.Error("gateway: relaying tool response", "upstream", name, "err", err)
 	}
-	return resp.StatusCode
+	return outcome{status: resp.StatusCode}
 }
 
 // forwardProjected relays a tools/list and rewrites the listing to the
@@ -481,6 +548,11 @@ func (h *handler) forwardProjected(w http.ResponseWriter, r *http.Request, cred 
 		http.Error(w, "tool upstream credential unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	if egress.IsRefusal(err) {
+		slog.Error("gateway: tool upstream refused by the egress policy", "upstream", name, "err", err)
+		http.Error(w, MsgUpstreamRefused, http.StatusBadGateway)
+		return
+	}
 	if err != nil {
 		slog.Error("gateway: tool upstream call failed", "upstream", name, "err", err)
 		http.Error(w, "tool upstream unreachable", http.StatusBadGateway)
@@ -488,7 +560,10 @@ func (h *handler) forwardProjected(w http.ResponseWriter, r *http.Request, cred 
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBufferedResp))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBufferedResp+1))
+	if err == nil && int64(len(raw)) > maxBufferedResp {
+		err = egress.ErrResponseTooLarge
+	}
 	if err != nil {
 		slog.Error("gateway: reading tools/list response", "upstream", name, "err", err)
 		http.Error(w, "tool upstream response unreadable", http.StatusBadGateway)
@@ -587,7 +662,16 @@ func (h *handler) terminate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tool upstream credential unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	resp, err := h.d.client().Do(outReq)
+	client, err := h.d.clientFor(up)
+	if err != nil {
+		http.Error(w, MsgUpstreamRefused, http.StatusBadGateway)
+		return
+	}
+	resp, err := client.Do(outReq)
+	if egress.IsRefusal(err) {
+		http.Error(w, MsgUpstreamRefused, http.StatusBadGateway)
+		return
+	}
 	if err != nil {
 		http.Error(w, "tool upstream unreachable", http.StatusBadGateway)
 		return
@@ -613,12 +697,18 @@ func (h *handler) do(r *http.Request, up config.ToolUpstream, body []byte) (*htt
 		return nil, err
 	}
 	outReq.ContentLength = int64(len(body))
-	return h.d.client().Do(outReq)
+	client, err := h.d.clientFor(up)
+	if err != nil {
+		return nil, err
+	}
+	return client.Do(outReq)
 }
 
 // MsgUpstreamRedirected is the 502 body for a redirect the gateway
-// refused to follow — the one 502 issued before any byte reached the
-// upstream, which the notifier (P8b) may therefore retry.
+// refused to follow — a 502 issued before any byte of the message reached
+// the upstream, which the notifier (P8b) may therefore retry. (P10's
+// MsgUpstreamRefused is the other such 502; the notifier's upstream is
+// in-cluster, so it never sees that one.)
 const MsgUpstreamRedirected = "tool upstream redirected (refused)"
 
 // errCredentialUnavailable marks a tool upstream whose own credential
@@ -656,8 +746,9 @@ func injectCredential(outReq *http.Request, up config.ToolUpstream) error {
 }
 
 // relayStream forwards SSE lines as they arrive, flushing each so a
-// long-running tool call streams through.
-func relayStream(w http.ResponseWriter, body io.Reader) {
+// long-running tool call streams through. It reports the read error that
+// ended the stream early (a cut body), nil on a clean end.
+func relayStream(w http.ResponseWriter, body io.Reader) error {
 	flusher, _ := w.(http.Flusher)
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 0, 64*1024), 4<<20)
@@ -667,9 +758,7 @@ func relayStream(w http.ResponseWriter, body io.Reader) {
 			flusher.Flush()
 		}
 	}
-	if err := sc.Err(); err != nil {
-		slog.Error("gateway: relaying stream", "err", err)
-	}
+	return sc.Err()
 }
 
 // lastSSEData extracts the final event's data payload from an SSE-framed

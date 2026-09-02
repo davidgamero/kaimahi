@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/kaimahi-agents/kaimahi/plane/internal/config"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/egress"
 	"github.com/kaimahi-agents/kaimahi/plane/internal/meter"
 	"github.com/kaimahi-agents/kaimahi/plane/internal/store"
 )
@@ -61,20 +62,32 @@ type Deps struct {
 	Store  Store
 	Meter  Meter
 	Config config.Config
-	// Client makes upstream calls. Nil gets a default that REFUSES
-	// redirects (a keyed call must never follow one — standing guidance)
-	// and bounds a call at 5 minutes.
+	// Client makes IN-CLUSTER upstream calls. Nil gets a default that
+	// REFUSES redirects (a keyed call must never follow one — standing
+	// guidance) and bounds a call at 5 minutes.
 	Client *http.Client
+	// InternetClient (P10) makes every call to an upstream marked
+	// `internet: true` — Copilot: the ONE hardened client main builds
+	// (internal/egress) and shares with the MCP gateway. Nil means no
+	// hosted upstream can be reached — such a call fails closed (502,
+	// ledgered) rather than falling back to the plain client.
+	InternetClient *http.Client
 }
 
-func (d Deps) client() *http.Client {
+func (d Deps) clientFor(up config.Upstream) (*http.Client, error) {
+	if up.Internet {
+		if d.InternetClient == nil {
+			return nil, egress.ErrNoClient
+		}
+		return d.InternetClient, nil
+	}
 	if d.Client != nil {
-		return d.Client
+		return d.Client, nil
 	}
 	return &http.Client{
 		Timeout: 5 * time.Minute,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse // surface the 3xx; never follow it with a credential
 		},
-	}
+	}, nil
 }

@@ -106,6 +106,19 @@ func main() {
 				"file", u.CredentialFile, "err", err)
 		}
 	}
+	// Tool upstream credentials too (P10): the GitHub token is plane
+	// custody exactly like the Copilot one, and must be redacted the same.
+	for name, t := range cfg.ToolUpstreams {
+		if t.CredentialFile == "" {
+			continue
+		}
+		if raw, err := os.ReadFile(t.CredentialFile); err == nil {
+			secrets = append(secrets, strings.TrimSpace(string(raw)))
+		} else {
+			slog.Warn("tool upstream credential unreadable at boot; value not redacted in logs",
+				"upstream", name, "file", t.CredentialFile, "err", err)
+		}
+	}
 	for name, h := range cfg.InboundHooks {
 		if h.SigningSecretFile == "" {
 			continue
@@ -172,6 +185,15 @@ func main() {
 		Meter:  mtr,
 		Config: cfg,
 	}
+	// P10: the ONE hardened client for every upstream marked internet —
+	// Copilot on the LLM seam, the hosted MCP servers on the tool seam —
+	// built once, each host vetted now (a private answer refuses the
+	// config loudly here), and injected into BOTH seams below.
+	internetClient, err := hardenedClient(ctx, cfg)
+	if err != nil {
+		slog.Error("hosted upstream configuration refused", "err", err)
+		os.Exit(1)
+	}
 
 	// ReadTimeout bounds slow request-body writers (chat requests are
 	// small; streamed RESPONSES are unaffected — WriteTimeout stays 0 so
@@ -180,6 +202,7 @@ func main() {
 	// and fail-closed machinery); its listener gets its own Service so
 	// the tool seam has its own address.
 	gwDeps := gateway.Deps{Store: filing, Upstreams: cfg.ToolUpstreams}
+	deps, gwDeps = wireInternet(deps, gwDeps, internetClient)
 	// The P7b inbound bridge: same process, same pool and fail-closed
 	// machinery, its own Service. Its workers invoke agents asynchronously
 	// and run until shutdown.
@@ -238,6 +261,7 @@ func main() {
 	slog.Info("kaimahi-proxy up", "data", dataAddr, "mcp", mcpAddr, "inbound", inboundAddr, "admin", adminAddr, "ops", opsAddr,
 		"version", metrics.Version(),
 		"upstreams", len(cfg.Upstreams), "tool_upstreams", len(cfg.ToolUpstreams), "inbound_hooks", len(cfg.InboundHooks),
+		"hosted_upstreams", len(cfg.InternetHosts()),
 		"approval_notifier", cfg.ApprovalNotifier != nil, "notifier_gateway", gatewayURL)
 
 	select {

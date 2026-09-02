@@ -50,9 +50,11 @@ IS the allowlist projection                │ tool_allowlist,    │
   This is a second, governed front door.
 - **Upstreams.** The `tool_upstreams` table in
   [`k8s/plane/upstreams.yaml`](../k8s/plane/upstreams.yaml) lists the
-  only places the gateway will relay to. Two entries, both in-cluster:
-  `kagent-tools` (kagent's tool server) and `slack` (the server deployed
-  in [slack.md](slack.md)).
+  only places the gateway will relay to. Three entries: `kagent-tools`
+  (kagent's tool server) and `slack` (the server deployed in
+  [slack.md](slack.md)), both in-cluster, and `github` (GitHub's hosted
+  MCP server), the one marked `internet: true` and reached only through
+  the hardened dialer ([hosted-upstreams.md](hosted-upstreams.md)).
 
 ## Credential custody
 
@@ -63,8 +65,9 @@ it via `headersFrom`. The gateway strips it, and every other
 credential-slot header, before relaying, so the token never reaches a
 tool server. The kagent tool server is in-cluster and unauthenticated. A
 keyed tool server gets its real credential injected from proxy-side
-custody, exactly like the LLM upstreams; the Slack server is the first
-one wired that way.
+custody, exactly like the LLM upstreams; the Slack server was the first
+one wired that way, and the GitHub token is held the same way
+([hosted-upstreams.md](hosted-upstreams.md#custody)).
 
 ## From zero
 
@@ -174,9 +177,10 @@ the 8 tools the upstream offers.
 
 - Application-layer only. A pod that bypasses the gateway is not
   constrained by it; NetworkPolicy is unbuilt as of this doc.
-- Both committed upstreams are in-cluster. An internet-facing gateway
-  upstream needs a hardened dialer and SSRF protection that do not exist
-  yet.
+- An internet-facing upstream is reached only through the hardened
+  dialer, and only when marked `internet: true` in the table; the
+  network allowance for it is opt-in. What that does and does not bound
+  is in [hosted-upstreams.md](hosted-upstreams.md#the-egress-sentence).
 - Discovery lag: enforcement is immediate, but what an agent sees changes
   on kagent's next reconcile.
 - The consolidated status of every governed and ungoverned surface is in

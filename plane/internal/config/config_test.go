@@ -14,7 +14,7 @@ func TestParseValid(t *testing.T) {
 	  "upstreams": {
 	    "ollama": {"base_url": "http://ollama.ollama.svc:11434", "path": "v1/chat/completions", "classification": "free"},
 	    "copilot": {"base_url": "https://api.githubcopilot.com", "path": "chat/completions",
-	                "classification": "metered", "credential_file": "/etc/x/token",
+	                "classification": "metered", "credential_file": "/etc/x/token", "internet": true,
 	                "prices": {"gpt-5-mini": {"in_cents_per_1m": 25, "out_cents_per_1m": 200}}}
 	  }
 	}`))

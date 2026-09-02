@@ -201,7 +201,7 @@ func TestVocabularyMatchesTheConstants(t *testing.T) {
 	for _, r := range []metrics.Reason{metrics.ReasonOK, metrics.ReasonBudget, metrics.ReasonAllowlist,
 		metrics.ReasonGrant, metrics.ReasonUnauthorized, metrics.ReasonCredentialStore, metrics.ReasonRoute,
 		metrics.ReasonBadRequest, metrics.ReasonUnpricedModel, metrics.ReasonAuditDegraded, metrics.ReasonMetering,
-		metrics.ReasonUpstreamCredential, metrics.ReasonUpstreamError, metrics.ReasonUpstreamUnreachable,
+		metrics.ReasonUpstreamCredential, metrics.ReasonUpstreamError, metrics.ReasonUpstreamUnreachable, metrics.ReasonEgressRefused,
 		metrics.ReasonMethod, metrics.ReasonGrantCheck, metrics.ReasonRateLimit, metrics.ReasonTooLarge,
 		metrics.ReasonReplay, metrics.ReasonQueueFull, metrics.ReasonHookConfig, metrics.ReasonAdmission,
 		metrics.ReasonNotApprover, metrics.ReasonIgnored, metrics.ReasonChallenge, metrics.ReasonCommand,

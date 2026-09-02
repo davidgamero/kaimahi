@@ -18,3 +18,7 @@ __pycache__/
 # `make backup` output: a pg_dump of the plane's database (credential
 # hashes, the ledger, audit trails). Operator data, never source.
 backups/
+
+# CI's synthetic hosted upstream (scripts/ci/synthetic-upstream.sh): a
+# throwaway CA, its key and certificate, and the patched table. Job-local.
+.synthetic-upstream/

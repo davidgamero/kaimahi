@@ -57,7 +57,7 @@ ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
 # The plane image. The tag moves with the phase so a stale side-loaded
 # image can never satisfy a newer manifest silently (P4b deviation 6).
 PLANE_IMAGE_REPO ?= kaimahi-proxy
-PLANE_IMAGE_TAG  ?= p9
+PLANE_IMAGE_TAG  ?= p10
 # The revision stamped into the binary for kaimahi_build_info (P9); the
 # image build context carries no .git. "unknown" outside a checkout.
 PLANE_VERSION    ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
@@ -116,6 +116,16 @@ SLACK_AGENT_TOOLS ?= $(SLACK_TOOLS),$(SLACK_POST_TOOL)
 comma          := ,
 TOOLNAMES_JSON  = $(if $(filter -,$(TOOLS)),,"$(subst $(comma),"$(comma)",$(TOOLS))")
 SLACK_TOOLNAMES_JSON = $(if $(filter -,$(SLACK_AGENT_TOOLS)),,"$(subst $(comma),"$(comma)",$(SLACK_AGENT_TOOLS))")
+# P10: the GitHub seam (GitHub's HOSTED MCP server behind the gateway)
+# has its own credential, agent and allowlist. Two READ tools are
+# allowlisted from the start; the write tool is not — it is the action
+# a human approves (make approvals / make approve), and the token in
+# plane custody is read-only anyway.
+CRED_GITHUB    ?= hello-github
+GITHUB_TOOLS   ?= list_issues,list_pull_requests
+GITHUB_WRITE_TOOL := issue_write
+GITHUB_AGENT_TOOLS ?= $(GITHUB_TOOLS),$(GITHUB_WRITE_TOOL)
+GITHUB_TOOLNAMES_JSON = $(if $(filter -,$(GITHUB_AGENT_TOOLS)),,"$(subst $(comma),"$(comma)",$(GITHUB_AGENT_TOOLS))")
 
 .PHONY: up cluster ollama model kagent agent tools-agent chat down status guard \
 	model-secret copilot-secret use use-ollama \
@@ -128,7 +138,9 @@ SLACK_TOOLNAMES_JSON = $(if $(filter -,$(SLACK_AGENT_TOOLS)),,"$(subst $(comma),
 	inbound-credential inbound-secret inbound-fire inbound-audit \
 	inbound-expose inbound-unexpose exposure-scan \
 	slack-approvers notify-slack slack-mention \
-	backup restore plane-metrics
+	backup restore plane-metrics \
+	github-secret github-revoke egress-hosted egress-hosted-off \
+	govern-github github-allow github-audit github-ask github-down
 
 # guard: the context-safety net every MUTATING target depends on. Prints
 # the target context/namespaces; demands explicit confirmation for
@@ -1002,6 +1014,99 @@ egress-copilot-off: guard
 	@# Delete by manifest, not by a name typed here: a renamed policy
 	@# would otherwise delete nothing, exit 0, and leave the hole open.
 	$(KUBECTL) delete -f k8s/egress-copilot.yaml --ignore-not-found
+
+## ---- P10: hosted upstreams (docs/hosted-upstreams.md) ----
+#
+# The gateway's first upstream OUTSIDE the cluster: GitHub's hosted MCP
+# server, reached through the plane's one hardened dialer. The table
+# entry is committed (k8s/plane/upstreams.yaml); what these targets add
+# is the credential in plane custody, the opt-in network allowance, and
+# the governed agent.
+
+## github-secret: capture a fine-grained, read-only, one-repository
+## GitHub token stdin-only, vet it against that repository, store it as
+## the plane-side Secret, and open the gateway's 443-to-public allowance.
+##   make github-secret GITHUB_REPO=owner/name
+github-secret: guard
+	@test -n "$(GITHUB_REPO)" || \
+		{ echo 'usage: make github-secret GITHUB_REPO=owner/name  (fine-grained read-only token on stdin)' >&2; exit 1; }
+	@KUBECTL="$(KUBECTL)" GITHUB_REPO="$(GITHUB_REPO)" bash scripts/github-secret.sh
+	@# A hosted tool upstream is the moment the gateway needs the
+	@# internet: the plane's own boundary lets it reach nothing outside
+	@# the cluster; this opens TCP 443 out to public addresses, for the
+	@# proxy pod only. `make github-revoke` closes it again.
+	$(KUBECTL) apply -f k8s/egress-hosted.yaml
+	@# The Secret mount is optional, so a proxy that started without it
+	@# would not see the file until kubelet projects it (docs/aks.md):
+	@# roll, so both replicas start with the credential present.
+	$(KUBECTL) -n kaimahi rollout restart deploy/kaimahi-proxy
+	$(KUBECTL) -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
+
+## github-revoke: the inverse — delete the token Secret and close the
+## allowance. Governed GitHub calls then fail closed (503: no credential;
+## and 502: no route out), which is the point.
+github-revoke: guard
+	$(KUBECTL) -n kaimahi delete secret kaimahi-github-pat --ignore-not-found
+	$(KUBECTL) delete -f k8s/egress-hosted.yaml --ignore-not-found
+
+## egress-hosted / egress-hosted-off: the allowance on its own (CI's
+## synthetic-upstream steps use these; `make github-secret` applies it
+## for you). Delete by manifest, not by a typed name, so a renamed policy
+## cannot leave the hole open with exit 0.
+egress-hosted: guard
+	$(KUBECTL) apply -f k8s/egress-hosted.yaml
+
+egress-hosted-off: guard
+	$(KUBECTL) delete -f k8s/egress-hosted.yaml --ignore-not-found
+
+## govern-github: put the GitHub demo agent behind the MCP gateway —
+## issue its kmh_ credential (agent-side Secret kaimahi-github-token),
+## set the READ-ONLY allowlist, apply the Kaimahi RemoteMCPServer and the
+## agent. The write tool is deliberately absent from the allowlist.
+govern-github: guard
+	@KUBECTL="$(KUBECTL)" GOVERNED_SECRET=kaimahi-github-token \
+		bash scripts/plane-admin.sh issue $(CRED_GITHUB)
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-allow $(CRED_GITHUB) "$(GITHUB_TOOLS)"
+	$(KUBECTL) apply -f k8s/kaimahi-github.yaml
+	$(KUBECTL) -n kagent wait \
+		--for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True \
+		remotemcpserver/kaimahi-github --timeout=300s
+	$(KUBECTL) apply -f k8s/github-agent.yaml
+	$(KUBECTL) -n kagent patch agent hello-github --type merge \
+		-p '{"spec":{"declarative":{"tools":[{"type":"McpServer","mcpServer":{"apiGroup":"kagent.dev","kind":"RemoteMCPServer","name":"kaimahi-github","toolNames":[$(GITHUB_TOOLNAMES_JSON)]}}]}}}'
+	$(KUBECTL) -n kagent wait \
+		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
+		agent/hello-github --timeout=300s
+
+## github-allow: replace the GitHub credential's allowlist, e.g.
+##   make github-allow GITHUB_TOOLS=list_issues
+##   make github-allow GITHUB_TOOLS=-        (empty: nothing callable)
+## Widening this is a CONFIG change; the demo widens by APPROVAL instead.
+github-allow: guard
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-allow $(CRED_GITHUB) "$(GITHUB_TOOLS)"
+
+## github-audit: the GitHub credential's tool-call audit trail
+github-audit:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-audit $(CRED_GITHUB)
+
+## github-ask: ask the demo agent what is open on a repository.
+##   make github-ask GITHUB_REPO=owner/name
+# The task reaches the recipe through the ENVIRONMENT (like slack-post),
+# and the repository gets the same anchored shape check the secret
+# script applies, so nothing odd reaches the agent.
+github-ask: export KAIMAHI_GITHUB_TASK = What is open on the GitHub repository $(GITHUB_REPO)? List the open issues and pull requests.
+github-ask: $(KAGENT)
+	@test -n "$(GITHUB_REPO)" || \
+		{ echo 'usage: make github-ask GITHUB_REPO=owner/name' >&2; exit 1; }
+	@printf '%s' "$(GITHUB_REPO)" | grep -qE '^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$$' || \
+		{ echo 'invalid GITHUB_REPO (want owner/name)' >&2; exit 1; }
+	@$(call kagent_forward,hello-github,$(KAGENT_INVOKE) --agent hello-github --task "$$KAIMAHI_GITHUB_TASK",$(CHAT_RETRYABLE_SAFE))
+
+## github-down: remove the P10 demo (agent, gateway seam). The token is
+## a separate decision: make github-revoke.
+github-down: guard
+	-$(KUBECTL) -n kagent delete agent hello-github
+	-$(KUBECTL) -n kagent delete remotemcpserver kaimahi-github
 
 ## ---- P7b: inbound connectors (docs/inbound.md) ----
 #

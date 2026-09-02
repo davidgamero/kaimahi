@@ -76,7 +76,7 @@ spec:
           # (AKS, private ACR) scripts/plane-deploy.sh renders both from
           # PLANE_IMAGE / PLANE_PULL_POLICY at deploy time, and the kind
           # path applies this document exactly as committed.
-          image: kaimahi-proxy:p9
+          image: kaimahi-proxy:p10
           imagePullPolicy: Never
           env:
             - name: PGHOST
@@ -123,6 +123,12 @@ spec:
               readOnly: true
             - name: notifier-cred
               mountPath: /etc/kaimahi/notifier
+              readOnly: true
+            - name: github-cred
+              mountPath: /etc/kaimahi/upstream-creds/github
+              readOnly: true
+            - name: upstream-ca
+              mountPath: /etc/kaimahi/upstream-ca
               readOnly: true
           # Two probes that mean different things (plane/internal/ops):
           #   readiness — "route to me": needs Postgres. A Postgres
@@ -243,6 +249,26 @@ spec:
         - name: notifier-cred
           secret:
             secretName: kaimahi-notifier-token
+            optional: true
+        # P10: the GitHub hosted MCP server's credential — a fine-grained,
+        # read-only, one-repository token (scripts/github-secret.sh) —
+        # plane custody like the Copilot key: the gateway injects it, the
+        # agent never sees it. Optional, same contract: without it the
+        # github upstream fails closed (503) and nothing else is affected.
+        - name: github-cred
+          secret:
+            secretName: kaimahi-github-pat
+            optional: true
+        # P10: trust anchors for hosted upstreams that name a ca_file in
+        # the table (one PEM per file). Nothing committed uses one — the
+        # GitHub server is verified against the system roots — so the
+        # mount is empty unless an operator (or CI, for its synthetic
+        # stand-in with a throwaway certificate) creates the ConfigMap.
+        # A ca_file the table names but the mount lacks refuses the whole
+        # config at boot (plane/internal/egress), never one call later.
+        - name: upstream-ca
+          configMap:
+            name: kaimahi-upstream-ca
             optional: true
 ---
 # P9: a voluntary disruption (a node drain, a cluster upgrade) may take

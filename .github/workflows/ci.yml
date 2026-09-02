@@ -143,7 +143,7 @@ jobs:
       # 0.0.0.0/0 with no exceptions would let "internet" mean "the
       # cluster"), and the Copilot allowance is NOT in k8s/plane/ — it is
       # opt-in, so the plane deploys internet-free.
-      - name: Network policy shape (default-deny both ways, private ranges excluded, Copilot opt-in)
+      - name: Network policy shape (default-deny both ways, private ranges excluded, Copilot and hosted-upstream allowances opt-in)
         run: |
           python3 - <<'EOF'
           import pathlib, sys, yaml
@@ -162,6 +162,12 @@ jobs:
           private = {"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
                      "169.254.0.0/16", "100.64.0.0/10", "127.0.0.0/8"}
           copilot = yaml.safe_load(pathlib.Path("k8s/egress-copilot.yaml").read_text())
+          # P10: the gateway's allowance for HOSTED tool upstreams — the
+          # second (and last) 443-only internet allowance for the proxy
+          # pod, the exact shape of the Copilot one, opt-in like it.
+          hosted = yaml.safe_load(pathlib.Path("k8s/egress-hosted.yaml").read_text())
+          assert hosted["metadata"]["name"] == "kaimahi-proxy-egress-hosted", hosted["metadata"]
+          assert hosted["spec"] == copilot["spec"], "the hosted allowance must be the exact shape of the Copilot allowance"
           # P8: the public edge's policies live outside k8s/plane/ (they are
           # an opt-in exposure, never deployed on kind) but obey the same
           # egress rule, and their ingress is bounded here too.
@@ -169,7 +175,7 @@ jobs:
                   if d and d.get("kind") == "NetworkPolicy"]
           assert {p["metadata"]["name"] for p in edge} == {"kaimahi-inbound-edge", "kaimahi-proxy-ingress-edge"}, "edge policies renamed"
           assert all(p["metadata"]["namespace"] == "kaimahi" for p in edge), "edge policy outside kaimahi"
-          for p in pols + [copilot] + edge:
+          for p in pols + [copilot, hosted] + edge:
               for rule in p["spec"].get("ingress") or []:
                   ports = {(x.get("protocol", "TCP"), x["port"]) for x in rule.get("ports") or []}
                   # A rule with no `from` admits every source; refuse it like a `to`-less egress.
@@ -185,7 +191,7 @@ jobs:
                           assert p["metadata"]["name"] == "kaimahi-proxy-ingress-edge" and ports == {("TCP", 8082)} \
                               and peer.get("podSelector", {}).get("matchLabels") == {"app": "kaimahi-inbound-edge"}, \
                               f'{p["metadata"]["name"]}: unexpected ingress peer {peer} on {ports}'
-          for p in pols + [copilot] + edge:
+          for p in pols + [copilot, hosted] + edge:
               name = p["metadata"]["name"]
               for rule in p["spec"].get("egress") or []:
                   # A rule with no `to` allows its ports to EVERY destination,
@@ -205,6 +211,13 @@ jobs:
                       ports = {(x.get("protocol", "TCP"), x["port"]) for x in rule.get("ports") or []}
                       assert ports == {("TCP", 443)}, f"{name}: internet rule ports {ports} != 443 only"
           assert copilot["metadata"]["name"] not in {p["metadata"]["name"] for p in pols}, "Copilot allowance leaked into k8s/plane/"
+          assert hosted["metadata"]["name"] not in {p["metadata"]["name"] for p in pols}, "hosted-upstream allowance leaked into k8s/plane/"
+          # The proxy pod's internet egress, wherever a policy lives, is
+          # exactly these two opt-in allowances and nothing in k8s/plane/.
+          plane_internet = [p["metadata"]["name"] for p in pols
+                            if any("ipBlock" in peer for r in p["spec"].get("egress") or [] for peer in r.get("to") or [])
+                            and p["spec"].get("podSelector", {}).get("matchLabels", {}).get("app") == "kaimahi-proxy"]
+          assert not plane_internet, f"the proxy has a baked-in internet allowance: {plane_internet}"
           assert not ({p["metadata"]["name"] for p in edge} & {p["metadata"]["name"] for p in pols}), "edge policy leaked into k8s/plane/"
           # P9: the ops port (metrics + probes, no auth) is on NO Service,
           # and the only policy that opens it is the scraper allowance —
@@ -213,7 +226,7 @@ jobs:
           svc_ports = {x["port"] for d in docs if d.get("kind") == "Service" for x in d["spec"]["ports"]}
           assert 9092 not in svc_ports and 9091 not in svc_ports, f"admin/ops port on a Service: {svc_ports}"
           opens_ops = []
-          for p in pols + [copilot] + edge:
+          for p in pols + [copilot, hosted] + edge:
               for rule in p["spec"].get("ingress") or []:
                   ports = {x["port"] for x in rule.get("ports") or []}
                   if 9092 in ports:
@@ -228,8 +241,56 @@ jobs:
           assert opens_ops == ["kaimahi-proxy-metrics"], f"ops port allowances: {opens_ops}"
           pdb = [d for d in docs if d.get("kind") == "PodDisruptionBudget"]
           assert len(pdb) == 1 and pdb[0]["spec"].get("minAvailable") == 1, "proxy PDB missing or not minAvailable: 1"
-          print(f"{len(pols)} plane policies + {len(edge)} edge policies; internet allowances are 443-only with private ranges excluded; internet ingress is the edge's 8443 only; ops port 9092 on no Service, opened only to the monitoring scraper")
+          print(f"{len(pols)} plane policies + {len(edge)} edge policies + 2 opt-in proxy allowances (Copilot, hosted upstreams; identical shape); internet allowances are 443-only with private ranges excluded; internet ingress is the edge's 8443 only; ops port 9092 on no Service, opened only to the monitoring scraper")
           EOF
+      # P10: the committed upstream table marks every hosted upstream —
+      # Copilot on the LLM seam, GitHub's MCP server on the tool seam —
+      # `internet: true`, so nothing about their hardening is implicit
+      # (the plane also refuses an unmarked public host at load; this is
+      # the same fact asserted on the file, before a cluster exists).
+      # The agent-side wiring is a Secret-resolved header only, and no
+      # GitHub token shape is anywhere in the tree (D14: none exists in
+      # CI, ever).
+      - name: Hosted upstreams are marked, keyed from plane custody, and no GitHub token is in the tree
+        run: |
+          python3 - <<'EOF'
+          import json, pathlib, sys, yaml
+          from urllib.parse import urlparse
+          cm = yaml.safe_load(pathlib.Path("k8s/plane/upstreams.yaml").read_text())
+          t = json.loads(cm["data"]["upstreams.json"])
+          copilot = t["upstreams"]["copilot"]
+          assert copilot.get("internet") is True, "upstreams.copilot must carry internet: true"
+          assert urlparse(copilot["base_url"]).scheme == "https", copilot
+          gh = t["tool_upstreams"]["github"]
+          assert gh.get("internet") is True, "tool_upstreams.github must carry internet: true"
+          assert gh["url"].startswith("https://api.githubcopilot.com/mcp"), gh
+          assert gh["credential_file"].startswith("/etc/kaimahi/upstream-creds/github/"), gh
+          assert not any(k in gh for k in ("credential", "token", "api_key", "ca_file")), gh
+          # Every UNMARKED entry, both tables, is in-cluster-shaped.
+          for table in ("upstreams", "tool_upstreams"):
+              for name, up in t[table].items():
+                  host = urlparse(up.get("url") or up.get("base_url")).hostname
+                  if up.get("internet"):
+                      assert urlparse(up.get("url") or up.get("base_url")).scheme == "https", (name, host)
+                      continue
+                  assert host.endswith((".kaimahi", ".kagent", ".svc.cluster.local")), (name, host)
+          # The agent-side seam: one Secret-resolved header, no inline value.
+          rms = yaml.safe_load(pathlib.Path("k8s/kaimahi-github.yaml").read_text())
+          h = rms["spec"]["headersFrom"]
+          assert len(h) == 1 and "value" not in h[0] and h[0]["valueFrom"] == {
+              "type": "Secret", "name": "kaimahi-github-token", "key": "api-key"}, h
+          assert rms["spec"]["url"].endswith("/upstream/github/mcp"), rms["spec"]["url"]
+          agent = yaml.safe_load(pathlib.Path("k8s/github-agent.yaml").read_text())
+          tools = agent["spec"]["declarative"]["tools"]
+          assert len(tools) == 1 and tools[0]["mcpServer"]["name"] == "kaimahi-github", tools
+          assert agent["spec"]["declarative"]["modelConfig"] == "governed-copilot", "the demo agent is not on a governed model preset"
+          print("hosted upstreams: copilot + github marked internet; every unmarked entry in-cluster; github wiring Secret-only")
+          EOF
+          set +e
+          grep -rIn --exclude-dir=.git -E 'github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{30,}' .
+          rc=$?
+          set -e
+          test "$rc" -eq 1 || { echo "possible GitHub token committed (or scanner failed: exit $rc)"; exit 1; }
 
       # CI flake class 2: the chat verifier's verdicts on the PR #24 task
       # shape must not drift — probe in the tool payload passes; a missing,
@@ -484,9 +545,14 @@ jobs:
       # `make plane` above booted both replicas together against an
       # EMPTY database, so the migration lock was exercised for real
       # there (its outcome is the consistent version table and two
-      # Ready pods; the current pods are the post-restart generation,
-      # so both log "nothing to apply"). The lock race itself is also
-      # proven by the store test in go-plane.
+      # Ready pods). The current pods are usually the post-restart
+      # generation and log "nothing to apply" — but `make plane` restarts
+      # the deployment the moment Postgres is Ready, and a first-generation
+      # pod still in its connect retry can be replaced before it migrated,
+      # so a post-restart pod may be the one that logs "applied" (seen on
+      # PR #51). Either line is a clean boot under the lock; what must hold
+      # is the consistent version table below. The lock race itself is
+      # also proven by the store test in go-plane.
       - name: Both replicas serve, schema consistent under the migration lock
         if: steps.changes.outputs.docs_only != 'true'
         run: |
@@ -499,7 +565,7 @@ jobs:
           for pod in $pods; do
             KUBECTL="kubectl --context kind-kaimahi-p1" POD="$pod" bash scripts/plane-metrics.sh > "metrics-$pod.out"
             grep -q '^kaimahi_build_info{' "metrics-$pod.out"
-            kubectl --context kind-kaimahi-p1 -n kaimahi logs "$pod" | grep -q 'migrations: nothing to apply'
+            kubectl --context kind-kaimahi-p1 -n kaimahi logs "$pod" | grep -qE 'migrations: (nothing to apply|applied)'
           done
           kubectl --context kind-kaimahi-p1 -n kaimahi exec deploy/kaimahi-postgres -- \
             psql -U kaimahi -d kaimahi -tAc 'SELECT count(*), count(DISTINCT version_id) FROM goose_db_version WHERE version_id > 0' | tee versions.out
@@ -696,7 +762,7 @@ jobs:
           rc=$?
           set -e
           test "$rc" -eq 1 || { echo "possible Slack token committed (or scanner failed: exit $rc)"; exit 1; }
-      - name: Gateway upstream table gained Slack, still entirely in-cluster
+      - name: Gateway upstream table — Slack and kagent-tools in-cluster, GitHub the one hosted entry (marked)
         if: steps.changes.outputs.docs_only != 'true'
         run: |
           kubectl --context kind-kaimahi-p1 -n kaimahi get configmap kaimahi-upstreams \
@@ -705,12 +771,16 @@ jobs:
           import json, sys
           from urllib.parse import urlparse
           t = json.load(open("upstreams.json"))["tool_upstreams"]
-          assert set(t) == {"kagent-tools", "slack"}, t
-          # P4b's deferral of the hardened dialer / SSRF set holds only
-          # while every tool upstream is in-cluster. Assert it, so an
-          # internet-facing entry cannot be added without this failing.
+          assert set(t) == {"kagent-tools", "slack", "github"}, t
+          # P10: an internet-facing entry exists now, and ONLY under the
+          # marker that routes it through the hardened dialer; every
+          # unmarked entry is still in-cluster (the plane refuses the
+          # config otherwise — this asserts the same on the deployed table).
           for name, up in t.items():
               host = urlparse(up["url"]).hostname
+              if up.get("internet"):
+                  assert name == "github" and urlparse(up["url"]).scheme == "https", (name, up)
+                  continue
               assert host.endswith((".kaimahi", ".kagent", ".svc.cluster.local")), (name, host)
           # The Slack upstream is keyed from plane custody, and the table
           # names the file without ever carrying a value.
@@ -1000,8 +1070,10 @@ jobs:
         run: |
           # A fresh subject, so the filing is not deduped and the notifier
           # fires: the denial files, the plane posts, the gateway admits
-          # the plane's call by allowlist (no grant), dials the absent
-          # upstream, 502 — same row shape as the P5a cycle, plane's name.
+          # the plane's call by allowlist (no grant — the detail is the dial
+          # failure, not a grant id), dials the absent upstream, 502 — same
+          # row shape as the P5a cycle, plane's name (P10: a 502 row now
+          # carries why: "upstream unreachable: …").
           bash scripts/tool-denial-probe.sh k8s_get_pods
           for _ in $(seq 1 30); do
             KUBECTL="kubectl --context kind-kaimahi-p1" bash scripts/plane-admin.sh tool-audit kaimahi-plane > plane-audit.out 2>/dev/null
@@ -1009,7 +1081,7 @@ jobs:
             sleep 2
           done
           cat plane-audit.out
-          grep -E 'kaimahi-plane +slack +tools/call +conversations_add_message +allowed +502 *$' plane-audit.out
+          grep -E 'kaimahi-plane +slack +tools/call +conversations_add_message +allowed +502 +upstream unreachable: ' plane-audit.out
           # Exactly ONE attempt: the gateway's 502 cannot say whether the
           # post reached the server (a dial refusal and a reset after
           # delivery answer alike), so it is recorded and NOT retried —
@@ -1197,6 +1269,108 @@ jobs:
           make chat | tee restored-chat.out
           python3 scripts/verify-chat.py restored-chat.out
           rm -f ci-backup.sql
+      # P10, keyless: a HOSTED tool upstream — the first the gateway reaches
+      # over the internet — proven against a SYNTHETIC stand-in, since no
+      # GitHub token exists in CI (D14). scripts/ci/synthetic-upstream.sh
+      # runs a tiny https MCP echo server in a sidecar on kind's docker
+      # network at 203.0.113.10 (a documentation-range address: NOT
+      # private, so the dialer's refusal list is not relaxed for it, and
+      # not routable, so nothing real is reached), routed from the node
+      # with the destination unchanged — so the NetworkPolicy is evaluated
+      # on that public-looking address exactly as it would be for GitHub.
+      # The cluster resolves it through a CoreDNS hosts entry and the
+      # gateway trusts its throwaway certificate through ca_file only.
+      # What is proven: boot-time vetting (and a private-resolving host
+      # refused at load); with the opt-in allowance a governed call is
+      # audited `allowed 200`; the write tool is denied and files a
+      # request; a redirecting stand-in and a record that REBINDS to the
+      # server's private address are refused by the dialer and audited
+      # with the reason; with the allowance removed the dial fails closed
+      # (unreachable), audited. The agent-side Secret holds only kmh_.
+      # No agent pod is created (the node is at its CPU ceiling; the
+      # decisions are exercised through the gateway directly). The GitHub
+      # server itself is live-verified in the PR with the worker's own
+      # read-only token, on kind (docs/hosted-upstreams.md).
+      - name: "Hosted upstreams: synthetic public MCP server up; the proxy vets every hosted host at boot"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          kubectl --context kind-kaimahi-p1 apply --dry-run=server -f k8s/kaimahi-github.yaml -f k8s/github-agent.yaml
+          KUBECTL="kubectl --context kind-kaimahi-p1" WORKDIR="$PWD/.synthetic-upstream" \
+            bash scripts/ci/synthetic-upstream.sh up
+          kubectl --context kind-kaimahi-p1 -n kaimahi logs -l app=kaimahi-proxy --tail=40 | tee hosted-boot.out
+          grep -q 'hosted upstream vetted.*host=mcp-echo.kaimahi-ci.test addresses=\[203.0.113.10\] trust="ca_file /etc/kaimahi/upstream-ca/mcp-echo.crt"' hosted-boot.out
+          grep -q 'hosted upstream vetted.*host=api.githubcopilot.com addresses=\[[0-9.]*\] trust="system roots"' hosted-boot.out
+      - name: "Hosted upstreams: a host that resolves private is refused at config load, loudly, and the serving replicas stay up"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          KUBECTL="kubectl --context kind-kaimahi-p1" WORKDIR="$PWD/.synthetic-upstream" \
+            bash scripts/ci/synthetic-upstream.sh load-refusal
+      - name: "Hosted upstreams: read-only credential; the write tool is not allowlisted; the agent-side Secret holds only kmh_"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-github-token \
+            bash scripts/plane-admin.sh issue hello-github
+          make github-allow GITHUB_TOOLS=echo
+          make tool-allowlist CRED_TOOLS=hello-github | tee github-allowlist.out
+          grep -qE '^hello-github: echo$' github-allowlist.out
+          if grep -q echo_write github-allowlist.out; then
+            echo 'the write tool is allowlisted — it must be approved, not configured' >&2; exit 1
+          fi
+          n=$(kubectl --context kind-kaimahi-p1 -n kagent get secret kaimahi-github-token \
+            -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
+          test "$n" = 1
+      - name: "Hosted upstreams: with the allowance, a governed call rides the hardened dialer → audited allowed 200"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make egress-hosted
+          sleep 3
+          probe="probe-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
+          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-github-token UPSTREAM=mcp-echo \
+            bash scripts/tool-call-probe.sh echo "{\"text\": \"$probe\"}" | tee hosted-call.out
+          grep -qF "echo:{\"text\": \"$probe\"}" hosted-call.out
+          make github-audit | tee github-audit.out
+          grep -E 'hello-github +mcp-echo +tools/call +echo +allowed +200' github-audit.out
+      - name: "Hosted upstreams: the write tool is denied and files a request; a redirecting stand-in is refused and audited"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-github-token UPSTREAM=mcp-echo \
+            bash scripts/tool-denial-probe.sh echo_write
+          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-github-token UPSTREAM=mcp-echo-redirect \
+            EXPECT_BODY='redirected (refused)' bash scripts/upstream-refusal-probe.sh
+          make github-audit | tee github-audit-2.out
+          grep -E 'hello-github +mcp-echo +tools/call +echo_write +denied +403' github-audit-2.out
+          make approvals | tee github-approvals.out
+          grep -E 'hello-github +tool +echo_write' github-approvals.out
+          grep -E 'hello-github +mcp-echo-redirect +tools/call +echo +allowed +502 +tool upstream redirected' github-audit-2.out
+      - name: "Hosted upstreams: the record rebinds to the server's private address → the dialer refuses before any byte leaves, audited"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          KUBECTL="kubectl --context kind-kaimahi-p1" WORKDIR="$PWD/.synthetic-upstream" \
+            bash scripts/ci/synthetic-upstream.sh rebind "$(cat .synthetic-upstream/sidecar.ip)"
+          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-github-token UPSTREAM=mcp-echo-rebind \
+            EXPECT_BODY='refused by the egress policy' bash scripts/upstream-refusal-probe.sh
+          make github-audit | tee github-audit-3.out
+          grep -E 'hello-github +mcp-echo-rebind +tools/call +echo +allowed +502 +egress refused: .*resolves to 172\.[0-9.]+ \(private' github-audit-3.out
+      - name: "Hosted upstreams: allowance removed → the dial fails closed (unreachable), audited"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make egress-hosted-off
+          sleep 3
+          if kubectl --context kind-kaimahi-p1 -n kaimahi get networkpolicy kaimahi-proxy-egress-hosted 2>/dev/null; then
+            echo 'the hosted allowance is still present' >&2; exit 1
+          fi
+          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-github-token UPSTREAM=mcp-echo \
+            EXPECT_BODY='unreachable' bash scripts/upstream-refusal-probe.sh
+          make github-audit | tee github-audit-4.out
+          # Anchored on the dial timeout: the network dropped the packets.
+          # A dead sidecar ("connection refused") or a lost hosts entry
+          # ("no such host") would also read "unreachable" and must not pass.
+          grep -E 'hello-github +mcp-echo +tools/call +echo +allowed +502 +upstream unreachable: .*dial tcp 203\.0\.113\.10:443: i/o timeout' github-audit-4.out
+      - name: "Hosted upstreams: teardown (committed table restored)"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          KUBECTL="kubectl --context kind-kaimahi-p1" WORKDIR="$PWD/.synthetic-upstream" \
+            bash scripts/ci/synthetic-upstream.sh down
       - name: Cluster state on failure
         if: failure() && steps.changes.outputs.docs_only != 'true'
         run: |
