@@ -260,6 +260,28 @@ jobs:
           ./node_modules/.bin/kaimahi agent create ci-probe \
             --instructions "$GITHUB_WORKSPACE/cli/scenarios/billing-dispute.md" \
             --model ollama > /dev/null
+      # CWE-494: `npx github:owner/repo` with no ref resolves to whatever the
+      # default branch holds at that moment and executes it locally, with the
+      # user's kubeconfig in reach. docs/CLI-PROPOSAL.md already required a
+      # pinned invocation; this stops the docs drifting back to the
+      # convenient form. Documented examples use a #<commit-sha> placeholder.
+      - name: Documented npx invocations are pinned
+        run: |
+          set +e
+          # COORDINATION.md is excluded: it records D19's ruling verbatim,
+          # and a decision record is history, not a command to copy. The
+          # coordinator owns that file; rewriting a quoted ruling to satisfy
+          # a lint would falsify the record.
+          grep -rEn --include='*.md' --exclude-dir=.git \
+            --exclude=COORDINATION.md \
+            'github:kaimahi-agents/kaimahi(#[^ `<]*)?' . \
+            | grep -vE 'github:kaimahi-agents/kaimahi#' > /tmp/unpinned
+          set -e
+          if [ -s /tmp/unpinned ]; then
+            echo "unpinned npx github: invocation (CWE-494) — add #<commit-sha>:"
+            cat /tmp/unpinned
+            exit 1
+          fi
       - name: Zero runtime dependencies
         run: |
           deps=$(node -e "const p=require('./package.json');console.log(Object.keys({...p.dependencies}).length)")

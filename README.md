@@ -27,7 +27,7 @@ tear down — is one.
 cloning anything:
 
 ```bash
-npx github:kaimahi-agents/kaimahi agent create support-triage \
+npx github:kaimahi-agents/kaimahi#<commit-sha> agent create support-triage \
   --instructions ./triage.md \
   --tools kaimahi-tools:k8s_get_resources \
   --out k8s/
@@ -35,8 +35,8 @@ npx github:kaimahi-agents/kaimahi agent create support-triage \
 
 It generates the agent-as-code YAML — Agent, model preset reference, tool
 wiring with a mandatory allowlist, and Secret *references* rather than
-secrets — validates it (server-side dry run when a cluster is reachable),
-and prints the next command. You get a reviewable file, not a black box: the
+secrets — checks it locally, and prints the next command. Add `--dry-run`
+to validate it against a cluster's live CRDs, or `--apply` to send it. You get a reviewable file, not a black box: the
 artifact is the same YAML you would have hand-written, and it is yours from
 that point on.
 
@@ -48,7 +48,10 @@ That is the whole reason to build a CLI at all. A Makefile requires a clone;
 
 > **Built, not published.** Per D19 the CLI is internal for now — run it
 > straight from the repo as above; publishing to npm waits on D9's naming
-> gates. `agent create` is the only command: reading, updating and deleting
+> gates. **Pin the ref.** `npx` on a bare `github:` spec resolves to whatever
+> the default branch holds at that moment and runs it locally, with access to
+> your kubeconfig — a mutable remote-code channel. Substitute a reviewed
+> commit SHA; CI rejects an unpinned spec in the docs. `agent create` is the only command: reading, updating and deleting
 > agents stay with `kubectl` and the kagent CLI. Design, survey and security
 > model in [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md); what it does and
 > what is verified in [docs/CLI-PROTOTYPE.md](docs/CLI-PROTOTYPE.md).

@@ -97,7 +97,7 @@ Scaffold-only. Everything kagent already does is delegated, not wrapped.
 > the surface grows. Shipped shape and flags: `docs/CLI-PROTOTYPE.md`.
 
 ```bash
-npx github:kaimahi-agents/kaimahi agent create <name> [--options]
+npx github:kaimahi-agents/kaimahi#<commit-sha> agent create <name> [--options]
 ```
 
 | Flag | Purpose |
@@ -200,7 +200,7 @@ All five are ruled; kept here so the reasoning above still reads against its
 outcome. The prototype is `docs/CLI-PROTOTYPE.md`.
 
 1. **Publish or not** → **not yet.** Internal use is
-   `npx github:kaimahi-agents/kaimahi`; publishing waits on D9's cultural
+   `npx github:kaimahi-agents/kaimahi#<commit-sha>`; publishing waits on D9's cultural
    read and trademark counsel, and is a one-line change once they clear.
    The manifest is `private: true` so an accidental publish fails.
 2. **The CRUD line** → **scaffold-only.** `agent create` is the only

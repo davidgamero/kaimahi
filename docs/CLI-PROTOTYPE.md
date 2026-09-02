@@ -5,7 +5,7 @@ against the billing journey in [SCENARIOS.md](SCENARIOS.md).
 
 **Status: prototype.** It runs, it is tested, and it has been used to stand
 up a real agent on a real cluster. Per D19 it is **not published to npm** —
-internal use is `npx github:kaimahi-agents/kaimahi` — and `package.json` is
+internal use is `npx github:kaimahi-agents/kaimahi#<commit-sha>` — and `package.json` is
 marked private so an accidental publish fails.
 
 ## What it does
@@ -27,8 +27,14 @@ make cli-test                                  # 12 unit tests, no cluster
 From outside a clone, per D19's "internal via npx github:":
 
 ```bash
-npx github:kaimahi-agents/kaimahi agent create my-agent --instructions ./my.md
+npx github:kaimahi-agents/kaimahi#<commit-sha> agent create my-agent --instructions ./my.md
 ```
+
+**Always pin the ref.** A bare `github:` spec resolves to the default branch
+at that moment and executes it on your workstation, with your kubeconfig in
+reach — the integrity problem `npx` has by default (CWE-494). Substitute a
+reviewed commit SHA for `<commit-sha>`. CI fails if an unpinned spec appears
+in the docs, so the instruction cannot rot back to the convenient form.
 
 **The manifest lives at the repository root on purpose.** `package.json` sits
 at the top level with `bin` pointing into `cli/`, because npm has no
@@ -132,7 +138,7 @@ The proposal's open decisions have been ruled:
 
 | Decision | Ruling | How this prototype reflects it |
 |---|---|---|
-| Publish to npm? | **Not yet.** Internal use via `npx github:kaimahi-agents/kaimahi`; publishing is a one-line change once D9's naming gates clear | `package.json` is `"private": true` and versioned `0.0.0-prototype`, so an accidental `npm publish` fails |
+| Publish to npm? | **Not yet.** Internal use via `npx github:kaimahi-agents/kaimahi#<commit-sha>`; publishing is a one-line change once D9's naming gates clear | `package.json` is `"private": true` and versioned `0.0.0-prototype`, so an accidental `npm publish` fails |
 | CRUD boundary | **Scaffold-only.** `agent create` is the only command; R/U/D refuse and print the tool that already does the job | as built — `agent list` prints the `kubectl`/`kagent` equivalents |
 | `up` / `install`? | **No.** The Makefile owns cluster bring-up | the CLI has no cluster-provisioning command |
 | Node toolchain | **Accepted**, on condition it stays zero-runtime-dependency, with `make cli-test` in CI | zero dependencies; CI runs the tests and asserts the dependency count is still zero |

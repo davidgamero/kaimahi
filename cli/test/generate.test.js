@@ -51,7 +51,10 @@ test("tool specs require an explicit allowlist", () => {
   assert.throws(() => parseToolSpec("Bad_Server:tool"), /valid server name/);
 });
 
-test("renderAgent produces the governed preset by default and flags ungoverned ones", () => {
+// Named for what it actually covers. The DEFAULT-selection path cannot be
+// tested here — renderAgent is handed a preset — so it lives in cli.test.js,
+// which spawns the binary with no --model.
+test("renderAgent labels governance according to the preset it is given", () => {
   const governed = renderAgent({
     name: "a1",
     modelConfig: "governed-ollama",
