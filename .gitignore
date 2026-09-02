@@ -9,3 +9,8 @@ bin/
 # output, not source — and a captured A2A task or an AKS transcript is
 # exactly the kind of thing that must not land in a public repo.
 *.out
+
+# Python bytecode caches: two .pyc files once landed on main because this
+# rule was missing.
+__pycache__/
+*.pyc

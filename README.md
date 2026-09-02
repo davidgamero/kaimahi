@@ -94,7 +94,7 @@ port-forwards the controller, and invokes the agent.
 | 5b | Cluster portability + a real managed-cluster run | **demonstrated once** — the plane, a governed Copilot chat, a ledger row, a budget denial and a governed tool call, all on a real AKS cluster, which was then deleted ([docs/aks.md](docs/aks.md)) |
 | 7a | Network policy around the plane | **runs** — default-deny NetworkPolicy in both directions, proven by a probe on every PR ([docs/egress.md](docs/egress.md)) |
 | 7b | Inbound hooks (webhooks → agent), governed | **runs** — auth before any work, budget checked at the door, a bounded grant consumed per event, probed keyless in CI; rate limiter and queue are in-memory, single replica ([docs/inbound.md](docs/inbound.md)) |
-| — | `kaimahi create` CLI | proposed — [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) |
+| — | `kaimahi agent create` CLI | considered and prototyped, not built — [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) |
 
 **Limitations, stated plainly.** Governance is opt-in per agent: an
 *ungoverned* preset still bills with no ledger, and an ungoverned tools wiring
@@ -142,8 +142,8 @@ these controls are collected in `docs/SCENARIOS.md` (proposed separately).
 
 ## Command reference
 
-Commands that exist today. `kaimahi create` is deliberately **not** in this
-table — it is a proposal.
+Commands that exist today. `kaimahi agent create` is deliberately **not** in
+this table — it was prototyped and shelved, not built.
 
 | Command | Does |
 |---|---|
@@ -231,32 +231,16 @@ server is locked down at three layers: k8s tools only, `--read-only`, and a
 get/list/watch ClusterRole that **cannot read Secrets**, with a single-tool
 allowlist on top. Details: [docs/tools.md](docs/tools.md).
 
-## Proposed CLI direction
+## A scaffolder CLI: considered, not built
 
-CLI before UI, deliberately. A command has an exit code, runs in CI, works
-over SSH, pipes into other commands, and can be read in a code review. Every
-step of the journey — provision, deploy, converse, switch models, add tools,
-tear down — is one today, from a clone, via make. The direction being chased
-is the same journey without a clone:
-
-```bash
-npx kaimahi create agent support-triage \
-  --model anthropic \
-  --instructions ./triage.md \
-  --tools kagent-tool-server:k8s_get_resources \
-  --out k8s/
-```
-
-It would generate the agent-as-code YAML — Agent, ModelConfig, tool wiring,
-and the Secret *references* to go with them — validate it (server-side
-dry-run when a cluster is reachable), and print the next command. The
-artifact is the same YAML you would have hand-written, and it is yours from
-that point on.
-
-> **`kaimahi create` is proposed, not built.** No package is published and
-> the name is unclaimed. The design, a survey of what already exists, and
-> the security model are in [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) —
-> including the honest case *against* building it.
+CLI before UI, deliberately: every step of the journey — provision, deploy,
+converse, switch models, add tools, tear down — is a command today, from a
+clone, via make. A `kaimahi agent create` scaffolder that would do the same
+without a clone was surveyed against kagent's own CLI, ruled on, and
+prototyped in a pull request that was closed unmerged. No package is
+published and the name is unclaimed. The survey, the design, the security
+model and the case against building it stay in
+[docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) for whoever picks it up next.
 
 ## Development
 

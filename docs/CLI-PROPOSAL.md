@@ -1,6 +1,12 @@
 # Proposal: a kaimahi scaffolder CLI
 
-**Status: proposal. Not GO. No code in this PR.**
+**Status: considered, prototyped, not built.** The five open decisions at
+the end were ruled (D19 on the board: no npm publish yet, scaffold-only,
+the Makefile owns bring-up, a zero-dependency Node toolchain accepted).
+A working prototype was reviewed in pull request #16 and closed by its
+author unmerged; nothing from it is on main. This document stays as the
+survey and the design record. Anyone reopening the idea starts from D19
+and the review notes on that pull request.
 
 The board files `npx kaimahi create agent` under *Under consideration — do
 not build yet*, and requires a written survey against kagent's existing CLI

@@ -67,8 +67,8 @@ They used to be eight runbooks named for the phase that built them (P1,
 P2, P3, P4a, P4b, P4c, P5a, P5b). That order was how the repo was
 built, not how anyone reads it: to find "how do I govern tool calls" you
 had to know it was P4b. The files are now named for the capability, and
-the old filenames are short stubs pointing here so external links keep
-working.
+the old phase-named files are gone (their history is in git and on the
+board).
 
 Each runbook mixed three things: how to use a capability, why it is
 built the way it is, and what was verified when it shipped. The rule
@@ -93,8 +93,10 @@ runbook, that is a bug in the restructure, not a decision. File it.
 
 - [COORDINATION.md](COORDINATION.md): the coordination board, decisions,
   and delta sheets. Owned by the coordinator session.
-- [CLI-PROPOSAL.md](CLI-PROPOSAL.md): the proposed `kaimahi create`
-  command, including the case against building it. Not built.
+- [CLI-PROPOSAL.md](CLI-PROPOSAL.md): the `kaimahi agent create`
+  scaffolder — surveyed, ruled on, prototyped in a pull request that was
+  closed unmerged. Kept as the record of what was considered and why;
+  nothing from it is on main.
 - [SCENARIOS.md](SCENARIOS.md): the delegation journeys that argue for
   the governance plane.
 - [NAMING.md](NAMING.md): the project name and what is still owed before
