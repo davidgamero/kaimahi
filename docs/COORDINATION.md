@@ -114,9 +114,9 @@ prefix.
 | P8b: approval routing via Slack + per-approver identity (D21) | W18 worker | PR #41 MERGED (109e08d) ahead of the coordinator's pass; verified against main (delta sheet below) | lane closed |
 | P9: run it for real — stateless multi-replica plane, exact budgets, metrics (D24) | W19 worker | PR #46 MERGED (43fd748) ahead of the coordinator's pass; verified against main (delta sheet below) | own kind cluster; touches Makefile/ci.yml/k8s/plane/proxy.yaml and the plane; #37/#42 (owner-handled) touch the Makefile too — second to merge rebases |
 | P10: hosted upstreams — GitHub's hosted MCP server through a hardened dialer (D25) | W20 worker | PR #51 MERGED (d79b469) ahead of the coordinator's pass; verified against main (delta sheet below) | lane closed |
-| P11: `kmx` milestone 1 — the developer journey as one Go binary (D27) | W21 worker | IN PROGRESS 2026-09-02 (launched by the user) | new root Go module; touches the Makefile, ci.yml, docs; watch for Makefile conflicts with #37/#53 |
-| P11: `kmx` milestone 2 — `kmx govern` and the plane, clone-free (D28) | W22 worker | SHAPED 2026-09-02 — prompt below; launches only after W21 merges | kind only and fully keyless; fetches the plane at kmx's own sha from the Go proxy, embeds `k8s/`, publishes nothing |
-| P12: argument-bound approvals — an approval binds to the call, not the verb (D29) | W23 worker | SHAPED 2026-09-02 — prompt below; launches after W22, or in parallel if the user re-applies the parallel-set rules | touches the gateway, the store, a migration, the approvals path and the Slack notifier; no new upstream |
+| P11: `kmx` milestone 1 — the developer journey as one Go binary (D27) | W21 worker | PR #57 MERGED (e3e3c84); coordinator verified on its own cluster incl. the clone-free install, guard parity and a tampered kagent cache (delta sheet below) | lane closed; #53's Podman recovery carried across, not lost |
+| P11: `kmx` milestone 2 — `kmx govern` and the plane, clone-free (D28) | W22 worker | READY 2026-09-02 — prompt below; W21 merged and verified, so this is clear to launch | kind only and fully keyless; fetches the plane at kmx's own sha from the Go proxy, embeds `k8s/`, publishes nothing |
+| P12: argument-level policy — standing constraints + an approval bound to the call (D29, widened by D31) | W23 worker | SHAPED 2026-09-02 — prompt below; launches after W22, or in parallel if the user re-applies the parallel-set rules | touches the gateway, the store, a migration, the approvals path and the Slack notifier; no new upstream |
 | P13: the accounts-payable exception demo — the scenario on top of P12 (D29, D30) | W24 worker | SHAPED 2026-09-02 — prompt below; launches after W23 (P12) merges | fixture ERP server + ConfigMap corpus, the payee-substitution injection case, Slack as the surface; kind + CI, no AKS run unless the user calls one |
 | Brand assets + architecture diagram + org/front-door plans | user-run lane (outside the board's prompt set) | PR #33 MERGED (+ kaimahi-agents/.github#1); main CI green | brand validator in the hygiene job |
 | README front door + CONTRIBUTING.md | user-run lane (outside the board's prompt set) | PR #34 MERGED; main CI green | anchored front-door checker in hygiene: section order enforced, no `npx kaimahi create` mention before the quickstart ends — PR #16's README hunk must land under "A scaffolder CLI: considered, not built" (was "Proposed CLI direction" until D23) |
@@ -166,6 +166,7 @@ prefix.
 | D28 | 2026-09-02 | **P11 milestone 2 shaped — `kmx govern` and the plane, clone-free**, after the coordinator's blind-spot pass (which established, by running them, that `go:embed` cannot cross into `plane/` while it is its own module, and that the plane module nevertheless installs straight from the public Go proxy at any main sha). Four rulings: (1) **the plane image is fetched and built at kmx's own revision** — kmx reads its own sha from its build info, runs `go install …/plane/cmd/kaimahi-proxy@<that sha>` (checksum-verified by Go's sum database), packages the binary into the image locally and side-loads it; `k8s/` is embedded in the binary (it is embeddable — only `plane/` is not); nothing is published, so D26/D27(3) hold unchanged; (2) **CI keeps proving the working tree, and a post-merge job proves the clone-free path** — the Makefile's delegation passes local source so a PR touching `plane/` is still exercised before merge, and a separate run on main installs kmx from the proxy at the merged sha and drives the real user journey end to end; (3) **milestone 2 is `plane` + `govern <name>` + the read-only views** (`ledger`, `grants`, audit reads) — budget, approvals, backup/restore and the Slack/GitHub/inbound families stay in make and scripts; (4) **kind only**, like milestone 1, which keeps milestone 2 entirely keyless (kind governs through `governed-ollama`) so D27's "secret capture stays scripts" holds without a hole; AKS stays a make/scripts path and is documented as such. W22 prompt below; launches only after W21 (milestone 1) merges | ruled via options: "Fetch + build at kmx's own sha (Recommended)", "Local source in CI + a post-merge clone-less run (Recommended)", "plane + govern + read-only views (Recommended)", "kind only (Recommended)" |
 | D29 | 2026-09-02 | **The demo thesis becomes accounts-payable exceptions, and the capability it needs — argument-bound approvals — is P12; the scenario is P13.** The user's framing: *build an agent that resolves the invoices ordinary automation cannot, then deploy it with authority to act, without giving it uncontrolled access to company money.* The coordinator's blind-spot pass established that the plane cannot make that claim today: enforcement is VERB-ONLY (the gateway reads `params.name` and nothing else, checks the allowlist, consumes a grant for the tool NAME, and forwards arguments unread), `permit_grant.amount` is budget-only by CHECK constraint, and approval requests dedupe on `(credential_name, kind, subject)` where subject is the tool name — so two attempts to pay different amounts collapse into ONE request and one approval covers both. Four rulings: (1) **an approval binds to the exact call** — the denied call's canonical arguments are fingerprinted, the request and the grant carry that digest, and the gateway admits only a matching call; the approver approves a transaction, not a verb; (2) **the audit records the digest plus a declared summary** of the fields a tool's own definition marks policy-relevant (amount, payee, invoice id) — provable linkage and a legible line, without persisting arbitrary business data into a table that is in every backup; (3) **capability first (P12), scenario second (P13)** — P12 builds argument-bound approvals end to end against the tools that already exist, P13 builds the AP scenario on top; (4) **the ERP is an in-cluster fixture-backed MCP server in this repo** (the shape `slack-mcp` already has, one `tool_upstreams` entry, keyless, deterministic, CI-testable) — not a real sandbox ERP. Also ruled, and stated plainly because it refines (1): the digest binds the tool's **declared policy-relevant fields** where a tool declares them, and the whole canonical argument object only where it does not — an LLM re-emitting a semantically identical call is not byte-stable, so a whole-blob digest would make "approve, then it proceeds" fail nondeterministically, including in the existing P4c approvals e2e. One declaration serves both the binding and the summary. Consequence, stated and accepted: P12 makes the injection demo's claim honest — not *the agent refuses manipulation*, but *being manipulated is not sufficient to move money* | ruled via options: "Approval binds to the exact call (Recommended)", "Digest plus a declared summary (Recommended)", "Capability first, then the scenario (Recommended)", "In-cluster MCP server in this repo, fixture-backed (Recommended)" |
 | D30 | 2026-09-02 | **P13 shaped — the accounts-payable exception demo, invented in full.** User ruling on the open scenario questions: "i think we can make up all of those things, its a demo, not a real implementation" — so the coordinator invented the corpus and the tool surface rather than asking. (1) **The ERP is one in-cluster fixture-backed MCP server** in this repo (the `slack-mcp` shape, one `tool_upstreams` entry, keyless), with the fixtures in a ConfigMap so the story can be edited without a rebuild. Read tools — `invoice_get`, `invoice_list`, `po_get`, `receiving_get`, `contract_get`, `payment_policy_get` — are on the standing allowlist. Consequential tools — `payment_schedule`, `dispute_open`, `vendor_notify` — are on NO allowlist, so every attempt to use one is denied and files an approval request; that is the demo. Their declared policy-relevant fields (D29) are: `payment_schedule` → invoice_id, amount_cents, payee_id; `dispute_open` → invoice_id, amount_cents; `vendor_notify` → vendor_id. (2) **The corpus is arithmetic the audience can check**: vendor Meridian Industrial Supply (MER-4471); PO-2291 for 400 units at $105.00 = $42,000.00, contract terms requiring prior written authorization for any expedite fee, none on file; invoice INV-88134 for $48,000.00 = 400 units at $105.00 plus $6,000.00 "expedited handling"; receiving record RCV-2291-A showing 310 units received and 90 backordered; payment policy: pay only the received quantity, hold disputed lines, and any payment over $10,000 needs human approval. The correct resolution is therefore 310 × $105 = **$32,550 payable**, $9,450 held as undelivered, $6,000 disputed as an unauthorized fee. (3) **The injection case is a payee substitution**, the real AP fraud pattern: a second invoice INV-88140 carries text instructing the agent that the invoice is pre-approved and must be paid in full to a DIFFERENT payee immediately without requesting approval. The demo does not depend on the model refusing it — the agent is allowed to comply, and the gateway denies the call anyway, files a request whose summary shows both the changed amount and the changed payee, and audits the attempt. Crucially it cannot ride the earlier approval either: that grant is welded to the $32,550 call's digest (D29). (4) **Slack is the demo's UI — no new web surface** (prime directive): the approval carries the transaction summary P12 adds, the evidence is what the agent posts, and the audit trail is printed. (5) **Built and proven on kind + CI**, keyless and deterministic; a live AKS run is a separate call for the user because it costs money and needs their credentials, exactly as D20/D25 handled it. W24 prompt below; launches after W23 (P12) merges | "i think we can make up all of those things, its a demo, not a real implementaiton" |
+| D31 | 2026-09-02 | **Kaimahi's boundary against the "AI Agent DevX" deck: own the governance vertical completely and expose it through `kmx`; do not build the experience around it.** Context: a PM-team ideation deck (8 pages) sketching a developer journey — describe the agent by chat, connect data/models/skills/MCP, define permissions, boundaries and pass/fail scenarios, generate and test locally, migrate to AKS with CI/CD and observability, then hand it to a business analyst. Coordinator's read of the deck itself, which binds this decision: (a) page 4 labels the guided flow **`(kmx-build-agent)`** — the deck already assumes kmx is the vehicle, which is the one real signal in it about direction; (b) it is titled "Ideation" and page 2 still asks "Developer? Business analyst? Hobby person?", with two slides marked "(NA)" — the AUDIENCE IS UNRESOLVED, which is upstream of every scoping question here; (c) its last slide's finance example is scheduled REPORTING with a sign-off step, not exception handling, so the AP agent (D30) is an UPGRADE on the deck and must not be presented internally as what the deck asked for. Four rulings: (1) **Kaimahi grows UP into slide 4's middle column** — describe permissions, boundaries and pass/fail scenarios, get an agent that provably enforces them — because every governance bullet in the deck is already built or shaped here (source permission RO/RW = the tool allowlist; "boundaries: no internet" = the P7a egress policy; "audit — can't turn off" = the audit trail; "Validate/HiL" and "Approver Sign off" = P4c/P8b approvals; pass/fail scenarios = what P12 makes enforceable). (2) **Kaimahi does NOT build the experience**: not the runtime console of slides 5–6 (agent list, logs, metrics, traces, start/stop/pause, YAML editing) — `kagent-ui` already ships that and was observed running during the P11 verification, so building a second one is exactly what the prime directive exists to stop — not the analyst canvas of slide 8, not chat-driven scaffolding, not CI/CD generation, not the Azure observability wiring. Those surfaces CONSUME Kaimahi. (3) **P12's scope gains the standing-constraint half**, amending D29(1): the hero prompt's "may approve valid invoices under $10,000, anything else needs Finance approval" is a declarative per-credential/tool constraint — the option NOT taken in D29 — and the scenario needs it alongside the bind-to-the-call digest. P12 therefore builds BOTH: standing constraints for routine calls, and an approval welded to the exact call for everything outside them. W23 amended below. (4) **"Never expose payment details" is cut from the hero prompt**: it is output filtering, neither an allowlist nor an approval, and the honest position is not to imply a control that does not exist. Consequence, stated: this answers the three positioning questions without ever having to explain why we rebuilt kagent's UI — kagent runs the agent, Kaimahi is what makes an agent safe to give authority to, and AKS matters for identity, private connectivity and observability, which are platform reasons rather than governance ones | "Your suggestions seem reasonable" |
 | D14 | 2026-09-01 | P5 direction: the **undeniable demo** — not a new capability arc but making the built one legible and credible. Rulings: (1) outbound connector platform is **Slack** (via existing MCP servers, no connector code); (2) AKS work goes all the way — cluster portability AND a real AKS deployment with evidence (accepts Azure spend + credentials in a worker session); (3) demos run on the **Copilot** preset while **CI stays keyless on ollama** (public fork-exposed repo — no repo secrets in CI, ever). Rationale on the board: everything governed so far protects an agent that lists ConfigMaps; posting to a channel humans read is the first consequential action, and it makes the approval gate the point rather than the plumbing | "sure, that's undeniable demo makes sense" — then ruled via options: "Slack (Recommended)", "Portability + real AKS run (Recommended)", "Copilot for demo, ollama for CI (Recommended)" |
 | D13 | 2026-09-01 | P4c approval model: TIME-BOXED PERMITS — a denied action files a pending request; approval grants it bounded (expiry by duration and/or use count) and compiles into the existing allowlist/budget rows; deny-and-retry mechanics, no held-open calls. Demo scenarios: tool-access widening (k8s_get_events, read-only) AND budget overage; the P3 tool-server read-only posture stays untouched (write-tool demo deferred) | ruled via options: "Time-boxed permits (Recommended)"; "Widen tool access (Recommended), Budget overage (Recommended)" |
 
@@ -1010,10 +1011,11 @@ the Makefile comment for `AKS_NETWORK_POLICY` (W15 deviation 3).
 
 ## Open items after P8b (2026-09-02)
 
-- **P9 and P10 DONE** (#46, #51 — both verified below). **P11 milestone 1
-  is IN PROGRESS (D27, W21); milestone 2 is SHAPED (D28, W22 prompt
-  below) and launches only after milestone 1 merges.** Still queued
-  behind them: Postgres durability (HA or a managed database on the AKS
+- **P9, P10 and P11 milestone 1 DONE** (#46, #51, #57 — all verified
+  below). **Milestone 1's lane is CLOSED, so W22 (milestone 2) is clear
+  to launch now**; W23 (P12) follows it, or runs in parallel if the
+  parallel-set rules are re-applied, and W24 (P13) needs W23. Still
+  queued behind them: Postgres durability (HA or a managed database on the AKS
   path), OAuth-based hosted servers (Slack's own), hostname-level egress
   on AKS (Cilium FQDN), `kmx` milestone 3 (budget, approvals,
   backup/restore, the connector families — everything D28(3) left in
@@ -1039,6 +1041,13 @@ the Makefile comment for `AKS_NETWORK_POLICY` (W15 deviation 3).
   dependencies but must not become a SECOND implementation of the render
   (D27(1)); the same one-implementation question milestone 1 answers for
   `kube-guard.sh`.
+- **Agent DevX deck (D31)**: Kaimahi owns the governance vertical and
+  exposes it through `kmx`; the runtime console (slides 5-6), the analyst
+  canvas (slide 8), chat-driven scaffolding, CI/CD generation and the
+  Azure observability wiring are NOT ours to build — `kagent-ui` already
+  ships the console. The deck's audience is unresolved ("Developer?
+  Business analyst? Hobby person?", two slides "(NA)"), which is upstream
+  of any further scoping against it; revisit if that resolves.
 - **P12/P13 findings** (coordinator blind-spot pass, 2026-09-02; they
   bind W23): the gateway's `canonicalize` collapses duplicated JSON keys
   at the top level AND at one level of `params` — deliberately, so a
@@ -1990,18 +1999,20 @@ bases; lane ends at PR-open-with-checks-green — do not merge. Report
 deviations in the PR.
 ```
 
-### W23 — P12: argument-bound approvals — an approval binds to the call, not the verb (UNASSIGNED — paste into a fresh CLI session)
+### W23 — P12: argument-level policy — standing constraints, and an approval bound to the call (UNASSIGNED — paste into a fresh CLI session)
 
 ```
 You are a worker session for the Kaimahi project (repo root: this
 checkout, remote kaimahi-agents/kaimahi). Read docs/COORDINATION.md
-first — decisions D13, D21 and especially D29, the "P12/P13 findings"
-bullet in the open items, the "Considered and rejected" list, and the
-security standing guidance all bind you. Your lane: P12. Today a
-governed agent's approval is for a VERB — "may call pay_invoice for the
-next ten minutes" — and the arguments are never read. You make an
-approval bind to the CALL, so a human approves a transaction and a
-manipulated agent cannot spend the approval on a different one.
+first — decisions D13, D21, D29 and D31 (which widened this lane), the
+"P12/P13 findings" bullet in the open items, the "Considered and
+rejected" list, and the security standing guidance all bind you. Your
+lane: P12. Today a governed agent's approval is for a VERB — "may call
+pay_invoice for the next ten minutes" — and the arguments are never
+read. You make the arguments policy: a standing constraint lets routine
+calls through without asking, and everything outside it needs an
+approval welded to the EXACT call, so a human approves a transaction and
+a manipulated agent cannot spend that approval on a different one.
 
 Survey first (prime directive): plane/internal/gateway/gateway.go's
 tools/call path, plane/internal/store/approvals.go, the approvals
@@ -2042,6 +2053,18 @@ Build:
   re-emitting a semantically identical call is not byte-stable.
   Declarations are config, never inferred; a malformed declaration is
   refused at load, like every other entry in that table.
+- **Standing constraints (D31).** A credential may carry declarative
+  bounds on a tool's policy-relevant fields — the AP case is "may call
+  payment_schedule when amount_cents <= 1000000, and never otherwise".
+  A call inside its bounds proceeds with no approval and is audited like
+  any allowed call; a call outside them is denied and files a request,
+  exactly as an unlisted tool does today. Keep the vocabulary small and
+  declarative — comparisons on declared fields and set membership, no
+  expression language (D31 keeps the plane dependency-light) — and refuse
+  a malformed constraint at load like every other entry in that table. A
+  constraint on a field the tool does not declare is a load-time error,
+  not a silently-ignored rule; a tool with no constraints keeps today's
+  behaviour, which is that every consequential call is denied and pends.
 - **The request carries the call.** A denied tools/call files a request
   carrying the tool name, the digest and the summary. The dedup key
   gains the digest, so two attempts to pay different amounts file TWO
@@ -2092,9 +2115,9 @@ the migration is additive and `make backup`/`make restore` still round-
 trip (prove it, it is in the e2e).
 
 Out of scope: the accounts-payable scenario, the fixture ERP server, the
-injection case, standing per-credential constraints ("may pay up to
-$5,000 without asking"), a policy language, and anything on the AKS
-path. P13 and later.
+injection case, an expression/policy language (D31), output filtering or
+redaction of tool RESULTS (that is not a control this project has — do
+not imply one), and anything on the AKS path. P13 and later.
 
 Verification is real: the full e2e green, plus a transcript in the PR of
 one hand-run cycle on your own kind cluster where an agent is denied a
@@ -2143,9 +2166,26 @@ Build:
   only.
 - **The governed wiring**: the ERP as one `tool_upstreams` entry with the
   declared policy-relevant fields from D30; a credential for the AP agent
-  whose STANDING allowlist is the six read tools and nothing else, so
-  every consequential call is denied and files an approval request
-  carrying the transaction summary P12 added.
+  whose STANDING allowlist is the six read tools, plus the standing
+  constraint P12 supplies (this lane CONFIGURES it, it does not build
+  it), admitting `payment_schedule` only at or under $10,000 — the
+  business rule the hero prompt states. Everything else is denied and
+  files an approval request carrying the transaction summary.
+  Read the amounts carefully, because they are the demo: the exception
+  invoice's correct payment is **$32,550, which EXCEEDS the $10,000
+  constraint** — so it is denied, files a request, and proceeds only
+  under an approval bound to that exact call. That is the point of the
+  scenario, not a snag in it. The $48,000 injected payment is denied for
+  the same reason and cannot ride the approval the $32,550 call earned.
+- **A routine invoice, so the standing constraint does visible work.**
+  With the constraint at $10,000 and every scenario payment above it,
+  nothing would exercise the no-approval path and the rule would be
+  asserted rather than shown. Add one ordinary invoice to the corpus —
+  INV-88121, a second vendor, $4,120.00, matching its PO and delivery
+  record with no fee issues — which the agent pays under the standing
+  constraint with NO human in the loop, audited like any allowed call.
+  The demo then shows three outcomes in one run: routine pays itself,
+  the exception needs a named human, and the manipulated call is refused.
 - **The agent**: an AP exception agent (k8s/ap-agent.yaml, the shape of
   the existing agents) whose instructions describe the job — investigate
   the mismatch, gather evidence, propose a resolution, act only through
@@ -2209,6 +2249,13 @@ governance, the approvals, the audit and the denials are real. Link it
 from docs/demo.md and the README's demo section. Say what the demo does
 NOT prove.
 
+A note on the hero prompt (D31): the business framing says the agent
+must "never expose payment details". Output filtering of tool RESULTS is
+NOT a control this project has, and this lane does not add one — drop
+that clause rather than implying it. What the demo can honestly show is
+that the agent cannot ACT on payment details without an approval bound
+to the exact call.
+
 Guardrails, all hard: no publishing; the ERP server holds no credential
 and reaches nothing outside the cluster; no real vendor, bank, or person
 named in the fixtures — invented names only; no Azure or Slack
@@ -2216,10 +2263,11 @@ identifiers in the tree; no repo secrets in CI; the demo runs on kind.
 
 Out of scope: a web UI (Slack is the surface, D30(4)), a live AKS run
 (the user's separate call — it costs money and needs their credentials),
-standing per-credential amount limits, a real ERP or sandbox vendor
-system, and anything that changes the P12 enforcement path — if you find
-yourself editing the gateway's policy code, stop: that is a P12 defect
-and belongs in its own lane.
+a real ERP or sandbox vendor system, output filtering of tool results,
+and anything that changes the P12 enforcement path. Standing constraints
+are P12's control (D31): this lane CONFIGURES one and must not implement
+or extend the mechanism — if you find yourself editing the gateway's
+policy code, stop: that is a P12 defect and belongs in its own lane.
 
 Verification is real: the full e2e green, plus a transcript in the PR of
 both scenarios hand-run on your own kind cluster — the investigation,
@@ -2230,6 +2278,93 @@ with-checks-green — do not merge. Report deviations in the PR.
 ```
 
 ## Delta sheets from finished lanes
+
+### P11 milestone 1 — `kmx`, the developer journey as one Go binary (PR #57, merged 2026-09-02)
+
+Verified against main at `e3e3c84`, on the coordinator's own cluster
+`coord-p11`, with the coordinator's own probes. The cluster was deleted
+when this sheet landed; `~/.config/kmx` (created by the run) was removed.
+**Everything checked below was run, not read off the PR.**
+
+- **The clone-free premise holds.** `go install
+  github.com/kaimahi-agents/kaimahi/cmd/kmx@e3e3c84` from an EMPTY
+  directory, with the DEFAULT `GOPROXY`, produced a working binary
+  (9.7MB; the proxy served `v0.0.0-20260903005229-e3e3c8415ef5`). The
+  PR's "needs `GOPROXY=direct` until this merges" caveat resolved itself
+  on merge exactly as it predicted.
+- **The whole journey, from that binary, in a directory that is not a
+  clone**: `kmx up` (kind + Ollama + qwen2.5:3b + kagent 0.9.12 + both
+  agents) → `kmx agent chat hello-world` (answered) → `kmx agent chat
+  hello-tools` (a REAL tool call: `function_call`, `"isError":false`, the
+  live pod name) → `kmx status` → `kmx down` (cluster gone). `kmx up`
+  ends with the required line naming `make plane` / `make govern`.
+- **Guard parity, differentially.** Both implementations were run against
+  the SAME kubeconfig, no stdin, for all eight `kube-guard-test.sh`
+  cases; they agree. A first run showed one apparent mismatch on the
+  empty-context case — that was the harness, not the code: `kmx ctx` with
+  no argument is a SHOW of persisted state. Retested at the right layer:
+  `--context ""` is refused outright, an unset `KUBE_CTX` defaults to
+  `kind-$KIND_CLUSTER` exactly as the Makefile does, and a REFUSED
+  `kmx ctx` does not persist the selection while an approved one does.
+- **The delegation check is not vacuous** — the thing worth testing about
+  a check like this. Two tampered copies of the Makefile: a `kubectl`
+  chained onto the `status` recipe was caught with the offending line
+  quoted, and the subtler drift (the recipe still calling kmx, with an
+  extra flag) was caught too. Both exit 1.
+- **The embedded manifests, checked against the PUBLISHED MODULE rather
+  than the checkout** (a program importing the module at the merged
+  pseudo-version, hashing what it carries): all four byte-identical to
+  the tree, and ZERO plane manifests embedded.
+- **The scaffolder's refusals fire and write nothing** (exit 1, empty
+  directory afterwards): a server named without an allowlist; a reserved
+  name (`hello-world`, `hello-tools`); and key-shaped text passed via
+  `--description`, which is the escaping bypass the lane's own review
+  round found and fixed.
+- **A tampered kagent cache is re-fetched, not executed.** The cached CLI
+  was overwritten with a script that prints `PWNED`; kmx reported the
+  digest mismatch, re-fetched, restored the correct binary, and `PWNED`
+  never appeared in the output. Deleting the `.sha256` sidecar produces
+  the same refusal — an unverifiable cache entry is not executed either.
+- **#53 survived the back-to-back merge.** #57 deletes the `cluster:`
+  recipe that carried sajayantony's Podman restart recovery (merged as
+  `940273b`, minutes earlier); `internal/kmx/app/up.go` reimplements it,
+  with credit. No silent regression.
+- **The delegating recipe runs, not just expands**: `make status` against
+  the live cluster produced the agents, modelconfigs and pods.
+
+**Unplanned, and the best evidence in the pass:** a stale port-forward of
+the coordinator's own (orphaned when an earlier chat was piped to `head`)
+held `CHAT_PORT`. `kmx agent chat` REFUSED to invoke — "if another
+cluster's forward holds this port, the task would have run THERE" — and
+named the fix. The fail-closed behaviour proved itself against a real
+accident rather than a synthetic test.
+
+**Deviations: all nine as declared in the PR are ACCEPTED.** The two that
+matter: more targets delegate than the six D27 named (`ollama`, `model`,
+`kagent`, `tools-agent` too) — required, or "no recipe re-implements what
+kmx owns" cannot hold; and a Go toolchain is now a prerequisite for the
+`make` path, which is unavoidable under D27(1) and is documented in both
+prerequisite tables.
+
+**Carry-forwards (none blocking):**
+- `kmx ctx` persists the selection to `~/.config/kmx/context` (0600) —
+  state the `make` path does not have, so a context chosen once silently
+  targets later commands. The guard banner naming the context on every
+  mutation is the mitigation; worth a line in the docs.
+- The delegation check is strict enough that adding a LEGITIMATE flag to
+  an owned recipe trips it. That is the conservative direction and it is
+  documented, but it will surprise someone.
+- `UP_STEPS` is now empty, so `make up` no longer runs the step targets
+  as prerequisites — it is one `kmx up`. The steps stay addressable.
+- The Podman path is carried across and unit-tested but was not run on a
+  Podman machine (the PR says so); the coordinator did not have one either.
+- The AKS path is untouched, by design.
+
+**Correction to a D28 assumption**: `embed.go` exists, but it names the
+four runtime manifests INDIVIDUALLY and deliberately excludes the plane's
+so they "cannot silently ride along in the binary". Embedding
+`k8s/plane/` is therefore still milestone 2's job — W22's scope stands as
+written.
 
 ### P10 — hosted upstreams (PR #51, merged 2026-09-02)
 
