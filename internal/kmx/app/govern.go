@@ -20,6 +20,10 @@ type GovernOptions struct {
 	Secret string
 	// SecretNamespace is where that Secret lives.
 	SecretNamespace string
+	// Command names the command an operator would re-run with a different
+	// --secret, so the refusal below names `kmx govern` or
+	// `kmx tools govern` — whichever they actually typed.
+	Command string
 }
 
 // Govern issues the governed credential, applies the governed presets, and
@@ -172,11 +176,19 @@ func (a *App) boundCredential(opt GovernOptions) (string, error) {
 	return strings.TrimSpace(bound), nil
 }
 
+// command is the invocation the refusals point back at.
+func command(opt GovernOptions, credential string) string {
+	if opt.Command != "" {
+		return opt.Command
+	}
+	return "kmx govern " + credential
+}
+
 func (a *App) wrongCredentialError(bound, credential string, opt GovernOptions) error {
 	return fmt.Errorf("Secret %s holds the token for credential %q, not %q — refusing.\n"+
 		"  That token is the only copy; overwriting it would leave %q live in the plane and unusable.\n"+
-		"  Name a different Secret: kmx govern %s --secret <name>",
-		opt.Secret, bound, credential, bound, credential)
+		"  Name a different Secret: %s --secret <name>",
+		opt.Secret, bound, credential, bound, command(opt, credential))
 }
 
 // reconcileExistingCredential decides what an HTTP 409 means, given what the

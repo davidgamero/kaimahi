@@ -27,7 +27,11 @@ const (
 	// DefaultAdminPort is the local side of the plane's admin port-forward —
 	// scripts/plane-admin.sh's ADMIN_PORT, so a stale forward left by either
 	// implementation is noticed by the other rather than talked through.
-	DefaultAdminPort   = "19091"
+	DefaultAdminPort = "19091"
+	// DefaultOpsPort is the local side of the metrics forward —
+	// scripts/plane-metrics.sh's OPS_PORT, for the same reason ADMIN_PORT
+	// is shared: a stale forward from either implementation is noticed.
+	DefaultOpsPort     = "19092"
 	DefaultAgent       = "hello-world"
 	DefaultTask        = "Hello! Who are you and where are you running?"
 	DefaultNamespace   = "kagent"
@@ -35,6 +39,17 @@ const (
 	// DefaultCredential is the Makefile's CRED: the credential `govern`
 	// issues and the ledger is read for by default.
 	DefaultCredential = "hello-world"
+	// DefaultToolsCredential is the Makefile's CRED_TOOLS: the credential
+	// the MCP gateway admits the tools agent by.
+	DefaultToolsCredential = "hello-tools"
+	// DefaultTools is the Makefile's TOOLS — the gateway allowlist
+	// `kmx tools govern` sets, and the agent's tool selection.
+	DefaultTools = "k8s_get_resources"
+	// DefaultToolsAgent is the agent `kmx tools govern` puts behind the
+	// gateway, and DefaultToolsSecret the agent-side Secret its kmh_ token
+	// is stored in (the Makefile's GOVERNED_SECRET for that target).
+	DefaultToolsAgent  = "hello-tools"
+	DefaultToolsSecret = "kaimahi-tools-token"
 	// GovernedSecret is the agent-side Secret the issued token is stored in
 	// (the Makefile's GOVERNED_SECRET default), in the kagent namespace.
 	GovernedSecret         = "kaimahi-governed-token"
@@ -52,7 +67,10 @@ type Config struct {
 	Model           string
 	ChatPort        string
 	AdminPort       string
+	OpsPort         string
 	Credential      string
+	// ToolsCredential is the Makefile's CRED_TOOLS.
+	ToolsCredential string
 	Confirm         string
 	// KagentBin, when set, is an existing kagent binary to use instead of
 	// the cached download. The Makefile points it at bin/kagent so a
@@ -89,7 +107,9 @@ func Load(contextFlag string) (*Config, error) {
 		Model:           env("MODEL", DefaultModel),
 		ChatPort:        env("CHAT_PORT", DefaultChatPort),
 		AdminPort:       env("ADMIN_PORT", DefaultAdminPort),
+		OpsPort:         env("OPS_PORT", DefaultOpsPort),
 		Credential:      env("CRED", DefaultCredential),
+		ToolsCredential: env("CRED_TOOLS", DefaultToolsCredential),
 		Confirm:         os.Getenv("KAIMAHI_CONFIRM"),
 		KagentBin:       strings.TrimSpace(os.Getenv("KAGENT")),
 	}

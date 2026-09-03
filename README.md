@@ -140,7 +140,7 @@ port-forwards the controller, and invokes the agent.
 | 9 | Run it for real: two stateless replicas, exact budgets, metrics | **runs** — two replicas behind every seam, every budget and grant decision serialized per credential in Postgres (N concurrent calls against a cap with room for one admit exactly one, asserted across both replicas in CI), a replica killed mid-cycle and Postgres restarted without a proxy restart, migrations under a lock, Prometheus on its own port, `make backup` / `make restore` ([docs/operations.md](docs/operations.md)) |
 | 10 | Hosted tool upstreams — the gateway reaches GitHub's MCP server on the internet through one hardened dialer | **runs** — `make github-secret` → `make govern-github`; the dialer's refusals, a synthetic public upstream, the opt-in allowance and the fail-closed negative asserted keyless in CI; GitHub itself verified once on kind ([docs/hosted-upstreams.md](docs/hosted-upstreams.md)) |
 | 12 | Argument-level policy — an approval binds the CALL, and standing constraints let routine calls through | **runs** — a tool declares which argument fields are policy-relevant; a credential may carry declarative bounds on them (a call inside proceeds with no human, one outside is denied and files a request); the request, the grant and the audit carry the call's digest and a readable summary, so an approval for one transaction cannot be spent on another. Asserted keyless in CI ([docs/approvals.md](docs/approvals.md#the-approval-binds-the-call)) |
-| 11 | `kmx` — the developer journey as one command | **runs** — `go install …/cmd/kmx@main`, then `kmx up`, `kmx agent create`, `kmx agent chat`, `kmx plane`, `kmx govern`, `kmx ledger`, `kmx status`, `kmx down`; the Makefile's kind path delegates to it, so CI proves it on every PR, and a post-merge job drives the whole journey from an installed binary with no checkout ([docs/kmx.md](docs/kmx.md)). Milestone 2: the runtime **and** the plane, on kind |
+| 11 | `kmx` — the developer journey as one command | **runs** — `go install …/cmd/kmx@main`, then `kmx up`, `kmx agent create`, `kmx agent chat`, `kmx plane`, `kmx govern`, `kmx ledger`, `kmx status`, `kmx down`; the Makefile's kind path delegates to it, so CI proves it on every PR, and a post-merge job drives the whole journey from an installed binary with no checkout ([docs/kmx.md](docs/kmx.md)). Milestone 3: the runtime, the plane, **and** the operator verbs — `use`, `budget`, `approvals`/`approve`/`deny`/`request`, `tools`, `backup`/`restore`, `metrics` — on kind |
 
 **Limitations, stated plainly.** The plane does not stop an agent being
 manipulated; it stops a manipulated agent acting outside the call a human
@@ -318,6 +318,10 @@ kmx agent create fleet-reporter --tools kagent-tool-server:k8s_get_resources
 kmx agent chat fleet-reporter "What is running in the ollama namespace?"
 kmx down
 ```
+
+Once the plane is up it is also the operator's command — the budget an agent
+spends under, the approvals waiting for a human (each showing the *call* it
+is about), the tool allowlist, the database backup, one replica's metrics.
 
 It duplicates nothing kagent's own CLI ships: `kmx agent chat` is a
 passthrough to `kagent invoke`, there is no `kmx install`, and reading,

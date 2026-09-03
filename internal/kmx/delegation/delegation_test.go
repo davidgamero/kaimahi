@@ -33,30 +33,68 @@ func dryRun(t *testing.T, args ...string) string {
 func TestMakeTargetsDelegateToKmx(t *testing.T) {
 	for _, tc := range []struct {
 		target string
-		want   string
+		// vars are make variables the recipe expands — set where the
+		// delegation only becomes meaningful with an operator's argument
+		// in it (a preset, a request id, a file). An `$(if ...)` that
+		// collapses the wrong way produces a flag with no value, and that
+		// failure has to land here rather than on an operator.
+		vars []string
+		want string
 	}{
-		{"up", "bin/kmx up"},
-		{"cluster", "bin/kmx up --step cluster"},
-		{"ollama", "bin/kmx up --step ollama"},
-		{"model", "bin/kmx up --step model"},
-		{"kagent", "bin/kmx up --step kagent"},
-		{"agent", "bin/kmx up --step agent"},
-		{"tools-agent", "bin/kmx up --step tools-agent"},
-		{"status", "bin/kmx status"},
-		{"down", "bin/kmx down"},
-		{"chat", `bin/kmx agent chat hello-world "Hello! Who are you and where are you running?"`},
+		{target: "up", want: "bin/kmx up"},
+		{target: "cluster", want: "bin/kmx up --step cluster"},
+		{target: "ollama", want: "bin/kmx up --step ollama"},
+		{target: "model", want: "bin/kmx up --step model"},
+		{target: "kagent", want: "bin/kmx up --step kagent"},
+		{target: "agent", want: "bin/kmx up --step agent"},
+		{target: "tools-agent", want: "bin/kmx up --step tools-agent"},
+		{target: "status", want: "bin/kmx status"},
+		{target: "down", want: "bin/kmx down"},
+		{target: "chat", want: `bin/kmx agent chat hello-world "Hello! Who are you and where are you running?"`},
 		// Milestone 2 (D28): the governance half.
-		{"plane", "bin/kmx plane --source ."},
-		{"plane-image", "bin/kmx plane --step image --source ."},
-		{"plane-secrets", "bin/kmx plane --step secrets"},
-		{"govern", "bin/kmx govern hello-world --agent hello-world --preset governed-ollama"},
-		{"ledger", "bin/kmx ledger hello-world"},
-		{"grants", "bin/kmx grants"},
-		{"tool-audit", "bin/kmx audit tool hello-tools"},
-		{"approval-audit", "bin/kmx audit approval"},
+		{target: "plane", want: "bin/kmx plane --source ."},
+		{target: "plane-image", want: "bin/kmx plane --step image --source ."},
+		{target: "plane-secrets", want: "bin/kmx plane --step secrets"},
+		{target: "govern", want: "bin/kmx govern hello-world --agent hello-world --preset governed-ollama"},
+		{target: "ledger", want: "bin/kmx ledger hello-world"},
+		{target: "grants", want: "bin/kmx grants"},
+		{target: "tool-audit", want: "bin/kmx audit tool hello-tools"},
+		{target: "approval-audit", want: "bin/kmx audit approval"},
+		// Milestone 3 (D33(5)): the operator verbs. The exact argument
+		// STRING is the contract, because these are what the delegating
+		// recipe hands kmx after make's own expansion — an `$(if ...)`
+		// that collapses the wrong way is a flag with no value, and the
+		// failure lands on an operator, not here.
+		{target: "use", want: "bin/kmx use"},
+		{target: "use", vars: []string{"PRESET=anthropic"}, want: "bin/kmx use anthropic"},
+		{target: "use-ollama", want: "bin/kmx use ollama"},
+		{target: "budget", want: `bin/kmx budget hello-world --cents "-" --tokens "-"`},
+		{target: "budget", vars: []string{"CAP_TOKENS=1"},
+			want: `bin/kmx budget hello-world --cents "-" --tokens "1"`},
+		{target: "approvals", want: "bin/kmx approvals"},
+		{target: "approve", vars: []string{"ID=abc", "TTL=10m", "USES=1"},
+			want: `bin/kmx approve "abc" --ttl "10m" --uses "1" --amount "-"`},
+		{target: "deny", vars: []string{"ID=abc"}, want: `bin/kmx deny "abc"`},
+		{target: "request", vars: []string{"KIND=tool", "SUBJECT=k8s_get_events"},
+			want: `bin/kmx request tool k8s_get_events --credential "hello-tools"`},
+		// A tool request names the CALL it is about (P12), and the quoting
+		// has to survive make, the shell and kmx's flag parsing intact.
+		{target: "request", vars: []string{"KIND=tool", "SUBJECT=k8s_get_events", `ARGS={"namespace": "default"}`},
+			want: `--args '{"namespace": "default"}'`},
+		{target: "request", vars: []string{"KIND=budget", "SUBJECT=tokens"},
+			want: `bin/kmx request budget tokens --credential "hello-world"`},
+		{target: "govern-tools", want: `bin/kmx tools govern --credential hello-tools --tools "k8s_get_resources"`},
+		{target: "ungovern-tools", want: "bin/kmx tools ungovern"},
+		{target: "tool-allow", want: `bin/kmx tools allow "k8s_get_resources" --credential hello-tools`},
+		{target: "tool-allowlist", want: "bin/kmx tools allowlist hello-tools"},
+		{target: "backup", want: "bin/kmx backup"},
+		{target: "backup", vars: []string{"FILE=ci-backup.sql"}, want: "bin/kmx backup ci-backup.sql"},
+		{target: "restore", vars: []string{"FILE=ci-backup.sql"}, want: "bin/kmx restore ci-backup.sql"},
+		{target: "plane-metrics", want: "bin/kmx metrics"},
+		{target: "plane-metrics", vars: []string{"POD=kaimahi-proxy-1"}, want: "bin/kmx metrics --pod kaimahi-proxy-1"},
 	} {
 		t.Run(tc.target, func(t *testing.T) {
-			out := dryRun(t, tc.target)
+			out := dryRun(t, append([]string{tc.target}, tc.vars...)...)
 			if !strings.Contains(out, tc.want) {
 				t.Errorf("`make %s` does not invoke `%s`:\n%s", tc.target, tc.want, out)
 			}

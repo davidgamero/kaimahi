@@ -13,14 +13,23 @@ import "embed"
 
 // Manifests holds the manifests kmx applies: the runtime (the Ollama model
 // server, kagent's helm values, the two agents), the governance plane
-// (milestone 2) and the two governed model presets `kmx govern` applies.
+// (milestone 2), the model presets `kmx govern` and `kmx use` apply, and the
+// governed RemoteMCPServer `kmx tools govern` puts the tools agent behind.
 //
 // The files are named individually rather than embedding `k8s` wholesale, so
 // that what kmx carries is a decision rather than a side effect of a
-// directory listing: the Slack, GitHub, inbound and egress manifests are
-// milestone 3's (D28(3)) and must not ride along, and neither must the
-// hosted-model presets, which need a captured key that kmx accepts in no
-// form at all (D27).
+// directory listing: the Slack, GitHub, inbound and egress manifests belong
+// to families kmx does not own (they are entangled with secret capture,
+// which D27 keeps in scripts) and must not ride along.
+//
+// `k8s/models/` IS embedded whole as of milestone 3, because `kmx use` is
+// `make use` and `make use PRESET=anthropic` has always been a documented
+// flow — a `kmx use` that handled only the keyless presets would be a
+// regression the delegating recipe would inherit. This does not put a
+// credential anywhere near kmx: a preset is a ModelConfig that NAMES a
+// Secret (`apiKeySecret`), it never carries a key, and minting that Secret
+// stays where D27 put it — `make model-secret`, `make copilot-secret`, the
+// scripts. kmx still accepts a credential in no form at all.
 //
 // `plane/` itself is NOT here and cannot be: it carries its own go.mod, and
 // go:embed refuses to cross a module boundary ("cannot embed directory: in
@@ -29,7 +38,8 @@ import "embed"
 // why the manifest that deploys it can nevertheless travel in the binary.
 //
 //go:embed k8s/ollama.yaml k8s/kagent-values.yaml k8s/hello-world.yaml k8s/tools-agent.yaml
+//go:embed k8s/kaimahi-tools.yaml
 //go:embed k8s/plane/namespace.yaml k8s/plane/postgres.yaml k8s/plane/proxy.yaml
 //go:embed k8s/plane/upstreams.yaml k8s/plane/network-policy.yaml
-//go:embed k8s/models/governed-ollama.yaml k8s/models/governed-copilot.yaml
+//go:embed k8s/models
 var Manifests embed.FS

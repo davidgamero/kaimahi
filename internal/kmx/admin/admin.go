@@ -72,12 +72,88 @@ type Client struct {
 	base  string
 	token string
 	http  *http.Client
-	pf    *exec.Cmd
-	log   *syncBuffer
+	fwd   *Forward
+}
+
+// Forward is a `kubectl port-forward` kmx started and proved is its own.
+//
+// It is shared by every kmx command that reaches a port on NO Service — the
+// plane's admin port and its ops port — because the rule those commands obey
+// is the same one, and it must have exactly one implementation: bind
+// 127.0.0.1 explicitly, and do not send a byte until kubectl has SAID it
+// bound the port we asked for.
+type Forward struct {
+	Port string
+	pf   *exec.Cmd
+	log  *syncBuffer
 	// done closes when the forward's process exits, so a forward that dies
 	// immediately (the port is taken, the deployment is missing) is a
 	// failure in milliseconds rather than a 30-second wait.
 	done chan struct{}
+}
+
+// StartForward opens a forward to one target and waits until kubectl reports
+// the bind.
+//
+// Both halves of that wait are load-bearing. `--address 127.0.0.1` makes
+// kubectl FAIL when the port is taken rather than bind only the v6 side, and
+// kubectl's own "Forwarding from" line is the only proof that the socket we
+// are about to talk to is OURS. Probing the service behind it first would
+// accept a 200 from a stale forward to a DIFFERENT cluster.
+func StartForward(k Kube, namespace, target, localPort, remotePort string) (*Forward, error) {
+	f := &Forward{Port: localPort, log: &syncBuffer{}}
+	f.pf = k.Command("-n", namespace, "port-forward", "--address", "127.0.0.1",
+		target, localPort+":"+remotePort)
+	// kubectl announces the bind on stdout and its failures on stderr; both
+	// are evidence, so both are kept.
+	f.pf.Stdout, f.pf.Stderr = f.log, f.log
+	if err := f.pf.Start(); err != nil {
+		return nil, fmt.Errorf("cannot port-forward to %s in %s: %w", target, namespace, err)
+	}
+	f.done = make(chan struct{})
+	go func() {
+		_ = f.pf.Wait()
+		close(f.done)
+	}()
+
+	want := "Forwarding from 127.0.0.1:" + localPort
+	bound := run.Poll(pollAttempts, pollInterval, func() bool {
+		if strings.Contains(f.log.String(), want) {
+			return true
+		}
+		select {
+		case <-f.done:
+			return true // it exited; the check below reports the failure
+		default:
+			return false
+		}
+	})
+	if !bound || !strings.Contains(f.log.String(), want) {
+		f.Close()
+		return nil, fmt.Errorf("the port-forward to %s never came up on 127.0.0.1:%s:\n  %s\n"+
+			"  Refusing to continue: if another cluster's forward holds this port, the\n"+
+			"  operation would have landed THERE. Use a free port.",
+			target, localPort, f.Detail())
+	}
+	return f, nil
+}
+
+// Detail is kubectl's own output, indented for a multi-line error.
+func (f *Forward) Detail() string {
+	out := strings.TrimSpace(f.log.String())
+	if out == "" {
+		out = "no output from kubectl"
+	}
+	return strings.ReplaceAll(out, "\n", "\n  ")
+}
+
+// Close tears the forward down.
+func (f *Forward) Close() {
+	if f == nil || f.pf == nil || f.pf.Process == nil {
+		return
+	}
+	_ = f.pf.Process.Kill()
+	<-f.done
 }
 
 // Open reads the admin token, starts the port-forward, and waits for the
@@ -106,69 +182,27 @@ func Open(k Kube, port string, log io.Writer) (*Client, error) {
 			Timeout:       60 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		log: &syncBuffer{},
 	}
 
-	// --address pins IPv4 explicitly; see the package comment.
-	c.pf = k.Command("-n", Namespace, "port-forward", "--address", "127.0.0.1",
-		"deploy/kaimahi-proxy", port+":9091")
-	// kubectl announces the bind on stdout and its failures on stderr; both
-	// are evidence, so both are kept.
-	c.pf.Stdout, c.pf.Stderr = c.log, c.log
-	if err := c.pf.Start(); err != nil {
-		return nil, fmt.Errorf("cannot port-forward to the plane's admin port: %w", err)
+	fwd, err := StartForward(k, Namespace, "deploy/kaimahi-proxy", port, "9091")
+	if err != nil {
+		return nil, fmt.Errorf("%w\n  (the admin port is on no Service; ADMIN_PORT=<free port> moves the local side)", err)
 	}
-	c.done = make(chan struct{})
-	go func() {
-		_ = c.pf.Wait()
-		close(c.done)
-	}()
+	c.fwd = fwd
 
-	// First: is this forward ours? Wait for kubectl to say it bound the
-	// port, and stop early if the process exits (the port is taken, the
-	// deployment is missing).
-	want := "Forwarding from 127.0.0.1:" + port
-	bound := run.Poll(pollAttempts, pollInterval, func() bool {
-		if strings.Contains(c.log.String(), want) {
-			return true
-		}
-		select {
-		case <-c.done:
-			return true // it exited; the check below reports the failure
-		default:
-			return false
-		}
-	})
-	if !bound || !strings.Contains(c.log.String(), want) {
-		c.Close()
-		return nil, fmt.Errorf("the admin port-forward never came up on 127.0.0.1:%s:\n  %s\n"+
-			"  Refusing to continue: if another cluster's forward holds this port, the\n"+
-			"  operation would have landed THERE. Use ADMIN_PORT=<free port>.",
-			port, c.detail())
-	}
-
-	// Only then: is the plane answering behind it?
+	// The forward is ours. Only then: is the plane answering behind it?
 	answered := run.Poll(pollAttempts, pollInterval, func() bool { return c.healthy() })
 	if !answered {
 		c.Close()
 		return nil, fmt.Errorf("the plane's admin API did not answer on the forward to 127.0.0.1:%s:\n  %s\n"+
 			"  The forward is up, so this is the proxy, not the port. Check `kubectl -n %s get pods`.",
-			port, c.detail(), Namespace)
+			port, fwd.Detail(), Namespace)
 	}
 	if log != nil {
 		fmt.Fprintf(log, "kubectl -n %s port-forward deploy/kaimahi-proxy %s:9091 # (the admin port is on no Service)\n",
 			Namespace, port)
 	}
 	return c, nil
-}
-
-// detail is kubectl's own output, indented for a multi-line error.
-func (c *Client) detail() string {
-	out := strings.TrimSpace(c.log.String())
-	if out == "" {
-		out = "no output from kubectl"
-	}
-	return strings.ReplaceAll(out, "\n", "\n  ")
 }
 
 // syncBuffer collects the forward's output while its goroutine writes it.
@@ -199,14 +233,8 @@ func (c *Client) healthy() bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// Close tears the forward down.
-func (c *Client) Close() {
-	if c.pf == nil || c.pf.Process == nil {
-		return
-	}
-	_ = c.pf.Process.Kill()
-	<-c.done
-}
+// Close tears the session's forward down.
+func (c *Client) Close() { c.fwd.Close() }
 
 // Do makes one authenticated admin call and returns the status and body.
 func (c *Client) Do(method, path string, body any) (int, []byte, error) {

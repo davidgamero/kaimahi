@@ -10,12 +10,13 @@ here has been run on a managed cluster since the AKS demonstrations in
 Assumes the plane from [spend.md](spend.md) is deployed (`make plane`, or
 `kmx plane` — on kind they are the same code, see [kmx.md](kmx.md)).
 
-**Which path is which.** Standing the plane up, governing an agent, and the
-read-only views (`plane`, `govern`, `ledger`, `grants`, the audit trails) are
-`kmx`'s on kind, and `make` delegates to it. Everything else on this page —
-backup, restore, `plane-metrics`, budgets and approvals — is `make` and the
-scripts, on every target; and the whole managed-cluster path (`TARGET=aks`)
-is `make`'s, because it needs a registry, a rendered manifest and a captured
+**Which path is which.** On kind, everything on this page is `kmx`'s and
+`make` delegates to it: standing the plane up, governing an agent, the
+read-only views, and — since milestone 3 — `backup`, `restore`,
+`plane-metrics`, budgets and approvals (`kmx backup`, `kmx restore`,
+`kmx metrics`, `kmx budget`, `kmx approvals`/`approve`/`deny`/`request`).
+The whole managed-cluster path (`TARGET=aks`) is still `make` and the
+scripts, because it needs a registry, a rendered manifest and a captured
 key that `kmx` deliberately has no way to accept.
 
 ## Shape

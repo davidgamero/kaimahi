@@ -422,6 +422,13 @@ jobs:
           # shell could only approximate with a 0600 file.
           grep -q 'ok  .*internal/kmx/planebuild' kmx-test.out
           grep -q 'ok  .*internal/kmx/admin' kmx-test.out
+          # Milestone 3's gates: the argument ORDER of every operator verb
+          # (Go's flag stops at the first positional, and an approval whose
+          # --uses was silently dropped is an UNBOUNDED grant), and the
+          # backup/restore fail-closed checks — a truncated dump refused,
+          # and the proxies scaled back after a failed load.
+          grep -q 'ok  .*kaimahi/cmd/kmx' kmx-test.out
+          grep -q 'ok  .*internal/kmx/app' kmx-test.out
           # The generated-manifest check is the only test that hands the
           # scaffolder's output to a REAL YAML parser, and it skips itself
           # when python3/PyYAML are missing — right on a laptop, a green
@@ -2110,7 +2117,7 @@ jobs:
           make backup FILE=ci-backup.sql | tee backup.out
           test -s ci-backup.sql
           # A dump holds hashes, never a token (and no hosted key exists here).
-          if grep -E 'kmh_[0-9a-f]{64}' ci-backup.sql; then echo 'a token in the backup' >&2; exit 1; fi
+          if grep -qE 'kmh_[0-9a-f]{64}' ci-backup.sql; then echo 'a token in the backup' >&2; exit 1; fi
           # Wipe: the Postgres Deployment AND its PVC go; a fresh, empty
           # database comes up in their place.
           kubectl --context kind-kaimahi-p1 delete -f k8s/plane/postgres.yaml --wait=true
@@ -2724,6 +2731,145 @@ jobs:
         run: |
           kmx grants | tee grants.out
           grep -q 'no grants' grants.out
+      - name: "budget — the caps a credential spends under, set and cleared"
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
+        env:
+          KIND_CLUSTER: kmx-clone-free
+        run: |
+          kmx budget hello-world --tokens 1 2>&1 | tee budget.out
+          grep -q 'cap_tokens=1' budget.out
+          # No flags CLEARS both caps, so the steps below are not run under
+          # a cap this one left behind.
+          kmx budget hello-world 2>&1 | tee budget-clear.out
+          grep -q 'cap_cents=null cap_tokens=null' budget-clear.out
+      - name: "tools — the gateway, its allowlist, and the empty allowlist that means nothing is callable"
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
+        env:
+          KIND_CLUSTER: kmx-clone-free
+        run: |
+          kmx tools govern --tools k8s_get_resources
+          kmx tools allowlist | tee allowlist.out
+          grep -q 'hello-tools: k8s_get_resources' allowlist.out
+          # Two tools read back SORTED — the plane's order, not the order
+          # they were written in.
+          kmx tools allow k8s_get_resources,k8s_get_events
+          kmx tools allowlist | tee allowlist-2.out
+          grep -q 'hello-tools: k8s_get_events, k8s_get_resources' allowlist-2.out
+          # The EMPTY allowlist is an answer, not an error: nothing is
+          # callable without a live grant.
+          kmx tools allow -
+          kmx tools allowlist | tee allowlist-empty.out
+          grep -q 'hello-tools: (empty — nothing callable)' allowlist-empty.out
+          kmx tools allow k8s_get_resources
+      - name: "approvals — a request names the CALL, an approval is bounded, a denial is not"
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
+        env:
+          KIND_CLUSTER: kmx-clone-free
+        run: |
+          # P12: the request is about one CALL, and `kmx approvals` must
+          # show it — an approver who can see only the verb is the whole
+          # problem restated.
+          kmx request tool k8s_get_events --args '{"namespace": "default"}'
+          kmx approvals | tee approvals.out
+          grep -E 'hello-tools +tool +k8s_get_events .*k8s_get_events: namespace default' approvals.out
+          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_events" && /namespace default/ {print $1}' approvals.out)
+          test -n "$id"
+          # An unbounded approval is refused, and nothing is granted by it.
+          if kmx approve "$id" 2>unbounded.out; then
+            echo "an unbounded approval was accepted"; exit 1
+          fi
+          grep -q 'an unbounded grant is a config change' unbounded.out
+          kmx approve "$id" --ttl 10m --uses 1 | tee approved.out
+          grep -q 'Granted: hello-tools tool/k8s_get_events' approved.out
+          # The grant is welded to that one call: `binds` names its digest.
+          kmx grants | tee grants-tool.out
+          grep -E 'hello-tools +tool +k8s_get_events +yes .*call [0-9a-f]{12}' grants-tool.out
+          # And a denial decides a request without granting anything.
+          kmx request tool k8s_describe_resource
+          kmx approvals | tee approvals-2.out
+          deny_id=$(awk '$5=="k8s_describe_resource" {print $1}' approvals-2.out)
+          test -n "$deny_id"
+          kmx deny "$deny_id" 2>&1 | tee denied.out
+          grep -q "Request $deny_id denied." denied.out
+          kmx audit approval | tee approval-audit.out
+          grep -E 'hello-tools +tool +k8s_describe_resource +denied' approval-audit.out
+      - name: "metrics — one replica's exposition, from a port on no Service"
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
+        env:
+          KIND_CLUSTER: kmx-clone-free
+        run: |
+          # stdout is the exposition and only the exposition: the replica's
+          # name goes to stderr, so a pipeline sees metrics.
+          kmx metrics 2>metrics.err | tee metrics.out
+          grep -q '^# TYPE kaimahi_decisions_total counter' metrics.out
+          grep -q '^kaimahi_build_info' metrics.out
+          grep -q '^# replica: ' metrics.err
+          test "$(grep -c '^# replica: ' metrics.out)" = 0
+      - name: "use — the switch returns only once ONE pod is on the new template"
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
+        env:
+          KIND_CLUSTER: kmx-clone-free
+        run: |
+          kmx use ollama
+          test "$(kubectl --context kind-kmx-clone-free -n kagent get agent hello-world \
+            -o jsonpath='{.spec.declarative.modelConfig}')" = ollama
+          # Exactly one pod, on the template the current revision names —
+          # `rollout status` returns while the old one is still draining,
+          # and an invoke landing there answers from the OLD preset (W16).
+          hashes=$(kubectl --context kind-kmx-clone-free -n kagent get pods -l kagent=hello-world \
+            -o jsonpath='{range .items[*]}{.metadata.labels.pod-template-hash}{"\n"}{end}')
+          test "$(printf '%s' "$hashes" | grep -c .)" = 1
+          # An unknown preset is refused with the list, not turned into a path.
+          if kmx use nonesuch 2>use-bad.out; then echo "an unknown preset was applied"; exit 1; fi
+          grep -q 'unknown model preset "nonesuch"' use-bad.out
+          kmx use governed-ollama
+      - name: "backup and restore — a ledger row survives an empty database"
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
+        env:
+          KIND_CLUSTER: kmx-clone-free
+        run: |
+          rows() { kubectl --context kind-kmx-clone-free -n kaimahi exec deploy/kaimahi-postgres -- \
+                     psql -U kaimahi -d kaimahi -tAc 'SELECT count(*) FROM ledger_entry'; }
+          before=$(rows); test "$before" -gt 0
+          kmx backup kmx-backup.sql | tee backup.out
+          grep -q 'plane-backup: wrote kmx-backup.sql' backup.out
+          # A dump holds hashes, never a token (no hosted key exists here).
+          if grep -qE 'kmh_[0-9a-f]{64}' kmx-backup.sql; then echo 'a token in the backup' >&2; exit 1; fi
+          # It is 0600 the moment it exists: it carries the ledger and the
+          # audit trails.
+          test "$(stat -c %a kmx-backup.sql)" = 600
+          # A truncated dump is refused, and the plane is never quiesced for
+          # it — the fail-closed half of the pair.
+          head -5 kmx-backup.sql > truncated.sql
+          if kmx restore truncated.sql 2>truncated.out; then echo "a truncated dump was restored"; exit 1; fi
+          grep -q 'not a complete pg_dump' truncated.out
+          # Wipe for real: the Deployment AND its PVC go, and a fresh, empty
+          # database comes up in their place.
+          kubectl --context kind-kmx-clone-free -n kaimahi delete deploy kaimahi-postgres --wait=true
+          kubectl --context kind-kmx-clone-free -n kaimahi delete pvc kaimahi-postgres-data --wait=true
+          # No checkout here, so the manifests come from the binary: this is
+          # the same `kubectl apply -f k8s/plane/` the e2e does, embedded.
+          # `--step deploy` re-applies the plane and restarts the proxy, so
+          # the migrations run against the new, empty volume: the schema is
+          # back and the DATA is gone. Assert that, rather than "no tables" —
+          # the shard e2e asserts the no-tables case, and asserting it here
+          # would only be asserting that the proxy had not restarted yet.
+          kmx plane --step deploy
+          kubectl --context kind-kmx-clone-free -n kaimahi rollout status deploy/kaimahi-postgres --timeout=300s
+          test "$(rows)" = 0
+          kmx restore kmx-backup.sql | tee restore.out
+          test "$(rows)" = "$before"
+          grep -q "ledger_entry has $before rows; plane serving again" restore.out
+          # The restored hashes admit the same agent-side token: the plane
+          # works again, end to end.
+          kmx ledger | tee ledger-restored.out
+          grep -E 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' ledger-restored.out
       - name: Cluster state on failure
         if: failure() && steps.changes.outputs.docs_only != 'true'
         run: |

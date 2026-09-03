@@ -103,6 +103,25 @@ func (r *Runner) RunStdin(stdin []byte, name string, args ...string) error {
 	return nil
 }
 
+// Pipe runs a command with an explicit stdin and stdout. It is how kmx
+// streams bytes rather than reading them into memory: pg_dump OUT of the
+// Postgres pod and psql back INTO it, both through `kubectl exec`. A nil
+// stdin or stdout means "none" and "the Runner's own", respectively.
+func (r *Runner) Pipe(stdin io.Reader, stdout io.Writer, name string, args ...string) error {
+	r.echo(name, args)
+	c := r.cmd(name, args...)
+	c.Stdin = stdin
+	c.Stdout = stdout
+	if stdout == nil {
+		c.Stdout = r.Stdout
+	}
+	c.Stderr = r.Stderr
+	if err := c.Run(); err != nil {
+		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	}
+	return nil
+}
+
 // Capture returns the command's stdout, trimmed, plus stderr on failure.
 // Nothing is echoed: these are reads, and a status command that printed
 // every query it made would be unreadable.

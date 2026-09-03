@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strings"
 )
 
 // The read views. Every format string, column width, header and empty-case
@@ -18,6 +19,7 @@ const (
 	grantsFmt   = "%-36s %-12s %-8s %-18s %-6s %-22s %-9s %-8s %-19s %-18s %s\n"
 	toolFmt     = "%-19s %-12s %-12s %-12s %-24s %-8s %6s %-44s %s\n"
 	approvalFmt = "%-19s %-12s %-8s %-18s %-10s %-18s %-40s %s\n"
+	pendingFmt  = "%-36s %-19s %-12s %-8s %-18s %-34s %s\n"
 )
 
 // Ledger prints the spend ledger, newest first, plus month-to-date totals.
@@ -69,6 +71,61 @@ func (c *Client) Grants(out io.Writer, credential string) error {
 			trunc(dash(g["expires_at"]), 19), uses, dash(g["amount"]),
 			trunc(str(g["created_at"]), 19), dash(g["decided_by"]), binds(g))
 	}
+	return nil
+}
+
+// Approvals lists the requests waiting for a human decision.
+//
+// The CALL column is not decoration (P12): a tool grant is welded to one
+// call, so an approver who can see only the verb is being asked to approve
+// something they cannot see. That is the whole problem restated.
+//
+// The columns are the script's, to the character. CI does not grep this
+// table, it AWKs it — `$1` is the id an approval is then issued against —
+// so a widened column is a broken pipeline, not a cosmetic change.
+func (c *Client) Approvals(out io.Writer) error {
+	doc, err := c.Get("approvals", "/admin/approvals")
+	if err != nil {
+		return err
+	}
+	list := rows(doc, "pending")
+	if len(list) == 0 {
+		fmt.Fprintln(out, "no pending approval requests")
+		return nil
+	}
+	fmt.Fprintf(out, pendingFmt, "id", "created (UTC)", "credential", "kind", "subject",
+		"detail", "call")
+	for _, r := range list {
+		fmt.Fprintf(out, pendingFmt,
+			str(r["id"]), trunc(str(r["created_at"]), 19), str(r["credential"]),
+			str(r["kind"]), str(r["subject"]), str(r["detail"]), dash(r["arg_summary"]))
+	}
+	return nil
+}
+
+// ToolAllowlist prints what a credential may call without a live grant.
+//
+// An EMPTY allowlist is an answer, not an error: it means nothing is
+// callable unless an approval grants it. The script says so in words and so
+// does this.
+func (c *Client) ToolAllowlist(out io.Writer, credential string) error {
+	if err := ValidCredentialName(credential); err != nil {
+		return err
+	}
+	doc, err := c.Get("tool-allowlist", "/admin/tool-allowlist?credential="+url.QueryEscape(credential))
+	if err != nil {
+		return err
+	}
+	tools := []string{}
+	list, _ := doc["tools"].([]any)
+	for _, t := range list {
+		tools = append(tools, str(t))
+	}
+	joined := strings.Join(tools, ", ")
+	if joined == "" {
+		joined = "(empty — nothing callable)"
+	}
+	fmt.Fprintf(out, "%s: %s\n", str(doc["credential"]), joined)
 	return nil
 }
 

@@ -42,9 +42,21 @@ COMMANDS
                                is always raw
   plane                        deploy the governance plane (proxy + ledger)
   govern [<credential>]        issue the credential and put an agent behind the plane
+  use <preset>                 switch an agent onto a preset from k8s/models/
   ledger [<credential>]        the spend ledger and month-to-date totals
   grants [<credential>]        grants, with liveness
   audit tool|approval [<cred>] the enforcement points' audit trails
+  budget [<credential>]        set monthly caps (--cents, --tokens; none = clear)
+  approvals                    pending approval requests, with the CALL each is about
+  approve <id>                 grant one, BOUNDED (--ttl and/or --uses; --amount)
+  deny <id>                    refuse one
+  request <kind> <subject>     file one explicitly (--credential, --args)
+  tools govern|allow|allowlist|ungovern
+                               the enforcing MCP gateway: put an agent behind
+                               it, replace its allowlist, read it, undo it
+  backup [<file>]              pg_dump the plane's database to a local file
+  restore <file>               REPLACE the plane's database from a backup
+  metrics                      one proxy replica's Prometheus exposition
   status                       agents, modelconfigs and pods
   down                         delete the kind cluster kmx created
   version                      print the pinned versions kmx installs
@@ -60,12 +72,16 @@ ENVIRONMENT (the names the Makefile and the scripts already use)
   MODEL             model pulled into Ollama            (qwen2.5:3b)
   CHAT_PORT         local port for the controller       (8083)
   ADMIN_PORT        local port for the plane's admin    (19091)
+  OPS_PORT          local port for a replica's metrics   (19092)
   CRED              credential govern issues, ledger reads  (hello-world)
+  CRED_TOOLS        credential the MCP gateway admits    (hello-tools)
   KAIMAHI_CONFIRM   confirm a non-kind context by name  (unset)
 
-NOT IN THIS MILESTONE
-  Budgets, approvals, backup/restore, the Slack/GitHub/inbound connectors,
-  secret capture, AKS and the probes stay in the Makefile. See docs/kmx.md.
+NOT IN kmx
+  The Slack, GitHub and inbound connector families, secret capture of any
+  kind, AKS and the probes stay in the Makefile and scripts. Each of those
+  families is entangled with capturing a credential, which kmx accepts in no
+  form at all (D27). See docs/kmx.md.
 `
 
 func main() {
@@ -102,7 +118,7 @@ func run(argv []string) error {
 		if rev, err := planebuild.Revision(debug.ReadBuildInfo()); err == nil {
 			revision = rev
 		}
-		fmt.Printf("kmx (kaimahi milestone 2)\n  kagent   %s\n  model    %s\n  plane    %s, built from %s\n",
+		fmt.Printf("kmx (kaimahi milestone 3)\n  kagent   %s\n  model    %s\n  plane    %s, built from %s\n",
 			config.DefaultKagentVersion, config.DefaultModel, app.PlaneImage, revision)
 		return nil
 	}
@@ -197,6 +213,82 @@ func run(argv []string) error {
 			return err
 		}
 		return a.Audit(args[0], credential)
+
+	case "use":
+		preset, opt, err := parseUse(args)
+		if err != nil {
+			return err
+		}
+		return a.Use(preset, opt)
+
+	case "budget":
+		credential, capCents, capTokens, err := parseBudget(args, a.Cfg.Credential)
+		if err != nil {
+			return err
+		}
+		return a.Budget(credential, capCents, capTokens)
+
+	case "approvals":
+		if len(args) != 0 {
+			return errors.New("usage: kmx approvals")
+		}
+		return a.Approvals()
+
+	case "approve":
+		id, ttl, uses, amount, err := parseApprove(args)
+		if err != nil {
+			return err
+		}
+		return a.Approve(id, ttl, uses, amount)
+
+	case "deny":
+		if len(args) != 1 {
+			return errors.New("usage: kmx deny <id>")
+		}
+		return a.Deny(args[0])
+
+	case "request":
+		credential, kind, subject, callArgs, err := parseRequest(args, a.Cfg.Credential, a.Cfg.ToolsCredential)
+		if err != nil {
+			return err
+		}
+		return a.Request(credential, kind, subject, callArgs)
+
+	case "tools":
+		verb, opt, positional, err := parseTools(args, a.Cfg.ToolsCredential)
+		if err != nil {
+			return err
+		}
+		switch verb {
+		case "govern":
+			return a.GovernTools(opt)
+		case "ungovern":
+			return a.UngovernTools(opt)
+		case "allow":
+			return a.AllowTools(opt.Credential, positional[0])
+		default: // "allowlist"; parseTools admits nothing else
+			return a.ToolAllowlist(opt.Credential)
+		}
+
+	case "backup":
+		file, err := parseOptionalFile("backup", args)
+		if err != nil {
+			return err
+		}
+		return a.Backup(file)
+
+	case "restore":
+		if len(args) != 1 {
+			return errors.New("usage: kmx restore <file>")
+		}
+		return a.Restore(args[0])
+
+	case "metrics":
+		pod, err := parseMetrics(args)
+		if err != nil {
+			return err
+		}
+		return a.Metrics(pod)
 
 	case "status":
 		return a.Status()

@@ -67,14 +67,16 @@ KMX_SOURCES  := go.mod embed.go $(shell find cmd/kmx internal/kmx -name '*.go' 2
 # The manifests are embedded in the binary (kmx runs outside a clone), so a
 # manifest edit has to relink it.
 KMX_ASSETS   := k8s/ollama.yaml k8s/kagent-values.yaml k8s/hello-world.yaml k8s/tools-agent.yaml \
-		$(wildcard k8s/plane/*.yaml) \
-		k8s/models/governed-ollama.yaml k8s/models/governed-copilot.yaml
+		k8s/kaimahi-tools.yaml \
+		$(wildcard k8s/plane/*.yaml) $(wildcard k8s/models/*.yaml)
 # kmx reads the Makefile's own variable names, so delegation passes them
 # through rather than translating. KAIMAHI_CONFIRM rides along so a
 # confirmation given to make is not asked for again by kmx.
 KMX_ENV       = KIND_CLUSTER='$(KIND_CLUSTER)' KUBE_CTX='$(KUBE_CTX)' \
 		CONTAINER_ENGINE='$(CONTAINER_ENGINE)' KAGENT_VERSION='$(KAGENT_VERSION)' \
 		MODEL='$(MODEL)' CHAT_PORT='$(CHAT_PORT)' KAGENT='$(KAGENT)' \
+		ADMIN_PORT='$(ADMIN_PORT)' OPS_PORT='$(OPS_PORT)' \
+		CRED='$(CRED)' CRED_TOOLS='$(CRED_TOOLS)' \
 		KAIMAHI_CONFIRM='$(KAIMAHI_CONFIRM)'
 
 OS   := $(shell uname -s | tr A-Z a-z)
@@ -641,6 +643,18 @@ endef
 # template. Identical content ("unchanged") moves neither generation and
 # takes the fast path. Only a genuine NotFound may leave the "before"
 # generation empty; any other read failure aborts.
+ifeq ($(TARGET),kind)
+# kmx owns the kind path (D33). `wait_switched` — the three-deep wait this
+# recipe used to spell out, every layer of it paid for by a flake — lives in
+# internal/kmx/app/use.go with its reasons attached, and is now the ONE
+# implementation the governed-tools switch shares.
+use: $(KMX)
+	@$(KMX_ENV) $(KMX) use $(PRESET)
+
+## use-ollama: switch back to the keyless in-cluster model
+use-ollama: $(KMX)
+	@$(KMX_ENV) $(KMX) use ollama
+else
 use: guard
 	@test -n "$(PRESET)" || { echo 'usage: make use PRESET=<name from k8s/models/>' >&2; exit 1; }
 	@mc0=""; \
@@ -684,6 +698,7 @@ use: guard
 # the sub-make must not ask a second time for the same action.
 use-ollama: guard
 	$(MAKE) use PRESET=ollama KAIMAHI_CONFIRM='$(KUBE_CTX)'
+endif
 
 ## ---- P4a: the governance plane (docs/spend.md) ----
 
@@ -781,9 +796,14 @@ endif
 
 ## budget: set monthly caps for a credential, e.g.
 ##   make budget CAP_CENTS=100 CAP_TOKENS=-     (- or empty = no cap)
+ifeq ($(TARGET),kind)
+budget: $(KMX)
+	@$(KMX_ENV) $(KMX) budget $(CRED) --cents "$(if $(CAP_CENTS),$(CAP_CENTS),-)" --tokens "$(if $(CAP_TOKENS),$(CAP_TOKENS),-)"
+else
 budget: guard
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh budget $(CRED) \
 		"$(if $(CAP_CENTS),$(CAP_CENTS),-)" "$(if $(CAP_TOKENS),$(CAP_TOKENS),-)"
+endif
 
 ## ledger: show the spend ledger (newest first) + month-to-date totals
 ifeq ($(TARGET),kind)
@@ -803,22 +823,37 @@ endif
 ## trails, never a token or an upstream key; keep it as you would the
 ## database. Reads only; unguarded like `ledger`.
 ##   make backup [FILE=path]
+ifeq ($(TARGET),kind)
+backup: $(KMX)
+	@$(KMX_ENV) $(KMX) backup $(FILE)
+else
 backup:
 	@KUBECTL="$(KUBECTL)" FILE='$(FILE)' bash scripts/plane-backup.sh
+endif
 
 ## restore: load a backup into the running plane's database, REPLACING
 ## its contents (the dump drops and recreates every table). Proven on a
 ## fresh cluster in CI. Guarded: this rewrites the ledger.
 ##   make restore FILE=backups/kaimahi-....sql
+ifeq ($(TARGET),kind)
+restore: $(KMX)
+	@$(KMX_ENV) $(KMX) restore $(FILE)
+else
 restore: guard
 	@test -n "$(FILE)" || { echo 'restore: FILE=<backup.sql> is required' >&2; exit 1; }
 	@KUBECTL="$(KUBECTL)" FILE='$(FILE)' bash scripts/plane-restore.sh
+endif
 
 ## plane-metrics: print one replica's Prometheus text (port-forward to a
 ## pod's ops port; the port is on no Service). POD=<name> picks a
 ## replica; default is the first.
+ifeq ($(TARGET),kind)
+plane-metrics: $(KMX)
+	@$(KMX_ENV) $(KMX) metrics $(if $(POD),--pod $(POD))
+else
 plane-metrics:
 	@KUBECTL="$(KUBECTL)" POD='$(POD)' bash scripts/plane-metrics.sh
+endif
 
 ## ---- P4b: the enforcing MCP gateway (docs/tool-governance.md) ----
 
@@ -827,6 +862,10 @@ plane-metrics:
 ## default allowlist, apply the Kaimahi RemoteMCPServer, repoint
 ## hello-tools at it. `make chat AGENT=hello-tools` then rides the
 ## gateway: authenticated, allowlisted, audited.
+ifeq ($(TARGET),kind)
+govern-tools: $(KMX)
+	@$(KMX_ENV) $(KMX) tools govern --credential $(CRED_TOOLS) --tools "$(TOOLS)"
+else
 govern-tools: guard
 	@KUBECTL="$(KUBECTL)" GOVERNED_SECRET=kaimahi-tools-token \
 		bash scripts/plane-admin.sh issue $(CRED_TOOLS)
@@ -841,22 +880,38 @@ govern-tools: guard
 	$(KUBECTL) -n kagent wait \
 		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
 		agent/hello-tools --timeout=300s
+endif
 
 ## ungovern-tools: restore the P3 wiring (direct to the chart-managed
 ## tool server, ungoverned) by re-applying the committed Agent YAML
+ifeq ($(TARGET),kind)
+ungovern-tools: $(KMX)
+	@$(KMX_ENV) $(KMX) tools ungovern
+else
 ungovern-tools: guard
 	$(KUBECTL) apply -f k8s/tools-agent.yaml
 	@$(call wait_switched,hello-tools)
+endif
 
 ## tool-allow: replace the tools credential's allowlist, e.g.
 ##   make tool-allow TOOLS=k8s_get_resources,k8s_get_events
 ##   make tool-allow TOOLS=-        (empty: nothing callable)
+ifeq ($(TARGET),kind)
+tool-allow: $(KMX)
+	@$(KMX_ENV) $(KMX) tools allow "$(TOOLS)" --credential $(CRED_TOOLS)
+else
 tool-allow: guard
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-allow $(CRED_TOOLS) "$(TOOLS)"
+endif
 
 ## tool-allowlist: show the tools credential's allowlist
+ifeq ($(TARGET),kind)
+tool-allowlist: $(KMX)
+	@$(KMX_ENV) $(KMX) tools allowlist $(CRED_TOOLS)
+else
 tool-allowlist:
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-allowlist $(CRED_TOOLS)
+endif
 
 ## tool-audit: show the tool-call audit trail (newest first)
 ifeq ($(TARGET),kind)
@@ -871,22 +926,37 @@ endif
 
 ## approvals: list pending approval requests (denied actions file them
 ## automatically; `make request` files one explicitly)
+ifeq ($(TARGET),kind)
+approvals: $(KMX)
+	@$(KMX_ENV) $(KMX) approvals
+else
 approvals:
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh approvals
+endif
 
 ## approve: approve a pending request with BOUNDS (at least one of TTL/
 ## USES required; AMOUNT tokens-or-cents only for budget requests), e.g.
 ##   make approve ID=<uuid> TTL=60s USES=1
 ##   make approve ID=<uuid> TTL=5m AMOUNT=100000
+ifeq ($(TARGET),kind)
+approve: $(KMX)
+	@$(KMX_ENV) $(KMX) approve "$(ID)" --ttl "$(if $(TTL),$(TTL),-)" --uses "$(if $(USES),$(USES),-)" --amount "$(if $(AMOUNT),$(AMOUNT),-)"
+else
 approve: guard
 	@test -n "$(ID)" || { echo 'usage: make approve ID=<uuid> [TTL=60s] [USES=1] [AMOUNT=n]' >&2; exit 1; }
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh approve "$(ID)" \
 		"$(if $(TTL),$(TTL),-)" "$(if $(USES),$(USES),-)" "$(if $(AMOUNT),$(AMOUNT),-)"
+endif
 
 ## deny: deny a pending request
+ifeq ($(TARGET),kind)
+deny: $(KMX)
+	@$(KMX_ENV) $(KMX) deny "$(ID)"
+else
 deny: guard
 	@test -n "$(ID)" || { echo 'usage: make deny ID=<uuid>' >&2; exit 1; }
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh deny "$(ID)"
+endif
 
 ## request: file an approval request explicitly, e.g.
 ##   make request KIND=tool SUBJECT=k8s_get_events
@@ -894,10 +964,15 @@ deny: guard
 ##   make request KIND=budget SUBJECT=tokens CRED=hello-world
 ## ARGS (tool requests only, P12) names the CALL to pre-approve; omitted
 ## means the argument-less call, never "any call".
+ifeq ($(TARGET),kind)
+request: $(KMX)
+	@$(KMX_ENV) $(KMX) request $(KIND) $(SUBJECT) --credential "$(REQ_CRED)" $(if $(ARGS),--args '$(ARGS)')
+else
 request: guard
 	@test -n "$(KIND)" && test -n "$(SUBJECT)" || \
 		{ echo 'usage: make request KIND=tool|budget SUBJECT=<tool|tokens|cents> [CRED=...] [ARGS=<json>]' >&2; exit 1; }
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh request "$(REQ_CRED)" "$(KIND)" "$(SUBJECT)" '$(ARGS)'
+endif
 
 # The filing credential: an explicit CRED= wins; otherwise tool requests
 # default to the tools credential and budget requests to the chat one.

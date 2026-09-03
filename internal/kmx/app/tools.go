@@ -1,0 +1,291 @@
+package app
+
+import (
+	"encoding/json"
+	"fmt"
+	"io/fs"
+	"sort"
+	"strings"
+
+	kaimahi "github.com/kaimahi-agents/kaimahi"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/admin"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
+)
+
+// `kmx use` and the tool-governance verbs.
+//
+// The Makefile's `use`, `use-ollama`, `govern-tools`, `ungovern-tools`,
+// `tool-allow` and `tool-allowlist` are the specification. All four of the
+// cluster-touching ones end in the same three-deep wait — `wait_switched`,
+// already carried across in use.go — because all four change what a pod
+// runs, and "the object was patched" is not that.
+
+// UseOptions are `kmx use`'s knobs.
+type UseOptions struct {
+	// Agent is the agent switched onto the preset. `make use` hard-codes
+	// hello-world; the flag exists because `kmx use` has no PRESET= line to
+	// hide a second agent behind.
+	Agent string
+}
+
+// Use switches an agent onto a model preset from k8s/models/.
+//
+// Hosted presets need their key Secret first (`make model-secret`,
+// `make copilot-secret`) — kmx accepts no credential in any form (D27), so
+// it applies the preset and switches the agent, and the Secret the preset
+// NAMES is somebody else's job. A preset whose Secret is missing produces an
+// agent that starts and then fails its calls; that is the behaviour
+// `make use` has always had.
+func (a *App) Use(preset string, opt UseOptions) error {
+	if opt.Agent == "" {
+		opt.Agent = config.DefaultAgent
+	}
+	name, err := presetManifest(preset)
+	if err != nil {
+		return err
+	}
+	if err := a.Guard(fmt.Sprintf("switch agent %q onto model preset %q", opt.Agent, preset),
+		"kmx use "+preset); err != nil {
+		return err
+	}
+	return a.UsePreset(opt.Agent, preset, []string{name})
+}
+
+// presetManifest resolves a preset NAME to the embedded manifest, refusing
+// anything that is not one of the presets kmx carries.
+//
+// The name is checked rather than interpolated: it becomes a path into the
+// embedded filesystem, and it is also the object name the agent is patched
+// onto. An unknown preset lists what there is, because the failure mode this
+// replaces — `kubectl apply -f k8s/models/typo.yaml` — told an operator only
+// that a file was missing.
+func presetManifest(preset string) (string, error) {
+	if preset == "" {
+		return "", fmt.Errorf("usage: kmx use <preset> — one of: %s", strings.Join(presetNames(), ", "))
+	}
+	for _, name := range presetNames() {
+		if name == preset {
+			return "models/" + preset + ".yaml", nil
+		}
+	}
+	return "", fmt.Errorf("unknown model preset %q — kmx carries: %s", preset, strings.Join(presetNames(), ", "))
+}
+
+// presetNames lists the presets embedded in the binary, sorted.
+func presetNames() []string {
+	entries, err := fs.ReadDir(kaimahi.Manifests, "k8s/models")
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if name := strings.TrimSuffix(e.Name(), ".yaml"); name != e.Name() {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ToolsOptions are the knobs `kmx tools govern` and `kmx tools ungovern`
+// share, defaulted to what `make govern-tools` uses.
+type ToolsOptions struct {
+	// Credential is the kmh_ credential the gateway admits (CRED_TOOLS).
+	Credential string
+	// Agent is the agent pointed at the governed RemoteMCPServer.
+	Agent string
+	// Secret is the agent-side Secret that credential's token is stored in.
+	Secret string
+	// SecretNamespace is where that Secret lives.
+	SecretNamespace string
+	// Tools is the comma-separated allowlist, and the agent's selection.
+	// "-" is the empty allowlist: nothing callable without a live grant.
+	Tools string
+}
+
+// GovernTools puts the tools agent behind the enforcing MCP gateway
+// (`make govern-tools`).
+//
+// The order is the recipe's, and it is not arbitrary: the credential exists
+// before the allowlist that names it, the allowlist exists before the
+// RemoteMCPServer whose discovery is its projection, and the agent is
+// repointed last. kagent discovers tools THROUGH the gateway with this same
+// credential, so `status.discoveredTools` IS the allowlist projection — an
+// agent never sees a tool its credential cannot call.
+func (a *App) GovernTools(opt ToolsOptions) error {
+	opt = a.toolsDefaults(opt)
+	if err := admin.ValidCredentialName(opt.Credential); err != nil {
+		return err
+	}
+	tools, err := admin.ParseToolList(opt.Tools)
+	if err != nil {
+		return err
+	}
+	if err := a.Guard(fmt.Sprintf("put agent %q behind the Kaimahi MCP gateway (credential %q)",
+		opt.Agent, opt.Credential), "kmx tools govern"); err != nil {
+		return err
+	}
+
+	if err := a.session(func(c *admin.Client) error {
+		if err := a.issueCredential(c, opt.Credential, GovernOptions{
+			Agent:           opt.Agent,
+			Secret:          opt.Secret,
+			SecretNamespace: opt.SecretNamespace,
+			Command:         "kmx tools govern",
+		}); err != nil {
+			return err
+		}
+		return a.setToolAllowlist(c, opt.Credential, tools)
+	}); err != nil {
+		return err
+	}
+
+	if err := a.apply("kaimahi-tools.yaml"); err != nil {
+		return err
+	}
+	// Accepted, not Ready: a RemoteMCPServer reports that it reached the
+	// upstream and discovered its tools. Patching the agent before that
+	// would point it at a server with no discovered tools, and kagent
+	// wires discovered ∩ toolNames — an empty intersection is an agent
+	// with no tools at all, which looks exactly like a policy denial.
+	if err := a.kubectlRun("-n", config_kagentNamespace, "wait",
+		`--for=jsonpath={.status.conditions[?(@.type=="Accepted")].status}=True`,
+		"remotemcpserver/kaimahi-tools", "--timeout=300s"); err != nil {
+		return err
+	}
+	if err := a.patchAgentTools(opt.Agent, tools); err != nil {
+		return err
+	}
+	if err := a.waitSwitched(opt.Agent); err != nil {
+		return err
+	}
+	return a.waitAgentReady(opt.Agent)
+}
+
+// UngovernTools restores the P3 wiring — direct to the chart-managed tool
+// server, ungoverned — by re-applying the committed Agent YAML.
+//
+// It ends at `wait_switched`, with no Ready wait, exactly as
+// `make ungovern-tools` does: the committed agent is the one `kmx up`
+// created and already proved Ready, so the question here is only whether
+// the OLD pod is gone. That is what wait_switched answers, and it is the
+// answer that matters — an invoke landing on a draining pod would still ride
+// the gateway.
+func (a *App) UngovernTools(opt ToolsOptions) error {
+	opt = a.toolsDefaults(opt)
+	// The undo is a RE-APPLY of one committed manifest, and that manifest
+	// names one agent. Ungoverning a different agent would mean un-patching
+	// something kmx has no committed form of — so it is refused rather than
+	// half-done: applying k8s/tools-agent.yaml and then waiting for another
+	// agent's rollout would report success while the agent the operator
+	// named was still riding the gateway.
+	if opt.Agent != config.DefaultToolsAgent {
+		return fmt.Errorf("kmx tools ungovern restores the committed agent %q, not %q.\n"+
+			"  There is no committed ungoverned form of %q to restore; repoint it yourself:\n"+
+			"    kubectl -n %s edit agent %s",
+			config.DefaultToolsAgent, opt.Agent, opt.Agent, config.DefaultNamespace, opt.Agent)
+	}
+	if err := a.Guard(fmt.Sprintf("return agent %q to the ungoverned tool server", opt.Agent),
+		"kmx tools ungovern"); err != nil {
+		return err
+	}
+	if err := a.apply("tools-agent.yaml"); err != nil {
+		return err
+	}
+	return a.waitSwitched(opt.Agent)
+}
+
+// AllowTools replaces a credential's tool allowlist (`make tool-allow`).
+func (a *App) AllowTools(credential, list string) error {
+	if err := admin.ValidCredentialName(credential); err != nil {
+		return err
+	}
+	tools, err := admin.ParseToolList(list)
+	if err != nil {
+		return err
+	}
+	if err := a.Guard(fmt.Sprintf("replace the tool allowlist for credential %q", credential),
+		"kmx tools allow "+list); err != nil {
+		return err
+	}
+	return a.session(func(c *admin.Client) error {
+		return a.setToolAllowlist(c, credential, tools)
+	})
+}
+
+// ToolAllowlist prints what a credential may call (`make tool-allowlist`).
+// A read: unguarded.
+func (a *App) ToolAllowlist(credential string) error {
+	return a.session(func(c *admin.Client) error { return c.ToolAllowlist(a.Out, credential) })
+}
+
+// setToolAllowlist writes the allowlist and says what it means, carrying
+// both of the script's notes. The second one is not decoration: enforcement
+// is immediate, but what an AGENT can see only catches up on kagent's next
+// RemoteMCPServer reconcile, and an operator who does not know that reads
+// the lag as the allowlist not having taken.
+func (a *App) setToolAllowlist(c *admin.Client, credential string, tools []string) error {
+	if err := c.SetToolAllowlist(credential, tools); err != nil {
+		return err
+	}
+	a.notef("Tool allowlist for %q: [%s] (enforced on tools/call, projected on tools/list).",
+		credential, quotedList(tools))
+	a.notef("kagent re-discovers the projection on its next RemoteMCPServer reconcile; enforcement is immediate.")
+	return nil
+}
+
+// quotedList renders the allowlist the way the script's note does — the JSON
+// array's own contents, so what is echoed is what was sent.
+func quotedList(tools []string) string {
+	quoted := make([]string, 0, len(tools))
+	for _, t := range tools {
+		quoted = append(quoted, `"`+t+`"`)
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// patchAgentTools points an agent at the governed RemoteMCPServer with an
+// explicit toolNames selection — the Makefile's TOOLNAMES_JSON patch.
+//
+// An EMPTY selection is passed through as an empty array, not omitted:
+// `make tool-allow TOOLS=-` means nothing is callable, and an agent whose
+// toolNames key vanished would fall back to every discovered tool.
+func (a *App) patchAgentTools(agent string, tools []string) error {
+	if tools == nil {
+		tools = []string{}
+	}
+	names, err := json.Marshal(tools)
+	if err != nil {
+		return err
+	}
+	patch := fmt.Sprintf(
+		`{"spec":{"declarative":{"tools":[{"type":"McpServer","mcpServer":{"apiGroup":"kagent.dev","kind":"RemoteMCPServer","name":"kaimahi-tools","toolNames":%s}}]}}}`,
+		names)
+	return a.kubectlRun("-n", config_kagentNamespace, "patch", "agent", agent, "--type", "merge", "-p", patch)
+}
+
+// toolsDefaults fills the knobs the operator did not name. The credential
+// comes from the RESOLVED configuration, not from the constant, so
+// CRED_TOOLS in the environment reaches `kmx tools` the same way it reaches
+// `make govern-tools`.
+func (a *App) toolsDefaults(o ToolsOptions) ToolsOptions {
+	if o.Credential == "" {
+		o.Credential = a.Cfg.ToolsCredential
+	}
+	if o.Credential == "" {
+		o.Credential = config.DefaultToolsCredential
+	}
+	if o.Agent == "" {
+		o.Agent = config.DefaultToolsAgent
+	}
+	if o.Secret == "" {
+		o.Secret = config.DefaultToolsSecret
+	}
+	if o.SecretNamespace == "" {
+		o.SecretNamespace = config.DefaultNamespace
+	}
+	if o.Tools == "" {
+		o.Tools = config.DefaultTools
+	}
+	return o
+}

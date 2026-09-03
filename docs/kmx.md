@@ -5,16 +5,19 @@ model, kagent, an agent, a conversation — and then the governance plane, a
 governed credential, and the ledger that shows what it spent. It needs no
 clone and no Makefile.
 
-It is also the only implementation of that journey. The Makefile's `up`,
-`cluster`, `ollama`, `model`, `kagent`, `agent`, `tools-agent`, `chat`,
-`status`, `down`, `plane`, `plane-image`, `plane-secrets`, `govern`,
-`ledger`, `grants`, `tool-audit` and `approval-audit` targets are one-line
-recipes that call this binary on the kind path, so CI proves the code you
-actually run. Everything else in the Makefile — budgets, approvals,
-backup/restore, Slack, GitHub, inbound hooks, secret capture, AKS, the
-probes — is unchanged and still make's.
+It is also the only implementation of that journey. Thirty-two Makefile
+targets are one-line recipes that call this binary on the kind path — the
+runtime (`up`, `cluster`, `ollama`, `model`, `kagent`, `agent`,
+`tools-agent`, `chat`, `status`, `down`), the plane (`plane`, `plane-image`,
+`plane-secrets`, `govern`), the reads (`ledger`, `grants`, `tool-audit`,
+`approval-audit`, `approvals`, `tool-allowlist`, `plane-metrics`,
+`backup`), and the operator verbs (`use`, `use-ollama`, `budget`,
+`approve`, `deny`, `request`, `govern-tools`, `ungovern-tools`,
+`tool-allow`, `restore`) — so CI proves the code you actually run. What is
+left in the Makefile is the Slack, GitHub and inbound connector families,
+secret capture, AKS and the probes.
 
-**Status: milestone 2.** Nothing is published. `kmx` is a provisional name,
+**Status: milestone 3.** Nothing is published. `kmx` is a provisional name,
 like `kaimahi` itself, and is not claimed anywhere (D26/D27/D28 on the
 [board](COORDINATION.md)).
 
@@ -63,6 +66,17 @@ kmx status
 kmx down
 ```
 
+Once the plane is up, the verbs an operator reaches for:
+
+```bash
+kmx budget hello-world --tokens 200000   # the cap it spends under
+kmx tools govern --tools k8s_get_resources   # the tools agent, behind the gateway
+kmx approvals                            # what is waiting for a human, and the CALL each is about
+kmx approve <id> --ttl 10m --uses 1      # bounded, or it is a config change
+kmx backup                               # the ledger and the audit trails, to a local file
+kmx metrics                              # one replica's Prometheus exposition
+```
+
 Between the two chats nothing about the agent changed except which model
 preset it thinks through. That is the whole point: governance is a preset
 swap plus a credential the agent cannot read past.
@@ -85,6 +99,19 @@ swap plus a credential the agent cannot read past.
 | `kmx ledger [<credential>]` | the spend ledger, newest first, plus month-to-date totals |
 | `kmx grants [<credential>]` | grants, with liveness — an expired grant is not a grant |
 | `kmx audit tool\|approval [<cred>]` | the enforcement points' audit trails |
+| `kmx use <preset>` | switch an agent onto a preset from `k8s/models/` (`--agent`, default `hello-world`); waits until exactly one pod is on the new template |
+| `kmx budget [<credential>] [--cents n\|-] [--tokens n\|-]` | replace the monthly caps. No flags **clears** both — the same as `make budget` with no `CAP_*` |
+| `kmx approvals` | the requests waiting for a decision, each with the CALL it is about |
+| `kmx approve <id> [--ttl 10m] [--uses 1] [--amount n]` | mint the bounded grant. At least one of `--ttl`/`--uses` is required — an unbounded grant is a config change, not an approval |
+| `kmx deny <id>` | refuse a pending request |
+| `kmx request <tool\|budget\|inbound> <subject>` | file one explicitly. `--args '<json>'` (tool requests only) names the CALL to pre-approve; omitting it means the **argument-less** call, never "any call" |
+| `kmx tools govern` | issue the gateway credential, set the allowlist, apply the governed `RemoteMCPServer`, repoint the agent (`--tools`, `--credential`, `--agent`, `--secret`) |
+| `kmx tools allow <tool,tool\|->` | replace the allowlist. `-` is the **empty** allowlist: nothing callable without a live grant |
+| `kmx tools allowlist [<credential>]` | read it back, sorted |
+| `kmx tools ungovern` | put the agent back on the ungoverned tool server |
+| `kmx backup [<file>]` | `pg_dump` the plane's database to a local file (default `backups/kaimahi-<UTC>.sql`, mode 0600) |
+| `kmx restore <file>` | **replace** the plane's database from a backup — every table dropped and recreated |
+| `kmx metrics [--pod <name>]` | one proxy replica's Prometheus exposition; the replica's name goes to stderr so stdout stays machine-readable |
 | `kmx status` | agents, modelconfigs and pods |
 | `kmx down` | delete the kind cluster kmx created |
 | `kmx version` | the pinned kagent and model versions, the plane's image tag, and the revision `kmx plane` would fetch it at |
@@ -118,7 +145,9 @@ kmx reads the names this repository already uses — the Makefile's, and
 | `MODEL` | `qwen2.5:3b` | model pulled into Ollama |
 | `CHAT_PORT` | `8083` | local port for the controller forward |
 | `ADMIN_PORT` | `19091` | local port for the plane's admin forward |
-| `CRED` | `hello-world` | the credential `govern` issues, and the one `ledger` reads by default (`grants` and `audit` default to **all** credentials) |
+| `OPS_PORT` | `19092` | local port for a replica's metrics forward |
+| `CRED` | `hello-world` | the credential `govern` issues, and the one `ledger` and `budget` read/write by default (`grants` and `audit` default to **all** credentials) |
+| `CRED_TOOLS` | `hello-tools` | the credential the MCP gateway admits — what `kmx tools` acts on, and what a `tool` request is filed against |
 | `KAIMAHI_CONFIRM` | unset | confirm a non-kind context, by name |
 | `KMX_HOME` | `~/.config/kmx` | where the selected context and the cached kagent binary live |
 
@@ -273,15 +302,34 @@ kmx agent chat hello-world "Who are you?"
 kmx ledger
 ```
 
-## What is NOT in `kmx` yet
+## Backup, restore, and metrics
 
-Deliberately, per D28(3) — these stay in the Makefile:
+```bash
+kmx backup                       # backups/kaimahi-<UTC>.sql, mode 0600
+kmx restore backups/kaimahi-....sql
+kmx metrics | grep '^kaimahi_'
+```
+
+`pg_dump` and `psql` run **inside** the Postgres pod, over its unix socket,
+and the bytes travel through `kubectl exec`. The database password never
+leaves the pod, nothing is written to disk in the cluster, and no local
+Postgres client is needed.
+
+| Property | Why |
+|---|---|
+| **A dump with no trailer is not a backup** | `pg_dump` writes its trailer last, so its presence is the only well-formed positive. kmx writes to `<file>.partial` and renames only once it is there; a dump that stopped half way leaves nothing behind. `restore` checks the same trailer **before** it touches the plane. |
+| **The backup is 0600 from the moment it exists** | It holds credential names and token hashes (never a token), the caps, the ledger, the audit trails and the grants. Keep it as you would the database. |
+| **`restore` quiesces the plane** | The proxies are scaled to zero — in-flight calls drain — the tables are replaced, and the proxies are scaled back. A proxy admitting calls during a `--clean` restore could write ledger rows the restore then discards, or decide a budget against a half-loaded ledger. Whatever happens, the proxies come back. |
+| **`restore` is guarded; `backup` is not** | `restore` rewrites the ledger. `backup` is a read, like `ledger`. |
+| **`metrics` reads ONE replica** | Each replica carries its own counters, so a merged view would be arithmetic kmx invented. The ops port is on no Service, so this is a port-forward to a **pod** — and only to one that is Ready and not terminating, because a draining pod stays Running and keeps its IP. |
+
+## What is NOT in `kmx`
+
+Deliberately — these stay in the Makefile and the scripts, because each is
+entangled with capturing a credential, which kmx accepts in no form at all:
 
 | Not here | Where it is |
 |---|---|
-| Budgets (`make budget`) and approvals (`make approvals`, `approve`, `deny`, `request`) | [approvals.md](approvals.md), [spend.md](spend.md) |
-| Backup and restore, plane metrics | [operations.md](operations.md) |
-| The tool gateway's wiring (`make govern-tools`, `tool-allow`) | [tool-governance.md](tool-governance.md) |
 | The Slack, GitHub and inbound connector families | [slack.md](slack.md), [hosted-upstreams.md](hosted-upstreams.md), [inbound.md](inbound.md) |
 | Capturing a secret of any kind | `make model-secret`, `make copilot-secret`, `make slack-secret` — key-bearing steps stay in standalone scripts |
 | A managed cluster (AKS) | `TARGET=aks make …` ([aks.md](aks.md)) |

@@ -3,6 +3,8 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -52,18 +54,90 @@ func TestThePlanesManifestsTravelInTheBinary(t *testing.T) {
 	}
 }
 
-// What kmx carries is a decision, not a directory listing. Milestone 3's
-// families must NOT ride along: their targets are still the Makefile's, and
-// a manifest in the binary that no kmx command applies is a claim kmx cannot
-// honour. The hosted-model presets are excluded for a second reason — they
-// need a captured key, and kmx accepts a credential in no form at all (D27).
-func TestMilestoneThreesManifestsAreNotEmbedded(t *testing.T) {
+// Milestone 3 adds two things to the binary, and each is there because a
+// kmx command applies it: the governed RemoteMCPServer `kmx tools govern`
+// puts the tools agent behind, and EVERY model preset, because `kmx use` is
+// `make use` and `make use PRESET=anthropic` has always been a documented
+// flow. A preset NAMES a Secret; it never carries a key, so this puts no
+// credential anywhere near kmx (D27) — minting that Secret is still
+// `make model-secret` and the scripts.
+func TestMilestoneThreesManifestsTravelInTheBinary(t *testing.T) {
+	names := []string{"kaimahi-tools.yaml"}
+	presets, err := os.ReadDir(filepath.Join("..", "..", "..", "k8s", "models"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range presets {
+		names = append(names, "models/"+e.Name())
+	}
+	for _, name := range names {
+		embedded, err := manifest(name)
+		if err != nil {
+			t.Errorf("k8s/%s is not embedded in the binary: %v", name, err)
+			continue
+		}
+		onDisk, err := os.ReadFile(filepath.Join("..", "..", "..", "k8s", filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatalf("k8s/%s: %v", name, err)
+		}
+		if string(embedded) != string(onDisk) {
+			t.Errorf("k8s/%s differs from the embedded copy", name)
+		}
+	}
+}
+
+// Every preset in the tree is a preset `kmx use` will name, and nothing
+// else is. This is the list an operator sees when they mistype one, so a
+// preset added to k8s/models/ that never reached the binary would be
+// advertised and then fail to apply.
+func TestUseOffersExactlyTheEmbeddedPresets(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join("..", "..", "..", "k8s", "models"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, e := range entries {
+		want = append(want, strings.TrimSuffix(e.Name(), ".yaml"))
+	}
+	// Sorted on the NAME, not the filename: ReadDir orders
+	// "openai-compatible.yaml" before "openai.yaml" ('-' sorts below '.'),
+	// and what an operator is offered is the name.
+	sort.Strings(want)
+	got := presetNames()
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("kmx use offers %v, k8s/models/ holds %v", got, want)
+	}
+	for _, preset := range got {
+		name, err := presetManifest(preset)
+		if err != nil {
+			t.Errorf("preset %q is offered but does not resolve: %v", preset, err)
+			continue
+		}
+		if _, err := manifest(name); err != nil {
+			t.Errorf("preset %q resolves to %s, which is not embedded: %v", preset, name, err)
+		}
+	}
+	// And a name that is not a preset is refused rather than turned into a
+	// path: the preset name reaches both the embedded filesystem and the
+	// object the agent is patched onto.
+	for _, bad := range []string{"", "../plane/proxy", "nope", "governed-ollama.yaml"} {
+		if _, err := presetManifest(bad); err == nil {
+			t.Errorf("presetManifest(%q) was accepted", bad)
+		}
+	}
+}
+
+// What kmx carries is still a decision, not a directory listing. The Slack,
+// GitHub, inbound and AP families must NOT ride along: their targets are
+// the Makefile's, each is entangled with capturing a credential (D27), and a
+// manifest in the binary that no kmx command applies is a claim kmx cannot
+// honour.
+func TestTheConnectorFamiliesAreNotEmbedded(t *testing.T) {
 	for _, name := range []string{
 		"kaimahi-slack.yaml", "slack-agent.yaml", "slack-mcp.yaml",
 		"kaimahi-github.yaml", "github-agent.yaml",
 		"inbound-edge.yaml", "egress-copilot.yaml", "egress-hosted.yaml",
-		"kaimahi-tools.yaml",
-		"models/openai.yaml", "models/anthropic.yaml", "models/github-copilot.yaml",
+		"ap-agent.yaml", "kaimahi-erp.yaml", "erp-mcp.yaml",
 	} {
 		// The premise first: this asserts an EXCLUSION, and an exclusion
 		// passes for free once the thing it excludes stops existing. If a

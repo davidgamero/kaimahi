@@ -53,13 +53,43 @@ OWNED = {
     "grants": "kmx grants",
     "tool-audit": "kmx audit tool",
     "approval-audit": "kmx audit approval",
+    # Milestone 3 (D33(5)): the verbs an operator reaches for once the plane
+    # is up. Same rule, same reason — and `use`, `govern-tools` and
+    # `ungovern-tools` in particular, because all three ended in the
+    # `wait_switched` macro and a fourth copy of that wait is exactly the
+    # drift this check exists to catch.
+    "use": "kmx use",
+    "use-ollama": "kmx use ollama",
+    "budget": "kmx budget",
+    "approvals": "kmx approvals",
+    "approve": "kmx approve",
+    "deny": "kmx deny",
+    "request": "kmx request",
+    "govern-tools": "kmx tools govern",
+    "ungovern-tools": "kmx tools ungovern",
+    "tool-allow": "kmx tools allow",
+    "tool-allowlist": "kmx tools allowlist",
+    "backup": "kmx backup",
+    "restore": "kmx restore",
+    "plane-metrics": "kmx metrics",
 }
 
 # Targets whose recipe passes an operator-settable argument (a credential, an
 # agent, a question). For these the delegation is a PREFIX match; every other
 # target must match its argument list exactly, which is what stops "up" from
 # being satisfied by "up --step cluster".
-CARRIES_ARGUMENTS = {"chat", "govern", "ledger", "tool-audit"}
+CARRIES_ARGUMENTS = {
+    "chat", "govern", "ledger", "tool-audit",
+    # Milestone 3: a preset, a credential, caps, a request id, a file, a
+    # tool list. Each is empty in this dry run and non-empty in real use, so
+    # the exact form is checked by the empty case and the prefix covers the
+    # rest.
+    "use", "budget", "approve", "deny", "request",
+    "govern-tools", "tool-allow", "tool-allowlist", "backup", "restore",
+    # POD= names one replica; without it the recipe expands to a bare
+    # `kmx metrics`, which the exact-match arm below still pins.
+    "plane-metrics",
+}
 
 # A line that reaches the cluster itself. Anchored to a command position —
 # the start of a line, or after a shell operator — so that `KIND_CLUSTER=x`
@@ -217,6 +247,23 @@ DELEGATION_SELFTEST = [
      "bin/kmx audit tool hello-tools", True),
     ("the approval trail is not the tool trail", "tool-audit", "kmx audit tool",
      "bin/kmx audit approval", False),
+    # Milestone 3: the noun-grouped tool verbs must not satisfy each other.
+    ("the governed-tools switch", "govern-tools", "kmx tools govern",
+     "bin/kmx tools govern --credential hello-tools --tools \"k8s_get_resources\"", True),
+    ("ungovern is not govern", "govern-tools", "kmx tools govern", "bin/kmx tools ungovern", False),
+    ("the allowlist read is not the allowlist write", "tool-allowlist", "kmx tools allowlist",
+     "bin/kmx tools allow \"k8s_get_resources\" --credential hello-tools", False),
+    ("`use` with no PRESET is still the use recipe", "use", "kmx use", "bin/kmx use", True),
+    ("`use ollama` is not the generic use recipe", "use-ollama", "kmx use ollama",
+     "bin/kmx use ollama", True),
+    ("...and the generic one does not satisfy use-ollama", "use-ollama", "kmx use ollama",
+     "bin/kmx use", False),
+    ("restore is not backup", "restore", "kmx restore", "bin/kmx backup", False),
+    ("metrics with no POD", "plane-metrics", "kmx metrics", "bin/kmx metrics", True),
+    ("metrics for one replica", "plane-metrics", "kmx metrics",
+     "bin/kmx metrics --pod kaimahi-proxy-1", True),
+    ("...but not some other command that starts the same way", "plane-metrics", "kmx metrics",
+     "bin/kmx metricsx", False),
 ]
 
 
