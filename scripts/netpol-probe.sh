@@ -112,9 +112,15 @@ r net443 nc -z -w 5 $INTERNET_TARGET 443
 r net80 nc -z -w 5 $INTERNET_TARGET 80
 "
 
-# run_probe <ns> <name> <labels-json> — a throwaway pod that runs the
-# checks and exits; its log is the result.
-run_probe() {
+# start_probe <ns> <name> <labels-json> — create a throwaway pod that runs
+# the checks and exits; its log is the result. Creating every probe pod at
+# once and collecting them afterwards is what keeps this step near the
+# duration of ONE probe rather than the sum of five (W25): each pod's ~25s of
+# deliberate timeouts is wall-clock nobody has to spend twice. The pods are
+# independent — different pods, different labels, read-only checks against
+# unrelated targets — and the RESULTS are still evaluated in the order below,
+# with the same early exits, so a run reads exactly as it always did.
+start_probe() {
   local ns=$1 name=$2 labels=$3
   pods+=("$ns/$name")
   $KUBECTL -n "$ns" apply -f - >/dev/null <<EOF
@@ -141,10 +147,15 @@ spec:
         capabilities:
           drop: [ALL]
 EOF
-  # Bounded wait for the pod to finish (image pull + up to ~25s of
-  # timeouts). Phase Failed would mean the shell itself died — the
-  # checks never exit nonzero — so require Succeeded specifically.
-  for _ in $(seq 1 120); do
+}
+
+# collect_probe <ns> <name> — bounded wait for the pod to finish (image pull
+# + up to ~25s of timeouts), then its log. Phase Failed would mean the shell
+# itself died — the checks never exit nonzero — so require Succeeded
+# specifically.
+collect_probe() {
+  local ns=$1 name=$2 phase=
+  for _ in $(seq 1 180); do
     phase=$($KUBECTL -n "$ns" get pod "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)
     case "$phase" in Succeeded) break ;; Failed) break ;; esac
     sleep 1
@@ -152,9 +163,41 @@ EOF
   if [ "$phase" != Succeeded ]; then
     echo "probe pod $ns/$name did not complete (phase '$phase'):" >&2
     $KUBECTL -n "$ns" describe pod "$name" 2>&1 | tail -15 >&2
-    exit 1
+    return 1
   fi
   $KUBECTL -n "$ns" logs "$name"
+}
+
+# in_background <who> <command...> — run one probe's collection into
+# $work/<who>, recording its exit status in $work/<who>.status so a failure
+# inside a background subshell cannot pass as an empty result file.
+in_background() {
+  local who=$1
+  shift
+  (
+    if "$@" > "$work/$who" 2>"$work/$who.err"; then
+      echo 0 > "$work/$who.status"
+    else
+      echo 1 > "$work/$who.status"
+    fi
+  ) &
+}
+
+# await_probes <who...> — wait for every background collection and fail
+# closed on any that did not finish cleanly, printing what it said. An
+# absent status file is a failure too: a killed subshell must never read as
+# an empty, uncontested result.
+await_probes() {
+  wait
+  local who status
+  for who in "$@"; do
+    status=$(cat "$work/$who.status" 2>/dev/null || echo missing)
+    cat "$work/$who.err" >&2 2>/dev/null || true
+    if [ "$status" != 0 ]; then
+      echo "netpol-probe: the $who probe did not produce results (status '$status')" >&2
+      exit 1
+    fi
+  done
 }
 
 # exec_probe <ns> <deploy> <loopback-port> — the same checks inside a
@@ -199,8 +242,21 @@ expect() {
 work=$(mktemp -d)
 trap 'cleanup; rm -rf "$work"' EXIT
 
+echo "== starting every probe at once (results are asserted in order below)"
+start_probe default "netpol-control-$suffix" '{}'
+start_probe "$NAMESPACE" "netpol-unlabeled-$suffix" '{}'
+start_probe "$NAMESPACE" "netpol-proxy-$suffix" '{"app": "kaimahi-proxy"}'
+start_probe "$NAMESPACE" "netpol-slack-$suffix" '{"app.kubernetes.io/name": "kaimahi-slack-mcp"}'
+in_background control collect_probe default "netpol-control-$suffix"
+in_background unlabeled collect_probe "$NAMESPACE" "netpol-unlabeled-$suffix"
+in_background proxy collect_probe "$NAMESPACE" "netpol-proxy-$suffix"
+in_background slack collect_probe "$NAMESPACE" "netpol-slack-$suffix"
+# The real Postgres pod is exec'd at the same time — it is already running,
+# so it has nothing to wait for but its own checks.
+in_background postgres exec_probe "$NAMESPACE" kaimahi-postgres 5432
+await_probes control unlabeled proxy slack postgres
+
 echo "== control: unpoliced pod in namespace default"
-run_probe default "netpol-control-$suffix" '{}' > "$work/control"
 expect control "$work/control" dns=reachable ollama=reachable postgres=blocked net443=reachable net80=reachable
 if grep -q 'blocked' <(awk '$2!="postgres"' "$work/control"); then
   echo "  the control cannot reach a target — nothing below can be attributed to policy" >&2
@@ -209,7 +265,6 @@ if grep -q 'blocked' <(awk '$2!="postgres"' "$work/control"); then
 fi
 
 echo "== unlabeled pod in namespace $NAMESPACE (default-deny, no allowance)"
-run_probe "$NAMESPACE" "netpol-unlabeled-$suffix" '{}' > "$work/unlabeled"
 if ! grep -q blocked "$work/unlabeled"; then
   echo "  NetworkPolicy is NOT ENFORCED on this cluster: a pod with no allowance reached everything." >&2
   echo "  The policies exist and protect nothing. See docs/egress.md (CNI enforcement)." >&2
@@ -218,16 +273,13 @@ fi
 expect unlabeled "$work/unlabeled" dns=blocked ollama=blocked postgres=blocked net443=blocked net80=blocked
 
 echo "== proxy-shaped pod (labels of kaimahi-proxy)"
-run_probe "$NAMESPACE" "netpol-proxy-$suffix" '{"app": "kaimahi-proxy"}' > "$work/proxy"
 if [ "$COPILOT_EGRESS" = 1 ]; then proxy_net=reachable; else proxy_net=blocked; fi
 expect proxy "$work/proxy" dns=reachable ollama=reachable postgres=reachable net443=$proxy_net net80=blocked
 
 echo "== slack-shaped pod (labels of the Slack MCP server)"
-run_probe "$NAMESPACE" "netpol-slack-$suffix" '{"app.kubernetes.io/name": "kaimahi-slack-mcp"}' > "$work/slack"
 expect slack "$work/slack" dns=reachable ollama=blocked postgres=blocked net443=reachable net80=blocked
 
 echo "== kaimahi-postgres (exec into the real pod)"
-exec_probe "$NAMESPACE" kaimahi-postgres 5432 > "$work/postgres"
 # loopback is the row's positive (see exec_probe). The postgres column
 # is the pod dialing its own Service IP; not a boundary statement either
 # way, so it is not asserted.

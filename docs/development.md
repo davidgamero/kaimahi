@@ -103,6 +103,37 @@ all running: a 3B model on a saturated single node can exceed the kagent
 controller's A2A timeout even though the governed calls themselves succeed.
 If a chat times out, check `make ledger` before assuming the plane is broken.
 
+### What CI proves, and where a new probe goes
+
+Three required checks gate every PR: `hygiene` (repository checks, kmx's
+own tests), `go-plane` (the proxy module) and `e2e-hello-world`.
+
+`e2e-hello-world` owns no cluster. It is an aggregator over four shard jobs
+that run at the same time, each bringing up its own kind cluster and running
+one part of the end-to-end proof:
+
+| shard | what it proves |
+|---|---|
+| `e2e-runtime` | the runtime a developer gets (P1/P2/P3) and hosted tool upstreams (P10) |
+| `e2e-spend` | metering, budgets, the budget approval cycle, the network boundary, the inbound bridge |
+| `e2e-tools` | the tool gateway, tool approvals, the governed Slack path, approvals from Slack, the exact races and metrics |
+| `e2e-resilience` | a replica killed mid-cycle, a Postgres outage, both replicas restarted, backup and restore |
+
+Adding a probe: put it in the shard whose state it needs. The shards are
+drawn along state lineage — a denial in one step is what files the approval
+the next step approves — so a probe that reads what another step wrote
+belongs in that step's shard, or it has to set that state up itself.
+
+Two rules the `hygiene` job enforces, so a mistake fails on the PR that
+makes it rather than on someone else's:
+
+- every step in every shard carries `if: steps.changes.outputs.docs_only !=
+  'true'`, the docs-only short-circuit (a docs-only PR reports all three
+  checks in seconds without booting a cluster);
+- `e2e-hello-world` names every shard in `needs` and runs with `always()`.
+  A shard nothing needs would fail while the required check stayed green,
+  and a required check that never reports blocks every merge.
+
 ## How the plane actually works
 
 One binary (two replicas), five HTTP listeners, one Postgres:

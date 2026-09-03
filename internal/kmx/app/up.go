@@ -47,25 +47,29 @@ func (a *App) Up(step string) error {
 		return err
 	}
 
-	for _, s := range steps {
-		var err error
-		switch s {
-		case "cluster":
-			err = a.stepCluster()
-		case "ollama":
-			err = a.stepOllama()
-		case "model":
-			err = a.stepModel()
-		case "kagent":
-			err = a.stepKagent()
-		case "agent":
-			err = a.stepAgent()
-		case "tools-agent":
-			err = a.stepToolsAgent()
+	if step != "" {
+		for _, s := range steps {
+			var err error
+			switch s {
+			case "cluster":
+				err = a.stepCluster()
+			case "ollama":
+				err = a.stepOllama()
+			case "model":
+				err = a.stepModel()
+			case "kagent":
+				err = a.stepKagent()
+			case "agent":
+				err = a.stepAgent()
+			case "tools-agent":
+				err = a.stepToolsAgent()
+			}
+			if err != nil {
+				return err
+			}
 		}
-		if err != nil {
-			return err
-		}
+	} else if err := a.upOverlapped(); err != nil {
+		return err
 	}
 
 	if step == "" {
@@ -86,6 +90,50 @@ func (a *App) Up(step string) error {
 		a.notef("\nTalk to the agent:  kmx agent chat %s \"%s\"", config.DefaultAgent, config.DefaultTask)
 	}
 	return nil
+}
+
+// upOverlapped is the whole journey, with the two agents brought up
+// together.
+//
+// The order the steps are DECLARED in (UpSteps) is the order an operator
+// reads them in and the order `--step` runs them in, and it is kept here:
+// Ollama is deployed and its model pulled before kagent is installed, so a
+// cluster that cannot pull at all still fails on the smaller download first.
+//
+// Only the two agents overlap, and the measurements say why (W25, on a
+// 2-CPU GitHub runner):
+//
+//	hello-world Ready 29s + hello-tools Ready 16s, serially → 33s together
+//	ollama's rollout (41s) overlapped with kagent's five pods (61s) → 116s,
+//	  against 118s serially: nothing gained
+//
+// The second line is the useful finding. Those two are not waiting on each
+// other, they are waiting on the same network: they pull ~2GB of images
+// between them, so running them at once splits the bandwidth instead of
+// saving time. The agents are different — their images are already on the
+// node — and that is where the 12 seconds are.
+//
+// Nothing is skipped and nothing is weakened: every command, wait and
+// preservation check the serial version ran still runs, with the same
+// timeouts.
+func (a *App) upOverlapped() error {
+	if err := a.stepCluster(); err != nil {
+		return err
+	}
+	if err := a.stepOllama(); err != nil {
+		return err
+	}
+	if err := a.stepModel(); err != nil {
+		return err
+	}
+	if err := a.stepKagent(); err != nil {
+		return err
+	}
+	a.notef("\nbringing up both agents together (each lane's output is tagged)")
+	return a.runLanes([]lane{
+		{"agent", func(b *App) error { return b.stepAgent() }},
+		{"tools-agent", func(b *App) error { return b.stepToolsAgent() }},
+	})
 }
 
 // ---- cluster --------------------------------------------------------------

@@ -298,17 +298,30 @@ jobs:
       # reply.
       - name: Chat verifier self-test (tool-path verdicts)
         run: python3 scripts/verify-chat.py --selftest
-      # Both cluster jobs short-circuit docs-only changes at STEP level (the
-      # e2e job must run and report — it is a required check). A step
-      # appended without the guard would run against no cluster on the next
-      # docs-only change, so refuse it here, on the PR that adds it. Only the
-      # checkout, the classify step and the docs-only summary steps are
-      # exempt; every other step must skip when docs_only is 'true'.
-      - name: Every cluster step carries the docs-only guard, and the clone-free job has no checkout
+      # Every cluster job short-circuits docs-only changes at STEP level (the
+      # e2e shards must run and report — `e2e-hello-world` aggregates them
+      # and is a required check). A step appended without the guard would run
+      # against no cluster on the next docs-only change, so refuse it here,
+      # on the PR that adds it. Only the checkout, the classify step and the
+      # docs-only summary steps are exempt; every other step must skip when
+      # docs_only is 'true'.
+      #
+      # W25 added the second half: the required check is an aggregator over
+      # the shards, so a new shard that nothing needs would run, fail, and
+      # still leave `e2e-hello-world` green. The aggregator must name every
+      # shard, must run with always() (a skipped required check never reports
+      # and blocks every merge), and must own no cluster steps of its own.
+      - name: Every cluster step carries the docs-only guard, the required check covers every shard, and the clone-free job has no checkout
         run: |
           python3 - <<'EOF'
           import sys, yaml
           wf = yaml.safe_load(open(".github/workflows/ci.yml"))
+          jobs = wf["jobs"]
+          required = "e2e-hello-world"
+          shards = sorted(j for j in jobs if j.startswith("e2e-") and j != required)
+          if not shards:
+              print("no e2e shard jobs found — the proof has to run somewhere")
+              sys.exit(1)
           exempt = lambda s: (s.get("id") in ("changes", "docs-only-summary")
                               or str(s.get("if", "")).strip() == "steps.changes.outputs.docs_only == 'true'"
                               or str(s.get("uses", "")).startswith("actions/checkout"))
@@ -318,22 +331,35 @@ jobs:
                     "failure() && steps.changes.outputs.docs_only != 'true'",
                     "always() && steps.changes.outputs.docs_only != 'true'"}
           total = 0
-          for job in ("e2e-hello-world", "kmx-clone-free"):
-              steps = wf["jobs"][job]["steps"]
+          for job in shards + ["kmx-clone-free"]:
+              steps = jobs[job]["steps"]
               total += len(steps)
               bad = [s.get("name") or s.get("uses") for s in steps
                      if not exempt(s) and str(s.get("if", "")).strip() not in guards]
               if bad:
                   print(f"{job} steps missing the docs-only guard:", *bad, sep="\n  ")
                   sys.exit(1)
+          agg = jobs[required]
+          if sorted(agg.get("needs", [])) != shards:
+              print(f"{required} must need exactly {shards}, needs {agg.get('needs')}")
+              sys.exit(1)
+          if str(agg.get("if", "")).strip() != "always()":
+              print(f"{required} must run with always(), or a failed shard leaves it unreported")
+              sys.exit(1)
+          for step in agg["steps"]:
+              body = str(step.get("run", ""))
+              if "kubectl" in body or "make " in body:
+                  print(f"{required} must own no cluster steps: {step.get('name')}")
+                  sys.exit(1)
           # The clone-free job proves the path with NO checkout. A checkout
           # step added to it would make kmx auto-detect a source and the job
           # would silently stop proving anything.
           if any(str(s.get("uses", "")).startswith("actions/checkout")
-                 for s in wf["jobs"]["kmx-clone-free"]["steps"]):
+                 for s in jobs["kmx-clone-free"]["steps"]):
               print("kmx-clone-free must not check the repository out — that is the premise of the job")
               sys.exit(1)
-          print(f"{total} cluster steps across both jobs: all guarded; kmx-clone-free has no checkout")
+          print(f"{total} cluster steps across {len(shards)} shards + kmx-clone-free: all guarded")
+          print(f"{required} reports for: {', '.join(shards)}; kmx-clone-free has no checkout")
           EOF
       # P11: kmx's own module. It lives in the REQUIRED hygiene job rather
       # than a job of its own, because the guard port, the scaffolder's
@@ -450,18 +476,80 @@ jobs:
           grep -q -- '--- PASS: TestMigrateTwiceConcurrentlyIsSerialAndIdempotent' test.out
           grep -q -- '--- PASS: TestEveryLabelIsFromTheFixedVocabularyOrAnAllowedShape' test.out
 
-  # The P1 deliverable, verified for real: kind cluster, in-cluster Ollama,
-  # kagent via helm, apply k8s/hello-world.yaml, converse via the kagent CLI.
+  # ---- the end-to-end proof, in four shards (W25) --------------------------
+  #
+  # Everything P1 through P12 proves about a running cluster lives below.
+  # It used to be ONE job of 68 serial steps on one cluster (P12 branch,
+  # run 33707312808): 934s, of which 186s was the bring-up and 748s was a
+  # serial tail of probes — hygiene and go-plane are ~40s each, so this job
+  # WAS CI's wall-clock. It is now four jobs that each bring up their own
+  # cluster and run one part of the tail, plus an aggregator (`e2e-hello-world`, the name the protect-main
+  # ruleset requires) that reports whether all four passed.
+  #
+  # The arithmetic, from measured runs and not estimates (run 33707312808
+  # for the baseline; the lab runs on PR #65 for the parts):
+  #
+  #   bring-up            186s, and it is BANDWIDTH-bound, not latency-bound
+  #                       (kind 25s, ollama's image 41s, the 1.9GB model
+  #                       16s, kagent's five pods 61s, the two agents 45s).
+  #                       Overlapping Ollama with kagent measured 116s
+  #                       against 118s serial — nothing to win there, and
+  #                       caching the model would save 16s of 934.
+  #
+  #                       Sharing the bring-up across the shards was
+  #                       measured too, and does not pay. Each job is its
+  #                       own VM, so what could be shared is the ~5.1GB of
+  #                       images, not the cluster: with every image already
+  #                       on the node `make up` is 87s instead of 188s, but
+  #                       `kind load image-archive` takes 94s to put them
+  #                       there (~54MB/s into containerd, SLOWER than the
+  #                       node pulls them from the registry). Trimmed to
+  #                       just the images kind's node image does not ship it
+  #                       is still a net loss before a cache restore is
+  #                       counted. The bring-up floor is bytes on the wire.
+  #                       (And the shards could not share one cluster even
+  #                       if they could reach it: this one wipes the
+  #                       database, that one kills replicas, another
+  #                       enforces default-deny.)
+  #   `make plane`        60s, of which ~30s is a docker build that needs no
+  #                       cluster. Building it in the background during the
+  #                       bring-up measured 53s against 60s and is NOT done
+  #                       here: kmx owns that build now (P11 m2), and a
+  #                       second copy of its command in this file would go
+  #                       stale silently — a changed build arg is a changed
+  #                       cache key, and the pre-warm would just be a wasted
+  #                       build nobody notices.
+  #   the tail            748s serial. Sharded four ways it is ~200s per
+  #                       shard, which is the same order as the bring-up
+  #                       every shard has to pay — so four is where the
+  #                       arithmetic stops paying: a fifth shard adds a
+  #                       whole bring-up to save ~50s of tail.
+  #
+  # What did NOT change: the set of assertions. Every probe that ran on
+  # every PR still runs on every PR. Steps were moved verbatim; where a
+  # shard needs state an earlier step used to leave behind (a governed
+  # credential, an exhausted budget), it REPEATS that step rather than
+  # asserting less. Nothing moved to main-only, nothing is path-filtered,
+  # and no assertion became a smoke test.
+  #
+  # The shards are drawn along state lineage, not step order, because the
+  # chain is stateful: the budget cycle's denial is what files the approval
+  # the next step approves, and the metrics step reads what the race probes
+  # wrote. A shard boundary in the middle of one of those would have needed
+  # a replay that proves less than the original.
+  #
   # Docs-only short-circuit (D17 follow-up): board updates are PRs and the
   # ruleset requires this check, so a doc-only PR used to wait ~11 min for
   # a cluster it cannot affect. The step after checkout classifies the
   # change with plain git; when EVERY changed file is documentation
-  # (docs/**, *.md)
-  # the cluster steps are skipped via a per-step guard and the job still
-  # reports success. Anything else — code, an undeterminable file set
-  # (missing/unfetchable base, empty diff), any error — runs the full job.
-  # The hygiene job refuses an e2e step that lacks the guard.
-  e2e-hello-world:
+  # (docs/**, *.md) the cluster steps are skipped via a per-step guard and
+  # every shard still reports success. Anything else — code, an
+  # undeterminable file set (missing/unfetchable base, empty diff), any
+  # error — runs the full job. The hygiene job refuses an e2e step that
+  # lacks the guard, and refuses a shard the aggregator does not name.
+  # SHARD 1 of 4 — the runtime a developer gets (P1/P2/P3) and the hosted
+  # tool upstream (P10), which needs the plane but no agent.
+  e2e-runtime:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -617,763 +705,6 @@ jobs:
       - name: Deploy the governance plane
         if: steps.changes.outputs.docs_only != 'true'
         run: make plane
-      # P9: two replicas (10m each — the node is at its request ceiling,
-      # ci.yml's P4a comment; this is the whole added cost). Both must
-      # be Ready and each must answer its own probes, and the schema
-      # under them must carry one row per migration: the first
-      # `make plane` above booted both replicas together against an
-      # EMPTY database, so the migration lock was exercised for real
-      # there (its outcome is the consistent version table and two
-      # Ready pods). The current pods are usually the post-restart
-      # generation and log "nothing to apply" — but `make plane` restarts
-      # the deployment the moment Postgres is Ready, and a first-generation
-      # pod still in its connect retry can be replaced before it migrated,
-      # so a post-restart pod may be the one that logs "applied" (seen on
-      # PR #51). Either line is a clean boot under the lock; what must hold
-      # is the consistent version table below. The lock race itself is
-      # also proven by the store test in go-plane.
-      - name: Both replicas serve, schema consistent under the migration lock
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          ready=$(kubectl --context kind-kaimahi-p1 -n kaimahi get deploy kaimahi-proxy -o jsonpath='{.status.readyReplicas}')
-          test "$ready" = 2
-          # Ready and not terminating (the restart in `make plane` leaves
-          # the old pods draining for a moment): scripts/plane-pods.sh.
-          pods=$(KUBECTL="kubectl --context kind-kaimahi-p1" bash scripts/plane-pods.sh)
-          test "$(echo "$pods" | wc -l)" = 2
-          for pod in $pods; do
-            KUBECTL="kubectl --context kind-kaimahi-p1" POD="$pod" bash scripts/plane-metrics.sh > "metrics-$pod.out"
-            grep -q '^kaimahi_build_info{' "metrics-$pod.out"
-            kubectl --context kind-kaimahi-p1 -n kaimahi logs "$pod" | grep -qE 'migrations: (nothing to apply|applied)'
-          done
-          kubectl --context kind-kaimahi-p1 -n kaimahi exec deploy/kaimahi-postgres -- \
-            psql -U kaimahi -d kaimahi -tAc 'SELECT count(*), count(DISTINCT version_id) FROM goose_db_version WHERE version_id > 0' | tee versions.out
-          python3 -c 'n,d=open("versions.out").read().strip().split("|"); assert n==d and int(n)>=7, (n,d)'
-      - name: Issue governed credential and switch agent through the proxy
-        if: steps.changes.outputs.docs_only != 'true'
-        run: make govern
-      - name: Governed chat via the proxy
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          make chat | tee governed-chat.out
-          python3 scripts/verify-chat.py governed-chat.out
-      - name: Assert the ledger recorded the governed chat
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          make ledger | tee ledger.out
-          # Fail closed: a free-tier row for the governed chat with real
-          # token counts, and a non-zero month-to-date token total.
-          grep -E 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' ledger.out
-          python3 - <<'EOF'
-          import re, sys
-          m = re.search(r"month to date: (\d+) cents, (\d+) tokens", open("ledger.out").read())
-          sys.exit(0 if m and int(m.group(2)) > 0 else 1)
-          EOF
-      - name: Budget exhaustion fails closed
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          make budget CAP_TOKENS=1
-          # The same chat must now fail with the meter's clear error; the
-          # task must NOT complete. kagent may exit nonzero on a failed
-          # task, so capture output regardless and assert on content.
-          make chat > denied-chat.out 2>&1 || true
-          cat denied-chat.out
-          grep -q 'monthly token budget reached' denied-chat.out
-          grep -q '"state":"failed"' denied-chat.out
-          # `! cmd` is exempt from errexit (see the lockdown step above),
-          # so assert the absence explicitly.
-          if grep -q '"state":"completed"' denied-chat.out; then
-            echo 'chat completed despite exhausted budget' >&2; exit 1
-          fi
-          make ledger | tee ledger-denied.out
-          grep -E 'denied +429' ledger-denied.out
-      # P4b, keyless: the enforcing MCP gateway in the same cluster/job.
-      # No new pods (the gateway is a second listener in the existing
-      # proxy pod — zero added CPU requests on the ~full node). The tools
-      # agent is governed through the gateway, a REAL tool call is proven
-      # with the P3 probe-ConfigMap pattern, the audit row is asserted,
-      # and a NOT-allowlisted call is denied fail-closed and audited.
-      - name: Govern the tools agent through the MCP gateway
-        if: steps.changes.outputs.docs_only != 'true'
-        run: make govern-tools
-      - name: Governed tool call rides the gateway (P3 probe proof)
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          probe="probe-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
-          kubectl --context kind-kaimahi-p1 -n default create configmap "$probe" \
-            --from-literal=owner=kaimahi-p4b-ci
-          make chat AGENT=hello-tools \
-            TASK='List the configmaps in the default namespace.' | tee gw-chat.out
-          python3 scripts/verify-chat.py gw-chat.out k8s_get_resources "$probe"
-      - name: Assert the audit recorded the governed tool call
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          make tool-audit | tee tool-audit.out
-          grep -E 'hello-tools +kagent-tools +tools/call +k8s_get_resources +allowed +200' tool-audit.out
-      - name: Non-allowlisted tool call denied fail-closed and audited
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          bash scripts/tool-denial-probe.sh k8s_describe_resource
-          make tool-audit | tee tool-audit-denied.out
-          grep -E 'hello-tools +kagent-tools +tools/call +k8s_describe_resource +denied +403' tool-audit-denied.out
-      - name: Agent-side tool wiring carries only the kmh_ token
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          # The Secret value never leaves the pipe; grep -c prints only a
-          # count. The RemoteMCPServer must reference the Secret (no
-          # inline header value), and discovery through the gateway must
-          # project exactly the allowlisted tool.
-          n=$(kubectl --context kind-kaimahi-p1 -n kagent get secret kaimahi-tools-token \
-            -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
-          test "$n" = 1
-          # Exactly one headersFrom entry, Secret-sourced (no inline value),
-          # referencing kaimahi-tools-token — the complete credential set.
-          kubectl --context kind-kaimahi-p1 -n kagent get remotemcpserver kaimahi-tools -o json \
-            | python3 -c 'import json,sys; h=json.load(sys.stdin)["spec"]["headersFrom"]; assert len(h)==1 and "value" not in h[0] and h[0]["valueFrom"]=={"type":"Secret","name":"kaimahi-tools-token","key":"api-key"}, h'
-          discovered=$(kubectl --context kind-kaimahi-p1 -n kagent get remotemcpserver kaimahi-tools \
-            -o jsonpath='{.status.discoveredTools[*].name}')
-          test "$discovered" = k8s_get_resources
-      # P4c, keyless: both approval cycles asserted fail-closed in the
-      # same cluster/job (zero CPU delta — approvals extend the existing
-      # process). USES=1 bounds keep CI sleep-free: exhaustion, not
-      # wall-clock expiry, proves grants end (TTL expiry is live-verified
-      # in the PR).
-      - name: "Approvals tool cycle: denied files request, bounded approval admits THAT call, exhaustion re-denies"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          # P12: a denial, an approval and a retry are all about one CALL.
-          # k8s_get_events declares `namespace` policy-relevant (the
-          # committed table), so the request carries that call's digest
-          # and a summary a human can read.
-          bash scripts/tool-denial-probe.sh k8s_get_events '{"namespace": "default"}'
-          make approvals | tee approvals-tool.out
-          grep -E 'hello-tools +tool +k8s_get_events .*k8s_get_events: namespace default' approvals-tool.out
-          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_events" && /namespace default/ {print $1}' approvals-tool.out)
-          test -n "$id"
-          make approve ID="$id" USES=1 TTL=10m
-          # A DIFFERENT call is not covered by that approval: denied, and
-          # it files its OWN request (two pending, two digests) — the
-          # grant is untouched.
-          bash scripts/tool-denial-probe.sh k8s_get_events '{"namespace": "kube-system"}'
-          make approvals | tee approvals-tool-2.out
-          grep -E 'hello-tools +tool +k8s_get_events .*namespace kube-system' approvals-tool-2.out
-          test "$(grep -c 'k8s_get_events' approvals-tool-2.out)" = 1
-          # The approved call itself is admitted, consuming the single use.
-          bash scripts/tool-call-probe.sh k8s_get_events '{"namespace": "default"}'
-          # The single use is consumed: the same call is denied again,
-          # fail closed, and a fresh request is filed.
-          bash scripts/tool-denial-probe.sh k8s_get_events '{"namespace": "default"}'
-          make tool-audit | tee tool-audit-p4c.out
-          grep -E 'hello-tools +kagent-tools +tools/call +k8s_get_events +allowed +200 +granted' tool-audit-p4c.out
-          # The denial and the admitted call carry the SAME digest: the
-          # call approved and the call that ran are provably one call.
-          python3 - tool-audit-p4c.out <<'EOF'
-          import re, sys
-          rows = [l for l in open(sys.argv[1]) if 'k8s_get_events' in l and 'namespace default' in l]
-          digests = {m.group(1) for l in rows for m in [re.search(r'\[([0-9a-f]{12})\]', l)] if m}
-          assert len(digests) == 1, (digests, rows)
-          assert any(' allowed ' in l or re.search(r'allowed +200', l) for l in rows), rows
-          assert any('denied' in l for l in rows), rows
-          print("one digest across the denial and the admitted call:", digests)
-          EOF
-      - name: "Approvals budget cycle: cap denial filed a request, bounded raise admits, exhaustion re-denies"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          # The budget-exhaustion step above (CAP_TOKENS=1) already
-          # denied a governed chat, which auto-filed this request:
-          make approvals | tee approvals-budget.out
-          id=$(awk '$3=="hello-world" && $4=="budget" && $5=="tokens" {print $1}' approvals-budget.out)
-          test -n "$id"
-          make approve ID="$id" USES=1 TTL=10m AMOUNT=1000000
-          make chat | tee granted-chat.out
-          python3 scripts/verify-chat.py granted-chat.out
-          # Grant exhausted (USES=1): the next chat is denied again.
-          make chat > overage-denied.out 2>&1 || true
-          grep -q 'monthly token budget reached' overage-denied.out
-          if grep -q '"state":"completed"' overage-denied.out; then
-            echo 'chat completed despite exhausted grant' >&2; exit 1
-          fi
-          make approval-audit | tee approval-audit.out
-          grep -E 'hello-world +budget +tokens +approved' approval-audit.out
-          grep -E 'hello-tools +tool +k8s_get_events +approved' approval-audit.out
-      # P5a, keyless: the governed Slack path. CI holds NO Slack token and
-      # NO Copilot token (public, fork-exposed repo), so the Slack MCP
-      # server is deliberately NOT deployed here. What that buys is an
-      # honest boundary rather than a stand-in pretending to be Slack:
-      # the gateway decides BEFORE it forwards, so the entire approval
-      # cycle is exercised, the gateway then DIALS the committed slack
-      # upstream, and the call answers 502 because no such Service
-      # exists. A 200 would mean CI reached a tool server —
-      # tool-admit-probe.sh fails on it.
-      #
-      # Be precise about what that does and does not prove. It proves the
-      # allowlist/grant decisions and that an admitted call is forwarded.
-      # It does NOT validate the upstream URL itself: any unreachable URL
-      # answers 502 alike. And it does not cover the Slack MCP server
-      # pod, its bot-token custody at runtime, the gateway relaying a
-      # real Slack response, or Slack accepting the message. Those are
-      # live-verified in the PR and nowhere else.
-      - name: Slack manifests valid against the live CRDs (server dry-run)
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          kubectl --context kind-kaimahi-p1 apply --dry-run=server \
-            -f k8s/slack-mcp.yaml -f k8s/kaimahi-slack.yaml -f k8s/slack-agent.yaml
-      - name: Committed Slack wiring carries no credential
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          python3 - <<'EOF'
-          import pathlib, sys, yaml
-          fail = []
-          mcp = yaml.safe_load(pathlib.Path("k8s/slack-mcp.yaml").read_text())
-          dep = mcp["spec"]["deployment"]
-          # Every secret-shaped value must arrive by secretRef; the
-          # plaintext env map may hold only these non-secret knobs.
-          allowed_env = {"SLACK_MCP_HOST", "SLACK_MCP_PORT", "SLACK_MCP_LOG_LEVEL"}
-          extra = set(dep.get("env", {})) - allowed_env
-          if extra:
-              fail.append(f"secret-capable env in plaintext YAML: {sorted(extra)}")
-          refs = {r["name"] for r in dep.get("secretRefs", [])}
-          if refs != {"kaimahi-slack-bot", "kaimahi-slack-mcp-key"}:
-              fail.append(f"unexpected secretRefs: {sorted(refs)}")
-          # The image is pinned by digest: the bytes holding a workspace
-          # token must be the bytes that were reviewed.
-          if "@sha256:" not in dep["image"]:
-              fail.append(f"Slack MCP image is not digest-pinned: {dep['image']}")
-          # The agent-side seam sends only a Secret-resolved header.
-          rms = yaml.safe_load(pathlib.Path("k8s/kaimahi-slack.yaml").read_text())
-          h = rms["spec"]["headersFrom"]
-          if len(h) != 1 or "value" in h[0] or h[0]["valueFrom"] != {
-                  "type": "Secret", "name": "kaimahi-slack-token", "key": "api-key"}:
-              fail.append(f"unexpected headersFrom: {h}")
-          # The agent's toolNames is a SELECTION, not a grant: kagent wires
-          # (discovered ∩ toolNames) and discovery runs through the gateway.
-          # Assert it selects from the Slack seam only — the authority is the
-          # plane's allowlist, checked dynamically below.
-          agent = yaml.safe_load(pathlib.Path("k8s/slack-agent.yaml").read_text())
-          tools = agent["spec"]["declarative"]["tools"]
-          if len(tools) != 1 or tools[0]["mcpServer"]["name"] != "kaimahi-slack":
-              fail.append(f"the demo agent reaches something other than the governed Slack seam: {tools}")
-          if agent["spec"]["declarative"]["modelConfig"] != "governed-copilot":
-              fail.append("the demo agent is not on a governed model preset")
-          for line in fail:
-              print(line)
-          sys.exit(1 if fail else 0)
-          EOF
-          # No Slack token shape anywhere in the tree.
-          set +e
-          grep -rIn --exclude-dir=.git -E 'xox[bpca]-[A-Za-z0-9-]{10,}' .
-          rc=$?
-          set -e
-          test "$rc" -eq 1 || { echo "possible Slack token committed (or scanner failed: exit $rc)"; exit 1; }
-      - name: Gateway upstream table — Slack and kagent-tools in-cluster, GitHub the one hosted entry (marked)
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          kubectl --context kind-kaimahi-p1 -n kaimahi get configmap kaimahi-upstreams \
-            -o jsonpath='{.data.upstreams\.json}' > upstreams.json
-          python3 - <<'EOF'
-          import json, sys
-          from urllib.parse import urlparse
-          t = json.load(open("upstreams.json"))["tool_upstreams"]
-          assert set(t) == {"kagent-tools", "slack", "github"}, t
-          # P10: an internet-facing entry exists now, and ONLY under the
-          # marker that routes it through the hardened dialer; every
-          # unmarked entry is still in-cluster (the plane refuses the
-          # config otherwise — this asserts the same on the deployed table).
-          for name, up in t.items():
-              host = urlparse(up["url"]).hostname
-              if up.get("internet"):
-                  assert name == "github" and urlparse(up["url"]).scheme == "https", (name, up)
-                  continue
-              assert host.endswith((".kaimahi", ".kagent", ".svc.cluster.local")), (name, host)
-          # The Slack upstream is keyed from plane custody, and the table
-          # names the file without ever carrying a value.
-          slack = t["slack"]
-          assert slack["credential_file"].startswith("/etc/kaimahi/upstream-creds/"), slack
-          assert not any(k for k in slack if k in ("credential", "token", "api_key")), slack
-          print("tool upstreams:", {k: urlparse(v["url"]).hostname for k, v in t.items()})
-          EOF
-      - name: Issue the Slack credential with a READ-ONLY allowlist
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          # No agent and no MCP server pod are created here: the node is
-          # at ~92% of its CPU requests (P4a delta) and neither is needed
-          # to exercise the gateway's decisions.
-          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-slack-token \
-            bash scripts/plane-admin.sh issue hello-slack
-          make slack-allow SLACK_TOOLS=conversations_history
-          make tool-allowlist CRED_TOOLS=hello-slack | tee slack-allowlist.out
-          grep -q conversations_history slack-allowlist.out
-          # The authority: posting must NOT be allowlisted. `! cmd` is
-          # exempt from errexit, so assert the absence explicitly.
-          if grep -q conversations_add_message slack-allowlist.out; then
-            echo 'posting is allowlisted — it must be approved, not configured' >&2; exit 1
-          fi
-          # Custody: the agent-side Secret holds ONLY an opaque kmh_ token.
-          n=$(kubectl --context kind-kaimahi-p1 -n kagent get secret kaimahi-slack-token \
-            -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
-          test "$n" = 1
-          # Give the gateway a throwaway upstream credential so it
-          # actually DIALS the slack upstream instead of failing closed on
-          # a missing Secret — that is what makes the admitted call's 502
-          # mean "forwarded and unreachable" rather than "never sent".
-          # This is NOT a Slack credential: no Slack token exists in CI.
-          kubectl --context kind-kaimahi-p1 -n kaimahi create secret generic kaimahi-slack-mcp-key \
-            --from-literal=SLACK_MCP_API_KEY=ci-not-a-real-credential \
-            --dry-run=client -o yaml | kubectl --context kind-kaimahi-p1 apply -f -
-          kubectl --context kind-kaimahi-p1 -n kaimahi rollout restart deploy/kaimahi-proxy
-          kubectl --context kind-kaimahi-p1 -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
-      - name: "Slack post DENIED fail-closed and files an approval request"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
-            bash scripts/tool-denial-probe.sh conversations_add_message '{"channel_id": "C0CIONLY", "payload": "ci"}'
-          make slack-audit | tee slack-audit-denied.out
-          grep -E 'hello-slack +slack +tools/call +conversations_add_message +denied +403' slack-audit-denied.out
-      - name: "Bounded approval admits the post, exhaustion re-denies"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          make approvals | tee approvals-slack.out
-          id=$(awk '$3=="hello-slack" && $4=="tool" && $5=="conversations_add_message" {print $1}' approvals-slack.out)
-          test -n "$id"
-          make approve ID="$id" USES=1 TTL=10m
-          # Admitted by the grant, then forwarded to an upstream that does
-          # not exist. The probe FAILS on a 200 (it reached a tool server)
-          # and on any 503 that is a pre-forward denial wearing a 503.
-          UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
-            bash scripts/tool-admit-probe.sh conversations_add_message '{"channel_id": "C0CIONLY", "payload": "ci"}'
-          make slack-audit | tee slack-audit-granted.out
-          # Exactly 502: an admitted call that was dialed and unreachable.
-          # 503 here would mean the gateway never forwarded at all.
-          grep -E 'hello-slack +slack +tools/call +conversations_add_message +allowed +502 +granted' slack-audit-granted.out
-          # The single use is consumed: denied again, and a fresh request filed.
-          UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
-            bash scripts/tool-denial-probe.sh conversations_add_message '{"channel_id": "C0CIONLY", "payload": "ci"}'
-          make approval-audit | tee approval-audit-slack.out
-          grep -E 'hello-slack +tool +conversations_add_message +approved' approval-audit-slack.out
-      # P7a, keyless: the plane's NetworkPolicy boundary, proven ENFORCED
-      # rather than present. Every governed step above already ran with
-      # the policies applied (they ship with `make plane`), which is the
-      # positive: chat, tools, approvals and the Slack cycle all still
-      # work behind default-deny. This is the NEGATIVE: pods that must
-      # not reach ollama / the internet / the ledger demonstrably cannot
-      # (their connections time out), against a control pod in an
-      # unpoliced namespace that reaches the same targets — so "blocked"
-      # can only mean policy. Includes an exec into the real Postgres
-      # pod. Probe pods are BestEffort (no CPU requests on the full node)
-      # and deleted afterwards. A cluster whose CNI ignored NetworkPolicy
-      # fails this step with a message saying so — that is the whole
-      # point (docs/egress.md).
-      - name: Network boundary is enforced (policed pods cannot reach what they must not)
-        if: steps.changes.outputs.docs_only != 'true'
-        run: make netpol-verify
-      # P7b, keyless: the inbound bridge — the plane's one INGRESS — in
-      # the same cluster/job (a fourth listener in the existing proxy
-      # pod: zero added CPU requests). The generic SIGNED webhook (the
-      # committed "demo" hook, Kaimahi's v1 HMAC scheme) is driven end to
-      # end through scripts/inbound-probe.sh, which passes only on the
-      # exact expected status: an unauthenticated event, a forged
-      # signature, an ungranted event, an event against an exhausted
-      # target budget, a REPLAY of an admitted delivery, and a spent
-      # grant are each refused fail-closed and audited; a bounded
-      # approval admits one, the agent actually runs (the outcome row
-      # carries the runtime's token counts, and the proxy ledgers the
-      # same call under hello-world).
-      #
-      # What this does NOT cover: the Slack Events source. Slack must
-      # reach a public HTTPS URL, which CI's kind cluster has no way to
-      # offer; its signature scheme and envelope handling are unit-tested
-      # in plane/internal/inbound and marked not-live-verified in
-      # docs/inbound.md. The rate limiter and the bounded queue are
-      # unit-tested (a port-forwarded probe cannot outrun a 60/min bucket).
-      - name: Inbound hook table is in-cluster and carries no secret
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          kubectl --context kind-kaimahi-p1 -n kaimahi get configmap kaimahi-upstreams \
-            -o jsonpath='{.data.upstreams\.json}' > upstreams-inbound.json
-          python3 - <<'EOF'
-          import json
-          hooks = json.load(open("upstreams-inbound.json"))["inbound_hooks"]
-          assert set(hooks) == {"demo", "demo-bearer", "slack-events"}, sorted(hooks)
-          for name, h in hooks.items():
-              # Every hook triggers an in-cluster kagent agent under a
-              # governed credential; signed hooks name a plane-side FILE.
-              assert h["agent_namespace"] == "kagent", (name, h)
-              assert h["budget_credential"] == "hello-world", (name, h)
-              if h["auth"] != "bearer":
-                  assert h["signing_secret_file"].startswith("/etc/kaimahi/inbound/"), (name, h)
-              if h["auth"] == "slack":
-                  # P8: a Slack hook is bound to the channel(s) in a plane-side
-                  # FILE (the same Secret key that restricts posting); dropping
-                  # the key would widen the ingress to the whole workspace.
-                  assert h["slack_channels_file"].startswith("/etc/kaimahi/slack/"), (name, h)
-                  # P8b: who may approve from Slack is a plane-side FILE too —
-                  # the table names it and carries no user id.
-                  assert h["slack_approvers_file"].startswith("/etc/kaimahi/slack/"), (name, h)
-              assert not any(k in h for k in ("secret", "signing_secret", "token", "api_key", "approvers", "users")), (name, h)
-          print("inbound hooks:", {k: (v["auth"], v["agent"]) for k, v in hooks.items()})
-          # P8b: the notifier posts THROUGH the gateway's committed slack
-          # upstream under a credential read from plane custody; the block
-          # names files, never values.
-          n = json.load(open("upstreams-inbound.json"))["approval_notifier"]
-          assert n["tool_upstream"] == "slack" and n["tool"] == "conversations_add_message", n
-          assert n["credential_file"].startswith("/etc/kaimahi/notifier/"), n
-          assert n["channel_file"].startswith("/etc/kaimahi/slack/"), n
-          assert set(n) == {"tool_upstream", "tool", "credential_file", "channel_file"}, n
-          EOF
-          # The ingress Service exposes the bridge only; no Service exposes admin.
-          ports=$(kubectl --context kind-kaimahi-p1 -n kaimahi get svc -o jsonpath='{range .items[*]}{.metadata.name}={.spec.ports[*].port} {end}')
-          echo "$ports"
-          case " $ports " in
-            *" kaimahi-inbound=8082 "*) ;;
-            *) echo 'kaimahi-inbound Service must expose exactly 8082' >&2; exit 1 ;;
-          esac
-          case "$ports" in
-            *9091*) echo 'admin port exposed by a Service' >&2; exit 1 ;;
-          esac
-      - name: "Inbound: unauthenticated, forged and ungranted events refused fail-closed"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          # The signed hook's credential is an IDENTITY: no bearer token
-          # is stored anywhere for it.
-          make inbound-credential
-          if kubectl --context kind-kaimahi-p1 -n kaimahi get secret kaimahi-inbound-token >/dev/null 2>&1; then
-            echo 'a bearer token was stored for the signed hook' >&2; exit 1
-          fi
-          make inbound-secret HOOK=demo GENERATE=1
-          # kubelet projects a first-time Secret mount with a lag (P5b
-          # delta), per pod — and with two replicas a probe through the
-          # Service could land on the one still lagging. A rolling
-          # restart starts both pods with the Secret already there (the
-          # image is distroless, so there is no `cat` to wait on anyway).
-          kubectl --context kind-kaimahi-p1 -n kaimahi rollout restart deploy/kaimahi-proxy
-          kubectl --context kind-kaimahi-p1 -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
-          AUTH=none EXPECT=401 bash scripts/inbound-probe.sh demo 'unauthenticated event'
-          AUTH=forged EXPECT=401 bash scripts/inbound-probe.sh demo 'forged signature'
-          AUTH=stale EXPECT=401 bash scripts/inbound-probe.sh demo 'correctly signed, ten minutes ago'
-          make inbound-audit | tee inbound-audit-denied.out
-          test "$(grep -cE 'demo +inbound-demo +  +denied +401 ' inbound-audit-denied.out)" = 3
-      # The door checks the target's budget BEFORE the hook's grant (a
-      # budget denial must burn no grant use), so with hello-world's cap
-      # at 1 token and its budget grant spent (steps above) a correctly
-      # signed event is refused here as 429, whatever the hook's grant
-      # state. Assert that first, clear the cap, and only then assert
-      # the grant gate — the order the product enforces.
-      - name: "Inbound: exhausted target budget refused at the door"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          EXPECT=429 bash scripts/inbound-probe.sh demo 'budget exhausted'
-          make inbound-audit | tee inbound-audit-budget.out
-          grep -E 'demo +inbound-demo +probe-[0-9a-f]+ +denied +429 +.*target budget' inbound-audit-budget.out
-          make budget   # clear both caps for the steps below
-      - name: "Inbound: signed but ungranted event refused and files its approval request"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          EXPECT=403 bash scripts/inbound-probe.sh demo 'no grant yet'
-          make inbound-audit | tee inbound-audit-ungranted.out
-          grep -E 'demo +inbound-demo +probe-[0-9a-f]+ +denied +403 +.*no live grant' inbound-audit-ungranted.out
-      - name: "Inbound: bounded approval admits, the agent runs, replay and exhaustion refused"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          make approvals | tee approvals-inbound.out
-          id=$(awk '$3=="inbound-demo" && $4=="inbound" && $5=="demo" {print $1}' approvals-inbound.out)
-          test -n "$id"
-          make approve ID="$id" USES=2 TTL=10m
-          # Count governed rows into a file first, so a `make ledger`
-          # failure fails the step instead of being read as zero rows.
-          make ledger > ledger-before.out
-          before=$(grep -cE 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' ledger-before.out || [ $? = 1 ])
-          d="ci-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
-          DELIVERY="$d" bash scripts/inbound-probe.sh demo 'Reply with exactly the word PONG.'
-          # The SAME delivery again is a replay: refused, no use burned.
-          DELIVERY="$d" EXPECT=409 bash scripts/inbound-probe.sh demo 'Reply with exactly the word PONG.'
-          # The invocation is asynchronous: wait for its outcome row.
-          for _ in $(seq 1 60); do
-            make inbound-audit > inbound-audit.out 2>/dev/null
-            grep -qE "demo +inbound-demo +$d +(completed|failed) " inbound-audit.out && break
-            sleep 5
-          done
-          cat inbound-audit.out
-          # A well-formed positive only: completed, HTTP 200, non-zero
-          # runtime-reported input tokens, a task id.
-          grep -E "demo +inbound-demo +$d +completed +200 +[1-9][0-9]* +[0-9]+ +task " inbound-audit.out
-          grep -E "demo +inbound-demo +$d +denied +409 " inbound-audit.out
-          # The event's spend was governed and ledgered by the proxy
-          # under the agent's credential: one more governed row.
-          make ledger > ledger-after.out
-          after=$(grep -cE 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' ledger-after.out || [ $? = 1 ])
-          test "$after" -gt "$before"
-          # Second use admitted; the grant is then spent: refused again
-          # and a fresh request filed.
-          bash scripts/inbound-probe.sh demo 'second use'
-          EXPECT=403 bash scripts/inbound-probe.sh demo 'third: grant exhausted'
-          make approval-audit | tee approval-audit-inbound.out
-          # P8b: the trail now names who decided between the action and the bounds.
-          grep -E 'inbound-demo +inbound +demo +approved +admin +expires=.* uses=2' approval-audit-inbound.out
-      - name: "Inbound: bearer hook authenticates the same way and is gated the same way"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          make inbound-credential CRED_INBOUND=inbound-bearer INBOUND_SECRET=kaimahi-inbound-token
-          n=$(kubectl --context kind-kaimahi-p1 -n kaimahi get secret kaimahi-inbound-token \
-            -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
-          test "$n" = 1
-          AUTH=none EXPECT=401 bash scripts/inbound-probe.sh demo-bearer 'no token'
-          AUTH=bearer EXPECT=403 bash scripts/inbound-probe.sh demo-bearer 'authenticated, no grant'
-      # P8b, keyless: approvals FROM Slack, and the plane telling Slack a
-      # request is waiting. Slack cannot reach a kind cluster and CI holds
-      # no Slack token, so the human is a synthetic, correctly SIGNED
-      # app_mention fired at the bridge (scripts/slack-mention-probe.sh,
-      # the way inbound-fire fires the generic hook) with synthetic user
-      # ids (U0CIAPPROVER / U0NOBODY — never a real workspace's), and the
-      # plane's own posts ride the same absent slack upstream the P5a
-      # cycle uses: admitted by the gateway, dialed, 502 — the audit row
-      # under the PLANE's credential is the proof the notification went
-      # through the governed path. What only the live run proves: the
-      # message landing in a channel, a person typing the command, the
-      # reply in the thread.
-      - name: "Approvals from Slack: setup (approver file, the plane's own credential, a signed hook)"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          make inbound-credential CRED_INBOUND=inbound-slack
-          make inbound-secret HOOK=slack-events GENERATE=1
-          # The channel the hook is bound to and the notifier posts into:
-          # the bot Secret's channel key only — no bot token exists in CI.
-          kubectl --context kind-kaimahi-p1 -n kaimahi create secret generic kaimahi-slack-bot \
-            --from-literal=SLACK_MCP_ADD_MESSAGE_TOOL=C0CIONLY \
-            --dry-run=client -o yaml | kubectl --context kind-kaimahi-p1 apply -f -
-          printf 'U0CIAPPROVER\n' | make slack-approvers
-          make notify-slack
-          # The plane's credential may post and nothing else — config,
-          # not a grant.
-          make tool-allowlist CRED_TOOLS=kaimahi-plane | tee plane-allowlist.out
-          grep -qx 'kaimahi-plane: conversations_add_message' plane-allowlist.out
-          # Its token is plane-side only (kaimahi namespace, kmh_ shape),
-          # and no Slack id is anywhere in the tree.
-          n=$(kubectl --context kind-kaimahi-p1 -n kaimahi get secret kaimahi-notifier-token \
-            -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
-          test "$n" = 1
-          if kubectl --context kind-kaimahi-p1 -n kagent get secret kaimahi-notifier-token >/dev/null 2>&1; then
-            echo "the plane's own credential must not live in the agent namespace" >&2; exit 1
-          fi
-          # kubelet projects first-time Secret mounts with a lag (P5b
-          # delta), per pod: restart so both replicas start with every
-          # file present, then confirm through the plane's own behaviour
-          # — a signed mention from a NON-approver answers 503 while the
-          # signing secret, the channel or the approver list is missing,
-          # and exactly 403 once all three are readable. The notifier's
-          # file is proven by its audit row in the next step.
-          kubectl --context kind-kaimahi-p1 -n kaimahi rollout restart deploy/kaimahi-proxy
-          kubectl --context kind-kaimahi-p1 -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
-          for _ in $(seq 1 60); do
-            EXPECT=403 bash scripts/slack-mention-probe.sh U0NOBODY "approve 00000000" >/dev/null 2>&1 && break
-            sleep 3
-          done
-          EXPECT=403 bash scripts/slack-mention-probe.sh U0NOBODY "approve 00000000"
-      - name: "Approvals from Slack: a filing is announced through the governed path (allowed 502 under the plane's credential)"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          # A fresh subject, so the filing is not deduped and the notifier
-          # fires: the denial files, the plane posts, the gateway admits
-          # the plane's call by allowlist (no grant — the detail is the dial
-          # failure, not a grant id), dials the absent upstream, 502 — same
-          # row shape as the P5a cycle, plane's name (P10: a 502 row now
-          # carries why: "upstream unreachable: …").
-          bash scripts/tool-denial-probe.sh k8s_get_pods
-          for _ in $(seq 1 30); do
-            KUBECTL="kubectl --context kind-kaimahi-p1" bash scripts/plane-admin.sh tool-audit kaimahi-plane > plane-audit.out 2>/dev/null
-            grep -qE 'kaimahi-plane +slack +tools/call +conversations_add_message +allowed +502' plane-audit.out && break
-            sleep 2
-          done
-          cat plane-audit.out
-          grep -E 'kaimahi-plane +slack +tools/call +conversations_add_message +allowed +502 +upstream unreachable: ' plane-audit.out
-          # Exactly ONE attempt: the gateway's 502 cannot say whether the
-          # post reached the server (a dial refusal and a reset after
-          # delivery answer alike), so it is recorded and NOT retried —
-          # a notification posted twice is the double-post this repo
-          # avoids. The notification is once per filing.
-          sleep 5
-          KUBECTL="kubectl --context kind-kaimahi-p1" bash scripts/plane-admin.sh tool-audit kaimahi-plane > plane-audit.out
-          test "$(grep -cE 'kaimahi-plane +slack +tools/call +conversations_add_message +allowed +502' plane-audit.out)" = 1
-      - name: "Approvals from Slack: a non-approver is refused 403 and audited; the request stays pending"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          make approvals | tee approvals-p8b.out
-          # P12: several k8s_get_events requests can be pending at once —
-          # one per distinct call — so the call is what selects the id.
-          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_events" && /namespace default/ {print $1}' approvals-p8b.out)
-          test -n "$id"
-          echo "$id" > p8b-request-id
-          EXPECT=403 bash scripts/slack-mention-probe.sh U0NOBODY "approve $id uses=1"
-          make inbound-audit HOOK=slack-events | tee inbound-audit-p8b.out
-          grep -E 'slack-events +inbound-slack +Ev[0-9A-F]+ +denied +403 +.*user U0NOBODY is not an approver' inbound-audit-p8b.out
-          make approvals | grep -q "$id"
-      - name: "Approvals from Slack: an approver's command mints a grant in their name, and enforcement honours it"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          id=$(cat p8b-request-id)
-          # The first block of the id is what a human types.
-          WANT="approved request $id" bash scripts/slack-mention-probe.sh U0CIAPPROVER "approve ${id%%-*} uses=1 ttl=10m"
-          make grants | tee grants-p8b.out
-          grep -E "hello-tools +tool +k8s_get_events +yes .* 0/1 .* slack:U0CIAPPROVER" grants-p8b.out
-          make approval-audit | tee approval-audit-p8b.out
-          grep -E 'hello-tools +tool +k8s_get_events +approved +slack:U0CIAPPROVER +expires=.* uses=1' approval-audit-p8b.out
-          # The grant a Slack approver minted admits the retried action.
-          bash scripts/tool-call-probe.sh k8s_get_events '{"namespace": "default"}'
-          make tool-audit | tee tool-audit-p8b.out
-          grep -E 'hello-tools +kagent-tools +tools/call +k8s_get_events +allowed +200 +granted' tool-audit-p8b.out
-          make inbound-audit HOOK=slack-events | tee inbound-audit-p8b-2.out
-          grep -E "slack-events +inbound-slack +Ev[0-9A-F]+ +command +200 +.*approve ${id%%-*} by slack:U0CIAPPROVER: approved request $id" inbound-audit-p8b-2.out
-          # The same command again: a decided request is immutable.
-          WANT="already approved by slack:U0CIAPPROVER" bash scripts/slack-mention-probe.sh U0CIAPPROVER "approve ${id%%-*} uses=9"
-          # The admin path still records the admin bearer as the decider.
-          grep -E 'hello-tools +tool +k8s_get_events +approved +admin ' approval-audit-p8b.out
-      - name: "Approvals from Slack: deny works and carries the identity"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          make approvals | tee approvals-deny.out
-          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_pods" {print $1}' approvals-deny.out)
-          test -n "$id"
-          WANT="denied request $id" bash scripts/slack-mention-probe.sh U0CIAPPROVER "deny $id"
-          make approval-audit | tee approval-audit-deny.out
-          grep -E 'hello-tools +tool +k8s_get_pods +denied +slack:U0CIAPPROVER' approval-audit-deny.out
-          # A command reply also rides the governed path: more plane rows,
-          # still every one an allowed-502 dial of the absent upstream —
-          # never a 200 (CI reached a tool server) and never a denial.
-          KUBECTL="kubectl --context kind-kaimahi-p1" bash scripts/plane-admin.sh tool-audit kaimahi-plane | tee plane-audit-2.out
-          if grep -E 'kaimahi-plane .*(allowed +200|denied)' plane-audit-2.out; then
-            echo "the plane's own post reached a tool server or was denied" >&2; exit 1
-          fi
-          # The admin port is still on no Service.
-          ports=$(kubectl --context kind-kaimahi-p1 -n kaimahi get svc -o jsonpath='{range .items[*]}{.metadata.name}={.spec.ports[*].port} {end}')
-          case "$ports" in
-            *9091*) echo 'admin port exposed by a Service' >&2; exit 1 ;;
-          esac
-      # P9, keyless: run it for real. Every step below drives the plane's
-      # two replicas directly (a port-forward per POD, so both are in
-      # every race by construction) rather than through kagent, whose
-      # OpenAI client retries 429s on its own and would make the counts
-      # a property of the client. No new pods: the node is at its CPU
-      # request ceiling; the second proxy replica (10m) is the whole
-      # added cost of this phase.
-      - name: "Exact budgets: 8 concurrent governed calls against a cap with room for one admit exactly one, across both replicas"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          # A fresh credential with a 1-token cap and nothing spent: room
-          # for exactly one call. Its token stays in the plane namespace.
-          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-race-token SECRET_NAMESPACE=kaimahi \
-            bash scripts/plane-admin.sh issue race-cred
-          make budget CRED=race-cred CAP_TOKENS=1
-          GOVERNED_SECRET=kaimahi-race-token SECRET_NAMESPACE=kaimahi EXPECT_ADMITTED=1 \
-            bash scripts/spend-race-probe.sh 8 | tee spend-race.out
-          grep -q 'admitted=1 denied(429)=7 other=0' spend-race.out
-          # The ledger agrees: one allowed row, seven denials, no open hold.
-          make ledger CRED=race-cred | tee ledger-race.out
-          test "$(grep -cE 'race-cred +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' ledger-race.out)" = 1
-          test "$(grep -cE 'race-cred +ollama +qwen2\.5:3b +0 +0 +0 +denied +429' ledger-race.out)" = 7
-          kubectl --context kind-kaimahi-p1 -n kaimahi exec deploy/kaimahi-postgres -- \
-            psql -U kaimahi -d kaimahi -tAc "SELECT count(*) FROM spend_reservation WHERE credential_name = 'race-cred'" | grep -qx 0
-      - name: "Exact grants: 8 concurrent tool calls against a USES=1 grant admit exactly one, across both replicas"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          # Counted in Postgres, not through the audit view's newest-50 window.
-          granted() { kubectl --context kind-kaimahi-p1 -n kaimahi exec deploy/kaimahi-postgres -- \
-            psql -U kaimahi -d kaimahi -tAc "SELECT count(*) FROM tool_audit WHERE credential_name = 'hello-tools' AND tool = 'k8s_get_events' AND decision = 'allowed' AND status = 200 AND detail LIKE 'granted %'"; }
-          before=$(granted)
-          bash scripts/tool-denial-probe.sh k8s_get_events '{"namespace": "default"}'
-          make approvals | tee approvals-race.out
-          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_events" && /namespace default/ {print $1}' approvals-race.out)
-          test -n "$id"
-          make approve ID="$id" USES=1 TTL=10m
-          EXPECT_ADMITTED=1 bash scripts/tool-race-probe.sh k8s_get_events 8 '{"namespace": "default"}' | tee tool-race.out
-          grep -q 'admitted=1 denied(-32001)=7 other=0' tool-race.out
-          after=$(granted)
-          test "$after" -eq $((before + 1))
-          make tool-audit | grep -E 'hello-tools +kagent-tools +tools/call +k8s_get_events +allowed +200 +granted'
-      - name: "Replica killed mid-cycle: the in-flight call drains, the survivor serves the next, no ledger row lost"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: bash scripts/replica-kill-probe.sh
-      - name: "Postgres outage drops readiness on every replica and restarts no proxy"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: bash scripts/store-outage-probe.sh
-      - name: "Both replicas restarted together come up clean under the migration lock"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          old=$(kubectl --context kind-kaimahi-p1 -n kaimahi get pods -l app=kaimahi-proxy -o jsonpath='{.items[*].metadata.name}')
-          kubectl --context kind-kaimahi-p1 -n kaimahi delete pods -l app=kaimahi-proxy --wait=false
-          # Wait for the OLD pods to be gone before reading the Deployment:
-          # its status lags the deletes, and a Terminating pod's log still
-          # says "up". The pods asserted below must be new ones.
-          for p in $old; do
-            kubectl --context kind-kaimahi-p1 -n kaimahi wait --for=delete "pod/$p" --timeout=120s
-          done
-          kubectl --context kind-kaimahi-p1 -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
-          test "$(kubectl --context kind-kaimahi-p1 -n kaimahi get deploy kaimahi-proxy -o jsonpath='{.status.readyReplicas}')" = 2
-          new=$(kubectl --context kind-kaimahi-p1 -n kaimahi get pods -l app=kaimahi-proxy --field-selector=status.phase=Running -o jsonpath='{.items[*].metadata.name}')
-          test "$(echo "$new" | wc -w)" = 2
-          for pod in $new; do
-            case " $old " in *" $pod "*) echo "old pod $pod still listed" >&2; exit 1 ;; esac
-            kubectl --context kind-kaimahi-p1 -n kaimahi logs "$pod" | grep -q 'migrations: nothing to apply'
-            kubectl --context kind-kaimahi-p1 -n kaimahi logs "$pod" | grep -q 'kaimahi-proxy up'
-          done
-          make chat | tee restart-chat.out
-          python3 scripts/verify-chat.py restart-chat.out
-      - name: "Metrics on the ops port: Prometheus text, expected names, no identifier labels; admin and ops ports on no Service"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          make plane-metrics | tee metrics.out
-          grep -q '^# TYPE kaimahi_decisions_total counter' metrics.out
-          for m in kaimahi_decisions_total kaimahi_ledger_month_tokens kaimahi_ledger_month_cents kaimahi_live_grants \
-                   kaimahi_open_reservations kaimahi_upstream_latency_seconds_bucket kaimahi_queue_depth \
-                   kaimahi_seam_degraded kaimahi_build_info kaimahi_store_up go_goroutines; do
-            grep -q "^$m" metrics.out || { echo "metric $m missing" >&2; exit 1; }
-          done
-          # The ledger totals are by credential NAME, and the names the
-          # run created are there; the store answered.
-          grep -q 'kaimahi_ledger_month_tokens{credential="hello-world"}' metrics.out
-          grep -q 'kaimahi_ledger_month_tokens{credential="race-cred"}' metrics.out
-          grep -q '^kaimahi_store_up 1' metrics.out
-          # Per-replica series exist from boot (primed), whatever this
-          # replica has seen since the restart above: the budget-denial
-          # counter and a latency histogram for the configured upstream.
-          grep -q 'kaimahi_decisions_total{decision="denied",reason="budget",seam="proxy"} ' metrics.out
-          grep -q 'kaimahi_upstream_latency_seconds_bucket{seam="proxy",upstream="ollama",le="+Inf"} ' metrics.out
-          # No token shape and no synthetic Slack id ever appears in a label.
-          if grep -E 'kmh_[0-9a-f]{20,}|U0CIAPPROVER|U0NOBODY|C0CIONLY' metrics.out; then
-            echo 'an identifier leaked into the metrics' >&2; exit 1
-          fi
-          ports=$(kubectl --context kind-kaimahi-p1 -n kaimahi get svc -o jsonpath='{range .items[*]}{.metadata.name}={.spec.ports[*].port} {end}')
-          echo "$ports"
-          case "$ports" in
-            *9091*|*9092*) echo 'admin or ops port exposed by a Service' >&2; exit 1 ;;
-          esac
-      - name: "Backup, wipe the database, restore: the ledger rows come back"
-        if: steps.changes.outputs.docs_only != 'true'
-        run: |
-          rows() { kubectl --context kind-kaimahi-p1 -n kaimahi exec deploy/kaimahi-postgres -- \
-                     psql -U kaimahi -d kaimahi -tAc 'SELECT count(*) FROM ledger_entry'; }
-          before=$(rows); test "$before" -gt 0
-          make backup FILE=ci-backup.sql | tee backup.out
-          test -s ci-backup.sql
-          # A dump holds hashes, never a token (and no hosted key exists here).
-          if grep -E 'kmh_[0-9a-f]{64}' ci-backup.sql; then echo 'a token in the backup' >&2; exit 1; fi
-          # Wipe: the Postgres Deployment AND its PVC go; a fresh, empty
-          # database comes up in their place.
-          kubectl --context kind-kaimahi-p1 delete -f k8s/plane/postgres.yaml --wait=true
-          kubectl --context kind-kaimahi-p1 apply -f k8s/plane/postgres.yaml
-          kubectl --context kind-kaimahi-p1 -n kaimahi rollout status deploy/kaimahi-postgres --timeout=300s
-          # Empty for real: no tables at all.
-          tables=$(kubectl --context kind-kaimahi-p1 -n kaimahi exec deploy/kaimahi-postgres -- \
-            psql -U kaimahi -d kaimahi -tAc "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'")
-          test "$tables" = 0
-          KAIMAHI_CONFIRM=kind-kaimahi-p1 make restore FILE=ci-backup.sql | tee restore.out
-          test "$(rows)" = "$before"
-          # The proxies reconnect on their own and the plane works again:
-          # the restored hashes admit the same agent-side token.
-          kubectl --context kind-kaimahi-p1 -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
-          make ledger | tee ledger-restored.out
-          grep -E 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' ledger-restored.out
-          make chat | tee restored-chat.out
-          python3 scripts/verify-chat.py restored-chat.out
-          rm -f ci-backup.sql
       # P10, keyless: a HOSTED tool upstream — the first the gateway reaches
       # over the internet — proven against a SYNTHETIC stand-in, since no
       # GitHub token exists in CI (D14). scripts/ci/synthetic-upstream.sh
@@ -1595,6 +926,1240 @@ jobs:
   # There is NO checkout step, deliberately, and nothing in this job may add
   # one: the moment a checkout exists, kmx auto-detects it as a source and
   # the job stops proving the thing it exists to prove.
+  # SHARD 2 of 4 — spend: the metering proxy and its budgets (P4a), the
+  # budget approval cycle (P4c), the network boundary (P7a) and the inbound
+  # bridge (P7b), whose door checks the same credential's budget.
+  e2e-spend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        # An explicit bash shell turns on `-o pipefail`, so the
+        # `make chat | tee` pipelines fail on make's own exit code instead
+        # of relying solely on the content check in verify-chat.py.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Classify the change (docs-only short-circuit, fail closed)
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          # pull_request: the base branch tip; push: the previous tip
+          # (all zeros on a new branch). HEAD is the PR merge commit or
+          # the pushed commit — what checkout checked out.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.sha }}
+        run: |
+          # The job's `shell: bash` runs with -e; turn it off here — every
+          # failure path must land on docs_only=false, never on a red step.
+          set +e
+          docs_only=false
+          reason=""
+          files=""
+          case "$BASE" in
+            ""|0000000000000000000000000000000000000000) reason="no base commit for $EVENT" ;;
+          esac
+          if [ -z "$reason" ] && ! git fetch --no-tags --depth=1 origin "$BASE"; then
+            reason="cannot fetch base $BASE"
+          fi
+          if [ -z "$reason" ]; then
+            # --no-renames: a pure rename lists only its destination, so a
+            # file moved INTO docs/ would otherwise read as documentation.
+            if files=$(git diff --name-only --no-renames "$BASE" "$HEAD") && [ -n "$files" ]; then
+              docs_only=true
+              while IFS= read -r f; do
+                case "$f" in
+                  docs/*|*.md) ;;
+                  *) docs_only=false; reason="non-doc change: $f"; break ;;
+                esac
+              done <<<"$files"
+              if [ "$docs_only" = true ]; then
+                reason="every changed file is documentation"
+              fi
+            else
+              reason="cannot diff $BASE..$HEAD, or the diff is empty"
+            fi
+          fi
+          echo "event=$EVENT base=$BASE head=$HEAD"
+          echo "changed files:"
+          echo "${files:-(undetermined)}" | sed 's/^/  /'
+          echo "docs_only=$docs_only ($reason)"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+      - name: Install kind
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          curl -sSfLo kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          chmod +x kind && sudo mv kind /usr/local/bin/kind
+      # P11: `make up` and every other target below now runs THROUGH kmx, so
+      # this job is what proves the binary a developer installs. Building it
+      # as its own step keeps a compile error legible instead of surfacing
+      # halfway through a cluster bring-up.
+      - uses: actions/setup-go@v5
+        if: steps.changes.outputs.docs_only != 'true'
+        with:
+          go-version-file: go.mod
+      - name: Build kmx (the Makefile's kind path delegates to it)
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make bin/kmx
+      - name: Cluster + Ollama + model + kagent + agent
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make up
+      # P4a, keyless: the governance plane in the SAME cluster/job — a
+      # separate e2e job would repeat the whole bring-up for no coverage
+      # gain; instead the plane's requests are trimmed (postgres 50m,
+      # proxy 25m) to fit the 2-CPU runner's request ceiling (P3 delta).
+      # Chat rides the governed ollama path via the proxy; the ledger row
+      # and the budget denial are asserted fail-closed.
+      # Preset switches roll the agent Deployment with maxSurge=1, so the
+      # node must fit a SECOND agent pod's requests while the old one
+      # drains. With the plane deployed the 2-CPU node cannot fit a
+      # second 100m/384Mi hello-world, so shrink its runtime requests to
+      # hello-tools' proven values (P3 delta) via the Agent CRD — the P1
+      # artifact k8s/hello-world.yaml stays untouched; this is a CI
+      # sizing patch, not a topology change.
+      - name: Shrink hello-world requests so preset switches can surge
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          kubectl --context kind-kaimahi-p1 -n kagent patch agent hello-world \
+            --type merge -p '{"spec":{"declarative":{"deployment":{"resources":{"requests":{"cpu":"50m","memory":"320Mi"},"limits":{"memory":"1Gi"}}}}}}'
+          kubectl --context kind-kaimahi-p1 -n kagent rollout status deploy/hello-world --timeout=300s
+      - name: Deploy the governance plane
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make plane
+      # P9: two replicas (10m each — the node is at its request ceiling,
+      # ci.yml's P4a comment; this is the whole added cost). Both must
+      # be Ready and each must answer its own probes, and the schema
+      # under them must carry one row per migration: the first
+      # `make plane` above booted both replicas together against an
+      # EMPTY database, so the migration lock was exercised for real
+      # there (its outcome is the consistent version table and two
+      # Ready pods). The current pods are usually the post-restart
+      # generation and log "nothing to apply" — but `make plane` restarts
+      # the deployment the moment Postgres is Ready, and a first-generation
+      # pod still in its connect retry can be replaced before it migrated,
+      # so a post-restart pod may be the one that logs "applied" (seen on
+      # PR #51). Either line is a clean boot under the lock; what must hold
+      # is the consistent version table below. The lock race itself is
+      # also proven by the store test in go-plane.
+      - name: Both replicas serve, schema consistent under the migration lock
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          ready=$(kubectl --context kind-kaimahi-p1 -n kaimahi get deploy kaimahi-proxy -o jsonpath='{.status.readyReplicas}')
+          test "$ready" = 2
+          # Ready and not terminating (the restart in `make plane` leaves
+          # the old pods draining for a moment): scripts/plane-pods.sh.
+          pods=$(KUBECTL="kubectl --context kind-kaimahi-p1" bash scripts/plane-pods.sh)
+          test "$(echo "$pods" | wc -l)" = 2
+          for pod in $pods; do
+            KUBECTL="kubectl --context kind-kaimahi-p1" POD="$pod" bash scripts/plane-metrics.sh > "metrics-$pod.out"
+            grep -q '^kaimahi_build_info{' "metrics-$pod.out"
+            kubectl --context kind-kaimahi-p1 -n kaimahi logs "$pod" | grep -qE 'migrations: (nothing to apply|applied)'
+          done
+          kubectl --context kind-kaimahi-p1 -n kaimahi exec deploy/kaimahi-postgres -- \
+            psql -U kaimahi -d kaimahi -tAc 'SELECT count(*), count(DISTINCT version_id) FROM goose_db_version WHERE version_id > 0' | tee versions.out
+          python3 -c 'n,d=open("versions.out").read().strip().split("|"); assert n==d and int(n)>=7, (n,d)'
+      - name: Issue governed credential and switch agent through the proxy
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make govern
+      - name: Governed chat via the proxy
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make chat | tee governed-chat.out
+          python3 scripts/verify-chat.py governed-chat.out
+      - name: Assert the ledger recorded the governed chat
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make ledger | tee ledger.out
+          # Fail closed: a free-tier row for the governed chat with real
+          # token counts, and a non-zero month-to-date token total.
+          grep -E 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' ledger.out
+          python3 - <<'EOF'
+          import re, sys
+          m = re.search(r"month to date: (\d+) cents, (\d+) tokens", open("ledger.out").read())
+          sys.exit(0 if m and int(m.group(2)) > 0 else 1)
+          EOF
+      - name: Budget exhaustion fails closed
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make budget CAP_TOKENS=1
+          # The same chat must now fail with the meter's clear error; the
+          # task must NOT complete. kagent may exit nonzero on a failed
+          # task, so capture output regardless and assert on content.
+          make chat > denied-chat.out 2>&1 || true
+          cat denied-chat.out
+          grep -q 'monthly token budget reached' denied-chat.out
+          grep -q '"state":"failed"' denied-chat.out
+          # `! cmd` is exempt from errexit (see the lockdown step above),
+          # so assert the absence explicitly.
+          if grep -q '"state":"completed"' denied-chat.out; then
+            echo 'chat completed despite exhausted budget' >&2; exit 1
+          fi
+          make ledger | tee ledger-denied.out
+          grep -E 'denied +429' ledger-denied.out
+      # P7a, keyless: the plane's NetworkPolicy boundary, proven ENFORCED
+      # rather than present. Every governed step above already ran with
+      # the policies applied (they ship with `make plane`), which is the
+      # positive: chat, tools, approvals and the Slack cycle all still
+      # work behind default-deny. This is the NEGATIVE: pods that must
+      # not reach ollama / the internet / the ledger demonstrably cannot
+      # (their connections time out), against a control pod in an
+      # unpoliced namespace that reaches the same targets — so "blocked"
+      # can only mean policy. Includes an exec into the real Postgres
+      # pod. Probe pods are BestEffort (no CPU requests on the full node)
+      # and deleted afterwards. A cluster whose CNI ignored NetworkPolicy
+      # fails this step with a message saying so — that is the whole
+      # point (docs/egress.md).
+      - name: Network boundary is enforced (policed pods cannot reach what they must not)
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make netpol-verify
+      # P7b, keyless: the inbound bridge — the plane's one INGRESS — in
+      # the same cluster/job (a fourth listener in the existing proxy
+      # pod: zero added CPU requests). The generic SIGNED webhook (the
+      # committed "demo" hook, Kaimahi's v1 HMAC scheme) is driven end to
+      # end through scripts/inbound-probe.sh, which passes only on the
+      # exact expected status: an unauthenticated event, a forged
+      # signature, an ungranted event, an event against an exhausted
+      # target budget, a REPLAY of an admitted delivery, and a spent
+      # grant are each refused fail-closed and audited; a bounded
+      # approval admits one, the agent actually runs (the outcome row
+      # carries the runtime's token counts, and the proxy ledgers the
+      # same call under hello-world).
+      #
+      # What this does NOT cover: the Slack Events source. Slack must
+      # reach a public HTTPS URL, which CI's kind cluster has no way to
+      # offer; its signature scheme and envelope handling are unit-tested
+      # in plane/internal/inbound and marked not-live-verified in
+      # docs/inbound.md. The rate limiter and the bounded queue are
+      # unit-tested (a port-forwarded probe cannot outrun a 60/min bucket).
+      - name: Inbound hook table is in-cluster and carries no secret
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          kubectl --context kind-kaimahi-p1 -n kaimahi get configmap kaimahi-upstreams \
+            -o jsonpath='{.data.upstreams\.json}' > upstreams-inbound.json
+          python3 - <<'EOF'
+          import json
+          hooks = json.load(open("upstreams-inbound.json"))["inbound_hooks"]
+          assert set(hooks) == {"demo", "demo-bearer", "slack-events"}, sorted(hooks)
+          for name, h in hooks.items():
+              # Every hook triggers an in-cluster kagent agent under a
+              # governed credential; signed hooks name a plane-side FILE.
+              assert h["agent_namespace"] == "kagent", (name, h)
+              assert h["budget_credential"] == "hello-world", (name, h)
+              if h["auth"] != "bearer":
+                  assert h["signing_secret_file"].startswith("/etc/kaimahi/inbound/"), (name, h)
+              if h["auth"] == "slack":
+                  # P8: a Slack hook is bound to the channel(s) in a plane-side
+                  # FILE (the same Secret key that restricts posting); dropping
+                  # the key would widen the ingress to the whole workspace.
+                  assert h["slack_channels_file"].startswith("/etc/kaimahi/slack/"), (name, h)
+                  # P8b: who may approve from Slack is a plane-side FILE too —
+                  # the table names it and carries no user id.
+                  assert h["slack_approvers_file"].startswith("/etc/kaimahi/slack/"), (name, h)
+              assert not any(k in h for k in ("secret", "signing_secret", "token", "api_key", "approvers", "users")), (name, h)
+          print("inbound hooks:", {k: (v["auth"], v["agent"]) for k, v in hooks.items()})
+          # P8b: the notifier posts THROUGH the gateway's committed slack
+          # upstream under a credential read from plane custody; the block
+          # names files, never values.
+          n = json.load(open("upstreams-inbound.json"))["approval_notifier"]
+          assert n["tool_upstream"] == "slack" and n["tool"] == "conversations_add_message", n
+          assert n["credential_file"].startswith("/etc/kaimahi/notifier/"), n
+          assert n["channel_file"].startswith("/etc/kaimahi/slack/"), n
+          assert set(n) == {"tool_upstream", "tool", "credential_file", "channel_file"}, n
+          EOF
+          # The ingress Service exposes the bridge only; no Service exposes admin.
+          ports=$(kubectl --context kind-kaimahi-p1 -n kaimahi get svc -o jsonpath='{range .items[*]}{.metadata.name}={.spec.ports[*].port} {end}')
+          echo "$ports"
+          case " $ports " in
+            *" kaimahi-inbound=8082 "*) ;;
+            *) echo 'kaimahi-inbound Service must expose exactly 8082' >&2; exit 1 ;;
+          esac
+          case "$ports" in
+            *9091*) echo 'admin port exposed by a Service' >&2; exit 1 ;;
+          esac
+      - name: "Inbound: unauthenticated, forged and ungranted events refused fail-closed"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          # The signed hook's credential is an IDENTITY: no bearer token
+          # is stored anywhere for it.
+          make inbound-credential
+          if kubectl --context kind-kaimahi-p1 -n kaimahi get secret kaimahi-inbound-token >/dev/null 2>&1; then
+            echo 'a bearer token was stored for the signed hook' >&2; exit 1
+          fi
+          make inbound-secret HOOK=demo GENERATE=1
+          # kubelet projects a first-time Secret mount with a lag (P5b
+          # delta), per pod — and with two replicas a probe through the
+          # Service could land on the one still lagging. A rolling
+          # restart starts both pods with the Secret already there (the
+          # image is distroless, so there is no `cat` to wait on anyway).
+          kubectl --context kind-kaimahi-p1 -n kaimahi rollout restart deploy/kaimahi-proxy
+          kubectl --context kind-kaimahi-p1 -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
+          AUTH=none EXPECT=401 bash scripts/inbound-probe.sh demo 'unauthenticated event'
+          AUTH=forged EXPECT=401 bash scripts/inbound-probe.sh demo 'forged signature'
+          AUTH=stale EXPECT=401 bash scripts/inbound-probe.sh demo 'correctly signed, ten minutes ago'
+          make inbound-audit | tee inbound-audit-denied.out
+          test "$(grep -cE 'demo +inbound-demo +  +denied +401 ' inbound-audit-denied.out)" = 3
+      # The door checks the target's budget BEFORE the hook's grant (a
+      # budget denial must burn no grant use), so with hello-world's cap
+      # at 1 token and its budget grant spent (steps above) a correctly
+      # signed event is refused here as 429, whatever the hook's grant
+      # state. Assert that first, clear the cap, and only then assert
+      # the grant gate — the order the product enforces.
+      - name: "Inbound: exhausted target budget refused at the door"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          EXPECT=429 bash scripts/inbound-probe.sh demo 'budget exhausted'
+          make inbound-audit | tee inbound-audit-budget.out
+          grep -E 'demo +inbound-demo +probe-[0-9a-f]+ +denied +429 +.*target budget' inbound-audit-budget.out
+          make budget   # clear both caps for the steps below
+      - name: "Inbound: signed but ungranted event refused and files its approval request"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          EXPECT=403 bash scripts/inbound-probe.sh demo 'no grant yet'
+          make inbound-audit | tee inbound-audit-ungranted.out
+          grep -E 'demo +inbound-demo +probe-[0-9a-f]+ +denied +403 +.*no live grant' inbound-audit-ungranted.out
+      - name: "Inbound: bounded approval admits, the agent runs, replay and exhaustion refused"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make approvals | tee approvals-inbound.out
+          id=$(awk '$3=="inbound-demo" && $4=="inbound" && $5=="demo" {print $1}' approvals-inbound.out)
+          test -n "$id"
+          make approve ID="$id" USES=2 TTL=10m
+          # Count governed rows into a file first, so a `make ledger`
+          # failure fails the step instead of being read as zero rows.
+          make ledger > ledger-before.out
+          before=$(grep -cE 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' ledger-before.out || [ $? = 1 ])
+          d="ci-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+          DELIVERY="$d" bash scripts/inbound-probe.sh demo 'Reply with exactly the word PONG.'
+          # The SAME delivery again is a replay: refused, no use burned.
+          DELIVERY="$d" EXPECT=409 bash scripts/inbound-probe.sh demo 'Reply with exactly the word PONG.'
+          # The invocation is asynchronous: wait for its outcome row.
+          for _ in $(seq 1 60); do
+            make inbound-audit > inbound-audit.out 2>/dev/null
+            grep -qE "demo +inbound-demo +$d +(completed|failed) " inbound-audit.out && break
+            sleep 5
+          done
+          cat inbound-audit.out
+          # A well-formed positive only: completed, HTTP 200, non-zero
+          # runtime-reported input tokens, a task id.
+          grep -E "demo +inbound-demo +$d +completed +200 +[1-9][0-9]* +[0-9]+ +task " inbound-audit.out
+          grep -E "demo +inbound-demo +$d +denied +409 " inbound-audit.out
+          # The event's spend was governed and ledgered by the proxy
+          # under the agent's credential: one more governed row.
+          make ledger > ledger-after.out
+          after=$(grep -cE 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' ledger-after.out || [ $? = 1 ])
+          test "$after" -gt "$before"
+          # Second use admitted; the grant is then spent: refused again
+          # and a fresh request filed.
+          bash scripts/inbound-probe.sh demo 'second use'
+          EXPECT=403 bash scripts/inbound-probe.sh demo 'third: grant exhausted'
+          make approval-audit | tee approval-audit-inbound.out
+          # P8b: the trail now names who decided between the action and the bounds.
+          grep -E 'inbound-demo +inbound +demo +approved +admin +expires=.* uses=2' approval-audit-inbound.out
+      - name: "Inbound: bearer hook authenticates the same way and is gated the same way"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make inbound-credential CRED_INBOUND=inbound-bearer INBOUND_SECRET=kaimahi-inbound-token
+          n=$(kubectl --context kind-kaimahi-p1 -n kaimahi get secret kaimahi-inbound-token \
+            -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
+          test "$n" = 1
+          AUTH=none EXPECT=401 bash scripts/inbound-probe.sh demo-bearer 'no token'
+          AUTH=bearer EXPECT=403 bash scripts/inbound-probe.sh demo-bearer 'authenticated, no grant'
+      - name: Cluster state on failure
+        if: failure() && steps.changes.outputs.docs_only != 'true'
+        run: |
+          kubectl --context kind-kaimahi-p1 get pods -A || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-world || true
+          kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-world --tail=100 || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-tools || true
+          kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-tools --tail=100 || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe remotemcpserver kagent-tool-server || true
+          kubectl --context kind-kaimahi-p1 -n kagent logs deploy/kagent-tools --tail=50 || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get pods -o wide || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi logs -l app=kaimahi-proxy --tail=100 --prefix || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get pdb,endpoints || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi logs deploy/kaimahi-postgres --tail=50 || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get mcpserver -o wide || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get networkpolicy || true
+          kubectl --context kind-kaimahi-p1 -n kube-system logs ds/kindnet --tail=30 || true
+      - name: Docs-only change — cluster steps skipped, job reports success
+        id: docs-only-summary
+        if: steps.changes.outputs.docs_only == 'true'
+        run: echo "every changed file is documentation; no cluster booted"
+
+  # P11 milestone 2 (D28(2)): the ONLY proof that the path users actually
+  # take works. Every other job runs from a checkout, and the checkout is
+  # exactly what a `go install` user does not have — the plane's image is
+  # fetched from the public Go proxy there, the manifests come out of the
+  # binary, and neither is exercised by a job that has k8s/ on disk.
+  #
+  # It runs on main AFTER merge, never on the pull request, because the Go
+  # proxy only serves commits that have been pushed to the default branch's
+  # history: on a PR there is no revision to install. A failure here is a
+  # release blocker, not a flake — it means `go install …/cmd/kmx@<sha>`
+  # produces a binary that cannot stand its own plane up.
+  #
+  # There is NO checkout step, deliberately, and nothing in this job may add
+  # one: the moment a checkout exists, kmx auto-detects it as a source and
+  # the job stops proving the thing it exists to prove.
+  # SHARD 3 of 4 — the tool gateway (P4b), tool approvals (P4c), the
+  # governed Slack path (P5a), approvals from Slack (P8b) and the exact
+  # races and metrics (P9) that read what all of them wrote.
+  e2e-tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        # An explicit bash shell turns on `-o pipefail`, so the
+        # `make chat | tee` pipelines fail on make's own exit code instead
+        # of relying solely on the content check in verify-chat.py.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Classify the change (docs-only short-circuit, fail closed)
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          # pull_request: the base branch tip; push: the previous tip
+          # (all zeros on a new branch). HEAD is the PR merge commit or
+          # the pushed commit — what checkout checked out.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.sha }}
+        run: |
+          # The job's `shell: bash` runs with -e; turn it off here — every
+          # failure path must land on docs_only=false, never on a red step.
+          set +e
+          docs_only=false
+          reason=""
+          files=""
+          case "$BASE" in
+            ""|0000000000000000000000000000000000000000) reason="no base commit for $EVENT" ;;
+          esac
+          if [ -z "$reason" ] && ! git fetch --no-tags --depth=1 origin "$BASE"; then
+            reason="cannot fetch base $BASE"
+          fi
+          if [ -z "$reason" ]; then
+            # --no-renames: a pure rename lists only its destination, so a
+            # file moved INTO docs/ would otherwise read as documentation.
+            if files=$(git diff --name-only --no-renames "$BASE" "$HEAD") && [ -n "$files" ]; then
+              docs_only=true
+              while IFS= read -r f; do
+                case "$f" in
+                  docs/*|*.md) ;;
+                  *) docs_only=false; reason="non-doc change: $f"; break ;;
+                esac
+              done <<<"$files"
+              if [ "$docs_only" = true ]; then
+                reason="every changed file is documentation"
+              fi
+            else
+              reason="cannot diff $BASE..$HEAD, or the diff is empty"
+            fi
+          fi
+          echo "event=$EVENT base=$BASE head=$HEAD"
+          echo "changed files:"
+          echo "${files:-(undetermined)}" | sed 's/^/  /'
+          echo "docs_only=$docs_only ($reason)"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+      - name: Install kind
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          curl -sSfLo kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          chmod +x kind && sudo mv kind /usr/local/bin/kind
+      # P11: `make up` and every other target below now runs THROUGH kmx, so
+      # this job is what proves the binary a developer installs. Building it
+      # as its own step keeps a compile error legible instead of surfacing
+      # halfway through a cluster bring-up.
+      - uses: actions/setup-go@v5
+        if: steps.changes.outputs.docs_only != 'true'
+        with:
+          go-version-file: go.mod
+      - name: Build kmx (the Makefile's kind path delegates to it)
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make bin/kmx
+      - name: Cluster + Ollama + model + kagent + agent
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make up
+      # P4a, keyless: the governance plane in the SAME cluster/job — a
+      # separate e2e job would repeat the whole bring-up for no coverage
+      # gain; instead the plane's requests are trimmed (postgres 50m,
+      # proxy 25m) to fit the 2-CPU runner's request ceiling (P3 delta).
+      # Chat rides the governed ollama path via the proxy; the ledger row
+      # and the budget denial are asserted fail-closed.
+      # Preset switches roll the agent Deployment with maxSurge=1, so the
+      # node must fit a SECOND agent pod's requests while the old one
+      # drains. With the plane deployed the 2-CPU node cannot fit a
+      # second 100m/384Mi hello-world, so shrink its runtime requests to
+      # hello-tools' proven values (P3 delta) via the Agent CRD — the P1
+      # artifact k8s/hello-world.yaml stays untouched; this is a CI
+      # sizing patch, not a topology change.
+      - name: Shrink hello-world requests so preset switches can surge
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          kubectl --context kind-kaimahi-p1 -n kagent patch agent hello-world \
+            --type merge -p '{"spec":{"declarative":{"deployment":{"resources":{"requests":{"cpu":"50m","memory":"320Mi"},"limits":{"memory":"1Gi"}}}}}}'
+          kubectl --context kind-kaimahi-p1 -n kagent rollout status deploy/hello-world --timeout=300s
+      - name: Deploy the governance plane
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make plane
+      - name: Issue governed credential and switch agent through the proxy
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make govern
+      - name: Governed chat via the proxy
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make chat | tee governed-chat.out
+          python3 scripts/verify-chat.py governed-chat.out
+      # P4b, keyless: the enforcing MCP gateway in the same cluster/job.
+      # No new pods (the gateway is a second listener in the existing
+      # proxy pod — zero added CPU requests on the ~full node). The tools
+      # agent is governed through the gateway, a REAL tool call is proven
+      # with the P3 probe-ConfigMap pattern, the audit row is asserted,
+      # and a NOT-allowlisted call is denied fail-closed and audited.
+      - name: Govern the tools agent through the MCP gateway
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make govern-tools
+      - name: Governed tool call rides the gateway (P3 probe proof)
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          probe="probe-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
+          kubectl --context kind-kaimahi-p1 -n default create configmap "$probe" \
+            --from-literal=owner=kaimahi-p4b-ci
+          make chat AGENT=hello-tools \
+            TASK='List the configmaps in the default namespace.' | tee gw-chat.out
+          python3 scripts/verify-chat.py gw-chat.out k8s_get_resources "$probe"
+      - name: Assert the audit recorded the governed tool call
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make tool-audit | tee tool-audit.out
+          grep -E 'hello-tools +kagent-tools +tools/call +k8s_get_resources +allowed +200' tool-audit.out
+      - name: Non-allowlisted tool call denied fail-closed and audited
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          bash scripts/tool-denial-probe.sh k8s_describe_resource
+          make tool-audit | tee tool-audit-denied.out
+          grep -E 'hello-tools +kagent-tools +tools/call +k8s_describe_resource +denied +403' tool-audit-denied.out
+      - name: Agent-side tool wiring carries only the kmh_ token
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          # The Secret value never leaves the pipe; grep -c prints only a
+          # count. The RemoteMCPServer must reference the Secret (no
+          # inline header value), and discovery through the gateway must
+          # project exactly the allowlisted tool.
+          n=$(kubectl --context kind-kaimahi-p1 -n kagent get secret kaimahi-tools-token \
+            -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
+          test "$n" = 1
+          # Exactly one headersFrom entry, Secret-sourced (no inline value),
+          # referencing kaimahi-tools-token — the complete credential set.
+          kubectl --context kind-kaimahi-p1 -n kagent get remotemcpserver kaimahi-tools -o json \
+            | python3 -c 'import json,sys; h=json.load(sys.stdin)["spec"]["headersFrom"]; assert len(h)==1 and "value" not in h[0] and h[0]["valueFrom"]=={"type":"Secret","name":"kaimahi-tools-token","key":"api-key"}, h'
+          discovered=$(kubectl --context kind-kaimahi-p1 -n kagent get remotemcpserver kaimahi-tools \
+            -o jsonpath='{.status.discoveredTools[*].name}')
+          test "$discovered" = k8s_get_resources
+      # P4c, keyless: both approval cycles asserted fail-closed in the
+      # same cluster/job (zero CPU delta — approvals extend the existing
+      # process). USES=1 bounds keep CI sleep-free: exhaustion, not
+      # wall-clock expiry, proves grants end (TTL expiry is live-verified
+      # in the PR).
+      - name: "Approvals tool cycle: denied files request, bounded approval admits THAT call, exhaustion re-denies"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          # P12: a denial, an approval and a retry are all about one CALL.
+          # k8s_get_events declares `namespace` policy-relevant (the
+          # committed table), so the request carries that call's digest
+          # and a summary a human can read.
+          bash scripts/tool-denial-probe.sh k8s_get_events '{"namespace": "default"}'
+          make approvals | tee approvals-tool.out
+          grep -E 'hello-tools +tool +k8s_get_events .*k8s_get_events: namespace default' approvals-tool.out
+          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_events" && /namespace default/ {print $1}' approvals-tool.out)
+          test -n "$id"
+          make approve ID="$id" USES=1 TTL=10m
+          # A DIFFERENT call is not covered by that approval: denied, and
+          # it files its OWN request (two pending, two digests) — the
+          # grant is untouched.
+          bash scripts/tool-denial-probe.sh k8s_get_events '{"namespace": "kube-system"}'
+          make approvals | tee approvals-tool-2.out
+          grep -E 'hello-tools +tool +k8s_get_events .*namespace kube-system' approvals-tool-2.out
+          test "$(grep -c 'k8s_get_events' approvals-tool-2.out)" = 1
+          # The approved call itself is admitted, consuming the single use.
+          bash scripts/tool-call-probe.sh k8s_get_events '{"namespace": "default"}'
+          # The single use is consumed: the same call is denied again,
+          # fail closed, and a fresh request is filed.
+          bash scripts/tool-denial-probe.sh k8s_get_events '{"namespace": "default"}'
+          make tool-audit | tee tool-audit-p4c.out
+          grep -E 'hello-tools +kagent-tools +tools/call +k8s_get_events +allowed +200 +granted' tool-audit-p4c.out
+          # The denial and the admitted call carry the SAME digest: the
+          # call approved and the call that ran are provably one call.
+          python3 - tool-audit-p4c.out <<'EOF'
+          import re, sys
+          rows = [l for l in open(sys.argv[1]) if 'k8s_get_events' in l and 'namespace default' in l]
+          digests = {m.group(1) for l in rows for m in [re.search(r'\[([0-9a-f]{12})\]', l)] if m}
+          assert len(digests) == 1, (digests, rows)
+          assert any(' allowed ' in l or re.search(r'allowed +200', l) for l in rows), rows
+          assert any('denied' in l for l in rows), rows
+          print("one digest across the denial and the admitted call:", digests)
+          EOF
+      # P5a, keyless: the governed Slack path. CI holds NO Slack token and
+      # NO Copilot token (public, fork-exposed repo), so the Slack MCP
+      # server is deliberately NOT deployed here. What that buys is an
+      # honest boundary rather than a stand-in pretending to be Slack:
+      # the gateway decides BEFORE it forwards, so the entire approval
+      # cycle is exercised, the gateway then DIALS the committed slack
+      # upstream, and the call answers 502 because no such Service
+      # exists. A 200 would mean CI reached a tool server —
+      # tool-admit-probe.sh fails on it.
+      #
+      # Be precise about what that does and does not prove. It proves the
+      # allowlist/grant decisions and that an admitted call is forwarded.
+      # It does NOT validate the upstream URL itself: any unreachable URL
+      # answers 502 alike. And it does not cover the Slack MCP server
+      # pod, its bot-token custody at runtime, the gateway relaying a
+      # real Slack response, or Slack accepting the message. Those are
+      # live-verified in the PR and nowhere else.
+      - name: Slack manifests valid against the live CRDs (server dry-run)
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          kubectl --context kind-kaimahi-p1 apply --dry-run=server \
+            -f k8s/slack-mcp.yaml -f k8s/kaimahi-slack.yaml -f k8s/slack-agent.yaml
+      - name: Committed Slack wiring carries no credential
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          python3 - <<'EOF'
+          import pathlib, sys, yaml
+          fail = []
+          mcp = yaml.safe_load(pathlib.Path("k8s/slack-mcp.yaml").read_text())
+          dep = mcp["spec"]["deployment"]
+          # Every secret-shaped value must arrive by secretRef; the
+          # plaintext env map may hold only these non-secret knobs.
+          allowed_env = {"SLACK_MCP_HOST", "SLACK_MCP_PORT", "SLACK_MCP_LOG_LEVEL"}
+          extra = set(dep.get("env", {})) - allowed_env
+          if extra:
+              fail.append(f"secret-capable env in plaintext YAML: {sorted(extra)}")
+          refs = {r["name"] for r in dep.get("secretRefs", [])}
+          if refs != {"kaimahi-slack-bot", "kaimahi-slack-mcp-key"}:
+              fail.append(f"unexpected secretRefs: {sorted(refs)}")
+          # The image is pinned by digest: the bytes holding a workspace
+          # token must be the bytes that were reviewed.
+          if "@sha256:" not in dep["image"]:
+              fail.append(f"Slack MCP image is not digest-pinned: {dep['image']}")
+          # The agent-side seam sends only a Secret-resolved header.
+          rms = yaml.safe_load(pathlib.Path("k8s/kaimahi-slack.yaml").read_text())
+          h = rms["spec"]["headersFrom"]
+          if len(h) != 1 or "value" in h[0] or h[0]["valueFrom"] != {
+                  "type": "Secret", "name": "kaimahi-slack-token", "key": "api-key"}:
+              fail.append(f"unexpected headersFrom: {h}")
+          # The agent's toolNames is a SELECTION, not a grant: kagent wires
+          # (discovered ∩ toolNames) and discovery runs through the gateway.
+          # Assert it selects from the Slack seam only — the authority is the
+          # plane's allowlist, checked dynamically below.
+          agent = yaml.safe_load(pathlib.Path("k8s/slack-agent.yaml").read_text())
+          tools = agent["spec"]["declarative"]["tools"]
+          if len(tools) != 1 or tools[0]["mcpServer"]["name"] != "kaimahi-slack":
+              fail.append(f"the demo agent reaches something other than the governed Slack seam: {tools}")
+          if agent["spec"]["declarative"]["modelConfig"] != "governed-copilot":
+              fail.append("the demo agent is not on a governed model preset")
+          for line in fail:
+              print(line)
+          sys.exit(1 if fail else 0)
+          EOF
+          # No Slack token shape anywhere in the tree.
+          set +e
+          grep -rIn --exclude-dir=.git -E 'xox[bpca]-[A-Za-z0-9-]{10,}' .
+          rc=$?
+          set -e
+          test "$rc" -eq 1 || { echo "possible Slack token committed (or scanner failed: exit $rc)"; exit 1; }
+      - name: Gateway upstream table — Slack and kagent-tools in-cluster, GitHub the one hosted entry (marked)
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          kubectl --context kind-kaimahi-p1 -n kaimahi get configmap kaimahi-upstreams \
+            -o jsonpath='{.data.upstreams\.json}' > upstreams.json
+          python3 - <<'EOF'
+          import json, sys
+          from urllib.parse import urlparse
+          t = json.load(open("upstreams.json"))["tool_upstreams"]
+          assert set(t) == {"kagent-tools", "slack", "github"}, t
+          # P10: an internet-facing entry exists now, and ONLY under the
+          # marker that routes it through the hardened dialer; every
+          # unmarked entry is still in-cluster (the plane refuses the
+          # config otherwise — this asserts the same on the deployed table).
+          for name, up in t.items():
+              host = urlparse(up["url"]).hostname
+              if up.get("internet"):
+                  assert name == "github" and urlparse(up["url"]).scheme == "https", (name, up)
+                  continue
+              assert host.endswith((".kaimahi", ".kagent", ".svc.cluster.local")), (name, host)
+          # The Slack upstream is keyed from plane custody, and the table
+          # names the file without ever carrying a value.
+          slack = t["slack"]
+          assert slack["credential_file"].startswith("/etc/kaimahi/upstream-creds/"), slack
+          assert not any(k for k in slack if k in ("credential", "token", "api_key")), slack
+          print("tool upstreams:", {k: urlparse(v["url"]).hostname for k, v in t.items()})
+          EOF
+      - name: Issue the Slack credential with a READ-ONLY allowlist
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          # No agent and no MCP server pod are created here: the node is
+          # at ~92% of its CPU requests (P4a delta) and neither is needed
+          # to exercise the gateway's decisions.
+          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-slack-token \
+            bash scripts/plane-admin.sh issue hello-slack
+          make slack-allow SLACK_TOOLS=conversations_history
+          make tool-allowlist CRED_TOOLS=hello-slack | tee slack-allowlist.out
+          grep -q conversations_history slack-allowlist.out
+          # The authority: posting must NOT be allowlisted. `! cmd` is
+          # exempt from errexit, so assert the absence explicitly.
+          if grep -q conversations_add_message slack-allowlist.out; then
+            echo 'posting is allowlisted — it must be approved, not configured' >&2; exit 1
+          fi
+          # Custody: the agent-side Secret holds ONLY an opaque kmh_ token.
+          n=$(kubectl --context kind-kaimahi-p1 -n kagent get secret kaimahi-slack-token \
+            -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
+          test "$n" = 1
+          # Give the gateway a throwaway upstream credential so it
+          # actually DIALS the slack upstream instead of failing closed on
+          # a missing Secret — that is what makes the admitted call's 502
+          # mean "forwarded and unreachable" rather than "never sent".
+          # This is NOT a Slack credential: no Slack token exists in CI.
+          kubectl --context kind-kaimahi-p1 -n kaimahi create secret generic kaimahi-slack-mcp-key \
+            --from-literal=SLACK_MCP_API_KEY=ci-not-a-real-credential \
+            --dry-run=client -o yaml | kubectl --context kind-kaimahi-p1 apply -f -
+          kubectl --context kind-kaimahi-p1 -n kaimahi rollout restart deploy/kaimahi-proxy
+          kubectl --context kind-kaimahi-p1 -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
+      - name: "Slack post DENIED fail-closed and files an approval request"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
+            bash scripts/tool-denial-probe.sh conversations_add_message '{"channel_id": "C0CIONLY", "payload": "ci"}'
+          make slack-audit | tee slack-audit-denied.out
+          grep -E 'hello-slack +slack +tools/call +conversations_add_message +denied +403' slack-audit-denied.out
+      - name: "Bounded approval admits the post, exhaustion re-denies"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make approvals | tee approvals-slack.out
+          id=$(awk '$3=="hello-slack" && $4=="tool" && $5=="conversations_add_message" {print $1}' approvals-slack.out)
+          test -n "$id"
+          make approve ID="$id" USES=1 TTL=10m
+          # Admitted by the grant, then forwarded to an upstream that does
+          # not exist. The probe FAILS on a 200 (it reached a tool server)
+          # and on any 503 that is a pre-forward denial wearing a 503.
+          UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
+            bash scripts/tool-admit-probe.sh conversations_add_message '{"channel_id": "C0CIONLY", "payload": "ci"}'
+          make slack-audit | tee slack-audit-granted.out
+          # Exactly 502: an admitted call that was dialed and unreachable.
+          # 503 here would mean the gateway never forwarded at all.
+          grep -E 'hello-slack +slack +tools/call +conversations_add_message +allowed +502 +granted' slack-audit-granted.out
+          # The single use is consumed: denied again, and a fresh request filed.
+          UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
+            bash scripts/tool-denial-probe.sh conversations_add_message '{"channel_id": "C0CIONLY", "payload": "ci"}'
+          make approval-audit | tee approval-audit-slack.out
+          grep -E 'hello-slack +tool +conversations_add_message +approved' approval-audit-slack.out
+      # P8b, keyless: approvals FROM Slack, and the plane telling Slack a
+      # request is waiting. Slack cannot reach a kind cluster and CI holds
+      # no Slack token, so the human is a synthetic, correctly SIGNED
+      # app_mention fired at the bridge (scripts/slack-mention-probe.sh,
+      # the way inbound-fire fires the generic hook) with synthetic user
+      # ids (U0CIAPPROVER / U0NOBODY — never a real workspace's), and the
+      # plane's own posts ride the same absent slack upstream the P5a
+      # cycle uses: admitted by the gateway, dialed, 502 — the audit row
+      # under the PLANE's credential is the proof the notification went
+      # through the governed path. What only the live run proves: the
+      # message landing in a channel, a person typing the command, the
+      # reply in the thread.
+      - name: "Approvals from Slack: setup (approver file, the plane's own credential, a signed hook)"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make inbound-credential CRED_INBOUND=inbound-slack
+          make inbound-secret HOOK=slack-events GENERATE=1
+          # The channel the hook is bound to and the notifier posts into:
+          # the bot Secret's channel key only — no bot token exists in CI.
+          kubectl --context kind-kaimahi-p1 -n kaimahi create secret generic kaimahi-slack-bot \
+            --from-literal=SLACK_MCP_ADD_MESSAGE_TOOL=C0CIONLY \
+            --dry-run=client -o yaml | kubectl --context kind-kaimahi-p1 apply -f -
+          printf 'U0CIAPPROVER\n' | make slack-approvers
+          make notify-slack
+          # The plane's credential may post and nothing else — config,
+          # not a grant.
+          make tool-allowlist CRED_TOOLS=kaimahi-plane | tee plane-allowlist.out
+          grep -qx 'kaimahi-plane: conversations_add_message' plane-allowlist.out
+          # Its token is plane-side only (kaimahi namespace, kmh_ shape),
+          # and no Slack id is anywhere in the tree.
+          n=$(kubectl --context kind-kaimahi-p1 -n kaimahi get secret kaimahi-notifier-token \
+            -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
+          test "$n" = 1
+          if kubectl --context kind-kaimahi-p1 -n kagent get secret kaimahi-notifier-token >/dev/null 2>&1; then
+            echo "the plane's own credential must not live in the agent namespace" >&2; exit 1
+          fi
+          # kubelet projects first-time Secret mounts with a lag (P5b
+          # delta), per pod: restart so both replicas start with every
+          # file present, then confirm through the plane's own behaviour
+          # — a signed mention from a NON-approver answers 503 while the
+          # signing secret, the channel or the approver list is missing,
+          # and exactly 403 once all three are readable. The notifier's
+          # file is proven by its audit row in the next step.
+          kubectl --context kind-kaimahi-p1 -n kaimahi rollout restart deploy/kaimahi-proxy
+          kubectl --context kind-kaimahi-p1 -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
+          for _ in $(seq 1 60); do
+            EXPECT=403 bash scripts/slack-mention-probe.sh U0NOBODY "approve 00000000" >/dev/null 2>&1 && break
+            sleep 3
+          done
+          EXPECT=403 bash scripts/slack-mention-probe.sh U0NOBODY "approve 00000000"
+      - name: "Approvals from Slack: a filing is announced through the governed path (allowed 502 under the plane's credential)"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          # A fresh subject, so the filing is not deduped and the notifier
+          # fires: the denial files, the plane posts, the gateway admits
+          # the plane's call by allowlist (no grant — the detail is the dial
+          # failure, not a grant id), dials the absent upstream, 502 — same
+          # row shape as the P5a cycle, plane's name (P10: a 502 row now
+          # carries why: "upstream unreachable: …").
+          bash scripts/tool-denial-probe.sh k8s_get_pods
+          for _ in $(seq 1 30); do
+            KUBECTL="kubectl --context kind-kaimahi-p1" bash scripts/plane-admin.sh tool-audit kaimahi-plane > plane-audit.out 2>/dev/null
+            grep -qE 'kaimahi-plane +slack +tools/call +conversations_add_message +allowed +502' plane-audit.out && break
+            sleep 2
+          done
+          cat plane-audit.out
+          grep -E 'kaimahi-plane +slack +tools/call +conversations_add_message +allowed +502 +upstream unreachable: ' plane-audit.out
+          # Exactly ONE attempt: the gateway's 502 cannot say whether the
+          # post reached the server (a dial refusal and a reset after
+          # delivery answer alike), so it is recorded and NOT retried —
+          # a notification posted twice is the double-post this repo
+          # avoids. The notification is once per filing.
+          sleep 5
+          KUBECTL="kubectl --context kind-kaimahi-p1" bash scripts/plane-admin.sh tool-audit kaimahi-plane > plane-audit.out
+          test "$(grep -cE 'kaimahi-plane +slack +tools/call +conversations_add_message +allowed +502' plane-audit.out)" = 1
+      - name: "Approvals from Slack: a non-approver is refused 403 and audited; the request stays pending"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make approvals | tee approvals-p8b.out
+          # P12: several k8s_get_events requests can be pending at once —
+          # one per distinct call — so the call is what selects the id.
+          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_events" && /namespace default/ {print $1}' approvals-p8b.out)
+          test -n "$id"
+          echo "$id" > p8b-request-id
+          EXPECT=403 bash scripts/slack-mention-probe.sh U0NOBODY "approve $id uses=1"
+          make inbound-audit HOOK=slack-events | tee inbound-audit-p8b.out
+          grep -E 'slack-events +inbound-slack +Ev[0-9A-F]+ +denied +403 +.*user U0NOBODY is not an approver' inbound-audit-p8b.out
+          make approvals | grep -q "$id"
+      - name: "Approvals from Slack: an approver's command mints a grant in their name, and enforcement honours it"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          id=$(cat p8b-request-id)
+          # The first block of the id is what a human types.
+          WANT="approved request $id" bash scripts/slack-mention-probe.sh U0CIAPPROVER "approve ${id%%-*} uses=1 ttl=10m"
+          make grants | tee grants-p8b.out
+          grep -E "hello-tools +tool +k8s_get_events +yes .* 0/1 .* slack:U0CIAPPROVER" grants-p8b.out
+          make approval-audit | tee approval-audit-p8b.out
+          grep -E 'hello-tools +tool +k8s_get_events +approved +slack:U0CIAPPROVER +expires=.* uses=1' approval-audit-p8b.out
+          # The grant a Slack approver minted admits the retried action.
+          bash scripts/tool-call-probe.sh k8s_get_events '{"namespace": "default"}'
+          make tool-audit | tee tool-audit-p8b.out
+          grep -E 'hello-tools +kagent-tools +tools/call +k8s_get_events +allowed +200 +granted' tool-audit-p8b.out
+          make inbound-audit HOOK=slack-events | tee inbound-audit-p8b-2.out
+          grep -E "slack-events +inbound-slack +Ev[0-9A-F]+ +command +200 +.*approve ${id%%-*} by slack:U0CIAPPROVER: approved request $id" inbound-audit-p8b-2.out
+          # The same command again: a decided request is immutable.
+          WANT="already approved by slack:U0CIAPPROVER" bash scripts/slack-mention-probe.sh U0CIAPPROVER "approve ${id%%-*} uses=9"
+          # The admin path still records the admin bearer as the decider.
+          grep -E 'hello-tools +tool +k8s_get_events +approved +admin ' approval-audit-p8b.out
+      - name: "Approvals from Slack: deny works and carries the identity"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make approvals | tee approvals-deny.out
+          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_pods" {print $1}' approvals-deny.out)
+          test -n "$id"
+          WANT="denied request $id" bash scripts/slack-mention-probe.sh U0CIAPPROVER "deny $id"
+          make approval-audit | tee approval-audit-deny.out
+          grep -E 'hello-tools +tool +k8s_get_pods +denied +slack:U0CIAPPROVER' approval-audit-deny.out
+          # A command reply also rides the governed path: more plane rows,
+          # still every one an allowed-502 dial of the absent upstream —
+          # never a 200 (CI reached a tool server) and never a denial.
+          KUBECTL="kubectl --context kind-kaimahi-p1" bash scripts/plane-admin.sh tool-audit kaimahi-plane | tee plane-audit-2.out
+          if grep -E 'kaimahi-plane .*(allowed +200|denied)' plane-audit-2.out; then
+            echo "the plane's own post reached a tool server or was denied" >&2; exit 1
+          fi
+          # The admin port is still on no Service.
+          ports=$(kubectl --context kind-kaimahi-p1 -n kaimahi get svc -o jsonpath='{range .items[*]}{.metadata.name}={.spec.ports[*].port} {end}')
+          case "$ports" in
+            *9091*) echo 'admin port exposed by a Service' >&2; exit 1 ;;
+          esac
+      # P9, keyless: run it for real. Every step below drives the plane's
+      # two replicas directly (a port-forward per POD, so both are in
+      # every race by construction) rather than through kagent, whose
+      # OpenAI client retries 429s on its own and would make the counts
+      # a property of the client. No new pods: the node is at its CPU
+      # request ceiling; the second proxy replica (10m) is the whole
+      # added cost of this phase.
+      - name: "Exact budgets: 8 concurrent governed calls against a cap with room for one admit exactly one, across both replicas"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          # A fresh credential with a 1-token cap and nothing spent: room
+          # for exactly one call. Its token stays in the plane namespace.
+          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-race-token SECRET_NAMESPACE=kaimahi \
+            bash scripts/plane-admin.sh issue race-cred
+          make budget CRED=race-cred CAP_TOKENS=1
+          GOVERNED_SECRET=kaimahi-race-token SECRET_NAMESPACE=kaimahi EXPECT_ADMITTED=1 \
+            bash scripts/spend-race-probe.sh 8 | tee spend-race.out
+          grep -q 'admitted=1 denied(429)=7 other=0' spend-race.out
+          # The ledger agrees: one allowed row, seven denials, no open hold.
+          make ledger CRED=race-cred | tee ledger-race.out
+          test "$(grep -cE 'race-cred +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' ledger-race.out)" = 1
+          test "$(grep -cE 'race-cred +ollama +qwen2\.5:3b +0 +0 +0 +denied +429' ledger-race.out)" = 7
+          kubectl --context kind-kaimahi-p1 -n kaimahi exec deploy/kaimahi-postgres -- \
+            psql -U kaimahi -d kaimahi -tAc "SELECT count(*) FROM spend_reservation WHERE credential_name = 'race-cred'" | grep -qx 0
+      - name: "Exact grants: 8 concurrent tool calls against a USES=1 grant admit exactly one, across both replicas"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          # Counted in Postgres, not through the audit view's newest-50 window.
+          granted() { kubectl --context kind-kaimahi-p1 -n kaimahi exec deploy/kaimahi-postgres -- \
+            psql -U kaimahi -d kaimahi -tAc "SELECT count(*) FROM tool_audit WHERE credential_name = 'hello-tools' AND tool = 'k8s_get_events' AND decision = 'allowed' AND status = 200 AND detail LIKE 'granted %'"; }
+          before=$(granted)
+          bash scripts/tool-denial-probe.sh k8s_get_events '{"namespace": "default"}'
+          make approvals | tee approvals-race.out
+          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_events" && /namespace default/ {print $1}' approvals-race.out)
+          test -n "$id"
+          make approve ID="$id" USES=1 TTL=10m
+          EXPECT_ADMITTED=1 bash scripts/tool-race-probe.sh k8s_get_events 8 '{"namespace": "default"}' | tee tool-race.out
+          grep -q 'admitted=1 denied(-32001)=7 other=0' tool-race.out
+          after=$(granted)
+          test "$after" -eq $((before + 1))
+          make tool-audit | grep -E 'hello-tools +kagent-tools +tools/call +k8s_get_events +allowed +200 +granted'
+      - name: Budget exhaustion fails closed
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make budget CAP_TOKENS=1
+          # The same chat must now fail with the meter's clear error; the
+          # task must NOT complete. kagent may exit nonzero on a failed
+          # task, so capture output regardless and assert on content.
+          make chat > denied-chat.out 2>&1 || true
+          cat denied-chat.out
+          grep -q 'monthly token budget reached' denied-chat.out
+          grep -q '"state":"failed"' denied-chat.out
+          # `! cmd` is exempt from errexit (see the lockdown step above),
+          # so assert the absence explicitly.
+          if grep -q '"state":"completed"' denied-chat.out; then
+            echo 'chat completed despite exhausted budget' >&2; exit 1
+          fi
+          make ledger | tee ledger-denied.out
+          grep -E 'denied +429' ledger-denied.out
+      - name: "Approvals budget cycle: cap denial filed a request, bounded raise admits, exhaustion re-denies"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          # The budget-exhaustion step above (CAP_TOKENS=1) already
+          # denied a governed chat, which auto-filed this request:
+          make approvals | tee approvals-budget.out
+          id=$(awk '$3=="hello-world" && $4=="budget" && $5=="tokens" {print $1}' approvals-budget.out)
+          test -n "$id"
+          make approve ID="$id" USES=1 TTL=10m AMOUNT=1000000
+          make chat | tee granted-chat.out
+          python3 scripts/verify-chat.py granted-chat.out
+          # Grant exhausted (USES=1): the next chat is denied again.
+          make chat > overage-denied.out 2>&1 || true
+          grep -q 'monthly token budget reached' overage-denied.out
+          if grep -q '"state":"completed"' overage-denied.out; then
+            echo 'chat completed despite exhausted grant' >&2; exit 1
+          fi
+          make approval-audit | tee approval-audit.out
+          grep -E 'hello-world +budget +tokens +approved' approval-audit.out
+          grep -E 'hello-tools +tool +k8s_get_events +approved' approval-audit.out
+      - name: "Metrics on the ops port: Prometheus text, expected names, no identifier labels; admin and ops ports on no Service"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make plane-metrics | tee metrics.out
+          grep -q '^# TYPE kaimahi_decisions_total counter' metrics.out
+          for m in kaimahi_decisions_total kaimahi_ledger_month_tokens kaimahi_ledger_month_cents kaimahi_live_grants \
+                   kaimahi_open_reservations kaimahi_upstream_latency_seconds_bucket kaimahi_queue_depth \
+                   kaimahi_seam_degraded kaimahi_build_info kaimahi_store_up go_goroutines; do
+            grep -q "^$m" metrics.out || { echo "metric $m missing" >&2; exit 1; }
+          done
+          # The ledger totals are by credential NAME, and the names the
+          # run created are there; the store answered.
+          grep -q 'kaimahi_ledger_month_tokens{credential="hello-world"}' metrics.out
+          grep -q 'kaimahi_ledger_month_tokens{credential="race-cred"}' metrics.out
+          grep -q '^kaimahi_store_up 1' metrics.out
+          # Per-replica series exist from boot (primed), whatever this
+          # replica has seen since the restart above: the budget-denial
+          # counter and a latency histogram for the configured upstream.
+          grep -q 'kaimahi_decisions_total{decision="denied",reason="budget",seam="proxy"} ' metrics.out
+          grep -q 'kaimahi_upstream_latency_seconds_bucket{seam="proxy",upstream="ollama",le="+Inf"} ' metrics.out
+          # No token shape and no synthetic Slack id ever appears in a label.
+          if grep -E 'kmh_[0-9a-f]{20,}|U0CIAPPROVER|U0NOBODY|C0CIONLY' metrics.out; then
+            echo 'an identifier leaked into the metrics' >&2; exit 1
+          fi
+          ports=$(kubectl --context kind-kaimahi-p1 -n kaimahi get svc -o jsonpath='{range .items[*]}{.metadata.name}={.spec.ports[*].port} {end}')
+          echo "$ports"
+          case "$ports" in
+            *9091*|*9092*) echo 'admin or ops port exposed by a Service' >&2; exit 1 ;;
+          esac
+      - name: Cluster state on failure
+        if: failure() && steps.changes.outputs.docs_only != 'true'
+        run: |
+          kubectl --context kind-kaimahi-p1 get pods -A || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-world || true
+          kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-world --tail=100 || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-tools || true
+          kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-tools --tail=100 || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe remotemcpserver kagent-tool-server || true
+          kubectl --context kind-kaimahi-p1 -n kagent logs deploy/kagent-tools --tail=50 || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get pods -o wide || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi logs -l app=kaimahi-proxy --tail=100 --prefix || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get pdb,endpoints || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi logs deploy/kaimahi-postgres --tail=50 || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get mcpserver -o wide || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get networkpolicy || true
+          kubectl --context kind-kaimahi-p1 -n kube-system logs ds/kindnet --tail=30 || true
+      - name: Docs-only change — cluster steps skipped, job reports success
+        id: docs-only-summary
+        if: steps.changes.outputs.docs_only == 'true'
+        run: echo "every changed file is documentation; no cluster booted"
+
+  # P11 milestone 2 (D28(2)): the ONLY proof that the path users actually
+  # take works. Every other job runs from a checkout, and the checkout is
+  # exactly what a `go install` user does not have — the plane's image is
+  # fetched from the public Go proxy there, the manifests come out of the
+  # binary, and neither is exercised by a job that has k8s/ on disk.
+  #
+  # It runs on main AFTER merge, never on the pull request, because the Go
+  # proxy only serves commits that have been pushed to the default branch's
+  # history: on a PR there is no revision to install. A failure here is a
+  # release blocker, not a flake — it means `go install …/cmd/kmx@<sha>`
+  # produces a binary that cannot stand its own plane up.
+  #
+  # There is NO checkout step, deliberately, and nothing in this job may add
+  # one: the moment a checkout exists, kmx auto-detects it as a source and
+  # the job stops proving the thing it exists to prove.
+  # SHARD 4 of 4 — run it for real (P9): a replica killed mid-cycle, a
+  # Postgres outage, both replicas restarted, backup and restore.
+  e2e-resilience:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        # An explicit bash shell turns on `-o pipefail`, so the
+        # `make chat | tee` pipelines fail on make's own exit code instead
+        # of relying solely on the content check in verify-chat.py.
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Classify the change (docs-only short-circuit, fail closed)
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          # pull_request: the base branch tip; push: the previous tip
+          # (all zeros on a new branch). HEAD is the PR merge commit or
+          # the pushed commit — what checkout checked out.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.sha }}
+        run: |
+          # The job's `shell: bash` runs with -e; turn it off here — every
+          # failure path must land on docs_only=false, never on a red step.
+          set +e
+          docs_only=false
+          reason=""
+          files=""
+          case "$BASE" in
+            ""|0000000000000000000000000000000000000000) reason="no base commit for $EVENT" ;;
+          esac
+          if [ -z "$reason" ] && ! git fetch --no-tags --depth=1 origin "$BASE"; then
+            reason="cannot fetch base $BASE"
+          fi
+          if [ -z "$reason" ]; then
+            # --no-renames: a pure rename lists only its destination, so a
+            # file moved INTO docs/ would otherwise read as documentation.
+            if files=$(git diff --name-only --no-renames "$BASE" "$HEAD") && [ -n "$files" ]; then
+              docs_only=true
+              while IFS= read -r f; do
+                case "$f" in
+                  docs/*|*.md) ;;
+                  *) docs_only=false; reason="non-doc change: $f"; break ;;
+                esac
+              done <<<"$files"
+              if [ "$docs_only" = true ]; then
+                reason="every changed file is documentation"
+              fi
+            else
+              reason="cannot diff $BASE..$HEAD, or the diff is empty"
+            fi
+          fi
+          echo "event=$EVENT base=$BASE head=$HEAD"
+          echo "changed files:"
+          echo "${files:-(undetermined)}" | sed 's/^/  /'
+          echo "docs_only=$docs_only ($reason)"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+      - name: Install kind
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          curl -sSfLo kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          chmod +x kind && sudo mv kind /usr/local/bin/kind
+      # P11: `make up` and every other target below now runs THROUGH kmx, so
+      # this job is what proves the binary a developer installs. Building it
+      # as its own step keeps a compile error legible instead of surfacing
+      # halfway through a cluster bring-up.
+      - uses: actions/setup-go@v5
+        if: steps.changes.outputs.docs_only != 'true'
+        with:
+          go-version-file: go.mod
+      - name: Build kmx (the Makefile's kind path delegates to it)
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make bin/kmx
+      - name: Cluster + Ollama + model + kagent + agent
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make up
+      # P4a, keyless: the governance plane in the SAME cluster/job — a
+      # separate e2e job would repeat the whole bring-up for no coverage
+      # gain; instead the plane's requests are trimmed (postgres 50m,
+      # proxy 25m) to fit the 2-CPU runner's request ceiling (P3 delta).
+      # Chat rides the governed ollama path via the proxy; the ledger row
+      # and the budget denial are asserted fail-closed.
+      # Preset switches roll the agent Deployment with maxSurge=1, so the
+      # node must fit a SECOND agent pod's requests while the old one
+      # drains. With the plane deployed the 2-CPU node cannot fit a
+      # second 100m/384Mi hello-world, so shrink its runtime requests to
+      # hello-tools' proven values (P3 delta) via the Agent CRD — the P1
+      # artifact k8s/hello-world.yaml stays untouched; this is a CI
+      # sizing patch, not a topology change.
+      - name: Shrink hello-world requests so preset switches can surge
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          kubectl --context kind-kaimahi-p1 -n kagent patch agent hello-world \
+            --type merge -p '{"spec":{"declarative":{"deployment":{"resources":{"requests":{"cpu":"50m","memory":"320Mi"},"limits":{"memory":"1Gi"}}}}}}'
+          kubectl --context kind-kaimahi-p1 -n kagent rollout status deploy/hello-world --timeout=300s
+      - name: Deploy the governance plane
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make plane
+      - name: Issue governed credential and switch agent through the proxy
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make govern
+      - name: Governed chat via the proxy
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make chat | tee governed-chat.out
+          python3 scripts/verify-chat.py governed-chat.out
+      - name: "Replica killed mid-cycle: the in-flight call drains, the survivor serves the next, no ledger row lost"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: bash scripts/replica-kill-probe.sh
+      - name: "Postgres outage drops readiness on every replica and restarts no proxy"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: bash scripts/store-outage-probe.sh
+      - name: "Both replicas restarted together come up clean under the migration lock"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          old=$(kubectl --context kind-kaimahi-p1 -n kaimahi get pods -l app=kaimahi-proxy -o jsonpath='{.items[*].metadata.name}')
+          kubectl --context kind-kaimahi-p1 -n kaimahi delete pods -l app=kaimahi-proxy --wait=false
+          # Wait for the OLD pods to be gone before reading the Deployment:
+          # its status lags the deletes, and a Terminating pod's log still
+          # says "up". The pods asserted below must be new ones.
+          for p in $old; do
+            kubectl --context kind-kaimahi-p1 -n kaimahi wait --for=delete "pod/$p" --timeout=120s
+          done
+          kubectl --context kind-kaimahi-p1 -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
+          test "$(kubectl --context kind-kaimahi-p1 -n kaimahi get deploy kaimahi-proxy -o jsonpath='{.status.readyReplicas}')" = 2
+          new=$(kubectl --context kind-kaimahi-p1 -n kaimahi get pods -l app=kaimahi-proxy --field-selector=status.phase=Running -o jsonpath='{.items[*].metadata.name}')
+          test "$(echo "$new" | wc -w)" = 2
+          for pod in $new; do
+            case " $old " in *" $pod "*) echo "old pod $pod still listed" >&2; exit 1 ;; esac
+            kubectl --context kind-kaimahi-p1 -n kaimahi logs "$pod" | grep -q 'migrations: nothing to apply'
+            kubectl --context kind-kaimahi-p1 -n kaimahi logs "$pod" | grep -q 'kaimahi-proxy up'
+          done
+          make chat | tee restart-chat.out
+          python3 scripts/verify-chat.py restart-chat.out
+      - name: "Backup, wipe the database, restore: the ledger rows come back"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          rows() { kubectl --context kind-kaimahi-p1 -n kaimahi exec deploy/kaimahi-postgres -- \
+                     psql -U kaimahi -d kaimahi -tAc 'SELECT count(*) FROM ledger_entry'; }
+          before=$(rows); test "$before" -gt 0
+          make backup FILE=ci-backup.sql | tee backup.out
+          test -s ci-backup.sql
+          # A dump holds hashes, never a token (and no hosted key exists here).
+          if grep -E 'kmh_[0-9a-f]{64}' ci-backup.sql; then echo 'a token in the backup' >&2; exit 1; fi
+          # Wipe: the Postgres Deployment AND its PVC go; a fresh, empty
+          # database comes up in their place.
+          kubectl --context kind-kaimahi-p1 delete -f k8s/plane/postgres.yaml --wait=true
+          kubectl --context kind-kaimahi-p1 apply -f k8s/plane/postgres.yaml
+          kubectl --context kind-kaimahi-p1 -n kaimahi rollout status deploy/kaimahi-postgres --timeout=300s
+          # Empty for real: no tables at all.
+          tables=$(kubectl --context kind-kaimahi-p1 -n kaimahi exec deploy/kaimahi-postgres -- \
+            psql -U kaimahi -d kaimahi -tAc "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'")
+          test "$tables" = 0
+          KAIMAHI_CONFIRM=kind-kaimahi-p1 make restore FILE=ci-backup.sql | tee restore.out
+          test "$(rows)" = "$before"
+          # The proxies reconnect on their own and the plane works again:
+          # the restored hashes admit the same agent-side token.
+          kubectl --context kind-kaimahi-p1 -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
+          make ledger | tee ledger-restored.out
+          grep -E 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' ledger-restored.out
+          make chat | tee restored-chat.out
+          python3 scripts/verify-chat.py restored-chat.out
+          rm -f ci-backup.sql
+      - name: Cluster state on failure
+        if: failure() && steps.changes.outputs.docs_only != 'true'
+        run: |
+          kubectl --context kind-kaimahi-p1 get pods -A || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-world || true
+          kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-world --tail=100 || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-tools || true
+          kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-tools --tail=100 || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe remotemcpserver kagent-tool-server || true
+          kubectl --context kind-kaimahi-p1 -n kagent logs deploy/kagent-tools --tail=50 || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get pods -o wide || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi logs -l app=kaimahi-proxy --tail=100 --prefix || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get pdb,endpoints || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi logs deploy/kaimahi-postgres --tail=50 || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get mcpserver -o wide || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get networkpolicy || true
+          kubectl --context kind-kaimahi-p1 -n kube-system logs ds/kindnet --tail=30 || true
+      - name: Docs-only change — cluster steps skipped, job reports success
+        id: docs-only-summary
+        if: steps.changes.outputs.docs_only == 'true'
+        run: echo "every changed file is documentation; no cluster booted"
+
+  # P11 milestone 2 (D28(2)): the ONLY proof that the path users actually
+  # take works. Every other job runs from a checkout, and the checkout is
+  # exactly what a `go install` user does not have — the plane's image is
+  # fetched from the public Go proxy there, the manifests come out of the
+  # binary, and neither is exercised by a job that has k8s/ on disk.
+  #
+  # It runs on main AFTER merge, never on the pull request, because the Go
+  # proxy only serves commits that have been pushed to the default branch's
+  # history: on a PR there is no revision to install. A failure here is a
+  # release blocker, not a flake — it means `go install …/cmd/kmx@<sha>`
+  # produces a binary that cannot stand its own plane up.
+  #
+  # There is NO checkout step, deliberately, and nothing in this job may add
+  # one: the moment a checkout exists, kmx auto-detects it as a source and
+  # the job stops proving the thing it exists to prove.
+
+  # The REQUIRED check (the protect-main ruleset names `e2e-hello-world`).
+  # It owns no cluster of its own: it reports whether every e2e shard
+  # above succeeded, so the ruleset keeps gating on one context while the
+  # work runs in four. `always()` matters — a job that is skipped never
+  # reports, and a required check that never reports blocks every merge.
+  e2e-hello-world:
+    runs-on: ubuntu-latest
+    needs: [e2e-runtime, e2e-spend, e2e-tools, e2e-resilience]
+    if: always()
+    steps:
+      - name: Every e2e shard succeeded
+        env:
+          SHARDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          shards = json.loads(os.environ["SHARDS"])
+          for job, outcome in sorted(shards.items()):
+              print(f"{job}: {outcome['result']}")
+          bad = {job: o["result"] for job, o in shards.items() if o["result"] != "success"}
+          if not shards:
+              print("no e2e shards reported — refusing to report success"); sys.exit(1)
+          if bad:
+              print("e2e shards did not succeed:", bad); sys.exit(1)
+          print("every e2e shard succeeded")
+          EOF
   kmx-clone-free:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
