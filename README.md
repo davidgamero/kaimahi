@@ -46,7 +46,7 @@ against the budget, and each event consuming one bounded grant.
 
 <p align="center">
   <img src="docs/assets/architecture.svg"
-       alt="A Kubernetes agent routes model calls through the Kaimahi LLM proxy and tool calls through its MCP gateway; bounded approvals can widen either path temporarily">
+       alt="The kmx entry point provisions the cluster, applies agents and deploys the governance plane from outside every request path; a Kubernetes agent then routes model calls through the Kaimahi LLM proxy and tool calls through its MCP gateway, external events reach the agent through its inbound bridge, and bounded approvals can widen any of the three governed paths temporarily">
 </p>
 
 The agents themselves run on **[kagent](https://kagent.dev)**, an
