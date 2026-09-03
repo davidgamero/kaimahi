@@ -16,11 +16,10 @@
 # cluster. Fail closed — no confirmation, no action.
 TARGET         ?= kind
 
-# `up` is the default goal, as it has always been. Stated explicitly
-# because it is no longer the first rule in the file: make takes the first
-# non-dot target, which is now `guard`, so a bare `make` would otherwise
-# print a banner and exit 0 — a no-op that looks like a successful run.
-.DEFAULT_GOAL := up
+# A bare `make` is build-only. Provisioning a cluster is consequential and
+# stays behind the explicit `make up`; the default builds kmx and prints where
+# it was written.
+.DEFAULT_GOAL := build
 
 # Container engine for the kind path. Explicit rather than auto-detected:
 # which engine built an image is exactly the kind of thing that should be
@@ -190,7 +189,7 @@ AP_INVOICE     ?= INV-88134
 # default keeps kind and CI exactly as they were.
 AP_HUMAN       ?= 0
 
-.PHONY: up cluster ollama model kagent agent tools-agent chat down status guard \
+.PHONY: build up cluster ollama model kagent agent tools-agent chat down status guard \
 	model-secret copilot-secret use use-ollama \
 	plane plane-image plane-secrets govern budget ledger plane-copilot-secret \
 	credentials credential-renew \
@@ -206,6 +205,10 @@ AP_HUMAN       ?= 0
 	github-secret github-revoke egress-hosted egress-hosted-off \
 	govern-github github-allow github-audit github-ask github-down \
 	erp erp-image erp-fixtures govern-ap ap-allow ap-audit ap-ask ap-demo ap-injection ap-down
+
+## build: build kmx from this checkout and print the resulting path
+build: $(KMX)
+	@echo "kmx ready: $(abspath $(KMX))"
 
 # guard: the context-safety net every MUTATING target depends on. Prints
 # the target context/namespaces; demands explicit confirmation for

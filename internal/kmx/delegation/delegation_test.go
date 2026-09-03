@@ -102,6 +102,24 @@ func TestMakeTargetsDelegateToKmx(t *testing.T) {
 	}
 }
 
+func TestBareMakeOnlyBuildsKmx(t *testing.T) {
+	cmd := exec.Command("make", "-n")
+	cmd.Dir = "../../.."
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bare make dry-run failed: %v\n%s", err, out)
+	}
+	text := string(out)
+	if !strings.Contains(text, "kmx ready:") {
+		t.Fatalf("bare make did not report the kmx path:\n%s", text)
+	}
+	for _, forbidden := range []string{"bin/kmx up", "kind create", "kubectl ", "helm "} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("bare make would perform runtime work (%q):\n%s", forbidden, text)
+		}
+	}
+}
+
 // The delegation has to carry the operator's settings, or `KIND_CLUSTER=mine
 // make up` would build one cluster and `KIND_CLUSTER=mine kmx up` another.
 func TestDelegationPassesTheOperatorsSettings(t *testing.T) {
