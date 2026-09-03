@@ -119,8 +119,8 @@ prefix.
 | P12: argument-level policy — standing constraints + an approval bound to the call (D29, widened by D31) | W23 worker | PR #62 MERGED; coordinator verified live — a constraint overrides the allowlist, a grant with a spare use could not be redirected, duplicate keys refused (delta sheet below) | lane closed | touches the gateway, the store, a migration, the approvals path and the Slack notifier; no new upstream |
 | P13: the accounts-payable exception demo (D29, D30) | W24 worker | PR #73 MERGED; coordinator verified both scenarios on its own cluster — the injection proven with the model actually complying (delta sheet below) | lane closed. ONE OPEN FINDING: the constraint bounds the amount but not the payee, and the agent walked through it. Fixture ERP server + ConfigMap corpus, the payee-substitution injection case, Slack as the surface; kind + CI, no AKS run unless the user calls one |
 | CI: the e2e job takes ~15 min on every PR (D32) | W25 worker | PR #65 MERGED; coordinator verified 934s to 483s with all 62 assertion bodies byte-identical (delta sheet below) | lane closed | investigation-led: 934s over 68 serial steps, bring-up 186s, the model pull only 16s of it |
-| P14: the AP demo live on AKS (D33) | W26 worker | SHAPED 2026-09-03 — prompt below; runs in PARALLEL with W27 | needs the ERP on ACR first (it is kind-only today); Copilot-only; real Slack approvals; teardown + spend mandatory |
-| `kmx` milestone 3 — the core plane verbs (D28(3), D33) | W27 worker | SHAPED 2026-09-03 — prompt below; runs in PARALLEL with W26 | kind ONLY, which is what keeps it clear of W26; no connector families, no secret capture |
+| P14: the AP demo live on AKS (D33) | W26 worker | PR #83 MERGED; coordinator verified teardown, the scanner, the kind path unchanged and the render's fail-closed cases (delta sheet below) | lane closed; ap-injection not run verbatim on AKS — deviation accepted, see sheet |
+| `kmx` milestone 3 — the core plane verbs (D28(3), D33) | W27 worker | PR #81 MERGED; coordinator verified live — wait_switched carried, a destructive backup/restore round trip, approvals showing the call (delta sheet below) | lane closed |
 | Brand assets + architecture diagram + org/front-door plans | user-run lane (outside the board's prompt set) | PR #33 MERGED (+ kaimahi-agents/.github#1); main CI green | brand validator in the hygiene job |
 | README front door + CONTRIBUTING.md | user-run lane (outside the board's prompt set) | PR #34 MERGED; main CI green | anchored front-door checker in hygiene: section order enforced, no `npx kaimahi create` mention before the quickstart ends — PR #16's README hunk must land under "A scaffolder CLI: considered, not built" (was "Proposed CLI direction" until D23) |
 | CLI decisions + PR #16 review | user + coordinator | D19 ruled; coordinator review rounds done (2026-09-01/02) | not a build lane; parallelises with everything |
@@ -1113,9 +1113,14 @@ the Makefile comment for `AKS_NETWORK_POLICY` (W15 deviation 3).
 
 ## Open items after P8b (2026-09-02)
 
-- **P9, P10, P11 (both milestones), P12, P13 and the CI speed lane are
-  all DONE and verified** (#46, #51, #57, #64, #62, #73, #65 — delta
-  sheets below). **The arc's demo is built.** One OPEN FINDING from the
+- **Everything GO'd is now built and verified**: P9, P10, P11 (all three
+  milestones), P12, P13, P14 and the CI speed lane (#46, #51, #57, #64,
+  #81, #62, #73, #83, #65 — delta sheets below). **The demo has run on a
+  managed cluster with a human approving a payment in Slack, and there is
+  no lane currently GO.** The candidates are the four gaps in the
+  agentdesktop positioning note above (identity on the call, credentials
+  that expire, a posture view, the agent pod's own constraints), D31's
+  middle column, and the durability/egress carry-forwards — none shaped. One OPEN FINDING from the
   P13 pass needs a decision: the AP standing constraint bounds
   `amount_cents` and nothing else, so the agent's own turn paid $4,800
   to a payee that does not exist, unasked — a `payee_id in [...]` clause
@@ -2671,6 +2676,93 @@ Report deviations in the PR.
 ```
 
 ## Delta sheets from finished lanes
+
+### P14 — the accounts-payable demo on AKS (PR #83, merged 2026-09-03)
+
+The live run is by nature unrepeatable without spend and the user's
+credentials, so it is accepted on the lane's transcript (the D15/D20/D21
+precedent). Everything that CAN be checked independently was, on the
+coordinator's own machine, without provisioning anything.
+
+- **Teardown is real.** `az group list` shows no `kaimahi*` resource
+  group. The Azure identifier scanner and its self-test pass on the
+  tree: the cluster FQDN, the ACR name and the public IP are nowhere in
+  it. Reported spend **≈ US$0.35**.
+- **The regression this lane was most likely to cause did not happen.**
+  Giving the ERP a registry path meant touching how its manifest is
+  produced, and the kind path applies it unrendered ON PURPOSE. Checked
+  in the code, not the comment: `do_apply` on a kind target is literally
+  `kubectl apply -f k8s/erp-mcp.yaml` with an early return before any
+  render — the same structure, and the same reasoning, as
+  scripts/plane-deploy.sh.
+- **The registry render fails closed, verified by running it.** The
+  script's `render` step contacts no cluster, so all three cases were
+  exercised locally: a well-formed target swaps image and pull policy; a
+  malformed `ERP_IMAGE` (the exact shape an unset `ACR_NAME` produces)
+  is refused BY NAME; and `Never` on a registry target is rejected
+  because it would mean ErrImageNeverPull forever.
+- **Nothing is published.** A private ACR built by `az acr build` is not
+  publication (D15); no public registry, no `docker push`, no registry
+  login on the operator's machine. The P13 guardrail stands.
+- **The lane found a defect the coordinator missed.**
+  `k8s/ap-agent.yaml` pinned `modelConfig: governed-ollama`, which does
+  not exist on a Copilot-only managed cluster (D15) — `make govern-ap`
+  would have waited for Ready until it timed out, on AKS only. The fix
+  rides the same merge patch as the tool selection, using
+  `$(GOVERNED_PRESET)`. Verified as a genuine no-op on kind: the
+  committed manifest already says `governed-ollama` and `GOVERNED_PRESET`
+  is `governed-ollama` there, so the patch sets the same value.
+
+**Deviation, reported by the lane and ACCEPTED: `make ap-injection` did
+not complete verbatim on AKS.** Three attempts — the first hit the
+defect above; the second elapsed a 30-minute human approval window and
+FAILED CLOSED, claiming nothing, which is the behaviour we want; by the
+third a live grant for the legitimate call existed, which makes the
+script's opening assertion (that the call is denied) impossible. The
+scenario's substantive half was therefore driven by hand with that
+script's own probes and its own fixed arguments, and every assertion it
+makes was checked. Ruling: accept. The guarantee was demonstrated, the
+script is unchanged, CI runs it end to end on kind every PR, and a
+verbatim run would have cost a fourth approval and another cluster-hour.
+Recorded rather than smoothed over because the lane volunteered it.
+
+### `kmx` milestone 3 — the operator's verbs (PR #81, merged 2026-09-03)
+
+Verified on the coordinator's own cluster `coord-m3`, deleted when this
+sheet landed.
+
+- **The trap milestone 1 left was caught.** `wait_switched` — deliberately
+  not carried across then, because `make use` was not one of the six
+  commands — is carried whole in `internal/kmx/app/use.go`, all three
+  waits including the exactly-ONE-pod-on-the-new-template check. Proven
+  live rather than read: `kmx use ollama` took ~27s, waited through "1
+  old replicas are pending termination", and left exactly one pod
+  Running on the new template with the preset actually switched.
+- **The backup/restore round trip works, destructively.** `kmx backup`
+  streamed pg_dump through `kubectl exec` (17998 bytes, 10 tables); the
+  `ledger_entry` table was then TRUNCATED and the ledger read back
+  empty; `kmx restore` brought the row back, rolled the proxy, and
+  reported "ledger_entry has 1 rows; plane serving again".
+- **`kmx approvals` is not a downgrade on `make approvals`** — the
+  requirement W27 set. A denied `k8s_get_events` call filed a request
+  and `kmx approvals` rendered the CALL under its own column:
+  `k8s_get_events: namespace kube-system`. `kmx approve` then minted a
+  grant `binds call 8f84e4e9f653`.
+- **32 targets delegate**, the delegation check and its self-test both
+  pass, and the connector families are correctly absent (D33(5)).
+- **The credential guardrail held in the direction that matters.** kmx
+  accepts no credential material — `--secret` names a Secret RESOURCE —
+  while `kmx govern` still issues governed credentials. That is exactly
+  the distinction the W27 prompt had to be corrected to state, and the
+  lane implemented the corrected version.
+
+**Both lanes respected the parallel-set boundary exactly** (D33(4),
+D33(7)): #83 touched no `cmd/kmx` or `internal/kmx`; #81 touched no AKS
+path. No conflict, no rework, and the `ci.yml` gate line survived both.
+
+**Carry-forward (not a defect):** `kmx restore` takes its file
+positionally (`kmx restore <file>`), not `--file`. The usage message is
+clear; noted only because the coordinator guessed wrong first.
 
 ### P13 — the accounts-payable exception demo (PR #73, merged 2026-09-03)
 
