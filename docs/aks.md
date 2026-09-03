@@ -434,23 +434,26 @@ Two smaller carry-overs, recorded rather than hidden:
 
 ## Working two clusters at once: move the local ports
 
-These tools port-forward to fixed loopback ports: `make chat` and
-`make slack-post` use `8083` (`CHAT_PORT`), `plane-admin.sh` uses `19091`
-(`ADMIN_PORT`), and each probe has its own `GATEWAY_PORT` default:
+`make chat` now asks kubectl for a free loopback port, so concurrent chats do
+not collide. Action-oriented `make slack-post` still uses fixed `8083`
+(`CHAT_PORT`), `plane-admin.sh` uses `19091` (`ADMIN_PORT`), and each probe
+has its own `GATEWAY_PORT` default:
 `tool-denial-probe.sh` `18081`, `tool-call-probe.sh` `18082`,
 `tool-admit-probe.sh` `18083`. Running a kind and an AKS verification
 concurrently makes the second bind lose, and its requests land on the
 *other* cluster's forward. Override per cluster:
 
 ```bash
-CHAT_PORT=8183 make chat                            # chat / slack-post
+CHAT_PORT=8183 make chat                            # optional deterministic chat port
+CHAT_PORT=8283 make slack-post                      # fixed action helper
 ADMIN_PORT=19291 make approvals                     # plane-admin targets
 GATEWAY_PORT=18281 bash scripts/tool-denial-probe.sh k8s_get_events
 ```
 
 `ADMIN_PORT` is what the plane-admin targets read; `GATEWAY_PORT` is
 read only by the probe scripts, which are run directly rather than
-through a target; `CHAT_PORT` covers the agent-invoking targets.
+through a target; `CHAT_PORT` is optional for chat and still required to move
+the legacy action helper.
 
 **The two collisions behave differently, and one used to be silent.** An
 `ADMIN_PORT` clash fails closed with a flat `HTTP 401 unauthorized` (the

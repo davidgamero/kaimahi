@@ -16,7 +16,6 @@ import (
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/admin"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/planebuild"
-	"github.com/kaimahi-agents/kaimahi/internal/kmx/run"
 )
 
 // PlaneImage is the tag the plane's image is built and side-loaded under.
@@ -90,6 +89,28 @@ func (a *App) Plane(opt PlaneOptions) error {
 			return fmt.Errorf("unknown step %q — one of: %s", opt.Step, strings.Join(PlaneSteps, ", "))
 		}
 	}
+	dependencies := []dependency{depKubectl}
+	for _, step := range steps {
+		if step != "image" {
+			continue
+		}
+		dependencies = append(dependencies, depKind, a.engineDependency())
+		needsGo := strings.TrimSpace(opt.Source) == "-"
+		if strings.TrimSpace(opt.Source) == "" {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			_, local := planebuild.DetectSourceFS(cwd)
+			needsGo = !local
+		}
+		if needsGo {
+			dependencies = append(dependencies, depGo)
+		}
+	}
+	if err := a.preflight(dependencies...); err != nil {
+		return err
+	}
 
 	action, command := "deploy the Kaimahi governance plane (proxy + Postgres ledger)", "kmx plane"
 	if opt.Step != "" {
@@ -127,14 +148,6 @@ func (a *App) Plane(opt PlaneOptions) error {
 
 // planeImage builds the proxy image and side-loads it into the kind cluster.
 func (a *App) planeImage(opt PlaneOptions) error {
-	if err := run.MustExist(a.Cfg.ContainerEngine, "to build the plane's image",
-		"https://docs.docker.com/get-docker/"); err != nil {
-		return err
-	}
-	if err := run.MustExist("kind", "to load the image into the local cluster",
-		"https://kind.sigs.k8s.io/docs/user/quick-start/#installation"); err != nil {
-		return err
-	}
 	if err := a.refuseForeignImageTag(); err != nil {
 		return err
 	}
@@ -235,10 +248,6 @@ func (a *App) buildFromSource(root string) error {
 // kmx's own revision, then package the binary onto the same runtime base
 // plane/Dockerfile uses.
 func (a *App) buildFromModuleProxy() error {
-	if err := run.MustExist("go", "to fetch and build the plane at kmx's own revision",
-		"https://go.dev/dl/"); err != nil {
-		return err
-	}
 	rev, err := planebuild.Revision(debug.ReadBuildInfo())
 	if err != nil {
 		return err

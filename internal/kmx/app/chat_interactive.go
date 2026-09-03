@@ -99,7 +99,12 @@ func usesKaimahiModelProxy(spec map[string]any) bool {
 				if strings.EqualFold(key, "baseUrl") || strings.EqualFold(key, "base_url") {
 					if raw, ok := child.(string); ok {
 						parsed, err := url.Parse(raw)
-						return err == nil && parsed.Scheme == "http" && parsed.Host == "kaimahi-proxy.kaimahi:8080" && strings.HasPrefix(parsed.Path, "/upstream/")
+						if err != nil || parsed == nil {
+							return false
+						}
+						host := parsed.Host
+						validHost := host == "kaimahi-proxy.kaimahi:8080" || host == "kaimahi-proxy.kaimahi.svc.cluster.local:8080"
+						return err == nil && parsed.Scheme == "http" && validHost && strings.HasPrefix(parsed.Path, "/upstream/")
 					}
 				}
 				if visit(child) {
@@ -267,6 +272,9 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 		}
 		view, err := a.invokeStream(ctx, kagent, base, agent, message, session, toolMode)
 		if err != nil {
+			if !isInteractiveTerminal(a.Stdin) {
+				return err
+			}
 			fmt.Fprintf(a.Err, "chat: %v\n", err)
 			continue
 		}
@@ -943,6 +951,9 @@ func (a *App) showChatPosture(agent string) error {
 		return fmt.Errorf("cannot validate active agent: %w", err)
 	}
 	var resource struct {
+		Metadata struct {
+			Generation int64 `json:"generation"`
+		} `json:"metadata"`
 		Spec struct {
 			Declarative struct {
 				ModelConfig string `json:"modelConfig"`
@@ -954,9 +965,18 @@ func (a *App) showChatPosture(agent string) error {
 				}
 			} `json:"declarative"`
 		} `json:"spec"`
+		Status struct {
+			ObservedGeneration int64 `json:"observedGeneration"`
+		} `json:"status"`
 	}
 	if err := json.Unmarshal([]byte(raw), &resource); err != nil {
 		return fmt.Errorf("agent %q returned invalid JSON: %w", agent, err)
+	}
+	if resource.Metadata.Generation == 0 || resource.Status.ObservedGeneration != resource.Metadata.Generation {
+		return fmt.Errorf("agent %q is still reconciling (generation %d, observed %d)", agent, resource.Metadata.Generation, resource.Status.ObservedGeneration)
+	}
+	if !a.agentDeploymentCurrent(agent) || !a.singleCurrentAgentPod(agent) {
+		return fmt.Errorf("agent %q deployment is not fully rolled out; refusing to describe stale serving posture", agent)
 	}
 	model := resource.Spec.Declarative.ModelConfig
 	modelRaw, err := a.kubectlCapture("-n", "kagent", "get", "modelconfig", model, "-o", "json")
@@ -987,10 +1007,7 @@ func (a *App) showChatPosture(agent string) error {
 		return fmt.Errorf("ModelConfig %q is not currently Accepted", model)
 	}
 	modelPosture := "direct, not Kaimahi-governed"
-	if strings.HasPrefix(model, "governed-") {
-		if !usesKaimahiModelProxy(modelResource.Spec) {
-			return fmt.Errorf("ModelConfig %q has a governed name but does not point at the Kaimahi proxy", model)
-		}
+	if usesKaimahiModelProxy(modelResource.Spec) {
 		if !a.planeReady("kaimahi-proxy") {
 			return fmt.Errorf("agent uses %q but the Kaimahi plane is not Ready", model)
 		}
@@ -1029,7 +1046,8 @@ func (a *App) showChatPosture(agent string) error {
 		}
 		posture := "direct, not Kaimahi-governed"
 		parsed, _ := url.Parse(server.Spec.URL)
-		if parsed != nil && parsed.Scheme == "http" && parsed.Host == "kaimahi-mcp-gateway.kaimahi:8081" && strings.HasPrefix(parsed.Path, "/upstream/") {
+		gatewayHost := parsed != nil && (parsed.Host == "kaimahi-mcp-gateway.kaimahi:8081" || parsed.Host == "kaimahi-mcp-gateway.kaimahi.svc.cluster.local:8081")
+		if parsed != nil && parsed.Scheme == "http" && gatewayHost && strings.HasPrefix(parsed.Path, "/upstream/") {
 			if !a.planeReady("kaimahi-mcp-gateway") {
 				return fmt.Errorf("RemoteMCPServer %q points at Kaimahi but the plane is not Ready", tool.MCPServer.Name)
 			}
@@ -1060,6 +1078,48 @@ func (a *App) showChatPosture(agent string) error {
 		}
 	}
 	return nil
+}
+
+func (a *App) agentDeploymentCurrent(agent string) bool {
+	raw, err := a.kubectlCapture("-n", "kagent", "get", "deployment", agent, "-o", "json")
+	if err != nil {
+		return false
+	}
+	var deployment struct {
+		Metadata struct {
+			Generation int64 `json:"generation"`
+		} `json:"metadata"`
+		Spec struct {
+			Replicas int32 `json:"replicas"`
+		} `json:"spec"`
+		Status struct {
+			ObservedGeneration  int64 `json:"observedGeneration"`
+			UpdatedReplicas     int32 `json:"updatedReplicas"`
+			ReadyReplicas       int32 `json:"readyReplicas"`
+			AvailableReplicas   int32 `json:"availableReplicas"`
+			UnavailableReplicas int32 `json:"unavailableReplicas"`
+		} `json:"status"`
+	}
+	return json.Unmarshal([]byte(raw), &deployment) == nil && deployment.Spec.Replicas > 0 &&
+		deployment.Status.ObservedGeneration == deployment.Metadata.Generation &&
+		deployment.Status.UpdatedReplicas == deployment.Spec.Replicas &&
+		deployment.Status.ReadyReplicas == deployment.Spec.Replicas &&
+		deployment.Status.AvailableReplicas == deployment.Spec.Replicas &&
+		deployment.Status.UnavailableReplicas == 0
+}
+
+func (a *App) singleCurrentAgentPod(agent string) bool {
+	revision, err := a.deploymentRevision(agent)
+	if err != nil || revision == "" {
+		return false
+	}
+	hash, err := a.templateHash(agent, revision)
+	if err != nil || hash == "" {
+		return false
+	}
+	pods, err := a.kubectlCapture("-n", config_kagentNamespace, "get", "pods", "-l", "kagent="+agent,
+		"-o", `jsonpath={range .items[*]}{.metadata.labels.pod-template-hash}{"\n"}{end}`)
+	return err == nil && strings.TrimSpace(pods) == hash
 }
 
 func (a *App) planeReady(service string) bool {

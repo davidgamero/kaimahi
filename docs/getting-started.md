@@ -269,14 +269,13 @@ and `TARGET` (`kind` by default, or `aks`).
 
 ## Talking to the agent
 
-`make chat` downloads the pinned kagent CLI to `bin/kagent`
-(checksum-verified against the release's `.sha256` file), checks that the
-agent answers through its Service, asks kubectl for a free loopback port, and
-port-forwards the kagent controller there. Set `CHAT_PORT` only when a fixed
-port is required.
+`make chat` lets kmx fetch/cache the pinned kagent CLI (checksum-verified),
+checks that the agent answers through its Service, asks kubectl for a free
+loopback port, and port-forwards the kagent controller there. Set `CHAT_PORT`
+only when a fixed port is required.
 
 ```bash
-bin/kagent invoke --agent hello-world --task "Hello! Who are you and where are you running?"
+kmx agent chat hello-world "Hello! Who are you and where are you running?"
 ```
 
 An explicit occupied `CHAT_PORT` still fails rather than falling back: an

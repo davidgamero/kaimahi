@@ -15,6 +15,7 @@ var (
 	depKubectl = dependency{"kubectl", "to read and write Kubernetes resources", "https://kubernetes.io/docs/tasks/tools/", []string{"version", "--client"}}
 	depKind    = dependency{"kind", "to manage the local Kubernetes cluster", "https://kind.sigs.k8s.io/docs/user/quick-start/#installation", []string{"version"}}
 	depHelm    = dependency{"helm", "to install kagent", "https://helm.sh/docs/intro/install/", []string{"version"}}
+	depGo      = dependency{"go", "to fetch and build the governance plane", "https://go.dev/dl/", []string{"version"}}
 )
 
 func (a *App) engineDependency() dependency {

@@ -62,8 +62,9 @@ make up    # build if stale, then create/update the local runtime
 | Helm | installs kagent |
 
 kmx fetches the pinned kagent CLI itself, checksum-verified, the first time
-you chat. In a clone it is handed the checkout's `bin/kagent` instead, so
-there is one binary on disk.
+you chat. A clone uses the same verified kmx cache unless `KAGENT=<path>` is
+explicitly supplied; the Makefile's `bin/kagent` remains for legacy
+action-oriented helpers such as `slack-post`.
 
 ## The journey
 
