@@ -45,105 +45,135 @@ type serverCondition struct {
 // with the file whether or not the cluster accepts it. Applying goes through
 // the same context guard as every other mutation.
 func (a *App) CreateAgent(opt CreateOptions) error {
+	started := a.timeNow()
 	if opt.Out == "-" {
 		opt.NoApply = true
 	}
 	if opt.NoApply && opt.DryRun {
 		return fmt.Errorf("--no-apply and --dry-run cannot be used together")
 	}
-	if err := scaffold.ValidateName(opt.Name); err != nil {
-		return err
-	}
-	tools, err := scaffold.ParseTools(opt.Tools)
-	if err != nil {
-		return err
-	}
-	instructions := opt.InstructionText
-	if opt.Instructions != "" {
-		body, err := os.ReadFile(opt.Instructions)
-		if err != nil {
-			return fmt.Errorf("cannot read the instructions file: %w", err)
-		}
-		instructions = string(body)
-	}
-
 	namespace := opt.Namespace
 	if namespace == "" {
 		namespace = config.DefaultNamespace
 	}
-	// `--out -` prints and stops, so it is the same kind of action as
-	// --no-apply: a pure generate that must still work with no cluster in
-	// reach (a GitOps checkout, say).
-	if !opt.NoApply {
-		if err := a.preflight(depKubectl); err != nil {
-			return err
-		}
-	}
-
-	modelConfig, governed, err := a.resolveModelConfig(opt, namespace)
-	if err != nil {
-		return err
-	}
-
-	document, err := scaffold.Generate(scaffold.Spec{
-		Name:         opt.Name,
-		Namespace:    namespace,
-		Description:  opt.Description,
-		ModelConfig:  modelConfig,
-		Instructions: instructions,
-		Tools:        tools,
-		Governed:     governed,
-	})
-	if err != nil {
-		return err
-	}
-
 	path := opt.Out
 	if path == "" {
 		path = filepath.Join("agents", opt.Name+".yaml")
 	}
-	if path == "-" {
-		fmt.Fprint(a.Out, document)
+	total := 3
+	if opt.NoApply {
+		total = 1
+	} else if opt.DryRun {
+		total = 2
+	}
+	var tools *scaffold.ToolWiring
+	var modelConfig string
+	if err := a.runPhase(phase{current: 1, total: total, name: "Generate agent manifest"}, func() error {
+		if err := scaffold.ValidateName(opt.Name); err != nil {
+			return err
+		}
+		var err error
+		tools, err = scaffold.ParseTools(opt.Tools)
+		if err != nil {
+			return err
+		}
+		instructions := opt.InstructionText
+		if opt.Instructions != "" {
+			body, err := os.ReadFile(opt.Instructions)
+			if err != nil {
+				return fmt.Errorf("cannot read the instructions file: %w", err)
+			}
+			instructions = string(body)
+		}
+		if !opt.NoApply {
+			if err := a.preflight(depKubectl); err != nil {
+				return err
+			}
+		}
+		governed := false
+		modelConfig, governed, err = a.resolveModelConfig(opt, namespace)
+		if err != nil {
+			return err
+		}
+		document, err := scaffold.Generate(scaffold.Spec{
+			Name: opt.Name, Namespace: namespace, Description: opt.Description,
+			ModelConfig: modelConfig, Instructions: instructions, Tools: tools, Governed: governed,
+		})
+		if err != nil {
+			return err
+		}
+		if path == "-" {
+			fmt.Fprint(a.Out, document)
+		} else {
+			if err := scaffold.WriteNew(path, document); err != nil {
+				return err
+			}
+			fmt.Fprintf(a.Out, "wrote %s\n", path)
+		}
+		if !governed {
+			a.notef("WARNING: %q is ungoverned — no budget, no ledger, no audit in front of it.\n"+
+				"         `make plane` then `make govern` puts the plane in front of an agent.", modelConfig)
+		}
+		if tools == nil {
+			a.notef("CAPABILITIES\n  Tools: none\n  Add later: kmx agent create <name> --tools <server>:<tool>[,<tool>...]")
+		} else {
+			a.notef("CAPABILITIES\n  Tools: %s via %s\n  Governance: agent allowlist only; no gateway audit until `kmx tools govern`", strings.Join(tools.Tools, ", "), tools.Server)
+		}
 		return nil
-	}
-	if err := scaffold.WriteNew(path, document); err != nil {
+	}); err != nil {
 		return err
-	}
-	fmt.Fprintf(a.Out, "wrote %s\n", path)
-
-	if !governed {
-		a.notef("WARNING: %q is ungoverned — no budget, no ledger, no audit in front of it.\n"+
-			"         `make plane` then `make govern` puts the plane in front of an agent.", modelConfig)
-	}
-	if tools == nil {
-		a.notef("This agent has no tools. Add an allowlisted MCP wiring with:\n" +
-			"  kmx agent create <name> --tools <server>:<tool>[,<tool>...]")
-	} else {
-		a.notef("Tool calls are allowlisted at the AGENT, not at a gateway, until the\n" +
-			"plane fronts this server (`make govern-tools`): there is no audit trail yet.")
 	}
 
 	if opt.NoApply {
-		a.notef("\nNot applied (--no-apply). Review it, then:\n  kubectl --context %s apply -f %s", a.Cfg.KubeContext, path)
+		label := "Agent manifest written; not applied"
+		if path == "-" {
+			label = "Agent manifest printed; not applied"
+		}
+		a.complete(label, started)
+		if path != "-" {
+			a.notef("\nNEXT  Review it, then:\n  kubectl --context %s apply -f %s", a.Cfg.KubeContext, path)
+		}
 		return nil
 	}
 
-	if err := a.Guard("apply agent "+opt.Name+" from "+path, "kmx agent create "+opt.Name); err != nil {
+	action := "apply agent " + opt.Name + " from " + path
+	command := "kmx agent create " + opt.Name
+	phaseName := "Validate and apply agent"
+	if opt.DryRun {
+		action = "server-side validate agent " + opt.Name + " from " + path
+		command += " --dry-run"
+		phaseName = "Validate agent against cluster"
+	}
+	fmt.Fprintln(a.Err)
+	if err := a.Guard(action, command); err != nil {
 		return err
 	}
-	if err := a.preflightModelConfig(modelConfig, namespace); err != nil {
-		return err
-	}
-	if err := a.preflightTools(tools, namespace); err != nil {
+	if err := a.runPhase(phase{current: 2, total: total, name: phaseName}, func() error {
+		if err := a.preflightModelConfig(modelConfig, namespace); err != nil {
+			return err
+		}
+		if err := a.preflightTools(tools, namespace); err != nil {
+			return err
+		}
+		if opt.DryRun {
+			return a.kubectlRun("apply", "--dry-run=server", "-f", path)
+		}
+		return a.kubectlRun("apply", "-f", path)
+	}); err != nil {
 		return err
 	}
 	if opt.DryRun {
-		return a.kubectlRun("apply", "--dry-run=server", "-f", path)
+		a.complete("Agent manifest validated; not applied", started)
+		return nil
 	}
-	if err := a.kubectlRun("apply", "-f", path); err != nil {
+	if err := a.runPhase(phase{current: 3, total: total, name: "Wait for agent Ready"}, func() error {
+		return a.waitAgentReady(opt.Name)
+	}); err != nil {
 		return err
 	}
-	return a.waitAgentReady(opt.Name)
+	a.complete(fmt.Sprintf("Agent %q ready", opt.Name), started)
+	a.notef("\nNEXT  kmx agent chat --interactive %s", opt.Name)
+	return nil
 }
 
 func (a *App) preflightTools(tools *scaffold.ToolWiring, namespace string) error {

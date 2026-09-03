@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/run"
@@ -132,5 +133,36 @@ func TestCreateRejectsDryRunWithoutApply(t *testing.T) {
 	err := a.CreateAgent(CreateOptions{Name: "demo", NoApply: true, DryRun: true})
 	if err == nil || !strings.Contains(err.Error(), "cannot be used together") {
 		t.Fatalf("contradictory flags were accepted: %v", err)
+	}
+}
+
+func TestCreateNoApplyGroupsArtifactCapabilitiesAndNextStep(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "demo.yaml")
+	var out, errOut bytes.Buffer
+	times := []time.Time{time.Unix(0, 0), time.Unix(0, 0), time.Unix(0, 250_000_000), time.Unix(0, 250_000_000)}
+	a := &App{
+		Cfg: &config.Config{KubeContext: "kind-test"},
+		Run: &run.Runner{Stdout: &out, Stderr: &errOut}, Out: &out, Err: &errOut,
+		now: func() time.Time { value := times[0]; times = times[1:]; return value },
+	}
+	err := a.CreateAgent(CreateOptions{Name: "demo", Description: "Demo agent", ModelConfig: "hello-world-model", Out: path, NoApply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := errOut.String()
+	for _, want := range []string{
+		"PHASE  [1/1] Generate agent manifest",
+		"CAPABILITIES\n  Tools: none",
+		"DONE   [1/1] Generate agent manifest (250ms)",
+		"COMPLETE  Agent manifest written; not applied (250ms total)",
+		"NEXT  Review it, then:",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("create transcript lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "Validate and apply") || strings.Contains(text, "Wait for agent Ready") {
+		t.Fatalf("no-apply transcript included cluster phases:\n%s", text)
 	}
 }
