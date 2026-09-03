@@ -209,3 +209,35 @@ func TestVocabularyMatchesTheConstants(t *testing.T) {
 		require.Contains(t, metrics.Vocabulary["reason"], string(r))
 	}
 }
+
+// kaimahi_build_info's LABEL NAMES are an interface, not an implementation
+// detail: the clone-free CI job greps this series for the revision the plane
+// was built at, and that is the only automated proof the module-proxy path
+// stamps a revision at all.
+//
+// This test exists because the first version of that grep looked for
+// `revision="…"` — a label this metric has never had. The assertion could
+// not match, and the failure surfaced twenty minutes into a cluster run
+// rather than here, in seconds.
+func TestBuildInfoExposesTheLabelsCIGrepsFor(t *testing.T) {
+	families, err := metrics.Registry().Gather()
+	require.NoError(t, err)
+
+	for _, f := range families {
+		if f.GetName() != "kaimahi_build_info" {
+			continue
+		}
+		require.NotEmpty(t, f.GetMetric(), "kaimahi_build_info has no series")
+		names := map[string]string{}
+		for _, l := range f.GetMetric()[0].GetLabel() {
+			names[l.GetName()] = l.GetValue()
+		}
+		require.Contains(t, names, "version",
+			"the clone-free job greps version=\"<revision>\"; renaming this label breaks it")
+		require.Contains(t, names, "go_version")
+		require.Len(t, names, 2, "an unexpected label on kaimahi_build_info")
+		require.NotEmpty(t, names["version"])
+		return
+	}
+	t.Fatal("kaimahi_build_info is not registered")
+}

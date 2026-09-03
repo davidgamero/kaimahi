@@ -1723,12 +1723,44 @@ jobs:
           # module-proxy build (plane/internal/metrics). Before that fix it
           # was "unknown" on exactly this path — the one path with no
           # checkout to compare against.
+          #
+          # The label is `version`, and the ops port serves /readyz — NOT
+          # /healthz, which lives on the data, gateway and admin listeners.
+          # Both were wrong in the first version of this step, which is how
+          # a green-looking assertion turns out to assert nothing; the
+          # pseudo-version's revision is the sha's first 12 characters.
           pod=$(kubectl --context kind-kmx-clone-free -n kaimahi get pods -l app=kaimahi-proxy \
             -o jsonpath='{.items[0].metadata.name}')
           kubectl --context kind-kmx-clone-free -n kaimahi port-forward "$pod" 19092:9092 >/dev/null 2>&1 &
-          for _ in $(seq 1 60); do curl -fsS -o /dev/null http://127.0.0.1:19092/healthz && break; sleep 0.5; done
+          # A wait that runs out has to SAY so. Falling through to the read
+          # below would still fail the step (pipefail), but it would blame
+          # curl instead of naming the forward that never came up.
+          ready=
+          for _ in $(seq 1 60); do
+            # 2>/dev/null on the ATTEMPTS only: the forward legitimately
+            # takes a moment, and 60 "connection refused" lines would bury
+            # the message that actually matters (plane-admin.sh polls the
+            # same way). The failure below is the one that speaks.
+            if curl -fsS -o /dev/null http://127.0.0.1:19092/readyz 2>/dev/null; then ready=1; break; fi
+            sleep 0.5
+          done
+          test -n "$ready" || {
+            echo "the plane's ops port never answered on 127.0.0.1:19092 after 30s"; exit 1
+          }
           curl -fsS http://127.0.0.1:19092/metrics | grep '^kaimahi_build_info{' | tee build-info.out
-          grep -q "revision=\"${SHA:0:12}\"" build-info.out
+
+          # ONE assertion, asked twice: once about the revision this job
+          # installed, once about a revision it certainly is not. Two
+          # separately-written greps would drift, and then the negative would
+          # stop proving that the positive can fail — which is precisely the
+          # defect this step is fixing.
+          built_at() { grep -q "^kaimahi_build_info{.*version=\"$1\"" build-info.out; }
+          built_at "${SHA:0:12}" || {
+            echo "the plane does not report the revision this job installed (${SHA:0:12})"; exit 1
+          }
+          if built_at 0000deadbeef; then
+            echo "the build_info assertion matches any revision — it proves nothing"; exit 1
+          fi
       - name: govern — the credential, the presets, the switch
         if: steps.changes.outputs.docs_only != 'true'
         working-directory: /home/runner/journey

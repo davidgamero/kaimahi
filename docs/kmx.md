@@ -80,7 +80,7 @@ swap plus a credential the agent cannot read past.
 | `kmx plane` | build the proxy image, bootstrap the plane's secrets, deploy the plane, wait for it to serve |
 | `kmx plane --step <step>` | one step only: `image`, `secrets`, `deploy` |
 | `kmx plane --source <path>` | build the plane from a checkout instead of fetching it (`-` forces the fetch) |
-| `kmx govern <credential>` | issue the governed credential, apply the governed presets, switch the agent onto one |
+| `kmx govern [<credential>]` | issue the governed credential (default `$CRED`), apply the governed presets, switch the agent onto one |
 | `kmx ledger [<credential>]` | the spend ledger, newest first, plus month-to-date totals |
 | `kmx grants [<credential>]` | grants, with liveness — an expired grant is not a grant |
 | `kmx audit tool\|approval [<cred>]` | the enforcement points' audit trails |
@@ -95,9 +95,9 @@ commands. Scaffolding is the only letter of CRUD with a real gap
 
 ## Settings
 
-kmx reads the Makefile's own variable names, with the Makefile's defaults,
-so `KIND_CLUSTER=mine make up` and `KIND_CLUSTER=mine kmx up` are the same
-run.
+kmx reads the names this repository already uses — the Makefile's, and
+`ADMIN_PORT` from `scripts/plane-admin.sh` — with the same defaults, so
+`KIND_CLUSTER=mine make up` and `KIND_CLUSTER=mine kmx up` are the same run.
 
 | Variable | Default | Meaning |
 |---|---|---|
