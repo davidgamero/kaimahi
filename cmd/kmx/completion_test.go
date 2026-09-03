@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,7 +16,7 @@ func TestStaticCompletionCandidates(t *testing.T) {
 		want  []string
 	}{
 		{"top level", []string{"ag"}, []string{"agent"}},
-		{"agent verbs", []string{"agent", ""}, []string{"--context", "chat", "create", "list"}},
+		{"agent verbs", []string{"agent", ""}, []string{"--context", "chat", "create", "edit", "list"}},
 		{"up step", []string{"up", "--step", ""}, []string{"agent", "cluster", "kagent", "model", "ollama", "tools-agent"}},
 		{"inline up step", []string{"up", "--step=o"}, []string{"--step=ollama"}},
 		{"plane step", []string{"plane", "--step", "s"}, []string{"secrets"}},
@@ -65,6 +67,29 @@ func TestCompletionFilteringIsSortedAndUnique(t *testing.T) {
 	got := filterCompletions([]string{"zeta", "alpha", "alpha", "beta"}, "a")
 	if !reflect.DeepEqual(got, []string{"alpha"}) {
 		t.Fatalf("filtered candidates: %v", got)
+	}
+}
+
+func TestLocalAgentNamesForEdit(t *testing.T) {
+	dir := t.TempDir()
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(old) })
+	if err := os.Mkdir("agents", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"zeta.yaml", "alpha.yaml", "ignore.txt"} {
+		if err := os.WriteFile(filepath.Join("agents", name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := localAgentNames(); !reflect.DeepEqual(got, []string{"alpha", "zeta"}) {
+		t.Fatalf("local agent completion: %v", got)
 	}
 }
 

@@ -1,0 +1,114 @@
+package app
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/run"
+)
+
+type sliceScanner struct {
+	values []string
+	index  int
+}
+
+func (s *sliceScanner) Scan() bool {
+	if s.index >= len(s.values) {
+		return false
+	}
+	s.index++
+	return true
+}
+func (s *sliceScanner) Text() string { return s.values[s.index-1] }
+func (s *sliceScanner) Err() error   { return nil }
+
+func TestCreateWizardCollectsSafeDefaultsAndDoesNotApplyByDefault(t *testing.T) {
+	scanner := &sliceScanner{values: []string{
+		"Reports unhealthy workloads", "", "", "", "", "", "", "",
+	}}
+	var out bytes.Buffer
+	opt, err := collectCreateOptions(scanner, &out, CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opt.Description != "Reports unhealthy workloads" || opt.Name != "reports-unhealthy-workloads" || opt.Namespace != "kagent" {
+		t.Fatalf("unexpected wizard options: %+v", opt)
+	}
+	if opt.Out != filepath.Join("agents", opt.Name+".yaml") || !opt.NoApply {
+		t.Fatalf("wizard should default to write-only: %+v", opt)
+	}
+	if !strings.HasPrefix(out.String(), "Describe this agent: ") {
+		t.Fatalf("first prompt is not the requested description prompt: %q", out.String())
+	}
+}
+
+func TestCreateWizardExplicitApply(t *testing.T) {
+	scanner := &sliceScanner{values: []string{"Cluster reporter", "cluster-reporter", "kagent", "hello-world-model", "", "", "", "yes"}}
+	opt, err := collectCreateOptions(scanner, &bytes.Buffer{}, CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opt.NoApply {
+		t.Fatal("explicit yes did not enable apply")
+	}
+}
+
+func TestSlugAgentName(t *testing.T) {
+	if got := slugAgentName("  CrashLoop mechanic: prod!  "); got != "crashloop-mechanic-prod" {
+		t.Fatalf("slug=%q", got)
+	}
+}
+
+func TestEditAgentLeavesOriginalOnInvalidCandidate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "demo.yaml")
+	original := "apiVersion: kagent.dev/v1alpha2\nkind: Agent\nmetadata:\n  name: demo\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	editor := filepath.Join(dir, "editor")
+	if err := os.WriteFile(editor, []byte("#!/bin/sh\nprintf 'not: [valid' > \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EDITOR", editor)
+	t.Setenv("VISUAL", "")
+	fakeTool(t, dir, "kubectl", "exit 1")
+	t.Setenv("PATH", dir)
+	// Validation stops at kubectl; the invalid source must never replace the original.
+	a := &App{Cfg: &config.Config{KubeContext: "kind-test"}, Run: &run.Runner{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}
+	if err := a.EditAgent("demo", path); err == nil {
+		t.Fatal("invalid edit was accepted")
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != original {
+		t.Fatalf("invalid edit replaced original:\n%s", got)
+	}
+}
+
+func TestEditAgentRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.yaml")
+	link := filepath.Join(dir, "demo.yaml")
+	if err := os.WriteFile(target, []byte("kind: Agent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{Cfg: &config.Config{KubeContext: "kind-test"}}
+	if err := a.EditAgent("demo", link); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("symlink edit was not refused: %v", err)
+	}
+}
+
+func TestCreateRejectsDryRunWithoutApply(t *testing.T) {
+	a := &App{}
+	err := a.CreateAgent(CreateOptions{Name: "demo", NoApply: true, DryRun: true})
+	if err == nil || !strings.Contains(err.Error(), "cannot be used together") {
+		t.Fatalf("contradictory flags were accepted: %v", err)
+	}
+}

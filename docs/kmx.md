@@ -105,7 +105,8 @@ swap plus a credential the agent cannot read past.
 | `kmx up` | check all host dependencies in one pass before the guard or first use, create the kind cluster, deploy Ollama, pull the pinned model, install kagent by helm, apply both agents, wait for each to be Ready, print status |
 | `kmx up --step <step>` | one step only: `cluster`, `ollama`, `model`, `kagent`, `agent`, `tools-agent` |
 | `kmx agent list [-o table\|json\|yaml]` | list agents with readiness, acceptance, active ModelConfig, and tool-server wiring |
-| `kmx agent create <name>` | scaffold `agents/<name>.yaml` and apply it |
+| `kmx agent create [<name>]` | scaffold an Agent manifest; without a name, run the guided wizard beginning `Describe this agent:` |
+| `kmx agent edit <name> [--file <path>]` | edit and validate owned local Agent source; never edits the live resource implicitly |
 | `kmx agent chat <name> [message]` | ask an agent one question, through `kagent invoke` |
 | `kmx agent chat <name> --json` | the raw A2A task instead of the readable view (piped output is always raw) |
 | `kmx agent chat --interactive <name>` | live streamed chat in one session; shows active tools, tool calls/results, and supports session history/resume |
@@ -275,6 +276,22 @@ the guard and waits for Ready.
 The reserved names `hello-world` and `hello-tools` are refused: they are
 `kmx up`'s own agents, and scaffolding over one would replace a committed
 artifact that the next `kmx up` would replace right back.
+
+Running `kmx agent create` without a name on a terminal starts a local wizard.
+It asks for a description, proposes a Kubernetes-safe name, then walks through
+namespace, ModelConfig, an optional explicit tool allowlist, instructions file,
+and output path. The wizard defaults to writing only; applying requires an
+explicit final `yes`, after which the ordinary create guard, preflights, apply,
+and Ready wait run unchanged. Non-interactive use still requires a name.
+
+`kmx agent edit <name>` treats `agents/<name>.yaml` as the source of truth and
+opens a secure temporary copy with `$VISUAL` or `$EDITOR`. It refuses symlinks
+and concurrent source changes, rejects key-shaped content, validates the Agent
+identity and explicit tool allowlists, and checks referenced ModelConfigs and
+RemoteMCPServers before atomically replacing the source. It does not apply the
+edit automatically; review the diff and run the printed `kubectl apply` command.
+Invalid non-secret candidates are retained at the reported temporary path so
+editor work is not lost. For a direct live-resource edit, use `kubectl edit`.
 
 ## Interactive chat
 

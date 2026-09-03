@@ -42,7 +42,8 @@ COMMANDS
   ctx [<context>]              show, or select, the kube context kmx acts on
   up                           kind cluster + Ollama + the model + kagent + the agents
   agent list                   list agents and their active model/tool wiring
-  agent create <name>          scaffold agents/<name>.yaml and apply it
+  agent create [<name>]        scaffold an agent; no name starts the guided wizard
+  agent edit <name>            edit and validate local agents/<name>.yaml
   agent chat <name> [message]  ask an agent one question (via ` + "`kagent invoke`" + `)
                                add --json for the raw A2A task; piped output
                                is always raw; --interactive keeps a session open
@@ -379,7 +380,7 @@ func optionalCredential(command string, args []string, fallback string) (string,
 
 func agentCommand(a *app.App, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: kmx agent list | kmx agent create <name> | kmx agent chat <name> [message]")
+		return errors.New("usage: kmx agent list | kmx agent create [<name>] | kmx agent edit <name> | kmx agent chat <name> [message]")
 	}
 	switch args[0] {
 	case "list":
@@ -395,6 +396,17 @@ func agentCommand(a *app.App, args []string) error {
 		return a.ListAgents(*output)
 	case "create":
 		return agentCreate(a, args[1:])
+	case "edit":
+		fs := newFlagSet("agent edit")
+		path := fs.String("file", "", "local Agent manifest to edit (default agents/<name>.yaml)")
+		names, err := parseInterspersed(fs, args[1:])
+		if err != nil {
+			return err
+		}
+		if len(names) != 1 {
+			return errors.New("usage: kmx agent edit <name> [--file <path>]")
+		}
+		return a.EditAgent(names[0], *path)
 	case "chat":
 		fs := newFlagSet("agent chat")
 		asJSON := fs.Bool("json", false, "print the raw A2A task instead of the readable view")
@@ -438,8 +450,11 @@ func agentCreate(a *app.App, args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(names) != 1 {
-		return errors.New("usage: kmx agent create <name> [flags]")
+	if len(names) > 1 {
+		return errors.New("usage: kmx agent create [<name>] [flags]")
+	}
+	if len(names) == 0 {
+		return a.CreateAgentInteractive(opt)
 	}
 	opt.Name = names[0]
 	return a.CreateAgent(opt)

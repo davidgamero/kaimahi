@@ -42,6 +42,9 @@ type serverCondition struct {
 // with the file whether or not the cluster accepts it. Applying goes through
 // the same context guard as every other mutation.
 func (a *App) CreateAgent(opt CreateOptions) error {
+	if opt.NoApply && opt.DryRun {
+		return fmt.Errorf("--no-apply and --dry-run cannot be used together")
+	}
 	if err := scaffold.ValidateName(opt.Name); err != nil {
 		return err
 	}
@@ -295,8 +298,8 @@ func RefuseUnknownAgentVerb(verb, kubeContext string) error {
 		ctx = " --context " + kubeContext
 	}
 	return fmt.Errorf("kmx: unknown command 'agent %s'.\n"+
-		"Use `kmx agent list`, `kmx agent create`, or `kmx agent chat`. Updating and\n"+
-		"deleting agents remains kubectl's job:\n"+
+		"Use `kmx agent list`, `kmx agent create`, `kmx agent edit`, or `kmx agent chat`.\n"+
+		"Direct live-resource editing and deletion remains kubectl's job:\n"+
 		"  kubectl%s -n kagent edit agent <name>\n"+
 		"  kubectl%s -n kagent delete agent <name>\n"+
 		"  kubectl%s apply -f agents/<name>.yaml",

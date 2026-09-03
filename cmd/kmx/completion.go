@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -90,7 +91,7 @@ func completeWords(words []string) []string {
 		return filterCompletions([]string{"bash", "fish", "zsh"}, prefix)
 	case "agent":
 		if len(rest) == 0 {
-			return filterCompletions(append([]string{"list", "create", "chat"}, "--context"), prefix)
+			return filterCompletions(append([]string{"list", "create", "edit", "chat"}, "--context"), prefix)
 		}
 		return completeAgent(rest, prefix, contextName)
 	case "up":
@@ -133,8 +134,32 @@ func completeAgent(rest []string, prefix, contextName string) []string {
 			"--namespace": nil, "--description": nil, "--model": nil, "--instructions": nil,
 			"--tools": nil, "--out": nil, "--no-apply": {}, "--dry-run": {},
 		})
+	case "edit":
+		flags := map[string][]string{"--file": nil}
+		if values := completeFlags(args, prefix, flags); values != nil {
+			return values
+		}
+		if len(nonFlagWordsWithValues(args, flags)) == 0 {
+			return filterCompletions(localAgentNames(), prefix)
+		}
 	}
 	return nil
+}
+
+func localAgentNames() []string {
+	entries, err := os.ReadDir("agents")
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
+			continue
+		}
+		names = append(names, strings.TrimSuffix(entry.Name(), ".yaml"))
+	}
+	sort.Strings(names)
+	return names
 }
 
 func completeFlags(committed []string, prefix string, flags map[string][]string) []string {
