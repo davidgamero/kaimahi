@@ -13,23 +13,27 @@ live-verified, the doc says so in those words.
 go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main
 kmx up                                    # kind cluster + local model + kagent + two agents (~5-10 min)
 kmx agent chat hello-world "Who are you?"
+
+kmx plane                                 # the governance plane: proxy + spend ledger
+kmx govern hello-world                    # the agent now spends through it
+kmx ledger                                # what it cost
 ```
 
 [Getting started](getting-started.md) is the walkthrough: prerequisites,
 what `kmx up` actually does, the agent YAML, and how to talk to it.
-[kmx.md](kmx.md) is the command reference. From a clone, `make up` and
-`make chat` run the same binary.
+[kmx.md](kmx.md) is the command reference. From a clone, `make up`,
+`make chat`, `make plane` and `make govern` run the same binary.
 
 ## By what you want to do
 
 | I want to… | Read | The commands |
 |---|---|---|
 | Get an agent running and talk to it | [getting-started.md](getting-started.md) | `kmx up`, `kmx agent chat`, `kmx status`, `kmx down` (or `make up`, `make chat`, …) |
-| Know exactly what the one command does, and what it deliberately does not | [kmx.md](kmx.md) | `kmx ctx`, `kmx up`, `kmx agent create`, `kmx version` |
+| Know exactly what the one command does, and what it deliberately does not | [kmx.md](kmx.md) | `kmx ctx`, `kmx up`, `kmx agent create`, `kmx plane`, `kmx govern`, `kmx version` |
 | Create an agent of my own, as reviewable YAML | [kmx.md](kmx.md#kmx-agent-create) | `kmx agent create <name> --tools <server>:<tool>` |
 | Use a hosted model (Copilot, Anthropic, OpenAI, Azure AI Foundry, OpenRouter, anything OpenAI-compatible) | [models.md](models.md) | `make model-secret`, `make copilot-secret`, `make use PRESET=…` |
 | Give the agent a tool | [tools.md](tools.md) | `make chat AGENT=hello-tools …` |
-| Put a budget on the agent's LLM spend, see the ledger, keep real API keys away from the agent | [spend.md](spend.md) | `make plane`, `make govern`, `make budget`, `make ledger` |
+| Put a budget on the agent's LLM spend, see the ledger, keep real API keys away from the agent | [spend.md](spend.md) | `kmx plane`, `kmx govern`, `kmx ledger` (or `make plane`, `make govern`, `make ledger`), `make budget` |
 | Control which tools the agent can call, and audit every call | [tool-governance.md](tool-governance.md) | `make govern-tools`, `make tool-allow`, `make tool-audit` |
 | Have a human approve a denied action with a bounded, expiring grant | [approvals.md](approvals.md) | `make approvals`, `make approve`, `make grants` |
 | Let the agent post to Slack, one approved message at a time | [slack.md](slack.md) | `make slack-secret`, `make slack-mcp`, `make govern-slack`, `make slack-post` |

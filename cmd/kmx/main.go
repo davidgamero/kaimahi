@@ -1,10 +1,10 @@
-// Command kmx is one entry point for the developer journey this repository
-// has shipped since P1: a cluster, a model, kagent, two agents, a
-// conversation — and the same journey CI runs, because the Makefile now
-// delegates to this binary rather than keeping a second copy of it.
+// Command kmx is one entry point for the journey this repository has shipped
+// since P1: a cluster, a model, kagent, two agents, a conversation, the
+// governance plane in front of them — and the same journey CI runs, because
+// the Makefile's kind path delegates to this binary rather than keeping a
+// second copy of it.
 //
-// Install (the only install path in milestone 1 — nothing is published,
-// D26/D27):
+// Install (the only install path — nothing is published, D26/D27/D28):
 //
 //	go install github.com/kaimahi-agents/kaimahi/cmd/kmx@<sha>
 //
@@ -12,16 +12,20 @@
 // `kagent invoke`, and the pinned kagent binary is fetched and
 // checksum-verified exactly as the Makefile fetches it. What kmx owns is the
 // part kagent's CLI does not: bringing up this project's cluster, this
-// project's model and agents, and doing it behind a context guard.
+// project's model and agents, putting them behind this project's governance
+// plane, and doing all of it behind a context guard.
 package main
 
 import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime/debug"
+	"strings"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/app"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/planebuild"
 )
 
 const usage = `kmx — create and run governed agents on Kubernetes.
@@ -34,6 +38,11 @@ COMMANDS
   up                           kind cluster + Ollama + the model + kagent + the agents
   agent create <name>          scaffold agents/<name>.yaml and apply it
   agent chat <name> [message]  ask an agent one question (via ` + "`kagent invoke`" + `)
+  plane                        deploy the governance plane (proxy + ledger)
+  govern [<credential>]        issue the credential and put an agent behind the plane
+  ledger [<credential>]        the spend ledger and month-to-date totals
+  grants [<credential>]        grants, with liveness
+  audit tool|approval [<cred>] the enforcement points' audit trails
   status                       agents, modelconfigs and pods
   down                         delete the kind cluster kmx created
   version                      print the pinned versions kmx installs
@@ -41,18 +50,20 @@ COMMANDS
 GLOBAL FLAGS
   --context <name>   act on this kube context for one command (beats KUBE_CTX)
 
-ENVIRONMENT (the Makefile's names, with the Makefile's defaults)
+ENVIRONMENT (the names the Makefile and the scripts already use)
   KIND_CLUSTER      cluster to create/delete            (kaimahi-p1)
   KUBE_CTX          context to act on                   (kind-$KIND_CLUSTER)
   CONTAINER_ENGINE  docker | podman                     (docker)
   KAGENT_VERSION    pinned kagent chart and CLI         (0.9.12)
   MODEL             model pulled into Ollama            (qwen2.5:3b)
   CHAT_PORT         local port for the controller       (8083)
+  ADMIN_PORT        local port for the plane's admin    (19091)
+  CRED              credential govern issues, ledger reads  (hello-world)
   KAIMAHI_CONFIRM   confirm a non-kind context by name  (unset)
 
 NOT IN THIS MILESTONE
-  The governance plane, ` + "`govern`" + `, secret capture, AKS and the probes stay in
-  the Makefile. See docs/kmx.md.
+  Budgets, approvals, backup/restore, the Slack/GitHub/inbound connectors,
+  secret capture, AKS and the probes stay in the Makefile. See docs/kmx.md.
 `
 
 func main() {
@@ -81,8 +92,16 @@ func run(argv []string) error {
 		fmt.Print(usage)
 		return nil
 	case "version":
-		fmt.Printf("kmx (kaimahi milestone 1)\n  kagent   %s\n  model    %s\n",
-			config.DefaultKagentVersion, config.DefaultModel)
+		// The plane's revision is kmx's own — that is the contract of the
+		// clone-free path — so print what `kmx plane` would fetch, or why
+		// it cannot. An operator asking "which plane will this deploy?"
+		// should not have to run a deploy to find out.
+		revision := "unknown (kmx plane needs --source <checkout>)"
+		if rev, err := planebuild.Revision(debug.ReadBuildInfo()); err == nil {
+			revision = rev
+		}
+		fmt.Printf("kmx (kaimahi milestone 2)\n  kagent   %s\n  model    %s\n  plane    %s, built from %s\n",
+			config.DefaultKagentVersion, config.DefaultModel, app.PlaneImage, revision)
 		return nil
 	}
 
@@ -111,6 +130,72 @@ func run(argv []string) error {
 		}
 		return a.Up(step)
 
+	case "plane":
+		var opt app.PlaneOptions
+		fs := newFlagSet("plane")
+		fs.StringVar(&opt.Step, "step", "", "run one step only: "+strings.Join(app.PlaneSteps, ", "))
+		fs.StringVar(&opt.Source, "source", "", "build the plane from this checkout instead of fetching it ('-' forces the fetch)")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return errors.New("usage: kmx plane [--step <step>] [--source <path>]")
+		}
+		return a.Plane(opt)
+
+	case "govern":
+		opt := app.GovernOptions{
+			Agent:           config.DefaultAgent,
+			Preset:          config.GovernedModelConfig,
+			Secret:          config.GovernedSecret,
+			SecretNamespace: config.DefaultNamespace,
+		}
+		fs := newFlagSet("govern")
+		fs.StringVar(&opt.Agent, "agent", opt.Agent, "the agent to put behind the plane")
+		fs.StringVar(&opt.Preset, "preset", opt.Preset, "the governed ModelConfig to switch it to")
+		fs.StringVar(&opt.Secret, "secret", opt.Secret, "agent-side Secret the issued token is stored in")
+		fs.StringVar(&opt.SecretNamespace, "secret-namespace", opt.SecretNamespace, "namespace for that Secret")
+		names, err := parseInterspersed(fs, args)
+		if err != nil {
+			return err
+		}
+		credential := a.Cfg.Credential
+		switch len(names) {
+		case 0:
+		case 1:
+			credential = names[0]
+		default:
+			return errors.New("usage: kmx govern <credential> [flags]")
+		}
+		return a.Govern(credential, opt)
+
+	case "ledger":
+		credential, err := optionalCredential("ledger", args, a.Cfg.Credential)
+		if err != nil {
+			return err
+		}
+		return a.Ledger(credential)
+
+	case "grants":
+		// Unlike the ledger, grants default to ALL credentials: a grant is
+		// authority someone was given, and the question an operator asks is
+		// "what is live anywhere", not "what is live for this one".
+		credential, err := optionalCredential("grants", args, "")
+		if err != nil {
+			return err
+		}
+		return a.Grants(credential)
+
+	case "audit":
+		if len(args) == 0 {
+			return errors.New("usage: kmx audit tool|approval [<credential>]")
+		}
+		credential, err := optionalCredential("audit "+args[0], args[1:], "")
+		if err != nil {
+			return err
+		}
+		return a.Audit(args[0], credential)
+
 	case "status":
 		return a.Status()
 
@@ -122,6 +207,18 @@ func run(argv []string) error {
 
 	default:
 		return fmt.Errorf("kmx: unknown command %q. Run `kmx help`.", command)
+	}
+}
+
+// optionalCredential reads the one optional positional a read view takes.
+func optionalCredential(command string, args []string, fallback string) (string, error) {
+	switch len(args) {
+	case 0:
+		return fallback, nil
+	case 1:
+		return args[0], nil
+	default:
+		return "", fmt.Errorf("usage: kmx %s [<credential>]", command)
 	}
 }
 

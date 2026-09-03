@@ -45,6 +45,15 @@ func TestMakeTargetsDelegateToKmx(t *testing.T) {
 		{"status", "bin/kmx status"},
 		{"down", "bin/kmx down"},
 		{"chat", `bin/kmx agent chat hello-world "Hello! Who are you and where are you running?"`},
+		// Milestone 2 (D28): the governance half.
+		{"plane", "bin/kmx plane --source ."},
+		{"plane-image", "bin/kmx plane --step image --source ."},
+		{"plane-secrets", "bin/kmx plane --step secrets"},
+		{"govern", "bin/kmx govern hello-world --agent hello-world --preset governed-ollama"},
+		{"ledger", "bin/kmx ledger hello-world"},
+		{"grants", "bin/kmx grants"},
+		{"tool-audit", "bin/kmx audit tool hello-tools"},
+		{"approval-audit", "bin/kmx audit approval"},
 	} {
 		t.Run(tc.target, func(t *testing.T) {
 			out := dryRun(t, tc.target)
@@ -90,8 +99,11 @@ func TestChatHandsKmxTheCheckoutsKagentBinary(t *testing.T) {
 	}
 }
 
-// The managed path is NOT kmx's in milestone 1 (D27: no AKS). Its bring-up
-// must still be the Makefile's own recipes.
+// The managed path is NOT kmx's (D27: no AKS in milestone 1; D28(4): kind
+// only in milestone 2). Its bring-up must still be the Makefile's own
+// recipes, and so must its plane and its governance: kmx side-loads a local
+// image and applies the manifest unrendered, which on a registry-backed
+// cluster would mean ErrImageNeverPull, forever.
 func TestTheManagedPathDoesNotDelegate(t *testing.T) {
 	out := dryRun(t, "cluster", "TARGET=aks", "AKS_RESOURCE_GROUP=rg", "ACR_NAME=acr")
 	if strings.Contains(out, "bin/kmx up") {
@@ -100,4 +112,105 @@ func TestTheManagedPathDoesNotDelegate(t *testing.T) {
 	if !strings.Contains(out, "aks-up.sh") {
 		t.Errorf("TARGET=aks cluster should still run scripts/aks-up.sh:\n%s", out)
 	}
+
+	// The recipes themselves, read out of make's own database. `make -n`
+	// cannot be used for this: a recipe line containing $(MAKE) is executed
+	// even under -n (that is make's recursion rule), and the managed
+	// `govern` has one — it would go looking for a real AKS context.
+	// Question mode prints the database and runs nothing.
+	db := recipes(t, "TARGET=aks", "AKS_RESOURCE_GROUP=rg", "ACR_NAME=acr")
+	for target, want := range map[string]string{
+		"plane":          "plane-deploy.sh",
+		"plane-image":    "az acr build",
+		"plane-secrets":  "plane-secrets.sh",
+		"govern":         "plane-admin.sh issue",
+		"ledger":         "plane-admin.sh ledger",
+		"grants":         "plane-admin.sh grants",
+		"tool-audit":     "plane-admin.sh tool-audit",
+		"approval-audit": "plane-admin.sh approval-audit",
+	} {
+		recipe, ok := db[target]
+		if !ok {
+			t.Errorf("TARGET=aks has no %s recipe at all", target)
+			continue
+		}
+		if strings.Contains(recipe, "$(KMX)") || strings.Contains(recipe, "bin/kmx") {
+			t.Errorf("TARGET=aks %s must stay on the scripts, not kmx:\n%s", target, recipe)
+		}
+		if !strings.Contains(recipe, want) {
+			t.Errorf("TARGET=aks %s no longer runs %q:\n%s", target, want, recipe)
+		}
+	}
+}
+
+// recipes returns each target's recipe as make itself records it, without
+// running anything (`make -qp`: question mode, print database).
+func recipes(t *testing.T, args ...string) map[string]string {
+	t.Helper()
+	if _, err := exec.LookPath("make"); err != nil {
+		t.Skip("make is not installed")
+	}
+	cmd := exec.Command("make", append([]string{"-qp"}, args...)...)
+	cmd.Dir = "../../.."
+	// -q exits 1 when a target is out of date; the database is still
+	// printed, so the exit status is not the signal here.
+	out, _ := cmd.Output()
+
+	db := map[string]string{}
+	target, body := "", []string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "\t"):
+			if target != "" {
+				body = append(body, line)
+			}
+		case strings.HasPrefix(line, "#"), line == "":
+			// Comments and blanks separate entries but do not end a recipe
+			// (make interleaves them), so only a new target line does.
+		default:
+			if target != "" {
+				db[target] = strings.Join(body, "\n")
+			}
+			target, body = "", nil
+			if name, _, ok := strings.Cut(line, ":"); ok && !strings.ContainsAny(name, " =$") {
+				target = name
+			}
+		}
+	}
+	if target != "" {
+		db[target] = strings.Join(body, "\n")
+	}
+	return db
+}
+
+// The plane's manifests and the governed presets are inside the binary, so a
+// manifest edit has to RELINK it. Without this the Makefile would happily
+// reuse a bin/kmx built before the edit and deploy the previous manifest —
+// the same class of staleness the unconditional proxy restart exists for.
+func TestEditingAPlaneManifestRebuildsKmx(t *testing.T) {
+	for _, asset := range []string{
+		"k8s/plane/proxy.yaml",
+		"k8s/models/governed-ollama.yaml",
+	} {
+		if !strings.Contains(makeVariable(t, "KMX_ASSETS"), asset) {
+			t.Errorf("KMX_ASSETS does not list %s, so editing it would not relink bin/kmx", asset)
+		}
+	}
+}
+
+// makeVariable asks make what a variable expands to, so the test reads the
+// same value a recipe would.
+func makeVariable(t *testing.T, name string) string {
+	t.Helper()
+	if _, err := exec.LookPath("make"); err != nil {
+		t.Skip("make is not installed")
+	}
+	cmd := exec.Command("make", "-f", "Makefile", "-f", "/dev/stdin", "print-"+name)
+	cmd.Stdin = strings.NewReader("print-%:\n\t@echo $($*)\n")
+	cmd.Dir = "../../.."
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("cannot read %s: %v", name, err)
+	}
+	return string(out)
 }

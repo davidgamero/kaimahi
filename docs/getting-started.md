@@ -80,8 +80,28 @@ kmx down    # delete the kind cluster (and everything in it, ledger included)
 ```
 
 `kmx` is the whole journey in one command; [kmx.md](kmx.md) is its
-reference, including what it deliberately does *not* do (the governance
-plane, secrets and AKS are still the Makefile's).
+reference, including what it deliberately does *not* do (budgets, approvals,
+the connector families, capturing a secret, and AKS are still the
+Makefile's).
+
+### Governing that agent
+
+Nothing above is metered. The plane is a second command, and on kind it is
+keyless too:
+
+```bash
+kmx plane               # metering proxy + Postgres ledger, in the cluster
+kmx govern hello-world  # issue the credential, switch the agent onto it
+kmx agent chat hello-world "Who are you and where are you running?"
+kmx ledger              # what that answer cost, attributed to a credential
+```
+
+`kmx plane` needs no clone and no registry: it fetches the plane's source
+from the public Go proxy **at kmx's own revision**, builds it, and
+side-loads the image into kind. The agent is handed an opaque Kaimahi token,
+never an upstream key. [spend.md](spend.md) is what the plane does;
+[kmx.md](kmx.md#how-the-plane-gets-there-without-a-clone) is how it gets
+there.
 
 ### The same journey from a clone
 
@@ -136,6 +156,10 @@ why.
 make status   # agents, modelconfigs, pods
 make down     # delete the kind cluster (and everything in it, ledger included)
 ```
+
+On the clone path the governed half is `make plane` and `make govern`, which
+are the same kmx commands with the checkout passed as the plane's source —
+so a change you make to `plane/` is what gets deployed.
 
 Coming from the project's old name? The cluster is now `kaimahi-p1` and
 the Copilot login cache moved. See

@@ -14,6 +14,7 @@ import (
 	"context"
 	"regexp"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -208,8 +209,24 @@ func SetDegraded(seam Seam, tripped bool) {
 // revision as -X); the image build has no .git to stamp from itself.
 var buildVersion string
 
-// Version is the build's revision: the linker-set value, else the VCS
-// revision as Go stamped it (short), else "unknown".
+// Version is the build's revision: the linker-set value, else whatever the
+// Go toolchain stamped into the build info, else "unknown".
+//
+// TWO stampings have to be read, because the plane is now built two ways.
+// `make plane-image` builds from a checkout through plane/Dockerfile, which
+// passes the revision as -X (the build context carries no .git, so the
+// toolchain stamps nothing). `kmx plane` fetches the module from the public
+// Go proxy at kmx's own revision and builds it there — and a MODULE-PROXY
+// build sets no `vcs.revision` at all. It sets Main.Version instead, a
+// pseudo-version whose last field is the revision:
+//
+//	v0.0.0-20260903013736-ffed1ee20737
+//	                      ^^^^^^^^^^^^ the 12-char revision
+//
+// Reading only vcs.revision therefore published kaimahi_build_info with
+// revision="unknown" on the kmx path — the one path where an operator has
+// no checkout to compare against, and so the one where the label matters
+// most.
 func Version() string {
 	if buildVersion != "" {
 		return buildVersion
@@ -218,8 +235,15 @@ func Version() string {
 	if !ok {
 		return "unknown"
 	}
+	return versionFrom(info.Main.Version, info.Settings)
+}
+
+// versionFrom is Version's decision, separated from the running binary's own
+// build info so it can be tested against the stampings of builds this
+// process is not.
+func versionFrom(mainVersion string, settings []debug.BuildSetting) string {
 	rev, dirty := "", false
-	for _, s := range info.Settings {
+	for _, s := range settings {
 		switch s.Key {
 		case "vcs.revision":
 			rev = s.Value
@@ -227,16 +251,53 @@ func Version() string {
 			dirty = s.Value == "true"
 		}
 	}
+	// A VCS stamping wins: it is the more direct statement, and it is the
+	// only one that can also say the tree was dirty. It is a full 40-char
+	// sha, so it is shortened; a MODULE VERSION is not, and must not be —
+	// truncating "v0.1.0-beta.1" to 12 characters would publish
+	// "v0.1.0-beta." and name no release at all.
+	if rev != "" {
+		if len(rev) > 12 {
+			rev = rev[:12]
+		}
+	} else {
+		rev = revisionFromModuleVersion(mainVersion)
+	}
 	if rev == "" {
 		return "unknown"
-	}
-	if len(rev) > 12 {
-		rev = rev[:12]
 	}
 	if dirty {
 		rev += "-dirty"
 	}
 	return rev
+}
+
+// revisionFromModuleVersion pulls the revision out of a pseudo-version, and
+// returns the version itself for a real tagged release (v1.2.3 names the
+// build perfectly well). "(devel)" is not a version — that is a local build
+// the toolchain did not stamp — and returns "".
+func revisionFromModuleVersion(version string) string {
+	if version == "" || version == "(devel)" {
+		return ""
+	}
+	// Pseudo-versions end in "-<yyyymmddhhmmss>-<12 hex>"; a tagged version
+	// has no such suffix. Take the last field only when it looks like a
+	// revision, so v1.2.3-rc1 is not mistaken for one.
+	if i := strings.LastIndex(version, "-"); i >= 0 {
+		if last := version[i+1:]; isHex(last) && len(last) == 12 {
+			return last
+		}
+	}
+	return version
+}
+
+func isHex(s string) bool {
+	for _, r := range s {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return s != ""
 }
 
 func goVersion() string {

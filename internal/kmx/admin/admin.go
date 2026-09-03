@@ -1,0 +1,281 @@
+// Package admin talks to the governance plane's admin API.
+//
+// This is scripts/plane-admin.sh's transport and its four read renderings,
+// in Go. The script's contract is the specification and is carried across
+// unchanged:
+//
+//   - The admin port (9091) is on NO Service. Reaching it takes a
+//     `kubectl port-forward` to the pod — i.e. CLUSTER credentials gate every
+//     operation before the admin bearer token does. That ordering is the
+//     point, not an implementation detail.
+//   - The forward binds 127.0.0.1 explicitly, and kmx waits for kubectl's own
+//     "Forwarding from" line before it sends anything. Both halves are
+//     load-bearing: the pin makes kubectl FAIL when the port is taken rather
+//     than bind only the v6 side, and the line is the only proof that the
+//     socket we are about to talk to is OURS. Probing /healthz first would
+//     have accepted a 200 from a stale forward to a DIFFERENT cluster — and
+//     then issued a credential in that plane while the Secret and the preset
+//     switch landed in this one. (`kmx agent chat` learned this the same way,
+//     against a real accident.)
+//   - Fail closed: every call checks for a well-formed positive, and no
+//     redirect is ever followed on an authenticated request.
+//   - Custody: the admin bearer token exists only in this process's memory.
+//     The shell script had to spill it into a 0600 file for curl to read;
+//     Go does not, so it never reaches a file, argv, the environment or a
+//     log. TestTokensNeverLeaveTheProcess holds that line.
+package admin
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/run"
+)
+
+// Namespace is where the plane lives.
+const Namespace = "kaimahi"
+
+// DefaultPort is the local side of the admin forward — plane-admin.sh's
+// ADMIN_PORT, so a stale forward from either implementation is noticed by
+// the other rather than silently talked to.
+const DefaultPort = "19091"
+
+// The forward's readiness wait: the script's 150 × 0.2s, twice over (once
+// for kubectl's bind, once for the plane behind it). Variables rather than
+// constants so the tests can exercise the timeout paths without spending
+// half a minute on each.
+var (
+	pollAttempts = 150
+	pollInterval = 200 * time.Millisecond
+)
+
+// Kube is the sliver of kmx's kubectl plumbing this package needs. It is an
+// interface so the tests can watch every argument that would be passed to a
+// real kubectl without running one.
+type Kube interface {
+	// Capture runs kubectl with an explicit --context and returns stdout.
+	Capture(args ...string) (string, error)
+	// Command prepares a kubectl the caller manages itself (the forward).
+	Command(args ...string) *exec.Cmd
+}
+
+// Client is an open admin session: a live port-forward plus the bearer.
+type Client struct {
+	base  string
+	token string
+	http  *http.Client
+	pf    *exec.Cmd
+	log   *syncBuffer
+	// done closes when the forward's process exits, so a forward that dies
+	// immediately (the port is taken, the deployment is missing) is a
+	// failure in milliseconds rather than a 30-second wait.
+	done chan struct{}
+}
+
+// Open reads the admin token, starts the port-forward, and waits for the
+// admin API to answer.
+func Open(k Kube, port string, log io.Writer) (*Client, error) {
+	if port == "" {
+		port = DefaultPort
+	}
+	encoded, err := k.Capture("-n", Namespace, "get", "secret", "kaimahi-admin",
+		"-o", "jsonpath={.data.token}")
+	if err != nil {
+		return nil, fmt.Errorf("cannot read the kaimahi-admin Secret (is the plane deployed? `kmx plane`): %w", err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
+		return nil, fmt.Errorf("the kaimahi-admin Secret is missing or empty — run `kmx plane`")
+	}
+
+	c := &Client{
+		base:  "http://127.0.0.1:" + port,
+		token: string(bytes.TrimSpace(raw)),
+		// No redirects on an authenticated call, ever: Go strips
+		// Authorization across hosts but not custom headers, and an admin
+		// bearer must not travel anywhere it was not addressed to.
+		http: &http.Client{
+			Timeout:       60 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
+		log: &syncBuffer{},
+	}
+
+	// --address pins IPv4 explicitly; see the package comment.
+	c.pf = k.Command("-n", Namespace, "port-forward", "--address", "127.0.0.1",
+		"deploy/kaimahi-proxy", port+":9091")
+	// kubectl announces the bind on stdout and its failures on stderr; both
+	// are evidence, so both are kept.
+	c.pf.Stdout, c.pf.Stderr = c.log, c.log
+	if err := c.pf.Start(); err != nil {
+		return nil, fmt.Errorf("cannot port-forward to the plane's admin port: %w", err)
+	}
+	c.done = make(chan struct{})
+	go func() {
+		_ = c.pf.Wait()
+		close(c.done)
+	}()
+
+	// First: is this forward ours? Wait for kubectl to say it bound the
+	// port, and stop early if the process exits (the port is taken, the
+	// deployment is missing).
+	want := "Forwarding from 127.0.0.1:" + port
+	bound := run.Poll(pollAttempts, pollInterval, func() bool {
+		if strings.Contains(c.log.String(), want) {
+			return true
+		}
+		select {
+		case <-c.done:
+			return true // it exited; the check below reports the failure
+		default:
+			return false
+		}
+	})
+	if !bound || !strings.Contains(c.log.String(), want) {
+		c.Close()
+		return nil, fmt.Errorf("the admin port-forward never came up on 127.0.0.1:%s:\n  %s\n"+
+			"  Refusing to continue: if another cluster's forward holds this port, the\n"+
+			"  operation would have landed THERE. Use ADMIN_PORT=<free port>.",
+			port, c.detail())
+	}
+
+	// Only then: is the plane answering behind it?
+	answered := run.Poll(pollAttempts, pollInterval, func() bool { return c.healthy() })
+	if !answered {
+		c.Close()
+		return nil, fmt.Errorf("the plane's admin API did not answer on the forward to 127.0.0.1:%s:\n  %s\n"+
+			"  The forward is up, so this is the proxy, not the port. Check `kubectl -n %s get pods`.",
+			port, c.detail(), Namespace)
+	}
+	if log != nil {
+		fmt.Fprintf(log, "kubectl -n %s port-forward deploy/kaimahi-proxy %s:9091 # (the admin port is on no Service)\n",
+			Namespace, port)
+	}
+	return c, nil
+}
+
+// detail is kubectl's own output, indented for a multi-line error.
+func (c *Client) detail() string {
+	out := strings.TrimSpace(c.log.String())
+	if out == "" {
+		out = "no output from kubectl"
+	}
+	return strings.ReplaceAll(out, "\n", "\n  ")
+}
+
+// syncBuffer collects the forward's output while its goroutine writes it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (c *Client) healthy() bool {
+	resp, err := c.http.Get(c.base + "/healthz")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode == http.StatusOK
+}
+
+// Close tears the forward down.
+func (c *Client) Close() {
+	if c.pf == nil || c.pf.Process == nil {
+		return
+	}
+	_ = c.pf.Process.Kill()
+	<-c.done
+}
+
+// Do makes one authenticated admin call and returns the status and body.
+func (c *Client) Do(method, path string, body any) (int, []byte, error) {
+	var payload io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, err
+		}
+		payload = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, c.base+path, payload)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("admin %s %s: %w", method, path, err)
+	}
+	defer resp.Body.Close()
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, out, nil
+}
+
+// Get performs a read and refuses anything but 200, quoting the body — the
+// script's `[ "$status" = 200 ] || { …; cat resp; exit 1; }`.
+func (c *Client) Get(what, path string) (map[string]any, error) {
+	status, body, err := c.Do(http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("%s read failed (HTTP %d): %s", what, status, strings.TrimSpace(string(body)))
+	}
+	return decode(body)
+}
+
+func decode(body []byte) (map[string]any, error) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	// UseNumber so a token count is printed as it was sent, never as
+	// 1.234568e+06.
+	dec.UseNumber()
+	var out map[string]any
+	if err := dec.Decode(&out); err != nil {
+		return nil, fmt.Errorf("cannot read the plane's reply: %w", err)
+	}
+	return out, nil
+}
+
+// TokenFrom reads the issued token out of a credential-creation reply.
+//
+// A missing or empty token is an error rather than an empty Secret: the
+// token is shown exactly once, so an empty one written now is a credential
+// that can never be used and never be recovered.
+func TokenFrom(body []byte) (string, error) {
+	doc, err := decode(body)
+	if err != nil {
+		return "", err
+	}
+	token, _ := doc["token"].(string)
+	if strings.TrimSpace(token) == "" {
+		return "", fmt.Errorf("the plane issued the credential but returned no token")
+	}
+	return token, nil
+}

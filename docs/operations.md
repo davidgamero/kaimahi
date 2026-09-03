@@ -7,7 +7,16 @@ available. Everything here is proven on kind in CI on every PR; nothing
 here has been run on a managed cluster since the AKS demonstrations in
 [aks.md](aks.md).
 
-Assumes the plane from [spend.md](spend.md) is deployed (`make plane`).
+Assumes the plane from [spend.md](spend.md) is deployed (`make plane`, or
+`kmx plane` — on kind they are the same code, see [kmx.md](kmx.md)).
+
+**Which path is which.** Standing the plane up, governing an agent, and the
+read-only views (`plane`, `govern`, `ledger`, `grants`, the audit trails) are
+`kmx`'s on kind, and `make` delegates to it. Everything else on this page —
+backup, restore, `plane-metrics`, budgets and approvals — is `make` and the
+scripts, on every target; and the whole managed-cluster path (`TARGET=aks`)
+is `make`'s, because it needs a registry, a rendered manifest and a captured
+key that `kmx` deliberately has no way to accept.
 
 ## Shape
 

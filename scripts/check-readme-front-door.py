@@ -38,6 +38,12 @@ QUICKSTART_COMMANDS = [
     ("go install .../cmd/kmx", r"^go install github\.com/kaimahi-agents/kaimahi/cmd/kmx@"),
     ("kmx up", r"^kmx up\b"),
     ("kmx agent chat", r"^kmx agent chat\b"),
+    # Since P11 milestone 2 the governed half is one command too, and it is
+    # the product's whole claim. A quickstart that stops at a conversation
+    # sells an agent runtime; kagent already ships one.
+    ("kmx plane", r"^kmx plane\b"),
+    ("kmx govern", r"^kmx govern\b"),
+    ("kmx ledger", r"^kmx ledger\b"),
 ]
 # The clone path is not allowed to disappear: `make up` / `make chat` are what
 # CI runs and what every other doc's commands assume, so they must still be a

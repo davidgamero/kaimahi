@@ -54,7 +54,8 @@ Agent pod (kagent)                         namespace kaimahi
   gateway's table and belongs to
   [tool-governance.md](tool-governance.md).
 - **Admin plane**: a second port (9091) that the Service deliberately
-  does not expose. `make govern`, `make budget` and `make ledger` reach
+  does not expose. `kmx govern`/`kmx ledger` (and `make govern`,
+  `make budget`, `make ledger`) reach
   it via `kubectl port-forward` plus a bearer token read from the
   `kaimahi-admin` Secret, so cluster credentials gate every admin
   operation.
@@ -90,6 +91,22 @@ make govern      # issue the credential, switch hello-world through the proxy
 make chat        # works as before, but now authenticated, metered, ledgered
 make ledger      # see the row the chat just wrote
 ```
+
+Or without a clone, which is the same code — on kind these `make` targets
+are one-line recipes that call `kmx` ([kmx.md](kmx.md)):
+
+```sh
+kmx up
+kmx plane                # fetches the plane at kmx's own revision; no clone, no registry
+kmx govern hello-world
+kmx agent chat hello-world "Who are you?"
+kmx ledger
+```
+
+`kmx` is the **kind** path. On a managed cluster the plane needs a registry,
+a rendered manifest and a captured key, so `TARGET=aks make plane` /
+`TARGET=aks make govern` stay the scripts' — see [aks.md](aks.md). Budgets
+(`make budget`) and approvals are `make`'s on every target.
 
 `make govern` leaves `hello-world` on the `governed-ollama` preset and
 also applies `governed-copilot`. Switch to the latter with

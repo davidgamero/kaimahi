@@ -1,19 +1,27 @@
 # `kmx` — one command for creating and running agents
 
 `kmx` is the developer journey as a single Go binary: a cluster, a local
-model, kagent, an agent, a conversation, teardown. It needs no clone and no
-Makefile.
+model, kagent, an agent, a conversation — and then the governance plane, a
+governed credential, and the ledger that shows what it spent. It needs no
+clone and no Makefile.
 
 It is also the only implementation of that journey. The Makefile's `up`,
 `cluster`, `ollama`, `model`, `kagent`, `agent`, `tools-agent`, `chat`,
-`status` and `down` targets are now one-line recipes that call this binary,
-so CI proves the code you actually run. Everything else in the Makefile —
-the governance plane, approvals, Slack, GitHub, AKS, the probes — is
-unchanged and still make's.
+`status`, `down`, `plane`, `plane-image`, `plane-secrets`, `govern`,
+`ledger`, `grants`, `tool-audit` and `approval-audit` targets are one-line
+recipes that call this binary on the kind path, so CI proves the code you
+actually run. Everything else in the Makefile — budgets, approvals,
+backup/restore, Slack, GitHub, inbound hooks, secret capture, AKS, the
+probes — is unchanged and still make's.
 
-**Status: milestone 1.** Nothing is published. `kmx` is a provisional name,
-like `kaimahi` itself, and is not claimed anywhere (D26/D27 on the
+**Status: milestone 2.** Nothing is published. `kmx` is a provisional name,
+like `kaimahi` itself, and is not claimed anywhere (D26/D27/D28 on the
 [board](COORDINATION.md)).
+
+**kind only.** Everything below assumes a local kind cluster. A managed
+cluster is the Makefile's path — `TARGET=aks make plane`, `TARGET=aks make
+govern` — because it needs a registry, a rendered manifest and a captured
+key, none of which kmx does (see [aks.md](aks.md)).
 
 ## Install
 
@@ -30,7 +38,7 @@ below uses it.
 
 | Prerequisite | Why |
 |---|---|
-| Go 1.26+ | to install or build kmx |
+| Go 1.26+ | to install or build kmx — and to build the plane, which kmx fetches at its own revision |
 | Docker **or** Podman | kind runs Kubernetes in containers |
 | kind | the local cluster |
 | kubectl | kmx shells out to it for every read and write |
@@ -45,9 +53,19 @@ there is one binary on disk.
 ```bash
 kmx up                                   # kind + Ollama + the model + kagent + two agents
 kmx agent chat hello-world "Who are you?"
+
+kmx plane                                # the governance plane: proxy + Postgres ledger
+kmx govern hello-world                   # issue the credential, put the agent behind it
+kmx agent chat hello-world "Who are you?"  # the same question, now metered
+kmx ledger                               # what it cost
+
 kmx status
 kmx down
 ```
+
+Between the two chats nothing about the agent changed except which model
+preset it thinks through. That is the whole point: governance is a preset
+swap plus a credential the agent cannot read past.
 
 ## Commands
 
@@ -59,9 +77,16 @@ kmx down
 | `kmx up --step <step>` | one step only: `cluster`, `ollama`, `model`, `kagent`, `agent`, `tools-agent` |
 | `kmx agent create <name>` | scaffold `agents/<name>.yaml` and apply it |
 | `kmx agent chat <name> [message]` | ask an agent one question, through `kagent invoke` |
+| `kmx plane` | build the proxy image, bootstrap the plane's secrets, deploy the plane, wait for it to serve |
+| `kmx plane --step <step>` | one step only: `image`, `secrets`, `deploy` |
+| `kmx plane --source <path>` | build the plane from a checkout instead of fetching it (`-` forces the fetch) |
+| `kmx govern <credential>` | issue the governed credential, apply the governed presets, switch the agent onto one |
+| `kmx ledger [<credential>]` | the spend ledger, newest first, plus month-to-date totals |
+| `kmx grants [<credential>]` | grants, with liveness — an expired grant is not a grant |
+| `kmx audit tool\|approval [<cred>]` | the enforcement points' audit trails |
 | `kmx status` | agents, modelconfigs and pods |
 | `kmx down` | delete the kind cluster kmx created |
-| `kmx version` | the pinned kagent and model versions |
+| `kmx version` | the pinned kagent and model versions, the plane's image tag, and the revision `kmx plane` would fetch it at |
 
 Reading, updating and deleting agents are not kmx's job — kubectl and the
 kagent CLI already do them, and `kmx agent list` says so and prints the
@@ -82,6 +107,8 @@ run.
 | `KAGENT_VERSION` | `0.9.12` | pinned kagent chart **and** CLI |
 | `MODEL` | `qwen2.5:3b` | model pulled into Ollama |
 | `CHAT_PORT` | `8083` | local port for the controller forward |
+| `ADMIN_PORT` | `19091` | local port for the plane's admin forward |
+| `CRED` | `hello-world` | the credential `govern` issues, and the one `ledger` reads by default (`grants` and `audit` default to **all** credentials) |
 | `KAIMAHI_CONFIRM` | unset | confirm a non-kind context, by name |
 | `KMX_HOME` | `~/.config/kmx` | where the selected context and the cached kagent binary live |
 
@@ -157,19 +184,99 @@ The reserved names `hello-world` and `hello-tools` are refused: they are
 `kmx up`'s own agents, and scaffolding over one would replace a committed
 artifact that the next `kmx up` would replace right back.
 
-## What is NOT in milestone 1
+## How the plane gets there without a clone
 
-Deliberately, per D27:
+`kmx plane` has to produce a container image of a Go program whose source is
+**not** in the binary. It cannot be: the plane is a separate Go module under
+`plane/`, and `go:embed` refuses to cross a module boundary — "cannot embed
+directory: in different module". The same nested module is what makes the
+answer work.
+
+1. kmx reads **its own revision** out of its build info — the pseudo-version
+   a `go install` binary carries, or the VCS revision a checkout build does.
+2. It runs `go install
+   github.com/kaimahi-agents/kaimahi/plane/cmd/kaimahi-proxy@<that revision>`.
+   The module resolves through the public Go proxy at any commit on `main`,
+   and Go's checksum database verifies what comes back.
+3. It packages that binary onto the same distroless base `plane/Dockerfile`
+   uses, and side-loads the image into the kind cluster with `kind load`.
+4. The manifests come out of the kmx binary and are applied **as committed**.
+
+Nothing is published to do this: no registry, no release, no tap. The plane
+image never leaves your machine.
+
+A checkout always wins. Inside a clone — or with `--source <path>` — kmx
+builds `plane/Dockerfile` from the working tree instead, which is what the
+Makefile passes (`--source .`) and what keeps CI proving the code a pull
+request changes rather than whatever the proxy last published. `--source -`
+forces the fetch even inside a checkout.
+
+Which revision is actually running is not inferred from the image tag (the
+tag is fixed, because the manifest is applied unrendered). Ask the plane:
+
+```bash
+make plane-metrics | grep kaimahi_build_info
+```
+
+### If `go install` says it cannot cross-compile
+
+```
+go: cannot install cross-compiled binaries when GOBIN is set
+```
+
+The plane's binary is built for **Linux** (that is what the kind node runs),
+so on macOS every plane build is a cross-compile — and mise, asdf and
+`go env -w GOBIN=…` all set `GOBIN`. kmx removes `GOBIN` from the
+environment it hands the toolchain, which covers the shell-set case. A
+`GOBIN` in Go's own environment file survives that, and kmx says so and
+names the fix:
+
+```bash
+go env -u GOBIN         # clear it, or
+kmx plane --source .    # build the plane from a checkout instead
+```
+
+## Governing an agent
+
+```bash
+kmx plane
+kmx govern hello-world
+```
+
+`govern` mints an opaque Kaimahi token, stores it as the agent-side Secret
+`kaimahi-governed-token`, applies the governed model presets, and switches
+the agent onto one. The agent never sees a real upstream key — the plane
+keeps those, and stores only the hash of the token it issued.
+
+| Property | Why |
+|---|---|
+| **Cluster credentials gate it before the admin token does** | The plane's admin port is on no Service. Reaching it takes a `kubectl port-forward` to the pod, so you must already be able to reach the cluster; the admin bearer is the second lock, not the first. |
+| **Tokens travel only through pipes** | The admin bearer and the issued token exist in kmx's memory and in the cluster. Neither reaches a file, an argument list, an environment listing or a log — the Secret is rendered in memory and piped into `kubectl apply -f -`. |
+| **Only a genuine `NotFound` skips the switch** | An unreachable API server, an expired credential, an RBAC denial and a wrong context all look like "the agent isn't there" if you do not look. Treating them as absence prints a reassuring note, exits 0, and leaves an agent spending **outside** the plane. Anything but a real NotFound aborts. |
+| **An already-issued credential is reconciled, never overwritten** | The token is shown exactly once and cannot be recovered. If the Secret is bound to a different credential kmx refuses; if it is missing, kmx tells you how to clear the row and re-issue. |
+| **The switch waits for the pods, not the object** | `rollout status` returns while the old pod is still draining, and a question that lands on it gets a plausible answer from the **old** preset. kmx waits until exactly one pod is on the new template. |
+
+Then:
+
+```bash
+kmx agent chat hello-world "Who are you?"
+kmx ledger
+```
+
+## What is NOT in `kmx` yet
+
+Deliberately, per D28(3) — these stay in the Makefile:
 
 | Not here | Where it is |
 |---|---|
-| The governance plane — budgets, the spend ledger, credential custody | `make plane` ([spend.md](spend.md)) |
-| `kmx govern` — putting an agent behind the plane | `make govern`, `make govern-tools` ([tool-governance.md](tool-governance.md)) |
+| Budgets (`make budget`) and approvals (`make approvals`, `approve`, `deny`, `request`) | [approvals.md](approvals.md), [spend.md](spend.md) |
+| Backup and restore, plane metrics | [operations.md](operations.md) |
+| The tool gateway's wiring (`make govern-tools`, `tool-allow`) | [tool-governance.md](tool-governance.md) |
+| The Slack, GitHub and inbound connector families | [slack.md](slack.md), [hosted-upstreams.md](hosted-upstreams.md), [inbound.md](inbound.md) |
 | Capturing a secret of any kind | `make model-secret`, `make copilot-secret`, `make slack-secret` — key-bearing steps stay in standalone scripts |
-| Approvals, Slack, inbound hooks, hosted upstreams | the Makefile ([approvals.md](approvals.md), [slack.md](slack.md), [inbound.md](inbound.md), [hosted-upstreams.md](hosted-upstreams.md)) |
 | A managed cluster (AKS) | `TARGET=aks make …` ([aks.md](aks.md)) |
 | The network and tool probes | `scripts/*-probe.sh` |
 | Publishing — a tap, a release, a package | nowhere, by decision (D26/D27) |
 
-`kmx up` says the plane is not deployed, in one line, at the end of a run.
-It is a runtime, not a governed runtime, until you run `make plane`.
+`kmx up` says the plane is not deployed, in one line, at the end of a run,
+and names the two commands that change that.

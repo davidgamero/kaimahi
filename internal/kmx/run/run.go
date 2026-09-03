@@ -27,6 +27,11 @@ type Runner struct {
 	// Env is added to the child's environment (KIND_EXPERIMENTAL_PROVIDER
 	// for the podman path).
 	Env []string
+	// Unset are variables REMOVED from the child's environment. `go
+	// install` refuses to cross-compile while GOBIN is set, and GOBIN is
+	// set by mise, asdf and `go env -w` alike — so the plane's build has to
+	// be able to take a variable away, not only add one.
+	Unset []string
 	// Echo prints each command before running it, like make does.
 	Echo bool
 }
@@ -38,10 +43,31 @@ func Default() *Runner {
 
 func (r *Runner) cmd(name string, args ...string) *exec.Cmd {
 	c := exec.Command(name, args...)
-	if len(r.Env) > 0 {
-		c.Env = append(os.Environ(), r.Env...)
+	if len(r.Env) > 0 || len(r.Unset) > 0 {
+		c.Env = environ(os.Environ(), r.Env, r.Unset)
 	}
 	return c
+}
+
+// environ applies additions and removals to a base environment. Removals are
+// applied to the base only: a variable both set and unset is set, since the
+// caller naming a value said so more specifically.
+func environ(base, add, unset []string) []string {
+	out := make([]string, 0, len(base)+len(add))
+	for _, entry := range base {
+		name, _, _ := strings.Cut(entry, "=")
+		drop := false
+		for _, u := range unset {
+			if name == u {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, entry)
+		}
+	}
+	return append(out, add...)
 }
 
 func (r *Runner) echo(name string, args []string) {

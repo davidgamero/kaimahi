@@ -298,30 +298,42 @@ jobs:
       # reply.
       - name: Chat verifier self-test (tool-path verdicts)
         run: python3 scripts/verify-chat.py --selftest
-      # The e2e job short-circuits docs-only changes at STEP level (the job
-      # must run and report — it is a required check). A step appended
-      # without the guard would run against no cluster on the next
-      # docs-only PR, so refuse it here, on the PR that adds it. Only the
-      # checkout, the classify step and the docs-only summary step are
+      # Both cluster jobs short-circuit docs-only changes at STEP level (the
+      # e2e job must run and report — it is a required check). A step
+      # appended without the guard would run against no cluster on the next
+      # docs-only change, so refuse it here, on the PR that adds it. Only the
+      # checkout, the classify step and the docs-only summary steps are
       # exempt; every other step must skip when docs_only is 'true'.
-      - name: Every e2e step carries the docs-only guard
+      - name: Every cluster step carries the docs-only guard, and the clone-free job has no checkout
         run: |
           python3 - <<'EOF'
           import sys, yaml
           wf = yaml.safe_load(open(".github/workflows/ci.yml"))
-          steps = wf["jobs"]["e2e-hello-world"]["steps"]
           exempt = lambda s: (s.get("id") in ("changes", "docs-only-summary")
+                              or str(s.get("if", "")).strip() == "steps.changes.outputs.docs_only == 'true'"
                               or str(s.get("uses", "")).startswith("actions/checkout"))
           # Exact match, not substring: `always() || …` or `!= 'false'`
           # would mention the output and still run without a cluster.
           guards = {"steps.changes.outputs.docs_only != 'true'",
-                    "failure() && steps.changes.outputs.docs_only != 'true'"}
-          bad = [s.get("name") or s.get("uses") for s in steps
-                 if not exempt(s) and str(s.get("if", "")).strip() not in guards]
-          if bad:
-              print("e2e steps missing the docs-only guard:", *bad, sep="\n  ")
+                    "failure() && steps.changes.outputs.docs_only != 'true'",
+                    "always() && steps.changes.outputs.docs_only != 'true'"}
+          total = 0
+          for job in ("e2e-hello-world", "kmx-clone-free"):
+              steps = wf["jobs"][job]["steps"]
+              total += len(steps)
+              bad = [s.get("name") or s.get("uses") for s in steps
+                     if not exempt(s) and str(s.get("if", "")).strip() not in guards]
+              if bad:
+                  print(f"{job} steps missing the docs-only guard:", *bad, sep="\n  ")
+                  sys.exit(1)
+          # The clone-free job proves the path with NO checkout. A checkout
+          # step added to it would make kmx auto-detect a source and the job
+          # would silently stop proving anything.
+          if any(str(s.get("uses", "")).startswith("actions/checkout")
+                 for s in wf["jobs"]["kmx-clone-free"]["steps"]):
+              print("kmx-clone-free must not check the repository out — that is the premise of the job")
               sys.exit(1)
-          print(f"{len(steps)} e2e steps: all guarded")
+          print(f"{total} cluster steps across both jobs: all guarded; kmx-clone-free has no checkout")
           EOF
       # P11: kmx's own module. It lives in the REQUIRED hygiene job rather
       # than a job of its own, because the guard port, the scaffolder's
@@ -354,6 +366,11 @@ jobs:
           grep -q 'ok  .*internal/kmx/scaffold' kmx-test.out
           grep -q 'ok  .*internal/kmx/kagentcli' kmx-test.out
           grep -q 'ok  .*internal/kmx/delegation' kmx-test.out
+          # Milestone 2's own gates: which revision the plane is fetched at,
+          # the GOBIN cross-compile refusal, and the credential custody the
+          # shell could only approximate with a 0600 file.
+          grep -q 'ok  .*internal/kmx/planebuild' kmx-test.out
+          grep -q 'ok  .*internal/kmx/admin' kmx-test.out
           # The generated-manifest check is the only test that hands the
           # scaffolder's output to a REAL YAML parser, and it skips itself
           # when python3/PyYAML are missing — right on a laptop, a green
@@ -362,6 +379,14 @@ jobs:
           go test ./internal/kmx/scaffold/ -v \
             -run TestGeneratedManifestParsesAndKeepsInstructionsInsideTheScalar 2>&1 | tee parse.out
           grep -q -- '--- PASS: TestGeneratedManifestParsesAndKeepsInstructionsInsideTheScalar' parse.out
+          # Same shape, same reason: the test that pins the image tag kmx
+          # builds to the tag k8s/plane/proxy.yaml deploys PARSES the
+          # manifest, so it skips itself without PyYAML — a green no-op on a
+          # laptop. If those two drift, `kmx plane` silently keeps running
+          # the previous image. Assert it ran.
+          go test ./internal/kmx/app/ -v \
+            -run TestPlaneImageMatchesTheCommittedManifest 2>&1 | tee planeimg.out
+          grep -q -- '--- PASS: TestPlaneImageMatchesTheCommittedManifest' planeimg.out
       - name: Makefile does not re-implement what kmx owns
         run: |
           python3 scripts/check-kmx-delegation.py --selftest
@@ -1446,3 +1471,211 @@ jobs:
         id: docs-only-summary
         if: steps.changes.outputs.docs_only == 'true'
         run: echo "every changed file is documentation; no cluster booted"
+
+  # P11 milestone 2 (D28(2)): the ONLY proof that the path users actually
+  # take works. Every other job runs from a checkout, and the checkout is
+  # exactly what a `go install` user does not have — the plane's image is
+  # fetched from the public Go proxy there, the manifests come out of the
+  # binary, and neither is exercised by a job that has k8s/ on disk.
+  #
+  # It runs on main AFTER merge, never on the pull request, because the Go
+  # proxy only serves commits that have been pushed to the default branch's
+  # history: on a PR there is no revision to install. A failure here is a
+  # release blocker, not a flake — it means `go install …/cmd/kmx@<sha>`
+  # produces a binary that cannot stand its own plane up.
+  #
+  # There is NO checkout step, deliberately, and nothing in this job may add
+  # one: the moment a checkout exists, kmx auto-detects it as a source and
+  # the job stops proving the thing it exists to prove.
+  kmx-clone-free:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The same docs-only short-circuit the e2e job has, and for the same
+      # reason: every board update is a PR that merges to main, and a
+      # 40-minute cluster run per doc commit is a cost with no coverage.
+      # Fail closed — any error, an undeterminable file set, or anything that
+      # is not documentation runs the full job. There is no checkout here, so
+      # the file list comes from the compare API rather than from git.
+      - name: Classify the change (docs-only short-circuit, fail closed)
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.before }}
+          HEAD: ${{ github.sha }}
+        run: |
+          set +e
+          docs_only=false
+          reason=""
+          case "$BASE" in
+            ""|0000000000000000000000000000000000000000) reason="no base commit" ;;
+          esac
+          files=""
+          if [ -z "$reason" ]; then
+            files=$(curl -sS --fail-with-body \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/compare/$BASE...$HEAD" \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); print("\n".join(f["filename"] for f in d.get("files") or []))')
+            rc=$?
+            if [ "$rc" -ne 0 ] || [ -z "$files" ]; then
+              reason="cannot list the changed files"
+            fi
+          fi
+          if [ -z "$reason" ]; then
+            docs_only=true
+            while IFS= read -r f; do
+              case "$f" in
+                docs/*|*.md) ;;
+                *) docs_only=false; reason="non-doc change: $f"; break ;;
+              esac
+            done <<<"$files"
+            [ "$docs_only" = true ] && reason="every changed file is documentation"
+          fi
+          echo "changed files:"; echo "${files:-(undetermined)}" | sed 's/^/  /'
+          echo "docs_only=$docs_only ($reason)"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v5
+        if: steps.changes.outputs.docs_only != 'true'
+        with:
+          go-version: '1.26'
+      - name: Install kind
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          curl -sSfLo kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          chmod +x kind && sudo mv kind /usr/local/bin/kind
+      - name: Install kmx from the Go proxy at this commit — no clone
+        if: steps.changes.outputs.docs_only != 'true'
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          mkdir -p "$HOME/journey"
+          # The proxy may not have indexed the push yet. Retry, and say
+          # which failure it was: "not yet published" and "does not build"
+          # look identical if only the last attempt is reported.
+          for attempt in 1 2 3 4 5 6; do
+            if go install "github.com/kaimahi-agents/kaimahi/cmd/kmx@$SHA" 2>install.err; then
+              published=1; break
+            fi
+            cat install.err
+            echo "attempt $attempt: the proxy does not serve $SHA yet; waiting 30s"
+            sleep 30
+          done
+          test -n "${published:-}" || { echo "go install never succeeded for $SHA"; exit 1; }
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: The binary is what a user gets, and knows nothing of a checkout
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
+        run: |
+          kmx version
+          # Fail closed on the premise: if a checkout somehow exists at or
+          # above this directory, `kmx plane` would build from it and the
+          # job would prove nothing.
+          test ! -e ./go.mod && test ! -e /home/runner/go.mod && test ! -e /home/runner/k8s
+      - name: up — cluster, Ollama, the model, kagent, both agents
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
+        env:
+          KIND_CLUSTER: kmx-clone-free
+        run: kmx up
+      - name: agent create — a scaffolded agent, applied
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
+        env:
+          KIND_CLUSTER: kmx-clone-free
+        run: |
+          kmx agent create fleet-reporter \
+            --description 'Reports what is running in the cluster.' \
+            --tools kagent-tool-server:k8s_get_resources
+          test -f agents/fleet-reporter.yaml
+      - name: plane — fetched from the Go proxy at kmx's own revision, built and side-loaded
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
+        env:
+          KIND_CLUSTER: kmx-clone-free
+        run: |
+          kmx plane 2>&1 | tee plane.out
+          # The premise again, at the one moment it can be observed: this
+          # must have FETCHED the plane, not found a checkout.
+          grep -q 'fetching and building the plane at kmx' plane.out
+          ready=$(kubectl --context kind-kmx-clone-free -n kaimahi get deploy kaimahi-proxy -o jsonpath='{.status.readyReplicas}')
+          test "$ready" = 2
+      - name: The running plane reports the revision it was built at
+        if: steps.changes.outputs.docs_only != 'true'
+        env:
+          KIND_CLUSTER: kmx-clone-free
+          SHA: ${{ github.sha }}
+        run: |
+          # kaimahi_build_info's revision comes from Main.Version on a
+          # module-proxy build (plane/internal/metrics). Before that fix it
+          # was "unknown" on exactly this path — the one path with no
+          # checkout to compare against.
+          pod=$(kubectl --context kind-kmx-clone-free -n kaimahi get pods -l app=kaimahi-proxy \
+            -o jsonpath='{.items[0].metadata.name}')
+          kubectl --context kind-kmx-clone-free -n kaimahi port-forward "$pod" 19092:9092 >/dev/null 2>&1 &
+          for _ in $(seq 1 60); do curl -fsS -o /dev/null http://127.0.0.1:19092/healthz && break; sleep 0.5; done
+          curl -fsS http://127.0.0.1:19092/metrics | grep '^kaimahi_build_info{' | tee build-info.out
+          grep -q "revision=\"${SHA:0:12}\"" build-info.out
+      - name: govern — the credential, the presets, the switch
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
+        env:
+          KIND_CLUSTER: kmx-clone-free
+        run: |
+          kmx govern hello-world
+          # The agent-side Secret holds a kmh_ token and nothing else: the
+          # real upstream keys stay with the proxy. The value never leaves
+          # the pipe — grep -c prints a count.
+          n=$(kubectl --context kind-kmx-clone-free -n kagent get secret kaimahi-governed-token \
+            -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
+          test "$n" = 1
+          preset=$(kubectl --context kind-kmx-clone-free -n kagent get agent hello-world \
+            -o jsonpath='{.spec.declarative.modelConfig}')
+          test "$preset" = governed-ollama
+      - name: chat — the governed conversation
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
+        env:
+          KIND_CLUSTER: kmx-clone-free
+        run: |
+          kmx agent chat hello-world 'Hello! Who are you and where are you running?' | tee chat.out
+          grep -q '"state":"completed"' chat.out
+      - name: ledger — the governed chat was metered
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
+        env:
+          KIND_CLUSTER: kmx-clone-free
+        run: |
+          kmx ledger | tee ledger.out
+          grep -E 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200' ledger.out
+          python3 - <<'EOF'
+          import re, sys
+          m = re.search(r"month to date: (\d+) cents, (\d+) tokens", open("ledger.out").read())
+          sys.exit(0 if m and int(m.group(2)) > 0 else 1)
+          EOF
+      - name: grants — the read view answers on an empty plane
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
+        env:
+          KIND_CLUSTER: kmx-clone-free
+        run: |
+          kmx grants | tee grants.out
+          grep -q 'no grants' grants.out
+      - name: Cluster state on failure
+        if: failure() && steps.changes.outputs.docs_only != 'true'
+        run: |
+          kubectl --context kind-kmx-clone-free get pods -A || true
+          kubectl --context kind-kmx-clone-free -n kaimahi get pods -o wide || true
+          kubectl --context kind-kmx-clone-free -n kaimahi logs -l app=kaimahi-proxy --tail=100 --prefix || true
+          kubectl --context kind-kmx-clone-free -n kagent describe agent hello-world || true
+      - name: down
+        if: always() && steps.changes.outputs.docs_only != 'true'
+        run: kind delete cluster --name kmx-clone-free || true
+      - name: Docs-only change — no cluster booted
+        if: steps.changes.outputs.docs_only == 'true'
+        run: echo "every changed file is documentation; the clone-free journey was not run"

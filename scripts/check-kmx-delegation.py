@@ -42,7 +42,24 @@ OWNED = {
     "chat": "kmx agent chat",
     "status": "kmx status",
     "down": "kmx down",
+    # Milestone 2 (D28): the governance half. Same rule, same reason — a
+    # wait or a fail-closed check fixed in the recipe rather than in kmx is
+    # a fix the clone-free path never gets.
+    "plane": "kmx plane --source .",
+    "plane-image": "kmx plane --step image --source .",
+    "plane-secrets": "kmx plane --step secrets",
+    "govern": "kmx govern",
+    "ledger": "kmx ledger",
+    "grants": "kmx grants",
+    "tool-audit": "kmx audit tool",
+    "approval-audit": "kmx audit approval",
 }
+
+# Targets whose recipe passes an operator-settable argument (a credential, an
+# agent, a question). For these the delegation is a PREFIX match; every other
+# target must match its argument list exactly, which is what stops "up" from
+# being satisfied by "up --step cluster".
+CARRIES_ARGUMENTS = {"chat", "govern", "ledger", "tool-audit"}
 
 # A line that reaches the cluster itself. Anchored to a command position —
 # the start of a line, or after a shell operator — so that `KIND_CLUSTER=x`
@@ -119,8 +136,10 @@ def delegates(target: str, expected: str, recipe: str) -> bool:
     for args in kmx_invocations(recipe):
         if args == wanted:
             return True
-        # `agent chat` carries the agent and the question, which vary.
-        if wanted == "agent chat" and args.startswith("agent chat "):
+        # Some recipes carry an operator-settable argument — the agent and
+        # the question for `chat`, the credential for `govern` and the
+        # reads. Those match on the prefix; everything else is exact.
+        if target in CARRIES_ARGUMENTS and args.startswith(wanted + " "):
             return True
     return False
 
@@ -184,6 +203,20 @@ DELEGATION_SELFTEST = [
     ("chat carries the agent and the question", "chat", "kmx agent chat",
      'bin/kmx agent chat hello-world "Who are you?"', True),
     ("chat with no arguments is not the chat recipe", "chat", "kmx agent chat", "bin/kmx agent", False),
+    # Milestone 2: the plane's steps are exact, the credential-carrying
+    # reads are prefixes.
+    ("the plane, built from the checkout", "plane", "kmx plane --source .",
+     "KIND_CLUSTER='x' bin/kmx plane --source .", True),
+    ("the plane without the checkout is not the recipe CI runs", "plane", "kmx plane --source .",
+     "bin/kmx plane", False),
+    ("a plane step", "plane-secrets", "kmx plane --step secrets", "bin/kmx plane --step secrets", True),
+    ("govern carries the credential", "govern", "kmx govern",
+     "bin/kmx govern hello-world --agent hello-world --preset governed-ollama", True),
+    ("govern with no credential is not the recipe", "govern", "kmx govern", "bin/kmx", False),
+    ("an audit read names its trail", "tool-audit", "kmx audit tool",
+     "bin/kmx audit tool hello-tools", True),
+    ("the approval trail is not the tool trail", "tool-audit", "kmx audit tool",
+     "bin/kmx audit approval", False),
 ]
 
 

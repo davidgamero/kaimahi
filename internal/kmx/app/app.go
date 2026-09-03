@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 
 	kaimahi "github.com/kaimahi-agents/kaimahi"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
@@ -61,6 +62,15 @@ func (a *App) kubectlCapture(args ...string) (string, error) {
 
 func (a *App) kubectlQuiet(args ...string) bool {
 	return a.Run.Quiet("kubectl", a.kubectl(args...)...)
+}
+
+// Capture and Command make App an admin.Kube: the admin plumbing reaches the
+// cluster through the SAME kubectl every other read and write here uses,
+// carrying the same explicit --context. It cannot be aimed anywhere else.
+func (a *App) Capture(args ...string) (string, error) { return a.kubectlCapture(args...) }
+
+func (a *App) Command(args ...string) *exec.Cmd {
+	return a.Run.Command("kubectl", a.kubectl(args...)...)
 }
 
 // kubeconfig reads the merged kubeconfig, saying plainly when the reason it

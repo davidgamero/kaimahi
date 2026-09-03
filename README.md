@@ -48,13 +48,20 @@ The working path today — one binary, no clone:
 go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main
 kmx up      # kind cluster + local model + kagent + agents (~5–10 minutes)
 kmx agent chat hello-world "Who are you?"
+
+kmx plane             # the governance plane: metering proxy + spend ledger
+kmx govern hello-world  # the agent now spends through it, on an issued credential
+kmx agent chat hello-world "Who are you?"
+kmx ledger            # what that answer cost, and to whom it was attributed
 ```
 
 The default path needs no API key. It uses an in-cluster Ollama model for a real
-agent conversation. Continue with the [getting-started guide](docs/getting-started.md)
-or choose a capability from the [documentation index](docs/README.md).
-[`kmx`](docs/kmx.md) is the whole journey: `up`, `agent create`, `agent chat`,
-`status`, `down`.
+agent conversation, and the governed half is keyless too. Continue with the
+[getting-started guide](docs/getting-started.md) or choose a capability from the
+[documentation index](docs/README.md). [`kmx`](docs/kmx.md) is the whole journey:
+`up`, `agent create`, `agent chat`, `plane`, `govern`, `ledger`, `status`,
+`down` — and it needs no clone, because it fetches the plane at its own
+revision from the public Go proxy.
 
 From a clone, `make` runs the same binary:
 
@@ -108,7 +115,7 @@ port-forwards the controller, and invokes the agent.
 | 8 | Approvals routed to Slack, with the approver's identity | **runs** — a filed request is announced in the channel through the plane's own governed post; `@kaimahi approve <id>` from a listed approver mints the grant in their name, asserted keyless in CI with signed synthetic mentions; live verification on AKS pending ([docs/approvals.md](docs/approvals.md#deciding-from-slack)) |
 | 9 | Run it for real: two stateless replicas, exact budgets, metrics | **runs** — two replicas behind every seam, every budget and grant decision serialized per credential in Postgres (N concurrent calls against a cap with room for one admit exactly one, asserted across both replicas in CI), a replica killed mid-cycle and Postgres restarted without a proxy restart, migrations under a lock, Prometheus on its own port, `make backup` / `make restore` ([docs/operations.md](docs/operations.md)) |
 | 10 | Hosted tool upstreams — the gateway reaches GitHub's MCP server on the internet through one hardened dialer | **runs** — `make github-secret` → `make govern-github`; the dialer's refusals, a synthetic public upstream, the opt-in allowance and the fail-closed negative asserted keyless in CI; GitHub itself verified once on kind ([docs/hosted-upstreams.md](docs/hosted-upstreams.md)) |
-| 11 | `kmx` — the developer journey as one command | **runs** — `go install …/cmd/kmx@main`, then `kmx up`, `kmx agent create`, `kmx agent chat`, `kmx status`, `kmx down`; the Makefile's kind path delegates to it, so CI proves it on every PR ([docs/kmx.md](docs/kmx.md)). Milestone 1: the runtime, not the plane |
+| 11 | `kmx` — the developer journey as one command | **runs** — `go install …/cmd/kmx@main`, then `kmx up`, `kmx agent create`, `kmx agent chat`, `kmx plane`, `kmx govern`, `kmx ledger`, `kmx status`, `kmx down`; the Makefile's kind path delegates to it, so CI proves it on every PR, and a post-merge job drives the whole journey from an installed binary with no checkout ([docs/kmx.md](docs/kmx.md)). Milestone 2: the runtime **and** the plane, on kind |
 
 **Limitations, stated plainly.** Governance is opt-in per agent: an
 *ungoverned* preset still bills with no ledger, and an ungoverned tools wiring

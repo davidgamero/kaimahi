@@ -29,7 +29,8 @@ it is also the first thing to state honestly in any doc you write.
 
 | Path | What it is |
 |---|---|
-| `plane/` | The Go governance plane. The only compiled artifact in the repo. |
+| `plane/` | The Go governance plane, its own module. `kmx plane` fetches and builds it from the public Go proxy at kmx's own revision — `go:embed` cannot cross into it, precisely because it is a separate module. |
+| `cmd/kmx`, `internal/kmx/`, `embed.go` | `kmx`: the developer journey and the kind governance path as one binary, in the root module. `k8s/` travels inside it. |
 | `plane/cmd/kaimahi-proxy/` | One binary, five listeners (below). |
 | `plane/internal/` | `proxy` (LLM data path + admin), `gateway` (MCP), `inbound` (webhooks), `meter` (budgets), `pricing` (tokens→cents), `store`/`db` (Postgres + migrations), `config` (upstream table), `redact` (log scrubbing), `metrics` (Prometheus, fixed label vocabularies), `ops` (metrics listener + probes). |
 | `k8s/` | Everything applied to a cluster: agents, model presets, the plane, network policy, scenario fixtures. |
@@ -43,10 +44,12 @@ it is also the first thing to state honestly in any doc you write.
 Everything below is runnable from a clean checkout with no cluster.
 
 ```bash
-# Go plane — the only thing that compiles.
+# Two Go modules: kmx at the root, the plane under plane/.
 # `gofmt -l` LISTS unformatted files but still exits 0, so it has to be
 # wrapped to actually fail the chain — the same trap as `! grep` below.
-cd plane && test -z "$(gofmt -l .)" && go vet ./... && go build ./... && go test ./...
+test -z "$(gofmt -l cmd internal embed.go)" && go vet ./... && go build ./... && go test ./...
+python3 scripts/check-kmx-delegation.py --selftest && python3 scripts/check-kmx-delegation.py
+(cd plane && test -z "$(gofmt -l .)" && go vet ./... && go build ./... && go test ./...)
 
 # Repository checks (these are the CI hygiene job)
 python3 scripts/check-doc-links.py
@@ -241,6 +244,12 @@ expensive way.
   reason; do the same when the claim is "both replicas".
 - **A bare `wait` in a script waits on the port-forwards too**, which
   never exit. Collect worker PIDs and `wait` on those.
+- **`go install` refuses to cross-compile while `GOBIN` is set** — and mise,
+  asdf and `go env -w GOBIN=…` all set it. The plane's binary is built for
+  Linux (the kind node's platform), so on macOS every `kmx plane` build is a
+  cross-compile. kmx removes `GOBIN` from the environment it hands the
+  toolchain; a `GOBIN` in Go's own environment file survives that, and kmx
+  says so and names `go env -u GOBIN` or `kmx plane --source .`.
 - **A container engine's clusters are invisible to the other engine.** `kind
   get clusters` under docker will not list a podman cluster, so the Makefile
   cheerfully tries to create one that already exists. Keep

@@ -22,6 +22,9 @@ GOOD = """<img src="brand/hero.png">
 go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main
 kmx up
 kmx agent chat hello-world "Who are you?"
+kmx plane
+kmx govern hello-world
+kmx ledger
 ```
 From a clone:
 ```bash
@@ -44,6 +47,11 @@ CASES = [
      GOOD.replace("go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main\n", ""),
      "go install .../cmd/kmx is missing"),
     ("kmx up missing", GOOD.replace("kmx up\n", ""), "kmx up is missing"),
+    # The governed half is the claim; a quickstart that stops at a
+    # conversation is an agent runtime, which kagent already ships.
+    ("the governed half missing", GOOD.replace("kmx plane\nkmx govern hello-world\nkmx ledger\n", ""),
+     "kmx plane is missing"),
+    ("govern without the ledger", GOOD.replace("kmx ledger\n", ""), "kmx ledger is missing"),
     # The clone path may move down the section, but it may not vanish: it is
     # what CI runs and what every other doc's commands assume.
     ("clone path deleted",
@@ -55,8 +63,8 @@ CASES = [
     # The kmx block must be FIRST: a clone path above it is the old order.
     ("clone path first",
      GOOD.replace(
-         '```bash\ngo install github.com/kaimahi-agents/kaimahi/cmd/kmx@main\nkmx up\nkmx agent chat hello-world "Who are you?"\n```\nFrom a clone:\n```bash\nmake up\nmake chat\n```',
-         '```bash\nmake up\nmake chat\n```\n```bash\ngo install github.com/kaimahi-agents/kaimahi/cmd/kmx@main\nkmx up\nkmx agent chat hello-world "Who are you?"\n```'),
+         '```bash\ngo install github.com/kaimahi-agents/kaimahi/cmd/kmx@main\nkmx up\nkmx agent chat hello-world "Who are you?"\nkmx plane\nkmx govern hello-world\nkmx ledger\n```\nFrom a clone:\n```bash\nmake up\nmake chat\n```',
+         '```bash\nmake up\nmake chat\n```\n```bash\ngo install github.com/kaimahi-agents/kaimahi/cmd/kmx@main\nkmx up\nkmx agent chat hello-world "Who are you?"\nkmx plane\nkmx govern hello-world\nkmx ledger\n```'),
      "go install .../cmd/kmx is missing"),
     ("outcome after the diagram",
      GOOD.replace('### Approve consequential actions\n<img src="docs/assets/architecture.svg">',
@@ -65,11 +73,11 @@ CASES = [
     ("clone command missing", GOOD.replace("make chat\n", ""), "the clone path (make up, make chat) is missing"),
     # Prose that starts a line with the command name is not a runnable path.
     ("kmx path only in Quickstart prose",
-     GOOD.replace('```bash\ngo install github.com/kaimahi-agents/kaimahi/cmd/kmx@main\nkmx up\nkmx agent chat hello-world "Who are you?"\n```\n',
+     GOOD.replace('```bash\ngo install github.com/kaimahi-agents/kaimahi/cmd/kmx@main\nkmx up\nkmx agent chat hello-world "Who are you?"\nkmx plane\nkmx govern hello-world\nkmx ledger\n```\n',
                   "go install the binary, then\nkmx up the cluster.\n"),
      "go install .../cmd/kmx is missing"),
     ("kmx commands in prose, a fenced block without them",
-     GOOD.replace('```bash\ngo install github.com/kaimahi-agents/kaimahi/cmd/kmx@main\nkmx up\nkmx agent chat hello-world "Who are you?"\n```\n',
+     GOOD.replace('```bash\ngo install github.com/kaimahi-agents/kaimahi/cmd/kmx@main\nkmx up\nkmx agent chat hello-world "Who are you?"\nkmx plane\nkmx govern hello-world\nkmx ledger\n```\n',
                   "go install the binary, then\nkmx up the cluster.\n```bash\nkmx status\n```\n"),
      "go install .../cmd/kmx is missing"),
     ("clone path only in a later section's block",
