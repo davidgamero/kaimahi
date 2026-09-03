@@ -22,3 +22,7 @@ backups/
 # CI's synthetic hosted upstream (scripts/ci/synthetic-upstream.sh): a
 # throwaway CA, its key and certificate, and the patched table. Job-local.
 .synthetic-upstream/
+
+# Scratch space: meeting transcripts, brand working files, anything not for the repo.
+# This is a PUBLIC repository — an untracked tmp/ is one `git add -A` from being one.
+tmp/
