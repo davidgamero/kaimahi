@@ -53,6 +53,9 @@ STATUS_OUTPUT  ?= table
 export KMX_STATUS_OUTPUT := $(STATUS_OUTPUT)
 SESSION        ?=
 export KMX_CHAT_SESSION := $(SESSION)
+KMX_CHAT_ARGS = $(strip $(if $(filter 1,$(INTERACTIVE)),--interactive) \
+	$(if $(SESSION),--session "$$KMX_CHAT_SESSION") $(AGENT) \
+	$(if $(filter 1,$(INTERACTIVE)),$(if $(filter command line environment override,$(origin TASK)),"$(TASK)"),"$(TASK)"))
 
 # ---- kmx (P11, D27) -------------------------------------------------------
 # The developer journey — cluster, model, kagent, the agents, a conversation,
@@ -548,9 +551,7 @@ endif
 # define itself stays because `slack-post` and `github-ask` still use it,
 # with the narrower refused-only class a non-idempotent action needs.
 chat: $(KMX)
-	@$(KMX_ENV) $(KMX) agent chat $(if $(filter 1,$(INTERACTIVE)),--interactive,) \
-		$(if $(SESSION),--session "$$KMX_CHAT_SESSION",) $(AGENT) \
-		$(if $(filter 1,$(INTERACTIVE)),$(if $(filter command line environment override,$(origin TASK)),"$(TASK)",),"$(TASK)")
+	@$(KMX_ENV) $(KMX) agent chat $(KMX_CHAT_ARGS)
 
 ## model-secret: store an API key as a K8s Secret, stdin-only (paste, Enter, Ctrl-D).
 # The key never touches argv, env listings, YAML, or logs; tr strips the
