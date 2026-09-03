@@ -45,7 +45,7 @@ COMMANDS
   ledger [<credential>]        the spend ledger and month-to-date totals
   grants [<credential>]        grants, with liveness
   audit tool|approval [<cred>] the enforcement points' audit trails
-  status                       agents, modelconfigs and pods
+  status                       grouped agent/model wiring and runtime health
   down                         delete the kind cluster kmx created
   version                      print the pinned versions kmx installs
 
@@ -199,7 +199,16 @@ func run(argv []string) error {
 		return a.Audit(args[0], credential)
 
 	case "status":
-		return a.Status()
+		fs := newFlagSet("status")
+		output := fs.String("o", "table", "output: table|json|yaml")
+		fs.StringVar(output, "output", "table", "output: table|json|yaml")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return errors.New("usage: kmx status [-o table|json|yaml]")
+		}
+		return a.StatusWithOptions(app.StatusOptions{Output: *output})
 
 	case "down":
 		return a.Down()

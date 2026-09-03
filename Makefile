@@ -49,6 +49,8 @@ MODEL          ?= qwen2.5:3b
 AGENT          ?= hello-world
 TASK           ?= Hello! Who are you and where are you running?
 KAGENT         ?= bin/kagent
+STATUS_OUTPUT  ?= table
+export KMX_STATUS_OUTPUT := $(STATUS_OUTPUT)
 
 # ---- kmx (P11, D27) -------------------------------------------------------
 # The developer journey — cluster, model, kagent, the agents, a conversation,
@@ -941,7 +943,7 @@ plane-copilot-secret: guard
 	$(KUBECTL) apply -f k8s/egress-copilot.yaml
 
 status: $(KMX)
-	@$(KMX_ENV) $(KMX) status
+	@$(KMX_ENV) $(KMX) status $(if $(filter table,$(STATUS_OUTPUT)),,-o "$$KMX_STATUS_OUTPUT")
 
 ifeq ($(TARGET),kind)
 ## down: delete the local kind cluster

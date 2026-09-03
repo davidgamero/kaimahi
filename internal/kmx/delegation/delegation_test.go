@@ -100,6 +100,23 @@ func TestDelegationPassesTheOperatorsSettings(t *testing.T) {
 	}
 }
 
+func TestStatusPassesOutputFormat(t *testing.T) {
+	out := dryRun(t, "status", "STATUS_OUTPUT=yaml")
+	if !strings.Contains(out, `bin/kmx status -o "$KMX_STATUS_OUTPUT"`) {
+		t.Fatalf("status output format was not delegated:\n%s", out)
+	}
+}
+
+func TestStatusOutputIsNotInterpolatedIntoShellSource(t *testing.T) {
+	out := dryRun(t, "status", "STATUS_OUTPUT=yaml && touch /tmp/pwn")
+	if strings.Contains(out, "&& touch /tmp/pwn") {
+		t.Fatalf("status output was interpolated into shell source:\n%s", out)
+	}
+	if !strings.Contains(out, `-o "$KMX_STATUS_OUTPUT"`) {
+		t.Fatalf("status does not read the format from the exported environment:\n%s", out)
+	}
+}
+
 // A confirmation given to make must not be asked for again by kmx.
 func TestConfirmationRidesThrough(t *testing.T) {
 	out := dryRun(t, "down", "KIND_CLUSTER=mine", "KAIMAHI_CONFIRM=kind-mine")

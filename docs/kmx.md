@@ -93,7 +93,8 @@ swap plus a credential the agent cannot read past.
 | `kmx ledger [<credential>]` | the spend ledger, newest first, plus month-to-date totals |
 | `kmx grants [<credential>]` | grants, with liveness — an expired grant is not a grant |
 | `kmx audit tool\|approval [<cred>]` | the enforcement points' audit trails |
-| `kmx status` | agents, modelconfigs and pods |
+| `kmx status` | grouped context, agent/model wiring, runtime health, restarts, and next actions |
+| `kmx status -o json\|yaml` | kubectl-native combined Agents, ModelConfigs, and kagent-namespace Pods for automation |
 | `kmx down` | delete the kind cluster kmx created |
 | `kmx version` | the pinned kagent and model versions, the plane's image tag, and the revision `kmx plane` would fetch it at |
 
