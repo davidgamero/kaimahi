@@ -153,7 +153,7 @@ func (a *App) runLanes(lanes []lane) error {
 		if err := w.flush(); err != nil {
 			// A lane can only be called successful if what it said was
 			// actually written: an unreported bring-up is not a quiet one.
-			errs = append(errs, fmt.Errorf("%s: output could not be written: %w", lanes[i].name, err))
+			errs[i] = errors.Join(errs[i], fmt.Errorf("%s: output could not be written: %w", lanes[i].name, err))
 		}
 	}
 	return errors.Join(errs...)
