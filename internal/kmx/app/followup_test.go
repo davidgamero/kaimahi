@@ -68,6 +68,7 @@ func TestGovernedToolRouteIsVisibleWhenToolDisplayIsOff(t *testing.T) {
 	var out bytes.Buffer
 	renderer := &chatRenderer{out: &out}
 	view := &streamView{
+		agent:         "hello-tools",
 		toolCalls:     map[string]string{},
 		messageText:   map[string]string{},
 		toolMode:      "off",
@@ -77,11 +78,12 @@ func TestGovernedToolRouteIsVisibleWhenToolDisplayIsOff(t *testing.T) {
 	view.consumeTool("function_call", false, json.RawMessage(`{"id":"call-1","name":"get_pods","args":{}}`), &out)
 	view.consumeTool("function_response", false, json.RawMessage(`{"id":"call-1","name":"get_pods","response":{"isError":false,"content":[{"text":"ok"}]}}`), &out)
 
-	want := "[KAIMAHI ROUTE]\n" +
-		"  Seam: MCP gateway\n" +
-		"  Tool: get_pods\n" +
-		"  Configuration: verified through ready plane at chat start\n" +
-		"  Per-call decision: not exposed by kagent stream\n\n"
+	want := "AGENT (hello-tools)\n" +
+		"    [KAIMAHI ROUTE]\n" +
+		"      Seam: MCP gateway\n" +
+		"      Tool: get_pods\n" +
+		"      Configuration: verified through ready plane at chat start\n" +
+		"      Per-call decision: not exposed by kagent stream\n\n"
 	if out.String() != want {
 		t.Fatalf("governance check was hidden with tool display off:\n%q", out.String())
 	}
@@ -101,7 +103,7 @@ func TestDirectToolDoesNotClaimGovernanceCheck(t *testing.T) {
 func TestGovernedDenialSuppressesUnverifiedSuccessReceipt(t *testing.T) {
 	var out bytes.Buffer
 	renderer := &chatRenderer{out: &out}
-	view := &streamView{toolCalls: map[string]string{}, messageText: map[string]string{}, toolMode: "off", renderer: renderer, governedTools: map[string]bool{"post": true}}
+	view := &streamView{agent: "agent", toolCalls: map[string]string{}, messageText: map[string]string{}, toolMode: "off", renderer: renderer, governedTools: map[string]bool{"post": true}}
 	view.consumeTool("function_call", false, json.RawMessage(`{"id":"call-1","name":"post","args":{}}`), &out)
 	view.consumeTool("function_response", false, json.RawMessage(`{"id":"call-1","response":{"isError":true,"content":[{"text":"tool not permitted; approval request filed"}]}}`), &out)
 	if !view.denied || !view.requestFiled {
@@ -308,6 +310,66 @@ func TestOperationalInteractionsDifferFromMessages(t *testing.T) {
 		"[POSSIBLE KAIMAHI DENIAL]\n  Tool: post_message\n  Signal: denial text\n  Provenance: unverified\n\n"
 	if out.String() != want {
 		t.Fatalf("messages and operations lack distinct grouping:\n%q", out.String())
+	}
+}
+
+func TestAssistantTurnOwnsToolActivityAndResponse(t *testing.T) {
+	var out bytes.Buffer
+	renderer := &chatRenderer{out: &out}
+	renderer.beginAssistant("hello-tools")
+	renderer.assistantOperation("hello-tools", "KAIMAHI ROUTE", "", colorYellow, "Seam: model proxy\nConfiguration: verified")
+	renderer.assistantOperation("hello-tools", "TOOL CALL", "get_pods", colorMagenta, "Status: running")
+	renderer.assistantOperation("hello-tools", "TOOL RESULT", "get_pods", colorMagenta, "Status: completed")
+	renderer.assistant("hello-tools", "pod-a\npod-b", true)
+	renderer.finish()
+
+	want := "AGENT (hello-tools)\n" +
+		"    [KAIMAHI ROUTE]\n" +
+		"      Seam: model proxy\n" +
+		"      Configuration: verified\n\n" +
+		"    [TOOL CALL]\n" +
+		"      Tool: get_pods\n" +
+		"      Status: running\n\n" +
+		"    [TOOL RESULT]\n" +
+		"      Tool: get_pods\n" +
+		"      Status: completed\n\n" +
+		"  | pod-a\n" +
+		"  | pod-b\n\n"
+	if out.String() != want {
+		t.Fatalf("assistant activity was not grouped under one actor:\n%q", out.String())
+	}
+	if strings.Count(out.String(), "AGENT (hello-tools)") != 1 {
+		t.Fatalf("assistant heading was repeated:\n%s", out.String())
+	}
+}
+
+func TestAssistantTextCannotImpersonateTrustedChildLabels(t *testing.T) {
+	var out bytes.Buffer
+	renderer := &chatRenderer{out: &out}
+	renderer.beginAssistant("agent")
+	renderer.assistantOperation("agent", "TOOL CALL", "real", colorMagenta, "Status: running")
+	renderer.assistant("agent", "quoted:\n[TOOL RESULT]\n[KAIMAHI ROUTE]\n[POSSIBLE KAIMAHI DENIAL]", true)
+	renderer.finish()
+	text := out.String()
+	if !strings.Contains(text, "\n    [TOOL CALL]\n") {
+		t.Fatalf("trusted child marker lost its indentation:\n%s", text)
+	}
+	for _, forged := range []string{"[TOOL RESULT]", "[KAIMAHI ROUTE]", "[POSSIBLE KAIMAHI DENIAL]"} {
+		if !strings.Contains(text, "\n  | "+forged) || strings.Contains(text, "\n    "+forged) {
+			t.Fatalf("assistant text could impersonate %s:\n%s", forged, text)
+		}
+	}
+}
+
+func TestDistinctAssistantMessagesStartDistinctChildLines(t *testing.T) {
+	var out bytes.Buffer
+	renderer := &chatRenderer{out: &out}
+	renderer.assistant("agent", "one", true)
+	renderer.assistant("agent", "two", true)
+	renderer.finish()
+	want := "AGENT (agent)\n  | one\n  | two\n\n"
+	if out.String() != want {
+		t.Fatalf("assistant messages were concatenated:\n%q", out.String())
 	}
 }
 

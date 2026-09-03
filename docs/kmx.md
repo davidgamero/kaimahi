@@ -315,7 +315,7 @@ resends the tool call. A Kaimahi governance denial still requires a separate
 operator approval, followed by explicit `/retry`.
 
 Capable terminals color conversational and operational labels without relying
-on color alone: `YOU` is cyan, `ASSISTANT` is green, tool activity is magenta,
+on color alone: `YOU` is cyan, `AGENT (<name>)` is green, tool activity is magenta,
 and approval/governance activity is yellow. The status header is never colored.
 Messages use actor labels; non-message interactions use trusted bracketed labels
 such as `[TOOL CALL]`, `[TOOL RESULT]`, `[NATIVE APPROVAL]`, and
@@ -323,6 +323,35 @@ such as `[TOOL CALL]`, `[TOOL RESULT]`, `[NATIVE APPROVAL]`, and
 Every payload line is indented, with arguments and
 results nested one level further, so model/tool text cannot impersonate a
 trusted label. Set `NO_COLOR=1` or use `TERM=dumb` for plain output.
+
+Route checks, tool calls, tool results, and possible governance-denial signals
+are actions taken while producing the current assistant turn, so they render as
+children of one assistant heading rather than as peer messages:
+
+```text
+AGENT (hello-tools)
+    [KAIMAHI ROUTE]
+      Seam: model proxy
+      Configuration: verified through ready plane at chat start
+
+    [TOOL CALL]
+      Tool: k8s_get_resources
+      Status: running
+
+    [TOOL RESULT]
+      Tool: k8s_get_resources
+      Status: completed
+
+  | pod-a
+  | pod-b
+```
+
+Native approval/questions and local `[CHAT]` controls remain top-level because
+they interrupt the agent turn and require user or client action.
+Trusted child action labels use four spaces and their fields use six. Agent
+response text uses the shallower `  | ` rail, preserving authored whitespace
+while preventing model text quoting `[TOOL RESULT]` from impersonating a real
+tool record in plain output.
 
 Native kagent `requireApproval` pauses keep their answer prompt inside a
 `[NATIVE APPROVAL]` interaction and resume with a structured approve/reject

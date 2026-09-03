@@ -47,6 +47,7 @@ type chatRenderer struct {
 	color      bool
 	cursor     bool
 	openActor  string
+	actorLine  bool
 	promptOpen bool
 }
 
@@ -72,6 +73,12 @@ func indentPayload(value string) string {
 	return "  " + strings.ReplaceAll(value, "\n", "\n  ")
 }
 
+func assistantPayload(value string) string {
+	// The rail preserves authored indentation while ensuring response text can
+	// never occupy the renderer-owned four-space action-label position.
+	return strings.ReplaceAll(safeTerminal(value), "\n", "\n  | ")
+}
+
 func (r *chatRenderer) clearLocked() {
 	if r.cursor {
 		fmt.Fprint(r.out, "\r\033[2K")
@@ -84,8 +91,12 @@ func (r *chatRenderer) closeLocked() {
 		r.promptOpen = false
 	}
 	if r.openActor != "" {
+		if r.actorLine {
+			fmt.Fprintln(r.out)
+		}
 		fmt.Fprintln(r.out)
 		r.openActor = ""
+		r.actorLine = false
 	}
 }
 
@@ -140,16 +151,62 @@ func (r *chatRenderer) operationPrompt(kind string, color actorColor, payload, p
 	r.promptOpen = true
 }
 
+func (r *chatRenderer) beginAssistant(agent string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clearLocked()
+	if r.openActor == agent {
+		return
+	}
+	r.closeLocked()
+	fmt.Fprintln(r.out, r.label("AGENT ("+safeTerminal(agent)+")", colorGreen))
+	r.openActor = agent
+}
+
+func (r *chatRenderer) assistantOperation(agent, kind, subject string, color actorColor, payload string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clearLocked()
+	if r.openActor != agent {
+		r.closeLocked()
+		fmt.Fprintln(r.out, r.label("AGENT ("+safeTerminal(agent)+")", colorGreen))
+		r.openActor = agent
+	}
+	if r.actorLine {
+		fmt.Fprintln(r.out)
+		r.actorLine = false
+	}
+	if subject != "" {
+		payload = "Tool: " + safeTerminal(subject) + "\n" + payload
+	}
+	payload = strings.TrimSuffix(safeTerminal(payload), "\n")
+	fmt.Fprintf(r.out, "    %s\n      %s\n\n", r.label("["+kind+"]", color), strings.ReplaceAll(payload, "\n", "\n      "))
+}
+
 func (r *chatRenderer) assistant(agent, text string, start bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.clearLocked()
-	if start || r.openActor != agent {
+	if r.openActor != agent {
 		r.closeLocked()
-		fmt.Fprintf(r.out, "%s\n  ", r.label("ASSISTANT "+safeTerminal(agent), colorGreen))
+		fmt.Fprintln(r.out, r.label("AGENT ("+safeTerminal(agent)+")", colorGreen))
 		r.openActor = agent
 	}
-	fmt.Fprint(r.out, strings.ReplaceAll(safeTerminal(text), "\n", "\n  "))
+	if start && r.actorLine {
+		fmt.Fprintln(r.out)
+		r.actorLine = false
+	}
+	if !r.actorLine {
+		fmt.Fprint(r.out, "  | ")
+		r.actorLine = true
+	}
+	fmt.Fprint(r.out, assistantPayload(text))
+}
+
+func (r *chatRenderer) clearTransient() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clearLocked()
 }
 
 func (r *chatRenderer) prompt() {
@@ -176,7 +233,7 @@ func (r *chatRenderer) spinner(agent, frame string, elapsed time.Duration) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.openActor != "" {
+	if r.actorLine {
 		return
 	}
 	r.clearLocked()
@@ -494,8 +551,9 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 		default:
 			last = message
 		}
+		renderer.beginAssistant(agent)
 		if posture.modelGoverned {
-			renderer.operation("KAIMAHI ROUTE", "", colorYellow, "Seam: model proxy\nConfiguration: verified through ready plane at chat start\nPer-call decision: not exposed by kagent stream")
+			renderer.assistantOperation(agent, "KAIMAHI ROUTE", "", colorYellow, "Seam: model proxy\nConfiguration: verified through ready plane at chat start\nPer-call decision: not exposed by kagent stream")
 		}
 		view, err := a.invokeStream(ctx, kagent, base, agent, message, session, toolMode, renderer, posture)
 		if err != nil {
@@ -636,7 +694,7 @@ func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, sessi
 	close(done)
 	<-spinnerDone
 	if spinner {
-		renderer.finish()
+		renderer.clearTransient()
 	}
 	if decodeErr != nil && cmd.Process != nil {
 		_ = cmd.Process.Kill()
@@ -745,7 +803,7 @@ func (v *streamView) consume(event streamEvent, out io.Writer) {
 							payload += "\nApproval request: reported in response text\nNext: run `make approvals` and verify the request"
 						}
 						if v.renderer != nil {
-							v.renderer.operation("POSSIBLE KAIMAHI DENIAL", "", colorYellow, payload)
+							v.renderer.assistantOperation(v.agent, "POSSIBLE KAIMAHI DENIAL", "", colorYellow, payload)
 						}
 						v.modelDenialShown = true
 					}
@@ -818,9 +876,7 @@ func (v *streamView) consume(event streamEvent, out io.Writer) {
 		v.reply = text
 	}
 	if event.Final && v.reply != "" {
-		if v.renderer != nil {
-			v.renderer.finish()
-		} else {
+		if v.renderer == nil {
 			fmt.Fprintln(out)
 		}
 	}
@@ -902,7 +958,7 @@ func (v *streamView) consumeTool(kind string, longRunning bool, raw json.RawMess
 		}
 		validID := data.ID != "" && !v.ambiguousToolCalls[data.ID]
 		if validID && v.governedTools[data.Name] && v.renderer != nil && !v.seenToolCalls[data.ID] {
-			v.renderer.operation("KAIMAHI ROUTE", "", colorYellow, "Seam: MCP gateway\nTool: "+safeTerminal(data.Name)+"\nConfiguration: verified through ready plane at chat start\nPer-call decision: not exposed by kagent stream")
+			v.renderer.assistantOperation(v.agent, "KAIMAHI ROUTE", "", colorYellow, "Seam: MCP gateway\nTool: "+safeTerminal(data.Name)+"\nConfiguration: verified through ready plane at chat start\nPer-call decision: not exposed by kagent stream")
 		}
 		if data.ID != "" {
 			v.seenToolCalls[data.ID] = true
@@ -914,7 +970,7 @@ func (v *streamView) consumeTool(kind string, longRunning bool, raw json.RawMess
 				payload += "\nArguments:\n" + indentPayload(truncatePayload(strings.TrimSpace(string(data.Args)), 16<<10))
 			}
 			if v.renderer != nil {
-				v.renderer.operation("TOOL CALL", data.Name, colorMagenta, payload)
+				v.renderer.assistantOperation(v.agent, "TOOL CALL", data.Name, colorMagenta, payload)
 			} else {
 				fmt.Fprintf(out, "Tool: %s %s\n", safeTerminal(data.Name), safeTerminal(truncatePayload(strings.TrimSpace(string(data.Args)), 16<<10)))
 			}
@@ -940,7 +996,7 @@ func (v *streamView) consumeTool(kind string, longRunning bool, raw json.RawMess
 				} else {
 					payload += "\nApproval request: not mentioned in response text"
 				}
-				v.renderer.operation("POSSIBLE KAIMAHI DENIAL", name, colorYellow, payload)
+				v.renderer.assistantOperation(v.agent, "POSSIBLE KAIMAHI DENIAL", name, colorYellow, payload)
 			}
 		}
 		if data.ID != "" {
@@ -953,7 +1009,7 @@ func (v *streamView) consumeTool(kind string, longRunning bool, raw json.RawMess
 				payload += "\nResult:\n" + indentPayload(truncatePayload(body, 16<<10))
 			}
 			if v.renderer != nil {
-				v.renderer.operation("TOOL RESULT", name, colorMagenta, payload)
+				v.renderer.assistantOperation(v.agent, "TOOL RESULT", name, colorMagenta, payload)
 			} else {
 				fmt.Fprintf(out, "Tool: %s %s\n", safeTerminal(name), state)
 				if v.toolMode == "verbose" {
@@ -1322,35 +1378,38 @@ func (a *App) showSessionHistory(base, id, agent, toolMode string) error {
 		if json.Unmarshal([]byte(wrapper.Data), &event) != nil {
 			continue
 		}
+		sender := event.Author
+		if event.Content.Role == "user" && event.Author == "user" {
+			sender = "You"
+		}
+		if sender == "" && event.Content.Role == "model" {
+			sender = agent
+		}
 		for _, part := range event.Content.Parts {
 			if part.Text != "" {
-				sender := event.Author
-				if event.Content.Role == "user" && event.Author == "user" {
-					sender = "You"
-				}
-				if sender == "" && event.Content.Role == "model" {
-					sender = agent
-				}
-				label, color := "ASSISTANT "+safeTerminal(sender), colorGreen
 				if sender == "You" {
-					label, color = "YOU", colorCyan
+					renderer.block("YOU", colorCyan, part.Text)
+				} else {
+					renderer.assistant(sender, part.Text, true)
 				}
-				renderer.block(label, color, part.Text)
 			}
 			if part.FunctionCall != nil {
 				if toolMode == "verbose" {
-					renderer.operation("TOOL CALL", part.FunctionCall.Name, colorMagenta, "Status: called\nArguments:\n"+indentPayload(truncatePayload(string(part.FunctionCall.Args), 16<<10)))
+					renderer.assistantOperation(agent, "TOOL CALL", part.FunctionCall.Name, colorMagenta, "Status: called\nArguments:\n"+indentPayload(truncatePayload(string(part.FunctionCall.Args), 16<<10)))
 				} else if toolMode == "summary" {
-					renderer.operation("TOOL CALL", part.FunctionCall.Name, colorMagenta, "Status: called")
+					renderer.assistantOperation(agent, "TOOL CALL", part.FunctionCall.Name, colorMagenta, "Status: called")
 				}
 			}
 			if part.FunctionResponse != nil {
 				if toolMode == "verbose" {
-					renderer.operation("TOOL RESULT", part.FunctionResponse.Name, colorMagenta, "Status: result\nPayload:\n"+indentPayload(truncatePayload(string(part.FunctionResponse.Response), 16<<10)))
+					renderer.assistantOperation(agent, "TOOL RESULT", part.FunctionResponse.Name, colorMagenta, "Status: result\nPayload:\n"+indentPayload(truncatePayload(string(part.FunctionResponse.Response), 16<<10)))
 				} else if toolMode == "summary" {
-					renderer.operation("TOOL RESULT", part.FunctionResponse.Name, colorMagenta, "Status: result")
+					renderer.assistantOperation(agent, "TOOL RESULT", part.FunctionResponse.Name, colorMagenta, "Status: result")
 				}
 			}
+		}
+		if event.Content.Role == "model" {
+			renderer.finish()
 		}
 	}
 	return nil
