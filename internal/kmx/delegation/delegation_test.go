@@ -138,6 +138,15 @@ func TestDelegationPassesTheOperatorsSettings(t *testing.T) {
 	}
 }
 
+func TestChatPortIsPassedOnlyWhenExplicit(t *testing.T) {
+	if out := dryRun(t, "chat"); strings.Contains(out, "CHAT_PORT='8083'") {
+		t.Fatalf("implicit fixed chat port was passed to kmx:\n%s", out)
+	}
+	if out := dryRun(t, "chat", "CHAT_PORT=8183"); !strings.Contains(out, "CHAT_PORT='8183'") {
+		t.Fatalf("explicit chat port was not passed to kmx:\n%s", out)
+	}
+}
+
 func TestStatusPassesOutputFormat(t *testing.T) {
 	out := dryRun(t, "status", "STATUS_OUTPUT=yaml")
 	if !strings.Contains(out, `bin/kmx status -o "$KMX_STATUS_OUTPUT"`) {

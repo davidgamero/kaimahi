@@ -75,7 +75,7 @@ KMX_ASSETS   := k8s/ollama.yaml k8s/kagent-values.yaml k8s/hello-world.yaml k8s/
 # confirmation given to make is not asked for again by kmx.
 KMX_ENV       = KIND_CLUSTER='$(KIND_CLUSTER)' KUBE_CTX='$(KUBE_CTX)' \
 		CONTAINER_ENGINE='$(CONTAINER_ENGINE)' KAGENT_VERSION='$(KAGENT_VERSION)' \
-		MODEL='$(MODEL)' CHAT_PORT='$(CHAT_PORT)' KAGENT='$(KAGENT)' \
+		MODEL='$(MODEL)' $(if $(filter command line environment override,$(origin CHAT_PORT)),CHAT_PORT='$(CHAT_PORT)',) KAGENT='$(KAGENT)' \
 		ADMIN_PORT='$(ADMIN_PORT)' OPS_PORT='$(OPS_PORT)' \
 		CRED='$(CRED)' CRED_TOOLS='$(CRED_TOOLS)' \
 		KAIMAHI_CONFIRM='$(KAIMAHI_CONFIRM)'

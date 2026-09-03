@@ -23,7 +23,7 @@ const (
 	DefaultKindCluster   = "kaimahi-p1"
 	DefaultKagentVersion = "0.9.12"
 	DefaultModel         = "qwen2.5:3b"
-	DefaultChatPort      = "8083"
+	DefaultChatPort      = "auto"
 	// DefaultAdminPort is the local side of the plane's admin port-forward —
 	// scripts/plane-admin.sh's ADMIN_PORT, so a stale forward left by either
 	// implementation is noticed by the other rather than talked through.

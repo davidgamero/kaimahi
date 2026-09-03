@@ -160,7 +160,7 @@ kmx reads the names this repository already uses — the Makefile's, and
 | `CONTAINER_ENGINE` | `docker` | `docker` or `podman` (sets `KIND_EXPERIMENTAL_PROVIDER`) |
 | `KAGENT_VERSION` | `0.9.12` | pinned kagent chart **and** CLI |
 | `MODEL` | `qwen2.5:3b` | model pulled into Ollama |
-| `CHAT_PORT` | `8083` | local port for the controller forward |
+| `CHAT_PORT` | automatic | local port for the controller forward; set a number for deterministic automation |
 | `ADMIN_PORT` | `19091` | local port for the plane's admin forward |
 | `OPS_PORT` | `19092` | local port for a replica's metrics forward |
 | `CRED` | `hello-world` | the credential `govern` issues, and the one `ledger` and `budget` read/write by default (`grants` and `audit` default to **all** credentials) |
