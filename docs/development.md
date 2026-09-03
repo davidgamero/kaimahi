@@ -246,9 +246,11 @@ expensive way.
   cheerfully tries to create one that already exists. Keep
   `CONTAINER_ENGINE` consistent for a given `KIND_CLUSTER`.
 - **Restarting the podman machine stops kind's node container.** `make
-  cluster CONTAINER_ENGINE=podman` starts every node belonging to the named
-  cluster and waits for both the API server and CoreDNS before returning,
-  so `make up` can safely continue.
+  cluster CONTAINER_ENGINE=podman` — and `kmx up`, which it delegates to —
+  starts every node belonging to the named cluster and waits for both the API
+  server and CoreDNS before returning, so the rest of `make up` can safely
+  continue. If kind lists the cluster but podman has no nodes for it, that is
+  a disagreement rather than a recovery, and it refuses.
 - **First `make up` on podman can fail at the ollama rollout.** Pulling the
   ~1.9GB image through the podman VM took 5m04s here, past the target's
   300s `rollout status` timeout, so make stops even though the pull

@@ -10,18 +10,23 @@ live-verified, the doc says so in those words.
 ## Start here
 
 ```bash
-make up     # kind cluster + local model + kagent + two agents (~5-10 min)
-make chat   # talk to the agent
+go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main
+kmx up                                    # kind cluster + local model + kagent + two agents (~5-10 min)
+kmx agent chat hello-world "Who are you?"
 ```
 
 [Getting started](getting-started.md) is the walkthrough: prerequisites,
-what `make up` actually does, the agent YAML, and how to talk to it.
+what `kmx up` actually does, the agent YAML, and how to talk to it.
+[kmx.md](kmx.md) is the command reference. From a clone, `make up` and
+`make chat` run the same binary.
 
 ## By what you want to do
 
 | I want to… | Read | The commands |
 |---|---|---|
-| Get an agent running and talk to it | [getting-started.md](getting-started.md) | `make up`, `make chat`, `make status`, `make down` |
+| Get an agent running and talk to it | [getting-started.md](getting-started.md) | `kmx up`, `kmx agent chat`, `kmx status`, `kmx down` (or `make up`, `make chat`, …) |
+| Know exactly what the one command does, and what it deliberately does not | [kmx.md](kmx.md) | `kmx ctx`, `kmx up`, `kmx agent create`, `kmx version` |
+| Create an agent of my own, as reviewable YAML | [kmx.md](kmx.md#kmx-agent-create) | `kmx agent create <name> --tools <server>:<tool>` |
 | Use a hosted model (Copilot, Anthropic, OpenAI, Azure AI Foundry, OpenRouter, anything OpenAI-compatible) | [models.md](models.md) | `make model-secret`, `make copilot-secret`, `make use PRESET=…` |
 | Give the agent a tool | [tools.md](tools.md) | `make chat AGENT=hello-tools …` |
 | Put a budget on the agent's LLM spend, see the ledger, keep real API keys away from the agent | [spend.md](spend.md) | `make plane`, `make govern`, `make budget`, `make ledger` |

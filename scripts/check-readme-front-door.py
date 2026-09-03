@@ -30,20 +30,40 @@ ORDER = [
     ("Quickstart heading", r"^## Quickstart$"),
     ("Status heading", r"^## Status$"),
 ]
-# The runnable path: both commands must be lines of the FIRST fenced code
-# block in the Quickstart section, not prose that happens to name them.
-QUICKSTART_COMMANDS = [("make up", r"^make up\b"), ("make chat", r"^make chat\b")]
+# The runnable path: these commands must be lines of the FIRST fenced code
+# block in the Quickstart section, in this order, not prose that happens to
+# name them. Since P11 that path is `kmx` — install, up, talk to the agent —
+# because it is the one that works without a clone.
+QUICKSTART_COMMANDS = [
+    ("go install .../cmd/kmx", r"^go install github\.com/kaimahi-agents/kaimahi/cmd/kmx@"),
+    ("kmx up", r"^kmx up\b"),
+    ("kmx agent chat", r"^kmx agent chat\b"),
+]
+# The clone path is not allowed to disappear: `make up` / `make chat` are what
+# CI runs and what every other doc's commands assume, so they must still be a
+# runnable block in the same section — after the kmx one, not instead of it.
+CLONE_COMMANDS = [("make up", r"^make up\b"), ("make chat", r"^make chat\b")]
 FENCE = re.compile(r"^```[^\n]*\n(.*?)^```", re.M | re.S)
 NEXT_SECTION = re.compile(r"^## ", re.M)
 PROPOSED_CLI = re.compile(r"npx kaimahi create")
 
 
-def quickstart_block(text: str, quickstart_end: int) -> str | None:
-    """The body of the first fenced block between the Quickstart heading and the next ## heading."""
+def quickstart_blocks(text: str, quickstart_end: int) -> list[str]:
+    """The fenced blocks between the Quickstart heading and the next ## heading."""
     section_end = NEXT_SECTION.search(text, quickstart_end)
     section = text[quickstart_end : section_end.start() if section_end else len(text)]
-    block = FENCE.search(section)
-    return block.group(1) if block else None
+    return [block.group(1) for block in FENCE.finditer(section)]
+
+
+def ordered_in(block: str, commands: list[tuple[str, str]]) -> str | None:
+    """Return the first command that is missing, or out of order, in a block."""
+    position = 0
+    for label, pattern in commands:
+        found = re.compile(pattern, re.M).search(block, position)
+        if found is None:
+            return label
+        position = found.end()
+    return None
 
 
 def check(text: str) -> str | None:
@@ -56,15 +76,14 @@ def check(text: str) -> str | None:
             return f"README front door: {label} is missing or out of order"
         position = match.end()
         if label == "Quickstart heading":
-            block = quickstart_block(text, position)
-            if block is None:
+            blocks = quickstart_blocks(text, position)
+            if not blocks:
                 return "README front door: Quickstart has no fenced command block"
-            command_position = 0
-            for command, pattern in QUICKSTART_COMMANDS:
-                found = re.compile(pattern, re.M).search(block, command_position)
-                if found is None:
-                    return f"README front door: {command} is missing from the Quickstart command block"
-                command_position = found.end()
+            missing = ordered_in(blocks[0], QUICKSTART_COMMANDS)
+            if missing is not None:
+                return f"README front door: {missing} is missing from the Quickstart command block"
+            if not any(ordered_in(block, CLONE_COMMANDS) is None for block in blocks[1:]):
+                return "README front door: the clone path (make up, make chat) is missing from the Quickstart section"
         if label == "Status heading":
             status_start = match.start()
     cli = PROPOSED_CLI.search(text)

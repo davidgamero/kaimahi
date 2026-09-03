@@ -42,19 +42,30 @@ and current limitations.
 
 ## Quickstart
 
-The working path today:
+The working path today — one binary, no clone:
+
+```bash
+go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main
+kmx up      # kind cluster + local model + kagent + agents (~5–10 minutes)
+kmx agent chat hello-world "Who are you?"
+```
+
+The default path needs no API key. It uses an in-cluster Ollama model for a real
+agent conversation. Continue with the [getting-started guide](docs/getting-started.md)
+or choose a capability from the [documentation index](docs/README.md).
+[`kmx`](docs/kmx.md) is the whole journey: `up`, `agent create`, `agent chat`,
+`status`, `down`.
+
+From a clone, `make` runs the same binary:
 
 ```bash
 make up     # kind cluster + local model + kagent + agents (~5–10 minutes)
 make chat   # talk to the default agent
 ```
 
-The default path needs no API key. It uses an in-cluster Ollama model for a real
-agent conversation. Continue with the [getting-started guide](docs/getting-started.md)
-or choose a capability from the [documentation index](docs/README.md).
-
 | Prerequisite | Why | Install |
 |---|---|---|
+| Go 1.26+ | builds/installs `kmx` | <https://go.dev/dl/> |
 | Docker | kind runs Kubernetes in containers | <https://docs.docker.com/get-docker/> |
 | kind | local Kubernetes cluster | <https://kind.sigs.k8s.io/docs/user/quick-start/#installation> |
 | kubectl | cluster interaction | <https://kubernetes.io/docs/tasks/tools/> |
@@ -97,7 +108,7 @@ port-forwards the controller, and invokes the agent.
 | 8 | Approvals routed to Slack, with the approver's identity | **runs** — a filed request is announced in the channel through the plane's own governed post; `@kaimahi approve <id>` from a listed approver mints the grant in their name, asserted keyless in CI with signed synthetic mentions; live verification on AKS pending ([docs/approvals.md](docs/approvals.md#deciding-from-slack)) |
 | 9 | Run it for real: two stateless replicas, exact budgets, metrics | **runs** — two replicas behind every seam, every budget and grant decision serialized per credential in Postgres (N concurrent calls against a cap with room for one admit exactly one, asserted across both replicas in CI), a replica killed mid-cycle and Postgres restarted without a proxy restart, migrations under a lock, Prometheus on its own port, `make backup` / `make restore` ([docs/operations.md](docs/operations.md)) |
 | 10 | Hosted tool upstreams — the gateway reaches GitHub's MCP server on the internet through one hardened dialer | **runs** — `make github-secret` → `make govern-github`; the dialer's refusals, a synthetic public upstream, the opt-in allowance and the fail-closed negative asserted keyless in CI; GitHub itself verified once on kind ([docs/hosted-upstreams.md](docs/hosted-upstreams.md)) |
-| — | `kaimahi agent create` CLI | considered and prototyped, not built — [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) |
+| 11 | `kmx` — the developer journey as one command | **runs** — `go install …/cmd/kmx@main`, then `kmx up`, `kmx agent create`, `kmx agent chat`, `kmx status`, `kmx down`; the Makefile's kind path delegates to it, so CI proves it on every PR ([docs/kmx.md](docs/kmx.md)). Milestone 1: the runtime, not the plane |
 
 **Limitations, stated plainly.** Governance is opt-in per agent: an
 *ungoverned* preset still bills with no ledger, and an ungoverned tools wiring
@@ -241,16 +252,29 @@ server is locked down at three layers: k8s tools only, `--read-only`, and a
 get/list/watch ClusterRole that **cannot read Secrets**, with a single-tool
 allowlist on top. Details: [docs/tools.md](docs/tools.md).
 
-## A scaffolder CLI: considered, not built
+## One command: `kmx`
 
-CLI before UI, deliberately: every step of the journey — provision, deploy,
-converse, switch models, add tools, tear down — is a command today, from a
-clone, via make. A `kaimahi agent create` scaffolder that would do the same
-without a clone was surveyed against kagent's own CLI, ruled on, and
-prototyped in a pull request that was closed unmerged. No package is
-published and the name is unclaimed. The survey, the design, the security
-model and the case against building it stay in
-[docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md) for whoever picks it up next.
+CLI before UI, deliberately. The journey — provision, deploy, converse,
+create an agent, tear down — is one binary, installed with `go install`
+and needing no clone:
+
+```bash
+kmx up
+kmx agent create fleet-reporter --tools kagent-tool-server:k8s_get_resources
+kmx agent chat fleet-reporter "What is running in the ollama namespace?"
+kmx down
+```
+
+It duplicates nothing kagent's own CLI ships: `kmx agent chat` is a
+passthrough to `kagent invoke`, there is no `kmx install`, and reading,
+updating and deleting agents print the `kubectl` command that already does
+the job. The Makefile's equivalents now call this binary, so there is one
+implementation and CI proves the code you run. Nothing is published, and
+neither `kmx` nor `kaimahi` is claimed as a package name.
+
+What it is, what it refuses and what it deliberately leaves to the Makefile:
+[docs/kmx.md](docs/kmx.md). The original survey against kagent's CLI, which
+still binds, is [docs/CLI-PROPOSAL.md](docs/CLI-PROPOSAL.md).
 
 ## Development
 

@@ -4,8 +4,9 @@ From an empty machine to a conversation with an agent that is defined
 entirely in YAML. Everything runs on [kagent](https://kagent.dev):
 kagent's controller provisions the agent, kagent's CLI talks to it.
 Kaimahi adds no runtime code at this point, only the YAML, a values file,
-and a Makefile that glues `kind`, `helm`, `kubectl` and the kagent CLI
-together.
+and `kmx` — one command that glues `kind`, `helm`, `kubectl` and the kagent
+CLI together. Nothing runs in your cluster that is not kagent's or
+Kubernetes' own.
 
 Every command here was run against a live cluster before it was written
 down. Model replies vary run to run; where one is quoted, expect the same
@@ -15,6 +16,7 @@ substance and different wording.
 
 | Tool | Why | Install |
 |------|-----|---------|
+| Go 1.26+ | builds/installs `kmx`, which every command below runs through | <https://go.dev/dl/> |
 | Docker **or** Podman | kind runs Kubernetes in containers | <https://docs.docker.com/get-docker/> · <https://podman.io/docs/installation> |
 | kind | local Kubernetes cluster | <https://kind.sigs.k8s.io/docs/user/quick-start/#installation> |
 | kubectl | cluster interaction | <https://kubernetes.io/docs/tasks/tools/> |
@@ -64,6 +66,29 @@ keyless). Hosted models are in [models.md](models.md).
 
 ## Up, and a first conversation
 
+Install `kmx` — one binary, no clone:
+
+```bash
+go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main
+```
+
+```bash
+kmx up      # kind cluster + Ollama + model pull + kagent + two agents (first run ~5-10 min)
+kmx agent chat hello-world "Who are you and where are you running?"
+kmx status  # agents, modelconfigs, pods
+kmx down    # delete the kind cluster (and everything in it, ledger included)
+```
+
+`kmx` is the whole journey in one command; [kmx.md](kmx.md) is its
+reference, including what it deliberately does *not* do (the governance
+plane, secrets and AKS are still the Makefile's).
+
+### The same journey from a clone
+
+Everything below uses `make`, and every one of these targets now calls the
+same `kmx` binary — the Makefile builds it from the checkout. Use whichever
+you prefer; they run the same code.
+
 ```bash
 make up     # kind cluster + Ollama + model pull + kagent + two agents (first run ~5-10 min)
 make chat   # ask the default question
@@ -89,6 +114,23 @@ make chat AGENT=hello-tools TASK="What pods are running in the ollama namespace?
 
 The tools agent is covered in [tools.md](tools.md), including why its
 prose summary is less reliable than the tool call underneath it.
+
+## An agent of your own
+
+```bash
+kmx agent create fleet-reporter \
+  --description "Reports what is running in the cluster." \
+  --instructions ./fleet.md \
+  --tools kagent-tool-server:k8s_get_resources
+```
+
+That writes `agents/fleet-reporter.yaml` — the same kind of document as the
+one below, which you own, review and commit — and applies it. The tool
+allowlist is mandatory: naming a server alone would grant every tool it
+offers, today and after its next release. `kmx` never accepts a credential
+in any form, and refuses to write a manifest with anything key-shaped in it.
+[kmx.md](kmx.md#kmx-agent-create) has the full list of what it refuses and
+why.
 
 ```bash
 make status   # agents, modelconfigs, pods

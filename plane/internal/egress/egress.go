@@ -357,7 +357,20 @@ func (b *boundedBody) Read(p []byte) (int, error) {
 	b.left -= int64(n)
 	// Only OUR deadline is a lifetime cut; a caller that cancelled (the
 	// agent went away) keeps its own error.
-	if err != nil && err != io.EOF && context.Cause(b.ctx) == ErrBodyLifetime {
+	//
+	// io.EOF counts. Once the deadline has cut the body, whatever the stream
+	// does next is not a clean end: the upstream had more to send and we
+	// stopped listening. Which of the two the transport reports at the moment
+	// of the cut is a race — an explicit cancellation error usually, a bare
+	// EOF occasionally — and treating the second as success handed the caller
+	// a SHORT body with no error at all, the silent truncation this type
+	// exists to prevent. Seen once as a CI flake, where the end-to-end test's
+	// ReadAll returned nil; TestALifetimeCutIsNeverACleanEndOfBody pins both
+	// shapes deterministically.
+	if err != nil && context.Cause(b.ctx) == ErrBodyLifetime {
+		if err == io.EOF {
+			return n, ErrBodyLifetime
+		}
 		return n, fmt.Errorf("%w: %v", ErrBodyLifetime, err)
 	}
 	if err == nil && b.left <= 0 {
@@ -368,11 +381,22 @@ func (b *boundedBody) Read(p []byte) (int, error) {
 		if m > 0 {
 			return n, ErrResponseTooLarge
 		}
-		if perr != nil && perr != io.EOF {
-			if context.Cause(b.ctx) == ErrBodyLifetime {
-				return n, fmt.Errorf("%w: %v", ErrBodyLifetime, perr)
+		// Same rule at the cap boundary: a deadline that has already fired
+		// makes the peek's end-of-stream a cut, not a clean finish.
+		if perr != nil && context.Cause(b.ctx) == ErrBodyLifetime {
+			if perr == io.EOF {
+				return n, ErrBodyLifetime
 			}
+			return n, fmt.Errorf("%w: %v", ErrBodyLifetime, perr)
+		}
+		if perr != nil && perr != io.EOF {
 			return n, perr
+		}
+		// The peek can also come back (0, nil). Rare, and legal for an
+		// io.Reader — so make the invariant total rather than nearly total:
+		// no path ends this body cleanly once our deadline has fired.
+		if context.Cause(b.ctx) == ErrBodyLifetime {
+			return n, ErrBodyLifetime
 		}
 		b.done = true
 		return n, io.EOF

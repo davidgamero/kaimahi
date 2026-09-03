@@ -51,6 +51,30 @@ AGENT          ?= hello-world
 TASK           ?= Hello! Who are you and where are you running?
 KAGENT         ?= bin/kagent
 
+# ---- kmx (P11, D27) -------------------------------------------------------
+# The developer journey — cluster, model, kagent, the agents, a conversation,
+# teardown — is implemented ONCE, in Go, in cmd/kmx. The targets below that
+# used to spell it out in shell are now one-line recipes that call this
+# binary, so CI keeps proving the code a developer actually runs. Everything
+# else in this file (the plane, governance, approvals, Slack, GitHub, AKS,
+# the probes) is unchanged and still make's.
+#
+# A developer who has cloned the repo gets kmx built from the checkout; a
+# developer who has not runs `go install github.com/kaimahi-agents/kaimahi/cmd/kmx@<sha>`
+# and never sees this file. Both run the same code.
+KMX          ?= bin/kmx
+KMX_SOURCES  := go.mod embed.go $(shell find cmd/kmx internal/kmx -name '*.go' 2>/dev/null)
+# The manifests are embedded in the binary (kmx runs outside a clone), so a
+# manifest edit has to relink it.
+KMX_ASSETS   := k8s/ollama.yaml k8s/kagent-values.yaml k8s/hello-world.yaml k8s/tools-agent.yaml
+# kmx reads the Makefile's own variable names, so delegation passes them
+# through rather than translating. KAIMAHI_CONFIRM rides along so a
+# confirmation given to make is not asked for again by kmx.
+KMX_ENV       = KIND_CLUSTER='$(KIND_CLUSTER)' KUBE_CTX='$(KUBE_CTX)' \
+		CONTAINER_ENGINE='$(CONTAINER_ENGINE)' KAGENT_VERSION='$(KAGENT_VERSION)' \
+		MODEL='$(MODEL)' CHAT_PORT='$(CHAT_PORT)' KAGENT='$(KAGENT)' \
+		KAIMAHI_CONFIRM='$(KAIMAHI_CONFIRM)'
+
 OS   := $(shell uname -s | tr A-Z a-z)
 ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
 
@@ -310,7 +334,11 @@ endef
 # BEFORE the agents do, because the agents go straight onto the governed
 # Copilot preset — there is no keyless model for them to start on.
 ifeq ($(TARGET),kind)
-UP_STEPS := cluster ollama model kagent agent tools-agent status
+# P11: the kind journey is kmx's, in one process — so it guards once, and so
+# the sequence CI runs is the sequence the binary implements, not a list of
+# targets that could drift from it. The individual steps below are still
+# addressable (`make cluster`, `make agent`, ...) and delegate one step each.
+UP_STEPS :=
 else
 # The Copilot credential is minted BEFORE the plane is deployed, not
 # after. The proxy mounts kaimahi-copilot-token as an OPTIONAL secret
@@ -333,41 +361,23 @@ endif
 # and an absent NON-kind context is precisely what the guard refuses as a
 # typo. The first step (`cluster`) is what brings that context into
 # existence; every step after it is guarded, by which time there is a real
-# context to check. (`kind` is unaffected either way: its first step is
-# `cluster: guard`, so the guard still runs before anything is touched.)
+# context to check. (On kind the whole journey is one `kmx up`, which runs
+# the same guard once, in-process, before it touches anything.)
+ifeq ($(TARGET),kind)
+up: $(KMX)
+	@$(KMX_ENV) $(KMX) up
+else
 up: $(UP_STEPS)
+endif
 
 ifeq ($(TARGET),kind)
-cluster: guard
-ifeq ($(CONTAINER_ENGINE),podman)
-	@if $(KIND_CMD) get clusters 2>/dev/null | grep -qx '$(KIND_CLUSTER)'; then \
-		nodes=$$(podman ps -a \
-			--filter 'label=io.x-k8s.kind.cluster=$(KIND_CLUSTER)' \
-			--format '{{.Names}}'); \
-		test -n "$$nodes" || { \
-			echo "kind lists cluster '$(KIND_CLUSTER)', but podman has no nodes for it" >&2; \
-			exit 1; \
-		}; \
-		podman start $$nodes >/dev/null; \
-	else \
-		$(KIND_CMD) create cluster --name $(KIND_CLUSTER); \
-	fi
-	@ready=; \
-	for _ in $$(seq 1 60); do \
-		if $(KUBECTL) get --raw=/readyz >/dev/null 2>&1; then \
-			ready=1; break; \
-		fi; \
-		sleep 2; \
-	done; \
-	test -n "$$ready" || { \
-		echo "kind cluster '$(KIND_CLUSTER)' API did not become ready after 120s" >&2; \
-		exit 1; \
-	}; \
-	$(KUBECTL) -n kube-system rollout status deployment/coredns --timeout=180s
-else
-	@$(KIND_CMD) get clusters 2>/dev/null | grep -qx '$(KIND_CLUSTER)' || \
-		$(KIND_CMD) create cluster --name $(KIND_CLUSTER)
-endif
+# The Podman recovery #53 added to this recipe — restart the cluster's
+# stopped nodes rather than trying to create a cluster that already exists,
+# refuse when kind lists a cluster Podman has no nodes for, and wait for
+# /readyz and CoreDNS before returning — moved into kmx with it, so the one
+# implementation keeps it. See internal/kmx/app/up.go, stepCluster.
+cluster: $(KMX)
+	@$(KMX_ENV) $(KMX) up --step cluster
 else
 ## cluster (TARGET=aks): resource group + private ACR + AKS, via the az CLI
 cluster: aks-cluster
@@ -383,12 +393,11 @@ endif
 # there is pure friction — and friction is what teaches people to type
 # past confirmations.
 ifeq ($(TARGET),kind)
-ollama: guard
-	$(KUBECTL) apply -f k8s/ollama.yaml
-	$(KUBECTL) -n ollama rollout status deploy/ollama --timeout=300s
+ollama: $(KMX)
+	@$(KMX_ENV) $(KMX) up --step ollama
 
-model: guard
-	$(KUBECTL) -n ollama exec deploy/ollama -- ollama pull $(MODEL)
+model: $(KMX)
+	@$(KMX_ENV) $(KMX) up --step model
 else
 ollama:
 	@echo 'ollama is not deployed on TARGET=$(TARGET) — the managed path is' >&2
@@ -400,6 +409,10 @@ model:
 	@exit 1
 endif
 
+ifeq ($(TARGET),kind)
+kagent: $(KMX)
+	@$(KMX_ENV) $(KMX) up --step kagent
+else
 kagent: guard
 	helm upgrade --install kagent-crds \
 		oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds \
@@ -410,6 +423,7 @@ kagent: guard
 		--version $(KAGENT_VERSION) --namespace kagent \
 		--kube-context $(KUBE_CTX) -f k8s/kagent-values.yaml
 	$(KUBECTL) -n kagent wait --for=condition=Ready pods --all --timeout=420s
+endif
 
 # Re-applying the committed YAML must not silently drop governance (or
 # any preset switch) from a live agent: capture the current modelConfig
@@ -425,6 +439,15 @@ kagent: guard
 #   previous behaviour: the patch branch is simply never taken), and the
 #   governed Copilot preset on AKS.
 # k8s/hello-world.yaml is still never mutated.
+ifeq ($(TARGET),kind)
+## agent: the hello-world agent (kmx owns the preservation rules above)
+agent: $(KMX)
+	@$(KMX_ENV) $(KMX) up --step agent
+
+## tools-agent: the P3 tools-enabled agent
+tools-agent: $(KMX)
+	@$(KMX_ENV) $(KMX) up --step tools-agent
+else
 agent: guard
 	@current=""; \
 	if out=$$($(KUBECTL) -n kagent get agent hello-world \
@@ -486,11 +509,18 @@ tools-agent: guard
 	$(KUBECTL) -n kagent wait \
 		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
 		agent/hello-tools --timeout=300s
+endif
 
 ## chat: one question to an agent via the kagent CLI (override with TASK=...,
 ## AGENT=hello-tools for the P3 tools agent)
-chat: $(KAGENT)
-	@$(call kagent_forward,$(AGENT),$(KAGENT_INVOKE) --agent $(AGENT) --task "$(TASK)")
+#
+# Delegated on every TARGET: kmx's `agent chat` is this recipe's
+# `kagent_forward` — the servable-through-the-Service check, the waited-for
+# port-forward on an explicit port, and the same two retry classes. The
+# define itself stays because `slack-post` and `github-ask` still use it,
+# with the narrower refused-only class a non-idempotent action needs.
+chat: $(KMX) $(KAGENT)
+	@$(KMX_ENV) $(KMX) agent chat $(AGENT) "$(TASK)"
 
 ## model-secret: store an API key as a K8s Secret, stdin-only (paste, Enter, Ctrl-D).
 # The key never touches argv, env listings, YAML, or logs; tr strips the
@@ -847,24 +877,17 @@ plane-copilot-secret: guard
 	@# before the plane is deployed.)
 	$(KUBECTL) apply -f k8s/egress-copilot.yaml
 
-status:
-	$(KUBECTL) -n kagent get agents,modelconfigs
-	$(KUBECTL) -n kagent get pods
+status: $(KMX)
+	@$(KMX_ENV) $(KMX) status
 
 ifeq ($(TARGET),kind)
 ## down: delete the local kind cluster
-down: guard
-	@# The guard vouches for $(KUBE_CTX); this recipe deletes
-	@# $(KIND_CLUSTER). They agree by default, but both are overridable, so
-	@# `KUBE_CTX=kind-safe make down KIND_CLUSTER=other` would show a banner
-	@# naming one cluster and destroy another. Refuse when the thing
-	@# confirmed is not the thing deleted.
-	@test '$(KUBE_CTX)' = 'kind-$(KIND_CLUSTER)' || { \
-		echo 'refusing: the guard checked context $(KUBE_CTX), but this would' >&2; \
-		echo 'delete kind cluster "$(KIND_CLUSTER)" (context kind-$(KIND_CLUSTER)).' >&2; \
-		echo 'Set KIND_CLUSTER and KUBE_CTX consistently, or just KIND_CLUSTER.' >&2; \
-		exit 1; }
-	$(KIND_CMD) delete cluster --name $(KIND_CLUSTER)
+# kmx carries the KIND_CLUSTER/KUBE_CTX consistency check this recipe had:
+# the guard vouches for KUBE_CTX and the delete names KIND_CLUSTER, both are
+# overridable, and a banner naming one cluster while another is destroyed is
+# exactly the accident the guard exists to prevent.
+down: $(KMX)
+	@$(KMX_ENV) $(KMX) down
 else
 ## down (TARGET=aks): delete the whole ephemeral resource group
 down: aks-down
@@ -913,8 +936,23 @@ aks-down:
 	@AKS_RESOURCE_GROUP='$(AKS_RESOURCE_GROUP)' AKS_CLUSTER='$(AKS_CLUSTER)' \
 		bash scripts/aks-down.sh
 
+## kmx: build the CLI this Makefile's kind path delegates to
+# Not .PHONY: a rebuild costs a second, but doing it on every `make chat`
+# would put a Go toolchain in the middle of the most-used command.
+$(KMX): $(KMX_SOURCES) $(KMX_ASSETS)
+	@command -v go >/dev/null 2>&1 || { \
+		echo 'kmx needs a Go toolchain to build from a checkout (https://go.dev/dl/).' >&2; \
+		echo 'Without a clone: go install github.com/kaimahi-agents/kaimahi/cmd/kmx@<sha>' >&2; \
+		exit 1; }
+	go build -o $(KMX) ./cmd/kmx
+
 # Pinned kagent CLI, checksum-verified. The release .sha256 files embed a
 # build path, so compare digests directly.
+#
+# Still here, and still make's, because `slack-post` and `github-ask` invoke
+# the CLI through $(call kagent_forward,...). kmx has its own copy of the
+# same pinned fetch for the install-without-a-clone case; in a checkout it is
+# handed this one (KAGENT=bin/kagent) so there is a single binary on disk.
 $(KAGENT):
 	mkdir -p bin
 	curl -sSfLo $(KAGENT) https://github.com/kagent-dev/kagent/releases/download/v$(KAGENT_VERSION)/kagent-$(OS)-$(ARCH)

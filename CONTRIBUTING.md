@@ -24,8 +24,16 @@ python3 scripts/check-readme-front-door-test.py
 python3 scripts/check-brand-assets.py
 bash scripts/check-no-azure-ids-test.sh && bash scripts/check-no-azure-ids.sh
 bash scripts/kube-guard-test.sh
+python3 scripts/check-kmx-delegation.py --selftest && python3 scripts/check-kmx-delegation.py
+test -z "$(gofmt -l cmd internal embed.go)" && go vet ./... && go test ./...
 (cd plane && test -z "$(gofmt -l .)" && go vet ./... && go test ./...)
 ```
+
+Two Go modules: the root one is `kmx` (`cmd/kmx`, `internal/kmx`), and
+`plane/` is the governance plane's. The kind path of the Makefile delegates
+to `kmx`, so a change to `make up`, `make chat`, `make status`, `make down`
+or the agent targets belongs in `cmd/kmx`/`internal/kmx`, not in a recipe —
+`check-kmx-delegation.py` fails the build if a recipe grows its own copy.
 
 For cluster changes, use the documented kind path and a dedicated `KIND_CLUSTER`
 name when another lane owns the shared cluster. See

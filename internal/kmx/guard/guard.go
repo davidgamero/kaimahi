@@ -1,0 +1,270 @@
+// Package guard is scripts/kube-guard.sh in Go: the context-safety net in
+// front of every mutating kmx command.
+//
+// The contract is the shell script's, unchanged, because the script is the
+// spec and both implementations have to agree:
+//
+//   - ALWAYS print where the action is about to land (context, API-server
+//     host, namespaces) on stderr, so the answer is on screen even when
+//     nothing is asked.
+//   - A LOCAL kind cluster proceeds with a banner and no question. That
+//     keeps the kind path's behaviour unchanged for existing users and for
+//     CI.
+//   - ANY other context requires explicit confirmation naming the context.
+//   - FAIL CLOSED: no confirmation, no action. An unknown context, an
+//     unreadable kubeconfig, or a non-interactive shell without
+//     KAIMAHI_CONFIRM all refuse rather than guess.
+//
+// "Local kind" is deliberately TWO independent checks, because a context
+// NAME is cosmetic — anyone can name an AKS context `kind-prod`. The
+// substantive check is the API-server address: kind publishes its API
+// server on loopback. Both must agree.
+//
+// The kubeconfig itself is read by shelling out to `kubectl config view
+// -o json` rather than parsing files here. That is not laziness: KUBECONFIG
+// can name several files, kubectl's merge rules are load-bearing, and a
+// second implementation of them would be a second set of bugs deciding
+// whose cluster gets written to. `config view` never contacts a cluster, so
+// it stays cheap and offline.
+package guard
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/url"
+	"os"
+	"os/exec"
+	"strings"
+)
+
+// Kubeconfig is the sliver of `kubectl config view -o json` this package
+// needs. Everything else in a kubeconfig — users, credentials, extensions —
+// is deliberately not modelled: the guard decides on names and addresses,
+// and reading no further means it can never print or log a credential.
+type Kubeconfig struct {
+	Clusters []struct {
+		Name    string `json:"name"`
+		Cluster struct {
+			Server string `json:"server"`
+		} `json:"cluster"`
+	} `json:"clusters"`
+	Contexts []struct {
+		Name    string `json:"name"`
+		Context struct {
+			Cluster string `json:"cluster"`
+		} `json:"context"`
+	} `json:"contexts"`
+}
+
+// Posture is the guard's classification of a context.
+type Posture struct {
+	// Context is the context name that was classified.
+	Context string
+	// Host is the API server's hostname, empty when the context is not in
+	// the kubeconfig at all.
+	Host string
+	// Label is the human-readable posture printed in the banner.
+	Label string
+	// Local reports whether this is a genuinely local kind cluster, which
+	// is the only case that proceeds without confirmation.
+	Local bool
+}
+
+// LoadKubeconfig returns the merged kubeconfig as kubectl sees it.
+func LoadKubeconfig(kubectlBin string) (*Kubeconfig, error) {
+	if kubectlBin == "" {
+		kubectlBin = "kubectl"
+	}
+	out, err := exec.Command(kubectlBin, "config", "view", "-o", "json").Output()
+	if err != nil {
+		return nil, fmt.Errorf("cannot read the kubeconfig — refusing to act blind: %w", err)
+	}
+	return ParseKubeconfig(out)
+}
+
+// ParseKubeconfig decodes `kubectl config view -o json` output.
+func ParseKubeconfig(raw []byte) (*Kubeconfig, error) {
+	var cfg Kubeconfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return nil, fmt.Errorf("cannot read the kubeconfig — refusing to act blind: %w", err)
+	}
+	return &cfg, nil
+}
+
+// server resolves a context name to its cluster's API-server URL. An empty
+// string means the context is absent from the kubeconfig.
+func (c *Kubeconfig) server(context string) string {
+	clusterName := ""
+	found := false
+	for _, ctx := range c.Contexts {
+		if ctx.Name == context {
+			clusterName, found = ctx.Context.Cluster, true
+			break
+		}
+	}
+	if !found {
+		return ""
+	}
+	for _, cl := range c.Clusters {
+		if cl.Name == clusterName {
+			return cl.Cluster.Server
+		}
+	}
+	return ""
+}
+
+func isLoopback(host string) bool {
+	switch host {
+	case "127.0.0.1", "localhost", "::1", "0.0.0.0":
+		return true
+	}
+	return false
+}
+
+// Classify applies the two-check "local kind" rule.
+//
+// Order matters, exactly as in the shell script: an ABSENT context is not
+// automatically unsafe — `kmx up` on an empty machine legitimately names a
+// kind context that does not exist yet, and CI depends on that. Absent +
+// kind-named is "about to be created"; absent + anything else is a typo,
+// which is precisely what this guard exists to catch.
+func Classify(cfg *Kubeconfig, context string) (Posture, error) {
+	if context == "" {
+		return Posture{}, fmt.Errorf("KUBE_CTX is empty — refusing to act on an unnamed cluster")
+	}
+	namedKind := strings.HasPrefix(context, "kind-")
+	server := cfg.server(context)
+
+	host := ""
+	if server != "" {
+		if u, err := url.Parse(strings.TrimSpace(server)); err == nil {
+			host = u.Hostname()
+		}
+	}
+
+	switch {
+	case server == "" && namedKind:
+		return Posture{Context: context, Label: "local kind (context not created yet)", Local: true}, nil
+	case server == "":
+		return Posture{}, fmt.Errorf("context %q is not in the kubeconfig.\n"+
+			"  Nothing was applied. Check the name with: kubectl config get-contexts\n"+
+			"  (Only a kind-* context may be named before it exists — that is\n"+
+			"   'kmx up' creating it. Any other name here is a typo.)", context)
+	case namedKind && isLoopback(host):
+		return Posture{Context: context, Host: host, Label: "local kind", Local: true}, nil
+	default:
+		return Posture{Context: context, Host: host, Label: "REMOTE / non-kind", Local: false}, nil
+	}
+}
+
+// Request is one call on the guard.
+type Request struct {
+	// Action is the sentence printed after "about to:".
+	Action string
+	// Context is the kube context the action would land on.
+	Context string
+	// Namespaces is the banner's namespace list.
+	Namespaces string
+	// Confirm is KAIMAHI_CONFIRM's value.
+	Confirm string
+	// Command is named back to the operator in the "to proceed" hints, so
+	// the hint is the command they actually typed.
+	Command string
+}
+
+// Check prints the banner and either returns nil (proceed) or an error
+// (refuse). It never returns nil without having printed where the action
+// lands.
+//
+// in is the stream a confirmation would be typed on; a nil or
+// non-character-device stream means nobody is there to answer, and the
+// guard fails closed rather than hanging or assuming.
+func Check(cfg *Kubeconfig, req Request, out io.Writer, in *os.File) error {
+	posture, err := Classify(cfg, req.Context)
+	if err != nil {
+		return fmt.Errorf("kube-guard: %w", err)
+	}
+
+	namespaces := req.Namespaces
+	if namespaces == "" {
+		namespaces = "kagent, kaimahi, ollama"
+	}
+	hostShown := posture.Host
+	if hostShown == "" {
+		hostShown = "<none yet>"
+	}
+	fmt.Fprintf(out, "----------------------------------------------------------------\n"+
+		"  about to: %s\n"+
+		"  context:  %s\n"+
+		"  server:   %s\n"+
+		"  namespace(s): %s\n"+
+		"  posture:  %s\n"+
+		"----------------------------------------------------------------\n",
+		req.Action, posture.Context, hostShown, namespaces, posture.Label)
+
+	if posture.Local {
+		return nil
+	}
+
+	proceed := fmt.Sprintf("  to proceed:  KAIMAHI_CONFIRM=%s %s", req.Context, req.Command)
+
+	// Remote: explicit confirmation naming the context, or nothing happens.
+	if req.Confirm != "" {
+		if req.Confirm == req.Context {
+			fmt.Fprintln(out, "kube-guard: confirmed via KAIMAHI_CONFIRM.")
+			return nil
+		}
+		return fmt.Errorf("kube-guard: KAIMAHI_CONFIRM does not name this context — refusing.\n%s", proceed)
+	}
+
+	// No pre-confirmation. Prompt only if a human is actually there to
+	// answer; a script or CI job reaching here must fail rather than hang.
+	if !isTerminal(in) {
+		return fmt.Errorf("kube-guard: %q is not a local kind cluster and there is no TTY to ask.\n%s",
+			req.Context, proceed)
+	}
+
+	fmt.Fprint(out, "Type the context name to continue (anything else aborts): ")
+	answer := readLine(in)
+	if answer != req.Context {
+		return fmt.Errorf("kube-guard: not confirmed — nothing was applied")
+	}
+	fmt.Fprintln(out, "kube-guard: confirmed.")
+	return nil
+}
+
+func isTerminal(f *os.File) bool {
+	if f == nil {
+		return false
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+// readLine reads one line without pulling in bufio's buffering, which would
+// swallow bytes a subsequently-spawned command might want. Confirmations are
+// short; a byte at a time is free here.
+func readLine(f *os.File) string {
+	var b []byte
+	buf := make([]byte, 1)
+	for {
+		n, err := f.Read(buf)
+		if n > 0 {
+			if buf[0] == '\n' {
+				break
+			}
+			b = append(b, buf[0])
+		}
+		if err != nil {
+			break
+		}
+		if len(b) > 4096 {
+			break
+		}
+	}
+	return strings.TrimRight(string(b), "\r")
+}

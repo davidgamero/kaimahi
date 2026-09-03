@@ -1,6 +1,15 @@
 # Proposal: a kaimahi scaffolder CLI
 
-**Status: considered, prototyped, not built.** The five open decisions at
+**Superseded by [`kmx`](kmx.md).** A command-line entry point was built after
+all, in Go rather than Node, and it does more than scaffold: `kmx` owns the
+whole developer journey (`up`, `agent create`, `agent chat`, `status`,
+`down`) and the Makefile delegates to it (D27). D19's rulings (2) and (3) —
+scaffold-only, and the Makefile owns bring-up — are superseded; the survey
+below still stands and still binds, which is why `kmx agent chat` is a
+passthrough to `kagent invoke` and there is no `kmx install`. The safety
+table this document's prototype established is carried across in full.
+
+**Status of this document: considered, prototyped, not built.** The five open decisions at
 the end were ruled (D19 on the board: no npm publish yet, scaffold-only,
 the Makefile owns bring-up, a zero-dependency Node toolchain accepted).
 A working prototype was reviewed in pull request #16 and closed by its
