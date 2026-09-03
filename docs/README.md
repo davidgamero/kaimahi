@@ -35,6 +35,7 @@ what `kmx up` actually does, the agent YAML, and how to talk to it.
 | Give the agent a tool | [tools.md](tools.md) | `make chat AGENT=hello-tools …` |
 | Put a budget on the agent's LLM spend, see the ledger, keep real API keys away from the agent | [spend.md](spend.md) | `kmx plane`, `kmx govern`, `kmx ledger` (or `make plane`, `make govern`, `make ledger`), `make budget` |
 | Control which tools the agent can call, and audit every call | [tool-governance.md](tool-governance.md) | `make govern-tools`, `make tool-allow`, `make tool-audit` |
+| Point Kaimahi at **my own** MCP server and **my own** agent | [govern-your-agent.md](govern-your-agent.md) | `kmx tools add <name> --url … --tool <tool>:<fields>`, `kmx tools govern --server …` |
 | Have a human approve a denied action with a bounded, expiring grant | [approvals.md](approvals.md) | `make approvals`, `make approve`, `make grants` |
 | Let the agent post to Slack, one approved message at a time | [slack.md](slack.md) | `make slack-secret`, `make slack-mcp`, `make govern-slack`, `make slack-post` |
 | Let the outside world trigger an agent (webhooks), governed | [inbound.md](inbound.md) | `make inbound-credential`, `make inbound-secret`, `make inbound-audit` |

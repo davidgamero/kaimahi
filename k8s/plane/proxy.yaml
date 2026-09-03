@@ -76,7 +76,7 @@ spec:
           # (AKS, private ACR) scripts/plane-deploy.sh renders both from
           # PLANE_IMAGE / PLANE_PULL_POLICY at deploy time, and the kind
           # path applies this document exactly as committed.
-          image: kaimahi-proxy:p10
+          image: kaimahi-proxy:p15
           imagePullPolicy: Never
           env:
             - name: PGHOST
@@ -102,6 +102,15 @@ spec:
             - name: upstreams
               mountPath: /etc/kaimahi/upstreams.json
               subPath: upstreams.json
+              readOnly: true
+            # P15: the operator overlay — one JSON fragment per MCP
+            # server somebody onboarded with `kmx tools add`, merged over
+            # the committed table above at boot. A whole-directory mount,
+            # not subPath: the ConfigMap grows a key per onboarded server
+            # and subPath would pin this pod to the keys that existed
+            # when it started.
+            - name: upstreams-overlay
+              mountPath: /etc/kaimahi/upstreams.d
               readOnly: true
             - name: pg-secret
               mountPath: /etc/kaimahi/pg
@@ -174,6 +183,15 @@ spec:
         - name: upstreams
           configMap:
             name: kaimahi-upstreams
+        # P15: optional, and on most clusters absent — an empty overlay
+        # is every cluster where nobody has onboarded their own MCP
+        # server. `kmx tools add` creates and grows it; this repo's four
+        # upstreams stay in the committed ConfigMap above, untouched, so
+        # the next `kmx plane` cannot discard an operator's entry.
+        - name: upstreams-overlay
+          configMap:
+            name: kaimahi-upstreams-extra
+            optional: true
         - name: pg-secret
           secret:
             secretName: kaimahi-pg

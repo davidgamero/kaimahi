@@ -26,6 +26,13 @@ runtime; the gateway relays the protocol and enforces.
 > The gateway also refuses an expired credential, audited like every
 > other refusal.
 
+> **Onboarding a server this repo did not write** — yours — is
+> [govern-your-agent.md](govern-your-agent.md): `kmx tools add` scaffolds
+> the table entry, the NetworkPolicy pair and the gateway seam as
+> reviewable YAML, validates them against the running plane's own parser
+> before applying, and leaves the two decisions that are policy — the
+> `policy_fields` declaration and the allowlist — to you.
+
 ## Architecture
 
 ```text
@@ -94,6 +101,9 @@ fields.
 Both of those are live entries in `k8s/plane/upstreams.yaml`; the ERP one
 is what the accounts-payable demo runs on ([ap-demo.md](ap-demo.md)).
 
+- **Choosing it is the governance-critical moment of onboarding**, and
+  [govern-your-agent.md](govern-your-agent.md#step-1--decide-what-the-arguments-mean)
+  is the table of what each of the three answers costs you.
 - **`policy_fields` is required** in a declaration. `[]` is a real answer
   — "no argument of this tool is policy-relevant", a verb-level binding —
   and it is different from forgetting the key, which is refused at load.
@@ -143,6 +153,20 @@ make govern-tools   # credential, allowlist, gateway wiring for hello-tools
 make chat AGENT=hello-tools TASK='What pods run in the ollama namespace?'
 make tool-audit     # the call you just made, in the audit trail
 ```
+
+An upstream an operator onboarded lives in a separate ConfigMap,
+`kaimahi-upstreams-extra`, merged over the committed table at boot: this
+repo's four entries are never edited by onboarding, an overlay that would
+redefine one is refused rather than resolved by precedence, and
+`make plane` cannot discard somebody's added server. `POST
+/admin/config/validate` decides whether a candidate overlay would load,
+using the same `config.Parse` the proxy boots with — so a malformed entry
+is refused before it is applied rather than by a pod that will not start.
+An overlay entry may not set `credential_file`, `credential_header`,
+`internet` or `ca_file`: those decide what credential the proxy reads and
+which host outside the cluster it may be sent to, and belong in the
+committed table. Keyed and hosted upstreams are therefore committed-table
+only, by enforcement rather than by convention.
 
 `make ungovern-tools` restores the direct, ungoverned wiring by
 re-applying `k8s/tools-agent.yaml`. Re-run `make plane` after editing

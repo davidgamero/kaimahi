@@ -247,6 +247,39 @@ func (s *Store) ToolAllowlist(ctx context.Context, credentialName string) ([]str
 	return out, rows.Err()
 }
 
+// CredentialsAllowlisting returns, for each of the given tool names, the
+// credentials that already allowlist it — ordered, so a message built
+// from it is stable.
+//
+// P15: the allowlist is per-CREDENTIAL, not per-(credential, upstream)
+// — a documented property of the gateway, and the reason onboarding a
+// new upstream that offers an already-allowlisted tool NAME makes that
+// tool callable on the new server by every credential that already had
+// it. That is not a bug to fix here (scoping the allowlist by upstream
+// is a decision, not a lane's choice), but it is a fact an operator must
+// be told at the moment they onboard, because otherwise nothing says it.
+func (s *Store) CredentialsAllowlisting(ctx context.Context, tools []string) (map[string][]string, error) {
+	out := map[string][]string{}
+	if len(tools) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT tool, credential_name FROM tool_allowlist
+		  WHERE tool = ANY($1) ORDER BY tool, credential_name`, tools)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var tool, cred string
+		if err := rows.Scan(&tool, &cred); err != nil {
+			return nil, err
+		}
+		out[tool] = append(out[tool], cred)
+	}
+	return out, rows.Err()
+}
+
 // RecordToolAudit appends one tool-audit row. Append-only by
 // construction, like the spend ledger.
 func (s *Store) RecordToolAudit(ctx context.Context, e ToolAuditEntry) error {

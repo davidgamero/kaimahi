@@ -255,7 +255,7 @@ func parseRequest(args []string, credential, toolsCredential string) (string, st
 // The returned options always carry a resolved credential, so no caller has
 // to remember the CRED_TOOLS fallback.
 func parseTools(args []string, toolsCredential string) (string, app.ToolsOptions, []string, error) {
-	const usage = "usage: kmx tools govern|allow <tools>|allowlist [<credential>]|ungovern"
+	const usage = "usage: kmx tools add <name>|govern|allow <tools>|allowlist [<credential>]|ungovern"
 	var opt app.ToolsOptions
 	if len(args) == 0 {
 		return "", opt, nil, errors.New(usage)
@@ -277,6 +277,7 @@ func parseTools(args []string, toolsCredential string) (string, app.ToolsOptions
 		fs.StringVar(&opt.Secret, "secret", "", "agent-side Secret the issued token is stored in")
 		fs.StringVar(&opt.SecretNamespace, "secret-namespace", "", "namespace for that Secret")
 		fs.StringVar(&opt.Tools, "tools", "", "allowlist, comma-separated ('-' for empty: nothing callable)")
+		fs.StringVar(&opt.Server, "server", "", "the RemoteMCPServer to govern against (default the committed "+config.DefaultToolServer+")")
 	}
 	positional, err := parseInterspersed(fs, rest)
 	if err != nil {
@@ -342,4 +343,50 @@ func parseMetrics(args []string) (string, error) {
 		return "", errors.New("usage: kmx metrics [--pod <name>]")
 	}
 	return *pod, nil
+}
+
+// repeated collects a flag given more than once, in order. `--tool` is
+// repeated rather than comma-separated because each value carries its own
+// comma-separated field list, and nesting one separator inside another is
+// how an operator ends up declaring something they did not mean.
+type repeated []string
+
+func (r *repeated) String() string     { return strings.Join(*r, " ") }
+func (r *repeated) Set(v string) error { *r = append(*r, v); return nil }
+
+// parseToolsAdd reads `kmx tools add <name>` (P15).
+//
+// It is separated from parseTools because it is the one verb whose subject
+// is an UPSTREAM rather than a credential: it takes no --credential, and
+// naming one would suggest it issues something, which it deliberately does
+// not (D27 — kmx accepts no credential in any form, and this command does
+// not even mint one).
+func parseToolsAdd(args []string) (app.AddUpstreamOptions, error) {
+	const usage = "usage: kmx tools add <name> --url http://<service>.<namespace>:<port>/mcp " +
+		"--tool <tool>:<field,field|*|> [--tool …] [--server-egress none|dns|keep] " +
+		"[--pod-port <n>] [--secret <name>] [--out <path>|-] [--no-apply] [--dry-run]"
+	var opt app.AddUpstreamOptions
+	var tools repeated
+	fs := newFlagSet("tools add")
+	fs.StringVar(&opt.URL, "url", "", "the server's own in-cluster MCP endpoint")
+	fs.Var(&tools, "tool", "a tool and its policy_fields: <tool>:<field,field>, <tool>: for a verb-level binding, <tool>:* for none")
+	fs.StringVar(&opt.ServerEgress, "server-egress", "", "what the scaffolded policy lets the SERVER reach: none (default), dns, keep")
+	fs.IntVar(&opt.PodPort, "pod-port", 0, "the container port, when the Service targets a named port")
+	fs.StringVar(&opt.Secret, "secret", "", "agent-side Secret NAME the seam resolves its credential from (never a value)")
+	fs.StringVar(&opt.Out, "out", "", "where to write the manifest ('-' for stdout)")
+	fs.BoolVar(&opt.NoApply, "no-apply", false, "write the manifest and stop")
+	fs.BoolVar(&opt.DryRun, "dry-run", false, "server-side dry run against the live CRDs")
+	positional, err := parseInterspersed(fs, args)
+	if err != nil {
+		return opt, err
+	}
+	if len(positional) != 1 {
+		return opt, errors.New(usage)
+	}
+	opt.Name = positional[0]
+	if strings.TrimSpace(opt.URL) == "" {
+		return opt, errors.New("kmx tools add: --url is required — the server's own in-cluster MCP endpoint.\n  " + usage)
+	}
+	opt.Tools = tools
+	return opt, nil
 }

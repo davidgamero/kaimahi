@@ -76,16 +76,36 @@ func main() {
 	// dials (per-agent A2A endpoints live under it).
 	a2aBase := env("A2A_BASE", inbound.DefaultA2ABase)
 	configFile := env("CONFIG_FILE", "/etc/kaimahi/upstreams.json")
+	// P15: the operator overlay. Fragments an operator added by
+	// onboarding their own MCP server (`kmx tools add`) live in their
+	// own ConfigMap, mounted here, and are merged over the committed
+	// table at boot. The volume is optional: an absent directory is an
+	// empty overlay, which is every cluster where nobody has onboarded
+	// anything. Set CONFIG_DIR="" to read the base table alone.
+	configDir := env("CONFIG_DIR", config.DefaultConfigDir)
 	adminTokenFile := env("ADMIN_TOKEN_FILE", "/etc/kaimahi/admin/token")
 	pgPasswordFile := env("PGPASSWORD_FILE", "/etc/kaimahi/pg/password")
 
 	pgPassword := mustReadSecretFile(pgPasswordFile, "postgres password")
 	adminToken := mustReadSecretFile(adminTokenFile, "admin token")
 
-	cfg, err := config.Load(configFile)
+	configBase, fragments, err := config.Read(configFile, configDir)
+	if err != nil {
+		slog.Error("reading upstream config", "err", err)
+		os.Exit(1)
+	}
+	mergedConfig, err := config.Merge(configBase, fragments)
+	if err != nil {
+		slog.Error("merging the operator overlay", "err", err, "dir", configDir)
+		os.Exit(1)
+	}
+	cfg, err := config.Parse(mergedConfig)
 	if err != nil {
 		slog.Error("loading upstream config", "err", err)
 		os.Exit(1)
+	}
+	for _, f := range fragments {
+		slog.Info("operator overlay merged", "fragment", f.Name, "dir", configDir)
 	}
 
 	// Redacting logger: defense in depth — nothing logs secrets on
@@ -181,9 +201,10 @@ func main() {
 		filing.N = poster
 	}
 	deps := proxy.Deps{
-		Store:  filing,
-		Meter:  mtr,
-		Config: cfg,
+		Store:      filing,
+		Meter:      mtr,
+		Config:     cfg,
+		ConfigBase: configBase,
 	}
 	// P10: the ONE hardened client for every upstream marked internet —
 	// Copilot on the LLM seam, the hosted MCP servers on the tool seam —

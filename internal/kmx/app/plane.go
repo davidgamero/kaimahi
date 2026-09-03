@@ -43,7 +43,7 @@ import (
 // asserts the manifest still pins `imagePullPolicy: Never` — a side-loaded
 // LOCAL tag must never quietly fall back to PULLING a squattable public
 // name (P4a/P4b rulings).
-const PlaneImage = "kaimahi-proxy:p10"
+const PlaneImage = "kaimahi-proxy:p15"
 
 // PlaneSteps are the stages of `kmx plane`, addressable individually so the
 // Makefile's `plane-image` and `plane-secrets` targets delegate to the same

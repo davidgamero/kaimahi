@@ -59,6 +59,10 @@ COMMANDS
   approve <id>                 grant one, BOUNDED (--ttl and/or --uses; --amount)
   deny <id>                    refuse one
   request <kind> <subject>     file one explicitly (--credential, --args)
+  tools add <name>             onboard YOUR OWN MCP server as a governed
+                               upstream: scaffold the table entry, the
+                               NetworkPolicy pair and the gateway seam
+                               (--url, --tool, --server-egress, --out, --no-apply)
   tools govern|allow|allowlist|ungovern
                                the enforcing MCP gateway: put an agent behind
                                it, replace its allowlist, read it, undo it
@@ -293,6 +297,14 @@ func run(argv []string) error {
 		return a.Request(credential, kind, subject, callArgs)
 
 	case "tools":
+		// `add` takes an upstream, not a credential, so it parses on its own.
+		if len(args) > 0 && args[0] == "add" {
+			opt, err := parseToolsAdd(args[1:])
+			if err != nil {
+				return err
+			}
+			return a.AddUpstream(opt)
+		}
 		verb, opt, positional, err := parseTools(args, a.Cfg.ToolsCredential)
 		if err != nil {
 			return err

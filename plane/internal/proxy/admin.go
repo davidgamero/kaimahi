@@ -65,6 +65,9 @@ func NewAdminMux(d Deps, adminTokenFile string) *http.ServeMux {
 	mux.HandleFunc("GET /admin/grants", auth(h.listGrants))
 	mux.HandleFunc("GET /admin/approval-audit", auth(h.approvalAudit))
 	mux.HandleFunc("GET /admin/inbound-audit", auth(h.inboundAudit))
+	// P15: a read that decides whether an overlay would load, using
+	// the same config.Parse this binary boots with (validate.go).
+	mux.HandleFunc("POST /admin/config/validate", auth(h.validateConfig))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})

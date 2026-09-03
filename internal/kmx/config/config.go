@@ -50,6 +50,11 @@ const (
 	// is stored in (the Makefile's GOVERNED_SECRET for that target).
 	DefaultToolsAgent  = "hello-tools"
 	DefaultToolsSecret = "kaimahi-tools-token"
+	// DefaultToolServer is the committed governed seam — the one
+	// RemoteMCPServer kmx carries and applies (k8s/kaimahi-tools.yaml).
+	// `kmx tools govern --server` names another, scaffolded by
+	// `kmx tools add` (P15).
+	DefaultToolServer = "kaimahi-tools"
 	// GovernedSecret is the agent-side Secret the issued token is stored in
 	// (the Makefile's GOVERNED_SECRET default), in the kagent namespace.
 	GovernedSecret         = "kaimahi-governed-token"

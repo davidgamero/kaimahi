@@ -27,17 +27,18 @@ import (
 
 // fakeStore implements proxy.Store in memory.
 type fakeStore struct {
-	creds      map[string]store.Credential // key: hex-free string(token hash)
-	actor      store.Attribution
-	actorErr   error
-	ledger     []store.LedgerEntry
-	lookupErr  error
-	ledgerErr  error
-	monthCents int64
-	monthToks  int64
-	monthErr   error
-	allowlists map[string][]string
-	audits     []store.ToolAuditEntry
+	creds        map[string]store.Credential // key: hex-free string(token hash)
+	actor        store.Attribution
+	actorErr     error
+	ledger       []store.LedgerEntry
+	lookupErr    error
+	ledgerErr    error
+	monthCents   int64
+	monthToks    int64
+	monthErr     error
+	allowlists   map[string][]string
+	allowlistErr error
+	audits       []store.ToolAuditEntry
 	// P4c approvals, in memory.
 	requests       []*store.ApprovalRequest
 	grants         []store.Grant
@@ -244,6 +245,24 @@ func (f *fakeStore) SetToolAllowlist(_ context.Context, name string, tools []str
 
 func (f *fakeStore) ToolAllowlist(_ context.Context, name string) ([]string, error) {
 	return f.allowlists[name], nil
+}
+
+func (f *fakeStore) CredentialsAllowlisting(_ context.Context, tools []string) (map[string][]string, error) {
+	if f.allowlistErr != nil {
+		return nil, f.allowlistErr
+	}
+	out := map[string][]string{}
+	for _, want := range tools {
+		for cred, have := range f.allowlists {
+			for _, t := range have {
+				if t == want {
+					out[want] = append(out[want], cred)
+				}
+			}
+		}
+		sort.Strings(out[want])
+	}
+	return out, nil
 }
 
 func (f *fakeStore) ToolAudit(_ context.Context, name string, _ int) ([]store.ToolAuditEntry, error) {

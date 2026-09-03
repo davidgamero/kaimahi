@@ -43,6 +43,10 @@ type Store interface {
 	SetToolAllowlist(ctx context.Context, credentialName string, tools []string) error
 	ToolAllowlist(ctx context.Context, credentialName string) ([]string, error)
 	ToolAudit(ctx context.Context, credentialName string, limit int) ([]store.ToolAuditEntry, error)
+	// P15: which credentials already allowlist a tool NAME, so onboarding
+	// an upstream that offers one can say so instead of claiming nothing
+	// can call it yet.
+	CredentialsAllowlisting(ctx context.Context, tools []string) (map[string][]string, error)
 	// P4c approvals: deny-and-pend filing (data path) and the decision
 	// surface (admin).
 	FileApprovalRequest(ctx context.Context, f store.Filing) (filed bool, err error)
@@ -70,6 +74,13 @@ type Deps struct {
 	Store  Store
 	Meter  Meter
 	Config config.Config
+	// ConfigBase is the COMMITTED table this replica booted from,
+	// before any overlay was merged in (P15). The admin surface
+	// validates a candidate overlay against it, so a validation is
+	// always "would this overlay load over the committed table"
+	// and never "would it load over whatever is already overlaid",
+	// which would collide an overlay with itself on a second run.
+	ConfigBase []byte
 	// Client makes IN-CLUSTER upstream calls. Nil gets a default that
 	// REFUSES redirects (a keyed call must never follow one — standing
 	// guidance) and bounds a call at 5 minutes.
