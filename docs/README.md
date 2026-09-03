@@ -43,7 +43,7 @@ what `kmx up` actually does, the agent YAML, and how to talk to it.
 | See what the plane's pods can and cannot reach, and prove it | [egress.md](egress.md) | `make netpol-verify`, `make egress-copilot`, `make egress-copilot-off` |
 | Let the agent read issues and pull requests through GitHub's hosted MCP server, with the token in plane custody | [hosted-upstreams.md](hosted-upstreams.md) | `make github-secret`, `make govern-github`, `make github-ask`, `make github-revoke` |
 | Give the demo, start to finish, in about thirty minutes | [demo.md](demo.md) | the order of the steps above and what each should print |
-| Show the whole thing on money: an invoice that does not match, an answer a person has to approve by amount and payee, and a later invoice that tries to redirect the payment | [ap-demo.md](ap-demo.md) | `make erp`, `make govern-ap`, `make ap-demo`, `make ap-injection` |
+| Show the whole thing on money: an invoice that does not match, an answer a person has to approve by amount and payee, and a later invoice that tries to redirect the payment — or [tell it without running it](ap-demo.md#telling-it-without-running-it) | [ap-demo.md](ap-demo.md) | `make erp`, `make govern-ap`, `make ap-demo`, `make ap-injection` |
 | Run the plane for real: replicas, probes, metrics, back up and restore the ledger | [operations.md](operations.md) | `make backup`, `make restore`, `make plane-metrics` |
 | Run all of this on a real cluster (AKS) instead of kind | [aks.md](aks.md) | `TARGET=aks`, `make aks-cluster`, `make aks-down` |
 | Fix something that went wrong | [FAQ.md](FAQ.md) | |
