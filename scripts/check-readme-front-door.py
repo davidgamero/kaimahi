@@ -22,7 +22,7 @@ from pathlib import Path
 
 ORDER = [
     ("hero image", r'src="brand/hero\.png"'),
-    ("product line", r"^## Governance for AI agents running on Kubernetes\.$"),
+    ("product line", r"^## Build and govern cloud-native AI agents on Kubernetes\.$"),
     ("outcome: control model spend", r"^### Control model spend$"),
     ("outcome: constrain tool calls", r"^### Constrain tool calls$"),
     ("outcome: approve consequential actions", r"^### Approve consequential actions$"),

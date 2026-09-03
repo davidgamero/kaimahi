@@ -12,7 +12,7 @@ spec.loader.exec_module(front_door)
 
 GOOD = """<img src="brand/hero.png">
 # Kaimahi
-## Governance for AI agents running on Kubernetes.
+## Build and govern cloud-native AI agents on Kubernetes.
 ### Control model spend
 ### Constrain tool calls
 ### Approve consequential actions

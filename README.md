@@ -11,10 +11,16 @@
 > schema-valid only, proposed, or unbuilt. The name is provisional — see
 > [docs/NAMING.md](docs/NAMING.md).
 
-## Governance for AI agents running on Kubernetes.
+## Build and govern cloud-native AI agents on Kubernetes.
 
-Kaimahi builds on [kagent](https://kagent.dev) rather than replacing it. It adds
-controls at the model and MCP boundaries for consequential agent work.
+`kmx` is the developer entry point: an empty machine to a running,
+conversational agent in minutes, scaffolded as YAML you can read, diff and
+own.
+
+Governance is the pillar underneath, not a bolt-on. Every model call, every
+tool call and every event that triggers an agent passes through a plane that
+meters it, bounds it, and records it — so delegating consequential work does
+not mean giving up control.
 
 ### Control model spend
 
@@ -32,17 +38,35 @@ Turn a denied model or tool action into a pending request. Human approval issues
 a grant limited by expiry, use count, or both. The exception lapses when its
 limit is reached.
 
+### Govern what triggers an agent
+
+Let the outside world start an agent only through the plane: authenticated
+before any work, rate- and size-bounded, replay-protected, spending previewed
+against the budget, and each event consuming one bounded grant.
+
 <p align="center">
   <img src="docs/assets/architecture.svg"
        alt="A Kubernetes agent routes model calls through the Kaimahi LLM proxy and tool calls through its MCP gateway; bounded approvals can widen either path temporarily">
 </p>
+
+The agents themselves run on **[kagent](https://kagent.dev)**, an
+open-source runtime that makes an agent a Kubernetes resource: you
+`kubectl apply` an `Agent` YAML, and its controller runs the pod, wires up
+the model and the MCP tools, and ships a CLI and dashboard to talk to it.
+Kaimahi governs that runtime rather than reimplementing it — it adds no
+agent runtime of its own.
 
 Governance is opt-in per agent. The documentation identifies ungoverned paths
 and current limitations.
 
 ## Quickstart
 
-The working path today — one binary, no clone:
+**[`kmx`](docs/kmx.md) is the entry point** — one Go binary that drives
+`kind`, `helm`, `kubectl` and the kagent CLI so a first agent takes minutes
+instead of a prerequisite list. It carries the whole journey — `up`, `agent create`,
+`agent chat`, `plane`, `govern`, `ledger`, `status`, `down` — and needs no
+clone, because it fetches the plane at its own revision from the public Go
+proxy.
 
 ```bash
 go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main
@@ -55,13 +79,13 @@ kmx agent chat hello-world "Who are you?"
 kmx ledger            # what that answer cost, and to whom it was attributed
 ```
 
-The default path needs no API key. It uses an in-cluster Ollama model for a real
-agent conversation, and the governed half is keyless too. Continue with the
-[getting-started guide](docs/getting-started.md) or choose a capability from the
-[documentation index](docs/README.md). [`kmx`](docs/kmx.md) is the whole journey:
-`up`, `agent create`, `agent chat`, `plane`, `govern`, `ledger`, `status`,
-`down` — and it needs no clone, because it fetches the plane at its own
-revision from the public Go proxy.
+That is a real agent conversation with **no API key**: `kmx up` brings up a
+kind cluster running an in-cluster Ollama model, and the governed half is
+keyless too. Create your own agent with `kmx agent create <name>`, which
+writes reviewable YAML and applies it.
+
+Continue with the [getting-started guide](docs/getting-started.md), or choose
+a capability from the [documentation index](docs/README.md).
 
 From a clone, `make` runs the same binary:
 
@@ -228,8 +252,23 @@ grows the same way it started — as YAML you can diff:
 [`k8s/tools-agent.yaml`](k8s/tools-agent.yaml) is the P1 agent plus a
 `tools:` block wiring it to an MCP server, and the P1 artifact itself is
 never mutated. Agents run on kagent — declarative Kubernetes agents whose
-Agent CRD YAML *is* the topology artifact. Kaimahi is thin glue over `kind`,
-`helm`, `kubectl`, and the kagent CLI.
+Agent CRD YAML *is* the topology artifact.
+
+**The north star: Kaimahi is thin glue over `kind`, `helm`, `kubectl`, and
+the kagent CLI.** Build nothing that can be delegated. Every component has
+to earn its existence by being something no upstream provides.
+
+The tooling holds to that literally. `kmx agent chat` is a passthrough to
+`kagent invoke`, there is no `kmx install`, and reading, updating and
+deleting agents stay with `kubectl` — an entry point that grew into a
+second control plane would be exactly the failure this star steers away
+from.
+
+The governance plane is what remains after delegating everything that
+could be delegated: the credentials, budgets, allowlists, grants and audit
+trail that neither Kubernetes nor the runtime provides. It is held to the
+same standard — every package answers why it is not configuration — and it
+is the honest measure of whether the star is being followed.
 
 ## Model endpoints
 
