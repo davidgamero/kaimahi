@@ -1729,25 +1729,54 @@ jobs:
           # Both were wrong in the first version of this step, which is how
           # a green-looking assertion turns out to assert nothing; the
           # pseudo-version's revision is the sha's first 12 characters.
-          pod=$(kubectl --context kind-kmx-clone-free -n kaimahi get pods -l app=kaimahi-proxy \
-            -o jsonpath='{.items[0].metadata.name}')
-          kubectl --context kind-kmx-clone-free -n kaimahi port-forward "$pod" 19092:9092 >/dev/null 2>&1 &
-          # A wait that runs out has to SAY so. Falling through to the read
-          # below would still fail the step (pipefail), but it would blame
-          # curl instead of naming the forward that never came up.
+          # The pod must be Ready and NOT terminating. `kmx plane` restarts
+          # the deployment, and a draining pod stays Running — keeping its
+          # IP — until its grace period ends, so `.items[0]` can name one a
+          # port-forward cannot reach. That rule is scripts/plane-pods.sh;
+          # this job has no checkout, so it carries the same three lines
+          # rather than a fourth guess at them.
+          pod=$(kubectl --context kind-kmx-clone-free -n kaimahi get pods -l app=kaimahi-proxy -o json | python3 -c '
+          import json, sys
+          for p in json.load(sys.stdin)["items"]:
+              if p["metadata"].get("deletionTimestamp"):
+                  continue
+              if any(c["type"] == "Ready" and c["status"] == "True"
+                     for c in p.get("status", {}).get("conditions", [])):
+                  print(p["metadata"]["name"])
+          ' | head -1)
+          test -n "$pod" || { echo "no Ready, non-terminating kaimahi-proxy pod"; exit 1; }
+
+          # --address pins IPv4 explicitly: kubectl's default is `localhost`,
+          # which can bind the v6 side only while curl talks to 127.0.0.1
+          # (scripts/plane-admin.sh's rule, and scripts/plane-metrics.sh does
+          # exactly this against exactly this port).
+          #
+          # The forward's own output is KEPT and printed on failure. Hiding
+          # it in /dev/null is why the first two failures of this step could
+          # not be diagnosed from the log at all.
+          kubectl --context kind-kmx-clone-free -n kaimahi port-forward --address 127.0.0.1 \
+            "pod/$pod" 19092:9092 >port-forward.log 2>&1 &
           ready=
-          for _ in $(seq 1 60); do
-            # 2>/dev/null on the ATTEMPTS only: the forward legitimately
-            # takes a moment, and 60 "connection refused" lines would bury
-            # the message that actually matters (plane-admin.sh polls the
-            # same way). The failure below is the one that speaks.
-            if curl -fsS -o /dev/null http://127.0.0.1:19092/readyz 2>/dev/null; then ready=1; break; fi
-            sleep 0.5
+          for _ in $(seq 1 150); do
+            # /livez, not /readyz: readiness needs Postgres, and reading
+            # build_info only needs the listener. 2>/dev/null on the ATTEMPTS
+            # only — the forward legitimately takes a moment, and a screenful
+            # of "connection refused" would bury the message that matters.
+            # --max-time bounds each ATTEMPT. curl has no default transfer
+            # timeout, so a forward that accepts TCP without ever answering
+            # would hang here forever — and the failure path below, the whole
+            # point of which is to print kubectl's output, would never run.
+            if curl -fsS --max-time 2 -o /dev/null http://127.0.0.1:19092/livez 2>/dev/null; then ready=1; break; fi
+            sleep 0.2
           done
           test -n "$ready" || {
-            echo "the plane's ops port never answered on 127.0.0.1:19092 after 30s"; exit 1
+            echo "the plane's ops port never answered on 127.0.0.1:19092 (pod $pod, 150 attempts); kubectl said:"
+            sed 's/^/  /' port-forward.log
+            exit 1
           }
-          curl -fsS http://127.0.0.1:19092/metrics | grep '^kaimahi_build_info{' | tee build-info.out
+          # Bounded for the same reason: a hung read here would hold the job
+          # until its 45-minute timeout instead of failing in seconds.
+          curl -fsS --max-time 30 http://127.0.0.1:19092/metrics | grep '^kaimahi_build_info{' | tee build-info.out
 
           # ONE assertion, asked twice: once about the revision this job
           # installed, once about a revision it certainly is not. Two
