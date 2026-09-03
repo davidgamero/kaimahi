@@ -8,8 +8,9 @@
 
 > **Incubation project.** Kaimahi is built in public. The README and
 > documentation label capabilities as running in CI, demonstrated once,
-> schema-valid only, proposed, or unbuilt. The name is provisional — see
-> [docs/NAMING.md](docs/NAMING.md).
+> schema-valid only, proposed, or unbuilt. The name is settled on a
+> stated basis — a cultural read cleared, no trademark opinion taken —
+> see [docs/NAMING.md](docs/NAMING.md).
 
 ## Build and govern cloud-native AI agents on Kubernetes.
 

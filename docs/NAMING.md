@@ -23,7 +23,7 @@ consistent even when the words were not available.
 
 | Name | Origin | Status |
 |---|---|---|
-| **kaimahi** | te reo Māori — *worker* | **current**, tentative — two review gates still open |
+| **kaimahi** | te reo Māori — *worker* | **settled** (D34) — cultural read cleared; no trademark opinion taken |
 | **hob** | English folklore — hobgoblin/household spirit that does the chores at night | **blocked — taken** on npm, PyPI, the GitHub handle, and `hob.dev` |
 | **tomte** | Scandinavian folklore — farm spirit that works at night for a bowl of porridge | previous name; retired. PyPI `tomte` is taken |
 
@@ -69,13 +69,25 @@ FYI, in plain terms:
 - **It is a real word in a living language**, not a coined token. That is
   the appeal and the risk: it reads naturally to New Zealand speakers and
   carries meaning that a made-up name would not.
-- **Two gates are still open** before the name is final (D9, restated by
-  D10):
-  1. A New Zealand developer's read, and a Māori cultural-appropriateness
-     check. Te reo Māori is a taonga protected under the Treaty of
-     Waitangi; commercial use of Māori words by non-Māori projects is a
-     live issue, not a formality. This gate has **not** been cleared.
-  2. Trademark counsel. Also **not** cleared.
+- **The name is settled, and here is exactly on what basis** (D34). Of
+  D9's two gates:
+  1. **The cultural read CLEARED.** A te reo Māori speaker was
+     comfortable with the use. Te reo Māori is a taonga protected under
+     the Treaty of Waitangi and commercial use of Māori words by
+     non-Māori projects is a live issue, not a formality — which is why
+     this gate came first and why it is recorded rather than assumed.
+  2. **Trademark counsel was NOT obtained.** No opinion was taken, and
+     none is claimed. This is written plainly so that silence is never
+     later mistaken for clearance.
+- **What that permits, and what it does not.** Publishing is unblocked
+  and free namespaces may be claimed. Nothing here asserts a trademark —
+  no ™, no "registered", no claim of exclusivity — and the project stays
+  renameable in principle. The residual risk is stated and accepted: a
+  later conflict would cost a rename, and every namespace claimed makes
+  that rename dearer.
+- **`kmx`**, the binary, is settled on the same basis (D34), accepting
+  that PyPI `kmx` and the GitHub user `kmx` are already taken and are
+  not ours, and that KMX is CarMax's ticker symbol.
 - **The repo was renamed ahead of the freeze** (D10). The user renamed it
   to `kaiwahi` — a typo, w/m transposed — which was caught and corrected to
   **gambtho/kaimahi**. It has since moved into a GitHub organization
@@ -90,9 +102,10 @@ FYI, in plain terms:
   is coordinator-owned and was excluded from that lane; the coordinator
   renamed its present-tense references separately (historical quotes and
   delta sheets on the board keep the old name verbatim).
-- **Renaming the tree is not the same as clearing the name.** Both D9 gates
-  above remain open; the rename lane was explicitly scoped to mechanical
-  substitution and kept the no-trademark wording.
+- **Renaming the tree was never the same as clearing the name.** The
+  rename lane was explicitly scoped to mechanical substitution and kept
+  the no-trademark wording; clearance came later and only in part, as
+  recorded above.
 - **Pronunciation**, for the inevitable meeting: roughly *kigh-MAH-hee*
   (`kai` as in "kite", not "kay").
 
@@ -151,7 +164,7 @@ then moved into the `kaimahi-agents` organization as
 
 ## Before claiming anything
 
-1. Clear D9's two gates — cultural read, trademark counsel.
+1. ~~Clear D9's two gates~~ — DONE in part (D34): cultural read cleared, trademark counsel not taken and not claimed.
 2. Re-verify availability the same day (this table decays).
 3. Get explicit user approval naming the exact artifact — "register
    kaimahi.dev", "publish npm `create-kaimahi`" — not blanket approval of
