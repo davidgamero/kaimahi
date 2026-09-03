@@ -738,20 +738,44 @@ jobs:
       # process). USES=1 bounds keep CI sleep-free: exhaustion, not
       # wall-clock expiry, proves grants end (TTL expiry is live-verified
       # in the PR).
-      - name: "Approvals tool cycle: denied files request, bounded approval admits, exhaustion re-denies"
+      - name: "Approvals tool cycle: denied files request, bounded approval admits THAT call, exhaustion re-denies"
         if: steps.changes.outputs.docs_only != 'true'
         run: |
-          bash scripts/tool-denial-probe.sh k8s_get_events
+          # P12: a denial, an approval and a retry are all about one CALL.
+          # k8s_get_events declares `namespace` policy-relevant (the
+          # committed table), so the request carries that call's digest
+          # and a summary a human can read.
+          bash scripts/tool-denial-probe.sh k8s_get_events '{"namespace": "default"}'
           make approvals | tee approvals-tool.out
-          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_events" {print $1}' approvals-tool.out)
+          grep -E 'hello-tools +tool +k8s_get_events .*k8s_get_events: namespace default' approvals-tool.out
+          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_events" && /namespace default/ {print $1}' approvals-tool.out)
           test -n "$id"
           make approve ID="$id" USES=1 TTL=10m
+          # A DIFFERENT call is not covered by that approval: denied, and
+          # it files its OWN request (two pending, two digests) — the
+          # grant is untouched.
+          bash scripts/tool-denial-probe.sh k8s_get_events '{"namespace": "kube-system"}'
+          make approvals | tee approvals-tool-2.out
+          grep -E 'hello-tools +tool +k8s_get_events .*namespace kube-system' approvals-tool-2.out
+          test "$(grep -c 'k8s_get_events' approvals-tool-2.out)" = 1
+          # The approved call itself is admitted, consuming the single use.
           bash scripts/tool-call-probe.sh k8s_get_events '{"namespace": "default"}'
           # The single use is consumed: the same call is denied again,
           # fail closed, and a fresh request is filed.
-          bash scripts/tool-denial-probe.sh k8s_get_events
+          bash scripts/tool-denial-probe.sh k8s_get_events '{"namespace": "default"}'
           make tool-audit | tee tool-audit-p4c.out
           grep -E 'hello-tools +kagent-tools +tools/call +k8s_get_events +allowed +200 +granted' tool-audit-p4c.out
+          # The denial and the admitted call carry the SAME digest: the
+          # call approved and the call that ran are provably one call.
+          python3 - tool-audit-p4c.out <<'EOF'
+          import re, sys
+          rows = [l for l in open(sys.argv[1]) if 'k8s_get_events' in l and 'namespace default' in l]
+          digests = {m.group(1) for l in rows for m in [re.search(r'\[([0-9a-f]{12})\]', l)] if m}
+          assert len(digests) == 1, (digests, rows)
+          assert any(' allowed ' in l or re.search(r'allowed +200', l) for l in rows), rows
+          assert any('denied' in l for l in rows), rows
+          print("one digest across the denial and the admitted call:", digests)
+          EOF
       - name: "Approvals budget cycle: cap denial filed a request, bounded raise admits, exhaustion re-denies"
         if: steps.changes.outputs.docs_only != 'true'
         run: |
@@ -902,7 +926,7 @@ jobs:
         if: steps.changes.outputs.docs_only != 'true'
         run: |
           UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
-            bash scripts/tool-denial-probe.sh conversations_add_message
+            bash scripts/tool-denial-probe.sh conversations_add_message '{"channel_id": "C0CIONLY", "payload": "ci"}'
           make slack-audit | tee slack-audit-denied.out
           grep -E 'hello-slack +slack +tools/call +conversations_add_message +denied +403' slack-audit-denied.out
       - name: "Bounded approval admits the post, exhaustion re-denies"
@@ -923,7 +947,7 @@ jobs:
           grep -E 'hello-slack +slack +tools/call +conversations_add_message +allowed +502 +granted' slack-audit-granted.out
           # The single use is consumed: denied again, and a fresh request filed.
           UPSTREAM=slack GOVERNED_SECRET=kaimahi-slack-token \
-            bash scripts/tool-denial-probe.sh conversations_add_message
+            bash scripts/tool-denial-probe.sh conversations_add_message '{"channel_id": "C0CIONLY", "payload": "ci"}'
           make approval-audit | tee approval-audit-slack.out
           grep -E 'hello-slack +tool +conversations_add_message +approved' approval-audit-slack.out
       # P7a, keyless: the plane's NetworkPolicy boundary, proven ENFORCED
@@ -1173,7 +1197,9 @@ jobs:
         if: steps.changes.outputs.docs_only != 'true'
         run: |
           make approvals | tee approvals-p8b.out
-          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_events" {print $1}' approvals-p8b.out)
+          # P12: several k8s_get_events requests can be pending at once —
+          # one per distinct call — so the call is what selects the id.
+          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_events" && /namespace default/ {print $1}' approvals-p8b.out)
           test -n "$id"
           echo "$id" > p8b-request-id
           EXPECT=403 bash scripts/slack-mention-probe.sh U0NOBODY "approve $id uses=1"
@@ -1252,9 +1278,9 @@ jobs:
           granted() { kubectl --context kind-kaimahi-p1 -n kaimahi exec deploy/kaimahi-postgres -- \
             psql -U kaimahi -d kaimahi -tAc "SELECT count(*) FROM tool_audit WHERE credential_name = 'hello-tools' AND tool = 'k8s_get_events' AND decision = 'allowed' AND status = 200 AND detail LIKE 'granted %'"; }
           before=$(granted)
-          bash scripts/tool-denial-probe.sh k8s_get_events
+          bash scripts/tool-denial-probe.sh k8s_get_events '{"namespace": "default"}'
           make approvals | tee approvals-race.out
-          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_events" {print $1}' approvals-race.out)
+          id=$(awk '$3=="hello-tools" && $4=="tool" && $5=="k8s_get_events" && /namespace default/ {print $1}' approvals-race.out)
           test -n "$id"
           make approve ID="$id" USES=1 TTL=10m
           EXPECT_ADMITTED=1 bash scripts/tool-race-probe.sh k8s_get_events 8 '{"namespace": "default"}' | tee tool-race.out
@@ -1421,6 +1447,88 @@ jobs:
           make approvals | tee github-approvals.out
           grep -E 'hello-github +tool +echo_write' github-approvals.out
           grep -E 'hello-github +mcp-echo-redirect +tools/call +echo +allowed +502 +tool upstream redirected' github-audit-2.out
+      # P12, keyless: argument-level policy end to end. The synthetic
+      # upstream declares `pay_invoice`'s policy-relevant fields and
+      # hello-github carries a standing constraint on them — "at or under
+      # $10,000, and only to MER-4471". Nothing about this needs a token:
+      # the whole decision happens in the gateway before the forward.
+      - name: "Argument policy: a call inside the standing constraint proceeds with NO approval"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make approvals > constraint-approvals-before.out
+          before=$(grep -c pay_invoice constraint-approvals-before.out || true)
+          # Just under the bound, and AT it: both proceed, audited allowed
+          # with the constraint named — no request filed, no human asked.
+          for amount in 999999 1000000; do
+            KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-github-token UPSTREAM=mcp-echo \
+              bash scripts/tool-call-probe.sh pay_invoice \
+              "{\"invoice_id\": \"INV-88134\", \"amount_cents\": $amount, \"payee_id\": \"MER-4471\"}"
+          done
+          make github-audit | tee constraint-audit.out
+          grep -E 'hello-github +mcp-echo +tools/call +pay_invoice +allowed +200 +within standing constraint .*amount_cents 999999' constraint-audit.out
+          grep -E 'hello-github +mcp-echo +tools/call +pay_invoice +allowed +200 +within standing constraint .*amount_cents 1000000' constraint-audit.out
+          make approvals > constraint-approvals-after.out
+          after=$(grep -c pay_invoice constraint-approvals-after.out || true)
+          test "$before" = "$after"
+      - name: "Argument policy: a cent outside it is denied and files a request carrying the call"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-github-token UPSTREAM=mcp-echo \
+            bash scripts/tool-denial-probe.sh pay_invoice \
+            '{"invoice_id": "INV-88134", "amount_cents": 1000001, "payee_id": "MER-4471"}'
+          # A different payee, inside the amount bound: also outside the
+          # constraint, and a SECOND request — two attempts at the same
+          # verb with different policy-relevant arguments no longer
+          # collapse into one approval.
+          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-github-token UPSTREAM=mcp-echo \
+            bash scripts/tool-denial-probe.sh pay_invoice \
+            '{"invoice_id": "INV-88134", "amount_cents": 900000, "payee_id": "EVIL-1"}'
+          make approvals | tee constraint-approvals.out
+          test "$(grep -c 'pay_invoice' constraint-approvals.out)" = 2
+          grep -E 'hello-github +tool +pay_invoice .*amount_cents 1000001, payee_id MER-4471' constraint-approvals.out
+          grep -E 'hello-github +tool +pay_invoice .*amount_cents 900000, payee_id EVIL-1' constraint-approvals.out
+          make github-audit | tee constraint-audit-2.out
+          grep -E 'hello-github +mcp-echo +tools/call +pay_invoice +denied +403 +tool call not permitted: outside the standing constraint' constraint-audit-2.out
+      - name: "Argument policy: the approval is welded to THAT call — a different one is denied again"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          id=$(awk '$3=="hello-github" && $5=="pay_invoice" && /amount_cents 1000001/ {print $1}' constraint-approvals.out)
+          test -n "$id"
+          make approve ID="$id" USES=1 TTL=10m
+          make grants | tee constraint-grants.out
+          grep -E 'hello-github +tool +pay_invoice +yes .*call [0-9a-f]{12}' constraint-grants.out
+          # A DIFFERENT amount cannot spend that approval: denied, and it
+          # files its own request. The grant is untouched.
+          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-github-token UPSTREAM=mcp-echo \
+            bash scripts/tool-denial-probe.sh pay_invoice \
+            '{"invoice_id": "INV-88134", "amount_cents": 4800000, "payee_id": "MER-4471"}'
+          make approvals | tee constraint-approvals-2.out
+          grep -E 'hello-github +tool +pay_invoice .*amount_cents 4800000' constraint-approvals-2.out
+          # The approved call itself is admitted, and the audit shows the
+          # grant and the call it was welded to.
+          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-github-token UPSTREAM=mcp-echo \
+            bash scripts/tool-call-probe.sh pay_invoice \
+            '{"invoice_id": "INV-88134", "amount_cents": 1000001, "payee_id": "MER-4471"}'
+          make github-audit | tee constraint-audit-3.out
+          grep -E 'hello-github +mcp-echo +tools/call +pay_invoice +allowed +200 +granted .*amount_cents 1000001' constraint-audit-3.out
+          # The use is spent: the same call is denied again.
+          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-github-token UPSTREAM=mcp-echo \
+            bash scripts/tool-denial-probe.sh pay_invoice \
+            '{"invoice_id": "INV-88134", "amount_cents": 1000001, "payee_id": "MER-4471"}'
+          make approval-audit | tee constraint-approval-audit.out
+          grep -E 'hello-github +tool +pay_invoice +approved +admin .*pay_invoice: invoice_id INV-88134, amount_cents 1000001' constraint-approval-audit.out
+      - name: "Argument policy: a duplicate key inside arguments is refused, not collapsed"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          # Enforcement and the forwarded bytes can never disagree about
+          # what the call was, because the message is refused outright.
+          KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-github-token UPSTREAM=mcp-echo \
+            EXPECT=400 EXPECT_BODY='duplicate JSON key' bash scripts/tool-raw-probe.sh \
+            '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "pay_invoice", "arguments": {"amount_cents": 1, "amount_cents": 9900000}}}'
+          make github-audit | tee dup-audit.out
+          # The refusal happens BEFORE the method is known, so the row
+          # carries no method or tool — only that the body was refused.
+          grep -E 'hello-github +mcp-echo +denied +400 +request body carries a duplicate JSON key' dup-audit.out
       - name: "Hosted upstreams: the record rebinds to the server's private address → the dialer refuses before any byte leaves, audited"
         if: steps.changes.outputs.docs_only != 'true'
         run: |

@@ -27,14 +27,20 @@ var ErrNotPending = errors.New("store: request is not pending")
 var ErrBounds = errors.New("store: invalid grant bounds")
 
 type ApprovalRequest struct {
-	ID             string     `json:"id"`
-	CredentialName string     `json:"credential"`
-	Kind           string     `json:"kind"`
-	Subject        string     `json:"subject"`
-	Status         string     `json:"status"`
-	Detail         string     `json:"detail"`
-	CreatedAt      time.Time  `json:"created_at"`
-	DecidedAt      *time.Time `json:"decided_at,omitempty"`
+	ID             string `json:"id"`
+	CredentialName string `json:"credential"`
+	Kind           string `json:"kind"`
+	Subject        string `json:"subject"`
+	Status         string `json:"status"`
+	Detail         string `json:"detail"`
+	// ArgDigest/ArgSummary (P12) carry the exact CALL a tool request is
+	// about: the digest a grant is welded to, and the transaction line an
+	// approver reads. Empty on budget and inbound requests, which have no
+	// arguments, and on tool requests filed before argument binding.
+	ArgDigest  string     `json:"arg_digest,omitempty"`
+	ArgSummary string     `json:"arg_summary,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	DecidedAt  *time.Time `json:"decided_at,omitempty"`
 	// DecidedBy names who decided (P8b): DecidedByAdmin for the admin
 	// bearer, "slack:<user id>" for a Slack command; empty while pending.
 	DecidedBy string `json:"decided_by"`
@@ -54,6 +60,11 @@ type Grant struct {
 	Amount         *int64     `json:"amount,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 	DecidedBy      string     `json:"decided_by"`
+	// ArgDigest (P12) is the call this tool grant admits — and only that
+	// call. NULL means a verb-level grant, a closed class: only grants
+	// that predate migration 00008 carry it (ApproveRequest refuses to
+	// mint another), and the gateway honours those unchanged.
+	ArgDigest *string `json:"arg_digest,omitempty"`
 }
 
 type ApprovalAuditEntry struct {
@@ -63,6 +74,8 @@ type ApprovalAuditEntry struct {
 	Subject        string    `json:"subject"`
 	Action         string    `json:"action"`
 	Bounds         string    `json:"bounds"`
+	ArgDigest      string    `json:"arg_digest,omitempty"`
+	ArgSummary     string    `json:"arg_summary,omitempty"`
 	DecidedBy      string    `json:"decided_by"`
 	CreatedAt      time.Time `json:"created_at"`
 }
@@ -81,31 +94,45 @@ const DecidedByAdmin = "admin"
 const grantLive = `(expires_at IS NULL OR expires_at > now())
 	AND (max_uses IS NULL OR uses < max_uses)`
 
+// Filing is one approval request to file. ArgDigest/ArgSummary are set
+// on tool requests (P12) and empty everywhere else.
+type Filing struct {
+	Credential string
+	Kind       string
+	Subject    string
+	Detail     string
+	ArgDigest  string
+	ArgSummary string
+}
+
 // FileApprovalRequest files a pending request, deduplicated per
-// (credential, kind, subject) among pending rows: refiling while one is
-// pending is a no-op (filed=false). A fresh filing also writes the
-// 'requested' audit row in the same transaction.
-func (s *Store) FileApprovalRequest(ctx context.Context, credential, kind, subject, detail string) (filed bool, err error) {
-	_, filed, err = s.FileRequest(ctx, credential, kind, subject, detail)
+// (credential, kind, subject, arg_digest) among pending rows: refiling
+// while an identical one is pending is a no-op (filed=false), but two
+// attempts at the SAME tool with DIFFERENT policy-relevant arguments are
+// two different requests (P12 — before argument binding they collapsed
+// into one, and one approval covered both). A fresh filing also writes
+// the 'requested' audit row in the same transaction.
+func (s *Store) FileApprovalRequest(ctx context.Context, f Filing) (filed bool, err error) {
+	_, filed, err = s.FileRequest(ctx, f)
 	return filed, err
 }
 
 // FileRequest is FileApprovalRequest returning the fresh request's id as
 // well (P8b: the notifier names it). id is empty when deduped.
-func (s *Store) FileRequest(ctx context.Context, credential, kind, subject, detail string) (id string, filed bool, err error) {
+func (s *Store) FileRequest(ctx context.Context, f Filing) (id string, filed bool, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	err = tx.QueryRow(ctx,
-		`INSERT INTO approval_request (credential_name, kind, subject, detail)
-		 VALUES ($1, $2, $3, $4)
-		 ON CONFLICT (credential_name, kind, subject) WHERE status = 'pending' DO NOTHING
+		`INSERT INTO approval_request (credential_name, kind, subject, detail, arg_digest, arg_summary)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (credential_name, kind, subject, arg_digest) WHERE status = 'pending' DO NOTHING
 		 RETURNING id`,
-		credential, kind, subject, detail).Scan(&id)
+		f.Credential, f.Kind, f.Subject, f.Detail, f.ArgDigest, f.ArgSummary).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, nil // already pending — deduped
+		return "", false, nil // an identical request is already pending — deduped
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign_key_violation
@@ -115,9 +142,9 @@ func (s *Store) FileRequest(ctx context.Context, credential, kind, subject, deta
 		return "", false, err
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO approval_audit (request_id, credential_name, kind, subject, action)
-		 VALUES ($1, $2, $3, $4, 'requested')`,
-		id, credential, kind, subject); err != nil {
+		`INSERT INTO approval_audit (request_id, credential_name, kind, subject, action, arg_digest, arg_summary)
+		 VALUES ($1, $2, $3, $4, 'requested', $5, $6)`,
+		id, f.Credential, f.Kind, f.Subject, f.ArgDigest, f.ArgSummary); err != nil {
 		return "", false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -133,7 +160,7 @@ func (s *Store) FileRequest(ctx context.Context, credential, kind, subject, deta
 // guarantees it; LIKE then has no metacharacters to escape).
 func (s *Store) RequestByPrefix(ctx context.Context, prefix string) (ApprovalRequest, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, credential_name, kind, subject, status, detail, created_at, decided_at, decided_by
+		`SELECT id, credential_name, kind, subject, status, detail, arg_digest, arg_summary, created_at, decided_at, decided_by
 		 FROM approval_request WHERE id::text LIKE $1 || '%' ORDER BY created_at LIMIT 2`, prefix)
 	if err != nil {
 		return ApprovalRequest{}, err
@@ -154,7 +181,7 @@ func (s *Store) RequestByPrefix(ctx context.Context, prefix string) (ApprovalReq
 // PendingApprovals lists pending requests, oldest first (the queue).
 func (s *Store) PendingApprovals(ctx context.Context) ([]ApprovalRequest, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, credential_name, kind, subject, status, detail, created_at, decided_at, decided_by
+		`SELECT id, credential_name, kind, subject, status, detail, arg_digest, arg_summary, created_at, decided_at, decided_by
 		 FROM approval_request WHERE status = 'pending' ORDER BY created_at`)
 	if err != nil {
 		return nil, err
@@ -168,7 +195,7 @@ func scanRequests(rows pgx.Rows) ([]ApprovalRequest, error) {
 	for rows.Next() {
 		var r ApprovalRequest
 		if err := rows.Scan(&r.ID, &r.CredentialName, &r.Kind, &r.Subject,
-			&r.Status, &r.Detail, &r.CreatedAt, &r.DecidedAt, &r.DecidedBy); err != nil {
+			&r.Status, &r.Detail, &r.ArgDigest, &r.ArgSummary, &r.CreatedAt, &r.DecidedAt, &r.DecidedBy); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -197,9 +224,9 @@ func (s *Store) ApproveRequest(ctx context.Context, id string,
 
 	var r ApprovalRequest
 	err = tx.QueryRow(ctx,
-		`SELECT id, credential_name, kind, subject, status
+		`SELECT id, credential_name, kind, subject, status, arg_digest, arg_summary
 		 FROM approval_request WHERE id = $1 FOR UPDATE`,
-		id).Scan(&r.ID, &r.CredentialName, &r.Kind, &r.Subject, &r.Status)
+		id).Scan(&r.ID, &r.CredentialName, &r.Kind, &r.Subject, &r.Status, &r.ArgDigest, &r.ArgSummary)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Grant{}, ErrNotFound
 	}
@@ -218,13 +245,26 @@ func (s *Store) ApproveRequest(ctx context.Context, id string,
 	if (r.Kind == "budget") != (amount != nil) {
 		return Grant{}, fmt.Errorf("%w: AMOUNT is required for budget grants and forbidden otherwise", ErrBounds)
 	}
+	// P12: a tool grant is welded to the CALL its request carries. A tool
+	// request with no digest predates argument binding (or was filed by a
+	// path that named no call), and minting a verb-level grant from it
+	// would re-open exactly the hole this lane closes — so it is refused,
+	// with the two honest ways forward named.
+	var argDigest *string
+	if r.Kind == "tool" {
+		if r.ArgDigest == "" {
+			return Grant{}, fmt.Errorf("%w: this tool request carries no call to bind (filed before argument binding); let the agent retry so a bound request is filed, or widen the allowlist with 'make tool-allow'", ErrBounds)
+		}
+		d := r.ArgDigest
+		argDigest = &d
+	}
 
 	g := Grant{RequestID: r.ID, CredentialName: r.CredentialName, Kind: r.Kind, Subject: r.Subject,
-		ExpiresAt: expiresAt, MaxUses: maxUses, Amount: amount, DecidedBy: decidedBy}
+		ExpiresAt: expiresAt, MaxUses: maxUses, Amount: amount, DecidedBy: decidedBy, ArgDigest: argDigest}
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO permit_grant (request_id, credential_name, kind, subject, expires_at, max_uses, amount, decided_by)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, created_at`,
-		r.ID, r.CredentialName, r.Kind, r.Subject, expiresAt, maxUses, amount, decidedBy).Scan(&g.ID, &g.CreatedAt); err != nil {
+		`INSERT INTO permit_grant (request_id, credential_name, kind, subject, expires_at, max_uses, amount, decided_by, arg_digest)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at`,
+		r.ID, r.CredentialName, r.Kind, r.Subject, expiresAt, maxUses, amount, decidedBy, argDigest).Scan(&g.ID, &g.CreatedAt); err != nil {
 		return Grant{}, err
 	}
 	if _, err := tx.Exec(ctx,
@@ -244,9 +284,9 @@ func (s *Store) ApproveRequest(ctx context.Context, id string,
 	}
 	bounds = strings.TrimSpace(bounds)
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO approval_audit (request_id, credential_name, kind, subject, action, bounds, decided_by)
-		 VALUES ($1, $2, $3, $4, 'approved', $5, $6)`,
-		r.ID, r.CredentialName, r.Kind, r.Subject, bounds, decidedBy); err != nil {
+		`INSERT INTO approval_audit (request_id, credential_name, kind, subject, action, bounds, decided_by, arg_digest, arg_summary)
+		 VALUES ($1, $2, $3, $4, 'approved', $5, $6, $7, $8)`,
+		r.ID, r.CredentialName, r.Kind, r.Subject, bounds, decidedBy, r.ArgDigest, r.ArgSummary); err != nil {
 		return Grant{}, err
 	}
 	return g, tx.Commit(ctx)
@@ -266,9 +306,9 @@ func (s *Store) DenyApprovalRequest(ctx context.Context, id string, decidedBy st
 	defer func() { _ = tx.Rollback(ctx) }()
 	var r ApprovalRequest
 	err = tx.QueryRow(ctx,
-		`SELECT id, credential_name, kind, subject, status
+		`SELECT id, credential_name, kind, subject, status, arg_digest, arg_summary
 		 FROM approval_request WHERE id = $1 FOR UPDATE`,
-		id).Scan(&r.ID, &r.CredentialName, &r.Kind, &r.Subject, &r.Status)
+		id).Scan(&r.ID, &r.CredentialName, &r.Kind, &r.Subject, &r.Status, &r.ArgDigest, &r.ArgSummary)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -284,9 +324,9 @@ func (s *Store) DenyApprovalRequest(ctx context.Context, id string, decidedBy st
 		return err
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO approval_audit (request_id, credential_name, kind, subject, action, decided_by)
-		 VALUES ($1, $2, $3, $4, 'denied', $5)`,
-		r.ID, r.CredentialName, r.Kind, r.Subject, decidedBy); err != nil {
+		`INSERT INTO approval_audit (request_id, credential_name, kind, subject, action, decided_by, arg_digest, arg_summary)
+		 VALUES ($1, $2, $3, $4, 'denied', $5, $6, $7)`,
+		r.ID, r.CredentialName, r.Kind, r.Subject, decidedBy, r.ArgDigest, r.ArgSummary); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -299,7 +339,7 @@ func (s *Store) DenyApprovalRequest(ctx context.Context, id string, decidedBy st
 // a grant with N uses left admits exactly N concurrent calls, never
 // N+1 and (unlike the P4c FOR UPDATE SKIP LOCKED it replaces) never
 // fewer. ok=false means no consumable grant — the caller denies.
-func (s *Store) ConsumeToolGrant(ctx context.Context, credential, tool string) (grantID string, ok bool, err error) {
+func (s *Store) ConsumeToolGrant(ctx context.Context, credential, tool, argDigest string) (grantID string, ok bool, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", false, err
@@ -308,7 +348,7 @@ func (s *Store) ConsumeToolGrant(ctx context.Context, credential, tool string) (
 	if _, err := lockCredential(ctx, tx, credential); err != nil {
 		return "", false, err
 	}
-	grantID, ok, err = consumeGrantLocked(ctx, tx, credential, "tool", tool)
+	grantID, ok, err = consumeToolGrantLocked(ctx, tx, credential, tool, argDigest)
 	if err != nil {
 		return "", false, err
 	}
@@ -336,6 +376,33 @@ func consumeGrantLocked(ctx context.Context, tx pgx.Tx, credential, kind, subjec
 		   ORDER BY created_at LIMIT 1
 		 ) RETURNING id`,
 		credential, kind, subject).Scan(&grantID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return grantID, true, nil
+}
+
+// consumeToolGrantLocked is consumeGrantLocked for tool grants, which
+// since P12 admit ONE CALL: the grant's digest must equal the digest of
+// the call being made. A mismatch consumes nothing, so the caller denies
+// and files a request for the call actually attempted — an approval can
+// never be spent on a different transaction. The one exception is the
+// closed legacy class (arg_digest IS NULL, migration 00008): those
+// verb-level grants are honoured, and preferred LAST, so an exact match
+// is always burned first.
+func consumeToolGrantLocked(ctx context.Context, tx pgx.Tx, credential, tool, argDigest string) (grantID string, ok bool, err error) {
+	err = tx.QueryRow(ctx,
+		`UPDATE permit_grant SET uses = uses + 1
+		 WHERE id = (
+		   SELECT id FROM permit_grant
+		   WHERE credential_name = $1 AND kind = 'tool' AND subject = $2
+		     AND (arg_digest = $3 OR arg_digest IS NULL) AND `+grantLive+`
+		   ORDER BY (arg_digest IS NULL), created_at LIMIT 1
+		 ) RETURNING id`,
+		credential, tool, argDigest).Scan(&grantID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
@@ -384,7 +451,7 @@ func (s *Store) Grants(ctx context.Context, credential string, limit int) ([]Gra
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, request_id, credential_name, kind, subject, expires_at, max_uses, uses, amount, created_at, decided_by,
+		`SELECT id, request_id, credential_name, kind, subject, expires_at, max_uses, uses, amount, created_at, decided_by, arg_digest,
 		        `+grantLive+` AS live
 		 FROM permit_grant
 		 WHERE ($1 = '' OR credential_name = $1)
@@ -400,7 +467,7 @@ func (s *Store) Grants(ctx context.Context, credential string, limit int) ([]Gra
 		var g Grant
 		var l bool
 		if err := rows.Scan(&g.ID, &g.RequestID, &g.CredentialName, &g.Kind, &g.Subject,
-			&g.ExpiresAt, &g.MaxUses, &g.Uses, &g.Amount, &g.CreatedAt, &g.DecidedBy, &l); err != nil {
+			&g.ExpiresAt, &g.MaxUses, &g.Uses, &g.Amount, &g.CreatedAt, &g.DecidedBy, &g.ArgDigest, &l); err != nil {
 			return nil, nil, err
 		}
 		out = append(out, g)
@@ -416,7 +483,7 @@ func (s *Store) ApprovalAudit(ctx context.Context, credential string, limit int)
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT request_id, credential_name, kind, subject, action, bounds, decided_by, created_at
+		`SELECT request_id, credential_name, kind, subject, action, bounds, decided_by, arg_digest, arg_summary, created_at
 		 FROM approval_audit
 		 WHERE ($1 = '' OR credential_name = $1)
 		 ORDER BY created_at DESC LIMIT $2`,
@@ -429,7 +496,7 @@ func (s *Store) ApprovalAudit(ctx context.Context, credential string, limit int)
 	for rows.Next() {
 		var e ApprovalAuditEntry
 		if err := rows.Scan(&e.RequestID, &e.CredentialName, &e.Kind, &e.Subject,
-			&e.Action, &e.Bounds, &e.DecidedBy, &e.CreatedAt); err != nil {
+			&e.Action, &e.Bounds, &e.DecidedBy, &e.ArgDigest, &e.ArgSummary, &e.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

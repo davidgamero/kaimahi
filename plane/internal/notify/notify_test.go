@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kaimahi-agents/kaimahi/plane/internal/gateway"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/store"
 )
 
 // The notifier's contract: a governed post through the plane's own
@@ -265,7 +266,7 @@ type fakeFiler struct {
 	err   error
 }
 
-func (f fakeFiler) FileRequest(context.Context, string, string, string, string) (string, bool, error) {
+func (f fakeFiler) FileRequest(context.Context, store.Filing) (string, bool, error) {
 	return f.id, f.filed, f.err
 }
 
@@ -276,28 +277,30 @@ func (n *fakeNotifier) Notify(f Filing) { n.got = append(n.got, f) }
 func TestStoreNotifiesOncePerFreshFiling(t *testing.T) {
 	n := &fakeNotifier{}
 	s := Store{Filer: fakeFiler{id: "00000000-0000-0000-0000-000000000001", filed: true}, N: n}
-	filed, err := s.FileApprovalRequest(context.Background(), "hello-tools", "tool", "k8s_get_events", "denied tools/call")
+	filed, err := s.FileApprovalRequest(context.Background(), store.Filing{Credential: "hello-tools", Kind: "tool",
+		Subject: "k8s_get_events", Detail: "denied tools/call", ArgSummary: "k8s_get_events: namespace default"})
 	require.NoError(t, err)
 	require.True(t, filed)
 	require.Equal(t, []Filing{{ID: "00000000-0000-0000-0000-000000000001", Credential: "hello-tools",
-		Kind: "tool", Subject: "k8s_get_events", Detail: "denied tools/call"}}, n.got)
+		Kind: "tool", Subject: "k8s_get_events", Detail: "denied tools/call",
+		Summary: "k8s_get_events: namespace default"}}, n.got)
 
 	// Deduped: the request was already pending — nobody is told twice.
 	s.Filer = fakeFiler{filed: false}
-	filed, err = s.FileApprovalRequest(context.Background(), "hello-tools", "tool", "k8s_get_events", "again")
+	filed, err = s.FileApprovalRequest(context.Background(), store.Filing{Credential: "hello-tools", Kind: "tool", Subject: "k8s_get_events", Detail: "again"})
 	require.NoError(t, err)
 	require.False(t, filed)
 	require.Len(t, n.got, 1)
 
 	// A failed filing notifies nothing and surfaces the error.
 	s.Filer = fakeFiler{err: errors.New("pg down")}
-	_, err = s.FileApprovalRequest(context.Background(), "hello-tools", "tool", "k8s_get_events", "again")
+	_, err = s.FileApprovalRequest(context.Background(), store.Filing{Credential: "hello-tools", Kind: "tool", Subject: "k8s_get_events", Detail: "again"})
 	require.Error(t, err)
 	require.Len(t, n.got, 1)
 
 	// No notifier configured: the store's answer, unchanged.
 	s = Store{Filer: fakeFiler{id: "x", filed: true}}
-	filed, err = s.FileApprovalRequest(context.Background(), "c", "tool", "t", "d")
+	filed, err = s.FileApprovalRequest(context.Background(), store.Filing{Credential: "c", Kind: "tool", Subject: "t", Detail: "d"})
 	require.NoError(t, err)
 	require.True(t, filed)
 }
@@ -313,4 +316,12 @@ func TestMessageNamesTheRequestAndTheCommand(t *testing.T) {
 	m = Message(Filing{ID: "00000000-0000-0000-0000-000000000008", Credential: "hello-world", Kind: "budget", Subject: "tokens"})
 	require.Contains(t, m, "amount=<tokens>")
 	require.False(t, strings.Contains(m, "<@"), "the bot is named in plain text, never as a mention token")
+
+	// P12: an approver who cannot see the transaction is the whole
+	// problem restated — where a filing carries a call summary, that is
+	// what the notification names.
+	m = Message(Filing{ID: "00000000-0000-0000-0000-000000000009", Credential: "ap-agent",
+		Kind: "tool", Subject: "payment_schedule", Detail: "denied tools/call via upstream erp",
+		Summary: "payment_schedule: amount_cents 4800000, payee_id MER-4471"})
+	require.Contains(t, m, "payment_schedule: amount_cents 4800000, payee_id MER-4471")
 }

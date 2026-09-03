@@ -223,7 +223,8 @@ func (f *fakeStore) ToolAudit(_ context.Context, name string, _ int) ([]store.To
 	return out, nil
 }
 
-func (f *fakeStore) FileApprovalRequest(_ context.Context, credential, kind, subject, detail string) (bool, error) {
+func (f *fakeStore) FileApprovalRequest(_ context.Context, fl store.Filing) (bool, error) {
+	credential, kind, subject, detail := fl.Credential, fl.Kind, fl.Subject, fl.Detail
 	if f.fileErr != nil {
 		return false, f.fileErr
 	}

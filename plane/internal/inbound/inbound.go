@@ -60,7 +60,7 @@ type Store interface {
 	CredentialByName(ctx context.Context, name string) (store.Credential, error)
 	RecordInboundAudit(ctx context.Context, e store.InboundAuditEntry) error
 	AdmitInboundEvent(ctx context.Context, hook, credential, delivery, agent string) (eventID, grantID string, err error)
-	FileApprovalRequest(ctx context.Context, credential, kind, subject, detail string) (filed bool, err error)
+	FileApprovalRequest(ctx context.Context, f store.Filing) (filed bool, err error)
 	// P8b: approval commands from Slack decide requests here, with the
 	// approver's identity.
 	RequestByPrefix(ctx context.Context, prefix string) (store.ApprovalRequest, error)
@@ -621,7 +621,7 @@ func (b *Bridge) authenticate(w http.ResponseWriter, r *http.Request, name strin
 func (b *Bridge) fileRequest(ctx context.Context, credential, kind, subject, detail string) bool {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if _, err := b.d.Store.FileApprovalRequest(ctx, credential, kind, subject, detail); err != nil {
+	if _, err := b.d.Store.FileApprovalRequest(ctx, store.Filing{Credential: credential, Kind: kind, Subject: subject, Detail: detail}); err != nil {
 		slog.Error("inbound: filing approval request failed (denial stands)",
 			"credential", credential, "kind", kind, "subject", subject, "err", err)
 		return false

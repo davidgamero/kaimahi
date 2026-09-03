@@ -201,7 +201,7 @@ func main() {
 	// The P4b MCP gateway shares this process (and its pool, redactor,
 	// and fail-closed machinery); its listener gets its own Service so
 	// the tool seam has its own address.
-	gwDeps := gateway.Deps{Store: filing, Upstreams: cfg.ToolUpstreams}
+	gwDeps := gateway.Deps{Store: filing, Upstreams: cfg.ToolUpstreams, Policy: cfg.Policy()}
 	deps, gwDeps = wireInternet(deps, gwDeps, internetClient)
 	// The P7b inbound bridge: same process, same pool and fail-closed
 	// machinery, its own Service. Its workers invoke agents asynchronously

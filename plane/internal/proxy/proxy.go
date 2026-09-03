@@ -40,7 +40,7 @@ type Store interface {
 	ToolAudit(ctx context.Context, credentialName string, limit int) ([]store.ToolAuditEntry, error)
 	// P4c approvals: deny-and-pend filing (data path) and the decision
 	// surface (admin).
-	FileApprovalRequest(ctx context.Context, credential, kind, subject, detail string) (filed bool, err error)
+	FileApprovalRequest(ctx context.Context, f store.Filing) (filed bool, err error)
 	PendingApprovals(ctx context.Context) ([]store.ApprovalRequest, error)
 	ApproveRequest(ctx context.Context, id string, expiresAt *time.Time, maxUses *int32, amount *int64, decidedBy string) (store.Grant, error)
 	DenyApprovalRequest(ctx context.Context, id string, decidedBy string) error

@@ -87,6 +87,12 @@ type ToolUpstream struct {
 	// entry must be in-cluster-shaped.
 	Internet bool   `json:"internet,omitempty"`
 	CAFile   string `json:"ca_file,omitempty"`
+	// Tools (P12) declares, per tool this server offers, which argument
+	// fields are policy-relevant: the fields an approval digest binds and
+	// the audit summary is built from (D29). Optional — an undeclared
+	// tool's digest binds the whole canonical argument object, which is
+	// the brittle case (policy.go, docs/tool-governance.md).
+	Tools map[string]ToolPolicy `json:"tools,omitempty"`
 }
 
 // Inbound authentication modes. Every mode binds the caller to the hook's
@@ -218,7 +224,20 @@ type Config struct {
 	// ApprovalNotifier (P8b) is optional: absent means nobody is told
 	// when a request is filed, exactly as before.
 	ApprovalNotifier *ApprovalNotifier `json:"approval_notifier,omitempty"`
+	// StandingConstraints (P12/D31) are declarative bounds a credential
+	// carries on a tool's declared policy fields: credential -> tool ->
+	// rules, ALL of which must hold. A call inside them proceeds with no
+	// approval; a call outside them is denied and files a request. Scoped
+	// per credential and tool rather than per upstream, so a constrained
+	// tool cannot be reached unconstrained through another route.
+	StandingConstraints map[string]map[string][]Constraint `json:"standing_constraints,omitempty"`
+	// policy is the flattened, validated view of the two declarations
+	// above, built by Parse.
+	policy PolicySet
 }
+
+// Policy is the argument-policy surface the gateway enforces on.
+func (c Config) Policy() PolicySet { return c.policy }
 
 func Load(path string) (Config, error) {
 	raw, err := os.ReadFile(path)
@@ -352,6 +371,11 @@ func Parse(raw []byte) (Config, error) {
 			return Config{}, fmt.Errorf("config: approval_notifier: credential_file and channel_file are required")
 		}
 	}
+	p, err := buildPolicy(c)
+	if err != nil {
+		return Config{}, err
+	}
+	c.policy = p
 	return c, nil
 }
 

@@ -872,11 +872,14 @@ deny: guard
 
 ## request: file an approval request explicitly, e.g.
 ##   make request KIND=tool SUBJECT=k8s_get_events
+##   make request KIND=tool SUBJECT=k8s_get_events ARGS='{"namespace": "default"}'
 ##   make request KIND=budget SUBJECT=tokens CRED=hello-world
+## ARGS (tool requests only, P12) names the CALL to pre-approve; omitted
+## means the argument-less call, never "any call".
 request: guard
 	@test -n "$(KIND)" && test -n "$(SUBJECT)" || \
-		{ echo 'usage: make request KIND=tool|budget SUBJECT=<tool|tokens|cents> [CRED=...]' >&2; exit 1; }
-	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh request "$(REQ_CRED)" "$(KIND)" "$(SUBJECT)"
+		{ echo 'usage: make request KIND=tool|budget SUBJECT=<tool|tokens|cents> [CRED=...] [ARGS=<json>]' >&2; exit 1; }
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh request "$(REQ_CRED)" "$(KIND)" "$(SUBJECT)" '$(ARGS)'
 
 # The filing credential: an explicit CRED= wins; otherwise tool requests
 # default to the tools credential and budget requests to the chat one.

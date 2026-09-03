@@ -15,9 +15,9 @@ import (
 
 const (
 	ledgerFmt   = "%-19s %-12s %-9s %-16s %6s %6s %6s %-8s %s\n"
-	grantsFmt   = "%-36s %-12s %-8s %-18s %-6s %-22s %-9s %-8s %-19s %s\n"
-	toolFmt     = "%-19s %-12s %-12s %-12s %-24s %-8s %6s %s\n"
-	approvalFmt = "%-19s %-12s %-8s %-18s %-10s %-18s %s\n"
+	grantsFmt   = "%-36s %-12s %-8s %-18s %-6s %-22s %-9s %-8s %-19s %-18s %s\n"
+	toolFmt     = "%-19s %-12s %-12s %-12s %-24s %-8s %6s %-44s %s\n"
+	approvalFmt = "%-19s %-12s %-8s %-18s %-10s %-18s %-40s %s\n"
 )
 
 // Ledger prints the spend ledger, newest first, plus month-to-date totals.
@@ -54,7 +54,7 @@ func (c *Client) Grants(out io.Writer, credential string) error {
 		return nil
 	}
 	fmt.Fprintf(out, grantsFmt, "id", "credential", "kind", "subject", "live",
-		"expires (UTC)", "uses", "amount", "created (UTC)", "decided by")
+		"expires (UTC)", "uses", "amount", "created (UTC)", "decided by", "binds")
 	for _, g := range list {
 		uses := str(g["uses"])
 		if max, ok := g["max_uses"]; ok && max != nil {
@@ -67,7 +67,7 @@ func (c *Client) Grants(out io.Writer, credential string) error {
 			// it: an expiry is printed to the second, and the extra width
 			// is the gap before the next column.
 			trunc(dash(g["expires_at"]), 19), uses, dash(g["amount"]),
-			trunc(str(g["created_at"]), 19), dash(g["decided_by"]))
+			trunc(str(g["created_at"]), 19), dash(g["decided_by"]), binds(g))
 	}
 	return nil
 }
@@ -79,11 +79,12 @@ func (c *Client) ToolAudit(out io.Writer, credential string) error {
 		return err
 	}
 	fmt.Fprintf(out, toolFmt, "created (UTC)", "credential", "upstream", "method",
-		"tool", "decision", "status", "detail")
+		"tool", "decision", "status", "detail", "call")
 	for _, e := range rows(doc, "entries") {
 		fmt.Fprintf(out, toolFmt,
 			trunc(str(e["created_at"]), 19), str(e["credential"]), str(e["upstream"]),
-			str(e["method"]), str(e["tool"]), str(e["decision"]), str(e["status"]), str(e["detail"]))
+			str(e["method"]), str(e["tool"]), str(e["decision"]), str(e["status"]), str(e["detail"]),
+			call(e))
 	}
 	return nil
 }
@@ -95,13 +96,42 @@ func (c *Client) ApprovalAudit(out io.Writer, credential string) error {
 		return err
 	}
 	fmt.Fprintf(out, approvalFmt, "created (UTC)", "credential", "kind", "subject",
-		"action", "decided by", "bounds")
+		"action", "decided by", "bounds", "call")
 	for _, e := range rows(doc, "entries") {
 		fmt.Fprintf(out, approvalFmt,
 			trunc(str(e["created_at"]), 19), str(e["credential"]), str(e["kind"]),
-			str(e["subject"]), str(e["action"]), dash(e["decided_by"]), str(e["bounds"]))
+			str(e["subject"]), str(e["action"]), dash(e["decided_by"]), str(e["bounds"]),
+			dash(e["arg_summary"]))
 	}
 	return nil
+}
+
+// binds says what a tool grant admits (P12): one CALL, named by the
+// digest of its policy-relevant arguments. A tool grant with no digest is
+// the closed legacy class — minted before argument binding, so it admits
+// any arguments and says so; other kinds have no arguments at all.
+func binds(g map[string]any) string {
+	if str(g["kind"]) != "tool" {
+		return "-"
+	}
+	if d := str(g["arg_digest"]); d != "" {
+		return "call " + trunc(d, 12)
+	}
+	return "verb-level (legacy)"
+}
+
+// call renders the audited call: the human-readable summary built from the
+// tool's declared policy fields, plus the digest prefix that ties a denial,
+// its approval and the admitted call together.
+func call(e map[string]any) string {
+	summary, digest := str(e["arg_summary"]), str(e["arg_digest"])
+	if digest == "" {
+		return dash(summary)
+	}
+	if summary != "" {
+		summary += " "
+	}
+	return summary + "[" + trunc(digest, 12) + "]"
 }
 
 // rows returns a document's list of records, tolerating a null or absent

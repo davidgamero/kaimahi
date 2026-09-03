@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kaimahi-agents/kaimahi/plane/internal/gateway"
 	"github.com/kaimahi-agents/kaimahi/plane/internal/store"
 )
 
@@ -59,6 +60,11 @@ func (h *handler) fileRequest(w http.ResponseWriter, r *http.Request) {
 		Credential string `json:"credential"`
 		Kind       string `json:"kind"`
 		Subject    string `json:"subject"`
+		// Arguments (P12), tool requests only: the CALL the operator wants
+		// pre-approved, as a JSON object. Omitted means the argument-less
+		// call — never "any call": since argument binding, an approval is
+		// welded to one call's digest, so a request has to name one.
+		Arguments json.RawMessage `json:"arguments,omitempty"`
 	}
 	if !decodeStrict(w, r, &req) {
 		return
@@ -73,7 +79,25 @@ func (h *handler) fileRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "body must be {\"credential\": ..., \"kind\": \"tool\"|\"budget\"|\"inbound\", \"subject\": ...} (budget subjects: tokens|cents; inbound subject: hook name)", http.StatusBadRequest)
 		return
 	}
-	filed, err := h.d.Store.FileApprovalRequest(r.Context(), req.Credential, req.Kind, req.Subject, "filed explicitly via admin")
+	if req.Kind != "tool" && len(req.Arguments) > 0 {
+		http.Error(w, "arguments are meaningful only on tool requests", http.StatusBadRequest)
+		return
+	}
+	filing := store.Filing{Credential: req.Credential, Kind: req.Kind, Subject: req.Subject,
+		Detail: "filed explicitly via admin"}
+	if req.Kind == "tool" {
+		// The same binding the gateway computes for the same call, from
+		// the same declarations — one implementation, so an operator's
+		// pre-approval and the agent's retry cannot disagree.
+		fields, declared := h.d.Config.Policy().Declared(req.Subject)
+		bind, err := gateway.BindArguments(req.Subject, req.Arguments, fields, declared)
+		if err != nil {
+			http.Error(w, "invalid tool arguments: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		filing.ArgDigest, filing.ArgSummary = bind.Digest, bind.Summary
+	}
+	filed, err := h.d.Store.FileApprovalRequest(r.Context(), filing)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such credential", http.StatusNotFound)
 		return

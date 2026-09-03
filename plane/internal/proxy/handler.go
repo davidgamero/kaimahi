@@ -202,8 +202,9 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request) {
 		// un-denies — the denial is the safe state.
 		if d.BudgetSubject != "" {
 			fctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-			if _, ferr := h.d.Store.FileApprovalRequest(fctx, cred.Name, "budget", d.BudgetSubject,
-				"denied "+req.Model+" via upstream "+name); ferr != nil {
+			filing := store.Filing{Credential: cred.Name, Kind: "budget", Subject: d.BudgetSubject,
+				Detail: "denied " + req.Model + " via upstream " + name}
+			if _, ferr := h.d.Store.FileApprovalRequest(fctx, filing); ferr != nil {
 				slog.Error("proxy: filing approval request failed (denial stands)",
 					"credential", cred.Name, "subject", d.BudgetSubject, "err", ferr)
 			} else {

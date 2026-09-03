@@ -8,9 +8,12 @@ import (
 )
 
 // Filing is one freshly filed approval request, as the notifier names
-// it to a human.
+// it to a human. Summary (P12) is the transaction line a tool request
+// carries — "payment_schedule: amount_cents 3255000, payee_id MER-4471"
+// — so an approver sees WHAT they are approving, not just which verb.
 type Filing struct {
 	ID, Credential, Kind, Subject, Detail string
+	Summary                               string
 }
 
 // Notifier is told about fresh filings. *Poster satisfies it via
@@ -42,15 +45,21 @@ func Message(f Filing) string {
 	if f.Kind == "budget" {
 		amount = " amount=<" + f.Subject + ">"
 	}
+	// The call itself, where there is one: an approver who cannot see the
+	// transaction is the problem this restates.
+	what := "`" + f.Subject + "`"
+	if f.Summary != "" {
+		what = "`" + f.Summary + "`"
+	}
 	return "Kaimahi approval request `" + f.ID + "`: credential `" + f.Credential +
-		"` was denied " + f.Kind + " `" + f.Subject + "` (" + f.Detail + ").\n" +
+		"` was denied " + f.Kind + " " + what + " (" + f.Detail + ").\n" +
 		"To decide, mention the bot: `@kaimahi approve " + f.ID + " [uses=N] [ttl=15m]" + amount +
 		"` or `@kaimahi deny " + f.ID + "`. Or run `make approvals`."
 }
 
 // Filer is the one filing function with the id (store.Store.FileRequest).
 type Filer interface {
-	FileRequest(ctx context.Context, credential, kind, subject, detail string) (id string, filed bool, err error)
+	FileRequest(ctx context.Context, f store.Filing) (id string, filed bool, err error)
 }
 
 // Store wraps the plane's store so that the ONE filing function every
@@ -67,14 +76,16 @@ type Store struct {
 	N     Notifier
 }
 
-func (s Store) FileApprovalRequest(ctx context.Context, credential, kind, subject, detail string) (bool, error) {
-	id, filed, err := s.Filer.FileRequest(ctx, credential, kind, subject, detail)
+func (s Store) FileApprovalRequest(ctx context.Context, f store.Filing) (bool, error) {
+	id, filed, err := s.Filer.FileRequest(ctx, f)
 	if err != nil || !filed {
 		return filed, err
 	}
 	if s.N != nil {
-		slog.Info("notify: approval request filed; notifying", "request", id, "credential", credential, "kind", kind, "subject", subject)
-		s.N.Notify(Filing{ID: id, Credential: credential, Kind: kind, Subject: subject, Detail: detail})
+		slog.Info("notify: approval request filed; notifying", "request", id,
+			"credential", f.Credential, "kind", f.Kind, "subject", f.Subject)
+		s.N.Notify(Filing{ID: id, Credential: f.Credential, Kind: f.Kind,
+			Subject: f.Subject, Detail: f.Detail, Summary: f.ArgSummary})
 	}
 	return true, nil
 }

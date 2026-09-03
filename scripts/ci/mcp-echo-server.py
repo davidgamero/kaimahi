@@ -9,9 +9,12 @@ minimal: no sessions, no SSE, no resources — just the four methods the
 gateway relays, answered as plain JSON.
 
   POST /mcp        initialize / notifications/initialized / tools/list /
-                   tools/call (tools: `echo` and `echo_write`; both echo
-                   their arguments back — the second exists only so a
-                   NOT-allowlisted tool has a name)
+                   tools/call (tools: `echo`, `echo_write` and
+                   `pay_invoice`; all three echo their arguments back.
+                   The second exists only so a NOT-allowlisted tool has a
+                   name; the third only so a tool with DECLARED
+                   policy-relevant fields and a money-shaped argument
+                   exists for the P12 standing-constraint checks)
   POST /redirect   302 → /mcp, so the gateway's refusal of a redirecting
                    upstream can be exercised
   anything else    404
@@ -78,11 +81,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                  "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}},
                 {"name": "echo_write", "description": "Echo the arguments back (a stand-in for a write tool).",
                  "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}},
+                {"name": "pay_invoice", "description": "Echo the arguments back (a stand-in for a consequential tool).",
+                 "inputSchema": {"type": "object", "properties": {
+                     "invoice_id": {"type": "string"},
+                     "amount_cents": {"type": "integer"},
+                     "payee_id": {"type": "string"}}}},
             ]})
         elif method == "tools/call":
             params = msg.get("params") or {}
             name = params.get("name")
-            if name not in ("echo", "echo_write"):
+            if name not in ("echo", "echo_write", "pay_invoice"):
                 self._rpc(msg_id, error={"code": -32602, "message": "unknown tool %r" % name})
                 return
             args = params.get("arguments") or {}

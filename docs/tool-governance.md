@@ -10,9 +10,12 @@ authenticated, scope-checked, allowlist-enforced, and audited before it
 reaches a tool server. kagent still runs the tools. Kaimahi ships no MCP
 runtime; the gateway relays the protocol and enforces.
 
-> **What this is, and is not.** The allowlist here is static policy. The
-> consent flow on top of it, where a denial files an approval request
-> and a human mints a bounded grant, is [approvals.md](approvals.md).
+> **What this is, and is not.** The allowlist here is static policy, and
+> since P12 it is joined by ARGUMENT policy: which argument fields a tool
+> declares policy-relevant, and the standing constraints a credential
+> carries on them. The consent flow on top of both, where a denial files
+> an approval request welded to the exact call and a human mints a
+> bounded grant, is [approvals.md](approvals.md).
 > And the gateway is an *application-layer* egress rule: a pod that
 > ignores its RemoteMCPServer wiring can still open arbitrary
 > connections. Cluster-level NetworkPolicy is not built as of this doc;
@@ -56,6 +59,55 @@ IS the allowlist projection                │ tool_allowlist,    │
   MCP server), the one marked `internet: true` and reached only through
   the hardened dialer ([hosted-upstreams.md](hosted-upstreams.md)).
 
+## Declaring what arguments mean
+
+A tool server knows what its arguments do; the plane has to be told. A
+`tool_upstreams` entry may therefore declare, per tool, which argument
+fields are **policy-relevant** — and that one declaration does two jobs
+(D29): the digest an approval is welded to binds exactly those fields,
+and the audit's human-readable summary is built from exactly those
+fields.
+
+```json
+"tool_upstreams": {
+  "kagent-tools": {
+    "url": "http://kagent-tools.kagent:8084/mcp",
+    "tools": {
+      "k8s_get_events":  {"policy_fields": ["namespace"]},
+      "payment_schedule": {"policy_fields": ["invoice_id", "amount_cents", "payee_id"]},
+      "invoice_get":     {"policy_fields": []}
+    }
+  }
+}
+```
+
+- **`policy_fields` is required** in a declaration. `[]` is a real answer
+  — "no argument of this tool is policy-relevant", a verb-level binding —
+  and it is different from forgetting the key, which is refused at load.
+- **Fields are top-level argument names** (`[A-Za-z0-9_-]{1,64}`). A value
+  nested inside an object is not addressable, which keeps the vocabulary
+  small and the summary flat.
+- **A tool with no declaration binds its WHOLE canonical argument
+  object.** That is exact, and it is the brittle case: an LLM re-emitting
+  a semantically identical call — one extra field, a reordered object, a
+  different trace id — produces a different digest, so the approval a
+  human granted will not admit the retry. Declare the fields that matter
+  for any tool an approval cycle runs through.
+- **Declarations are per tool NAME across the table.** The allowlist is
+  per-credential and not per-upstream, so a tool name means one thing
+  here too; two upstreams declaring the same name differently is refused
+  at load, which is what stops a constrained tool being reached
+  unconstrained through another route.
+- **Numbers**: an integer literal has one canonical form, so `48000` and
+  `48000` agree however they were spaced. `48000.0` is a different value
+  — policy fields should be integers, as money in this plane already is
+  (cents).
+
+Standing constraints — the per-credential bounds that let routine calls
+through without an approval — are declared alongside, and are documented
+with the rest of the consent flow in
+[approvals.md](approvals.md#standing-constraints-the-calls-that-need-no-approval).
+
 ## Credential custody
 
 `make govern-tools` mints a separate `hello-tools` credential. The
@@ -88,19 +140,38 @@ via subPath, which never live-updates.
 
 - **Egress.** Only `tool_upstreams` entries are reachable. Any other
   upstream name answers 403 before any network contact.
+- **Canonicalization.** Every message is parsed ONCE into a canonical
+  form, and the policy decision, the approval digest, the audit summary
+  and the bytes relayed upstream all come from it — they cannot disagree
+  about what the call was. A **duplicated JSON key at any depth is
+  refused** (HTTP 400, audited), not collapsed: Go reads last-wins and an
+  upstream parser may read first-wins, so `{"amount": 42000, "amount":
+  48000}` inside `arguments` is a smuggling vector, not a typo. Nesting
+  depth and node count are bounded, and a message past either bound is
+  refused rather than walked.
 - **Protocol scope.** Tools only. `initialize` and
   `notifications/initialized` (the mandatory lifecycle handshake) relay;
   `tools/list` and `tools/call` relay under governance; `ping` is
   answered locally without upstream contact; **every other method is
   denied, not relayed** (JSON-RPC error, audited). JSON-RPC batches are
   rejected outright, since a batch could smuggle a denied method.
+- **Argument policy.** A `tools/call` is admitted by, in order: a
+  standing constraint the call is INSIDE (no approval, no grant burned,
+  audited `within standing constraint`); otherwise the allowlist — but
+  only where no constraint exists for that credential and tool, since a
+  constraint is a bound and not merely another way in; otherwise a live
+  grant welded to this call's digest. Everything else is denied and files
+  a request carrying the call. Arguments that are not a JSON object are
+  refused rather than forwarded unexamined.
 - **Allowlist.** Enforced on `tools/call` and **projected** onto
   `tools/list`. kagent's controller discovers through the gateway, so
   `status.discoveredTools` on `kaimahi-tools` shows exactly what the
   credential may call, and the agent never sees the rest. **Empty or
   missing allowlist means nothing is callable.** The one governed
   exception is a live bounded grant ([approvals.md](approvals.md)), which
-  admits calls and joins the projection while it lasts. Allowlist edits
+  admits calls and joins the projection while it lasts; a tool a
+  credential is constrained on joins it too, since it is callable right
+  now for arguments inside those bounds. Allowlist edits
   enforce immediately on calls; the projection an agent *sees* refreshes
   on kagent's next RemoteMCPServer reconcile.
 - **Audit.** Every `tools/call` outcome and every attributable denial is
@@ -165,6 +236,11 @@ the 8 tools the upstream offers.
   `make plane`, the first reconcile raced the proxy rollout. It
   self-heals within a minute, the same behaviour the chart's own server
   shows.
+- Argument declarations and standing constraints are read at boot from
+  the same ConfigMap as the rest of the table, so `make plane` after
+  editing them (the mount is subPath, which never live-updates). A
+  malformed declaration or constraint refuses the config at load — the
+  pod says so and the old replicas keep serving.
 - The allowlist is per-credential, not per-(credential, upstream). With
   two upstreams in the table, a credential's allowlist applies across
   both; scope credentials per upstream (the Slack agent has its own) and
@@ -177,6 +253,9 @@ the 8 tools the upstream offers.
 
 - Application-layer only. A pod that bypasses the gateway is not
   constrained by it; NetworkPolicy is unbuilt as of this doc.
+- Argument policy governs INPUTS. There is no filtering or redaction of
+  tool RESULTS in this project, and none is implied: a governed call's
+  answer is relayed as the upstream wrote it.
 - An internet-facing upstream is reached only through the hardened
   dialer, and only when marked `internet: true` in the table; the
   network allowance for it is opt-in. What that does and does not bound

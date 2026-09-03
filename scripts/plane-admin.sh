@@ -38,9 +38,13 @@
 #                                          s/m/h/d suffixes; amount only
 #                                          for budget requests)
 #   plane-admin.sh deny <id>               deny a pending request
-#   plane-admin.sh request <name> <tool|budget|inbound> <subject>
+#   plane-admin.sh request <name> <tool|budget|inbound> <subject> [args-json]
 #                                          file a request explicitly
-#                                          (inbound subject: hook name)
+#                                          (inbound subject: hook name;
+#                                          args-json, tool requests only,
+#                                          names the CALL to pre-approve —
+#                                          omitted means the argument-less
+#                                          call, never "any call")
 #   plane-admin.sh grants [name]           list grants (with liveness)
 #   plane-admin.sh approval-audit [name]   show the approvals audit trail
 #   plane-admin.sh inbound-audit [hook]    show the inbound event trail (P7b)
@@ -236,11 +240,18 @@ print(f'"'"'{d["credential"]}: {", ".join(d["tools"]) or "(empty — nothing cal
 import json, sys
 d = json.load(open(sys.argv[1]))
 rows = d.get("entries") or []
-fmt = "%-19s %-12s %-12s %-12s %-24s %-8s %6s %s"
-print(fmt % ("created (UTC)", "credential", "upstream", "method", "tool", "decision", "status", "detail"))
+fmt = "%-19s %-12s %-12s %-12s %-24s %-8s %6s %-44s %s"
+print(fmt % ("created (UTC)", "credential", "upstream", "method", "tool", "decision", "status", "detail", "call"))
 for e in rows:
+    # arg_digest identifies the call; arg_summary says what it was. Both
+    # are on the denial and on the admitted call, so an approved call and
+    # the call that ran are provably the same one.
+    call = e.get("arg_summary") or ""
+    if e.get("arg_digest"):
+        call = (call + " ") if call else ""
+        call += "[" + e["arg_digest"][:12] + "]"
     print(fmt % (e["created_at"][:19], e["credential"], e["upstream"], e["method"],
-                 e["tool"], e["decision"], e["status"], e["detail"]))
+                 e["tool"], e["decision"], e["status"], e["detail"], call or "-"))
 EOF
     ;;
   approvals)
@@ -252,11 +263,14 @@ d = json.load(open(sys.argv[1]))
 rows = d.get("pending") or []
 if not rows:
     print("no pending approval requests")
-fmt = "%-36s %-19s %-12s %-8s %-18s %s"
+fmt = "%-36s %-19s %-12s %-8s %-18s %-34s %s"
 if rows:
-    print(fmt % ("id", "created (UTC)", "credential", "kind", "subject", "detail"))
+    print(fmt % ("id", "created (UTC)", "credential", "kind", "subject", "detail", "call"))
 for r in rows:
-    print(fmt % (r["id"], r["created_at"][:19], r["credential"], r["kind"], r["subject"], r["detail"]))
+    # The call (P12) is what a human is actually approving: an approver
+    # who cannot see the transaction is the whole problem restated.
+    print(fmt % (r["id"], r["created_at"][:19], r["credential"], r["kind"], r["subject"],
+                 r["detail"], r.get("arg_summary") or "-"))
 EOF
     ;;
   approve)
@@ -307,15 +321,31 @@ print(f'"'"'Granted: {g["credential"]} {g["kind"]}/{g["subject"]} — {", ".join
     echo "Request $id denied." >&2
     ;;
   request)
-    name="${2:?usage: plane-admin.sh request <name> <tool|budget|inbound> <subject>}"
+    name="${2:?usage: plane-admin.sh request <name> <tool|budget|inbound> <subject> [args-json]}"
     kind="${3:?kind (tool|budget|inbound)}"
     subject="${4:?subject (tool name, tokens|cents, or hook name)}"
+    args="${5:-}"
     check_name "$name"
     case "$kind" in (tool|budget|inbound) ;; (*) echo "kind must be tool, budget or inbound" >&2; exit 2 ;; esac
     case "$subject" in
       (*[!A-Za-z0-9._-]*|'') echo "invalid subject '$subject'" >&2; exit 2 ;;
     esac
-    printf '{"credential": "%s", "kind": "%s", "subject": "%s"}\n' "$name" "$kind" "$subject" > "$workdir/req"
+    # P12: a tool request names the CALL it is about. The arguments are
+    # embedded as JSON (validated here so a typo fails before the admin
+    # port sees it); the plane computes the digest with the gateway's own
+    # code, so this request and the agent's retry are the same call.
+    if [ -n "$args" ]; then
+      [ "$kind" = tool ] || { echo "args-json is meaningful only on tool requests" >&2; exit 2; }
+      python3 -c 'import json,sys
+d = json.loads(sys.argv[1])
+assert isinstance(d, dict), "tool arguments must be a JSON object"' "$args" \
+        || { echo "invalid args-json (want a JSON object)" >&2; exit 2; }
+      python3 -c 'import json,sys
+print(json.dumps({"credential": sys.argv[1], "kind": sys.argv[2], "subject": sys.argv[3],
+                  "arguments": json.loads(sys.argv[4])}))' "$name" "$kind" "$subject" "$args" > "$workdir/req"
+    else
+      printf '{"credential": "%s", "kind": "%s", "subject": "%s"}\n' "$name" "$kind" "$subject" > "$workdir/req"
+    fi
     admin_curl POST /admin/requests "$workdir/req"
     [ "$status" = 201 ] || { echo "request failed (HTTP $status):" >&2; cat "$workdir/resp" >&2; exit 1; }
     if grep -q '"deduped":true' "$workdir/resp"; then
@@ -335,16 +365,25 @@ d = json.load(open(sys.argv[1]))
 rows = d.get("grants") or []
 if not rows:
     print("no grants")
-fmt = "%-36s %-12s %-8s %-18s %-6s %-22s %-9s %-8s %-19s %s"
+fmt = "%-36s %-12s %-8s %-18s %-6s %-22s %-9s %-8s %-19s %-18s %s"
 if rows:
-    print(fmt % ("id", "credential", "kind", "subject", "live", "expires (UTC)", "uses", "amount", "created (UTC)", "decided by"))
+    print(fmt % ("id", "credential", "kind", "subject", "live", "expires (UTC)", "uses", "amount", "created (UTC)", "decided by", "binds"))
 for g in rows:
     uses = str(g["uses"]) + ("/" + str(g["max_uses"]) if g.get("max_uses") is not None else "")
+    # A tool grant admits ONE call (P12): "binds" is that call's digest.
+    # "verb-level" marks the closed legacy class — a grant minted before
+    # argument binding, which admits any arguments; none can be created.
+    if g["kind"] != "tool":
+        binds = "-"
+    elif g.get("arg_digest"):
+        binds = "call " + g["arg_digest"][:12]
+    else:
+        binds = "verb-level (legacy)"
     print(fmt % (g["id"], g["credential"], g["kind"], g["subject"],
                  "yes" if g["live"] else "no",
                  (g.get("expires_at") or "-")[:19], uses,
                  g.get("amount") if g.get("amount") is not None else "-",
-                 g["created_at"][:19], g.get("decided_by") or "-"))
+                 g["created_at"][:19], g.get("decided_by") or "-", binds))
 EOF
     ;;
   approval-audit)
@@ -356,11 +395,11 @@ EOF
 import json, sys
 d = json.load(open(sys.argv[1]))
 rows = d.get("entries") or []
-fmt = "%-19s %-12s %-8s %-18s %-10s %-18s %s"
-print(fmt % ("created (UTC)", "credential", "kind", "subject", "action", "decided by", "bounds"))
+fmt = "%-19s %-12s %-8s %-18s %-10s %-18s %-40s %s"
+print(fmt % ("created (UTC)", "credential", "kind", "subject", "action", "decided by", "bounds", "call"))
 for e in rows:
     print(fmt % (e["created_at"][:19], e["credential"], e["kind"], e["subject"], e["action"],
-                 e.get("decided_by") or "-", e["bounds"]))
+                 e.get("decided_by") or "-", e["bounds"], e.get("arg_summary") or "-"))
 EOF
     ;;
   inbound-audit)

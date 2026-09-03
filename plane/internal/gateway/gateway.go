@@ -68,14 +68,22 @@ type Store interface {
 	// P4c approvals: bounded grants admit tools outside the static
 	// allowlist (consuming a use, liveness evaluated in SQL at call
 	// time), and a denial files a pending approval request.
-	ConsumeToolGrant(ctx context.Context, credential, tool string) (grantID string, ok bool, err error)
+	// P12: a grant admits one CALL — the digest of its canonical policy
+	// fields must match — and a filed request carries that call.
+	ConsumeToolGrant(ctx context.Context, credential, tool, argDigest string) (grantID string, ok bool, err error)
 	LiveToolGrantSubjects(ctx context.Context, credential string) ([]string, error)
-	FileApprovalRequest(ctx context.Context, credential, kind, subject, detail string) (filed bool, err error)
+	FileApprovalRequest(ctx context.Context, f store.Filing) (filed bool, err error)
 }
 
 type Deps struct {
 	Store     Store
 	Upstreams map[string]config.ToolUpstream
+	// Policy (P12) is the argument-policy surface built from the same
+	// committed config: which argument fields each tool declares
+	// policy-relevant, and the standing constraints each credential
+	// carries on them. The zero value declares and constrains nothing,
+	// which is exactly P4b/P4c behaviour.
+	Policy config.PolicySet
 	// Client makes IN-CLUSTER upstream calls. Nil gets a default that
 	// never FOLLOWS a redirect (standing guidance); the relay paths then
 	// refuse the 3xx itself with a 502. Calls are bounded at 5 minutes.
@@ -157,7 +165,7 @@ func reasonFor(status int, msg string) metrics.Reason {
 	case strings.HasPrefix(msg, "tool audit unavailable"):
 		return metrics.ReasonAuditDegraded
 	case strings.HasPrefix(msg, "request body"), strings.HasPrefix(msg, "JSON-RPC batches"),
-		strings.HasPrefix(msg, "tools/call params"), strings.HasPrefix(msg, "upstream tool listing"):
+		strings.HasPrefix(msg, "tools/call "), strings.HasPrefix(msg, "upstream tool listing"):
 		return metrics.ReasonBadRequest
 	case strings.HasPrefix(msg, "grant check unavailable"):
 		return metrics.ReasonGrantCheck
@@ -165,6 +173,8 @@ func reasonFor(status int, msg string) metrics.Reason {
 		return metrics.ReasonCredentialStore
 	case strings.HasPrefix(msg, "tool not permitted"):
 		return metrics.ReasonAllowlist
+	case strings.HasPrefix(msg, "tool call not permitted"):
+		return metrics.ReasonConstraint
 	case strings.HasPrefix(msg, "method not relayed"):
 		return metrics.ReasonMethod
 	case status == http.StatusUnauthorized:
@@ -189,6 +199,26 @@ func (h *handler) rpcDeny(w http.ResponseWriter, r *http.Request, cred store.Cre
 	upstream, method, tool string, id json.RawMessage, code int, msg string) {
 	h.audit(r, store.ToolAuditEntry{CredentialName: cred.Name, Upstream: upstream,
 		Method: method, Tool: tool, Decision: "denied", Status: http.StatusForbidden, Detail: msg})
+	metrics.Decide(metrics.SeamGateway, metrics.Denied, reasonFor(http.StatusForbidden, msg))
+	if len(id) == 0 {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	writeRPC(w, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"error":   map[string]any{"code": code, "message": msg},
+	})
+}
+
+// rpcDenyCall is rpcDeny for a tools/call: the denial row carries the
+// digest and summary of the call that was refused, so a denied attempt
+// and the approval it files describe the same transaction.
+func (h *handler) rpcDenyCall(w http.ResponseWriter, r *http.Request, cred store.Credential,
+	upstream, method, tool string, b CallBinding, id json.RawMessage, code int, msg string) {
+	h.audit(r, store.ToolAuditEntry{CredentialName: cred.Name, Upstream: upstream,
+		Method: method, Tool: tool, Decision: "denied", Status: http.StatusForbidden, Detail: msg,
+		ArgDigest: b.Digest, ArgSummary: b.Summary})
 	metrics.Decide(metrics.SeamGateway, metrics.Denied, reasonFor(http.StatusForbidden, msg))
 	if len(id) == 0 {
 		w.WriteHeader(http.StatusAccepted)
@@ -266,24 +296,20 @@ func (h *handler) relay(w http.ResponseWriter, r *http.Request) {
 		h.httpDeny(w, r, cred, name, "", "", http.StatusBadRequest, "JSON-RPC batches are not relayed")
 		return
 	}
-	var msg struct {
-		ID     json.RawMessage `json:"id"`
-		Method string          `json:"method"`
-		Params json.RawMessage `json:"params"`
-	}
-	if err := json.Unmarshal(body, &msg); err != nil {
-		h.httpDeny(w, r, cred, name, "", "", http.StatusBadRequest, "request body is not a JSON-RPC message")
+	// Parse ONCE, into the canonical tree every consumer reads: the
+	// policy decision, the argument digest, the audit summary and the
+	// bytes forwarded upstream all come from it, so no parser difference
+	// can put them out of step. A duplicated key at any depth is refused
+	// here (canon.go), not collapsed.
+	body, msg, err := canonicalize(body)
+	if err != nil {
+		h.httpDeny(w, r, cred, name, "", "", http.StatusBadRequest, canonRefusal(err))
 		return
 	}
-	// Forward exactly what was checked: rebuild the message from the
-	// parse so duplicated JSON keys cannot smuggle a different method or
-	// tool past enforcement into a first-key-wins upstream parser.
-	if body, err = canonicalize(body); err != nil {
-		h.httpDeny(w, r, cred, name, msg.Method, "", http.StatusBadRequest, "request body is not a JSON-RPC message")
-		return
-	}
+	method, _ := msg["method"].(string)
+	id := rawID(msg)
 
-	switch msg.Method {
+	switch method {
 	case "initialize", "notifications/initialized":
 		// The mandatory MCP lifecycle handshake, relayed verbatim.
 		h.forward(w, r, name, up, body)
@@ -292,58 +318,89 @@ func (h *handler) relay(w http.ResponseWriter, r *http.Request) {
 		// Answered locally: the spec demands a prompt response, and a
 		// liveness check earns no upstream contact through a governance
 		// gateway.
-		if len(msg.ID) == 0 {
+		if len(id) == 0 {
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}
-		writeRPC(w, map[string]any{"jsonrpc": "2.0", "id": msg.ID, "result": map[string]any{}})
+		writeRPC(w, map[string]any{"jsonrpc": "2.0", "id": id, "result": map[string]any{}})
 
 	case "tools/list":
-		allowed, ok := h.allowlist(w, r, cred, name, msg.Method)
+		allowed, ok := h.allowlist(w, r, cred, name, method)
 		if !ok {
 			return
 		}
-		if allowed, ok = h.projectable(w, r, cred, name, msg.Method, allowed); !ok {
+		if allowed, ok = h.projectable(w, r, cred, name, method, allowed); !ok {
 			return
 		}
 		h.forwardProjected(w, r, cred, name, up, body, allowed)
 
 	case "tools/call":
-		var params struct {
-			Name string `json:"name"`
-		}
-		if err := json.Unmarshal(msg.Params, &params); err != nil || params.Name == "" {
-			h.httpDeny(w, r, cred, name, msg.Method, "", http.StatusBadRequest, "tools/call params carry no tool name")
+		tool := toolNameOf(msg)
+		if tool == "" {
+			h.httpDeny(w, r, cred, name, method, "", http.StatusBadRequest, "tools/call params carry no tool name")
 			return
 		}
-		allowed, ok := h.allowlist(w, r, cred, name, msg.Method)
+		// P12: arguments are policy inputs now, so they must be an object
+		// the plane can read. Anything else is refused rather than
+		// forwarded unexamined.
+		args, ok := argumentsOf(msg)
+		if !ok {
+			h.httpDeny(w, r, cred, name, method, tool, http.StatusBadRequest, "tools/call arguments must be a JSON object")
+			return
+		}
+		fields, declared := h.d.Policy.Declared(tool)
+		bind := Bind(tool, args, fields, declared)
+
+		allowed, ok := h.allowlist(w, r, cred, name, method)
 		if !ok {
 			return
 		}
-		detail := ""
-		if !slices.Contains(allowed, params.Name) {
-			// Outside the static allowlist: a live time-boxed grant
-			// (P4c) can still admit the call, consuming one use — the
-			// use is consumed before the forward, so an upstream
-			// failure burns it (conservative direction).
-			grantID, ok, err := h.d.Store.ConsumeToolGrant(r.Context(), cred.Name, params.Name)
+
+		// Three ways a call is admitted, in order:
+		//   1. a STANDING CONSTRAINT (D31) the call is inside — routine
+		//      traffic proceeds with no human, and no grant is burned;
+		//   2. the static allowlist — but ONLY where no constraint exists
+		//      for this credential and tool, because a constraint is a
+		//      BOUND ("may call payment_schedule when amount_cents <=
+		//      1000000, and never otherwise"), not merely another way in;
+		//   3. a live grant welded to THIS call's digest (P4c + P12).
+		// Anything else is denied and files a request carrying the call.
+		detail, outside := "", ""
+		admitted := false
+		if cs, constrained := h.d.Policy.Constraints(cred.Name, tool); constrained {
+			if inside, why := config.Satisfied(cs, args); inside {
+				admitted, detail = true, "within standing constraint"
+			} else {
+				outside = why
+			}
+		} else if slices.Contains(allowed, tool) {
+			admitted = true
+		}
+		if !admitted {
+			// The use is consumed before the forward, so an upstream
+			// failure burns it (conservative direction, unchanged).
+			grantID, ok, err := h.d.Store.ConsumeToolGrant(r.Context(), cred.Name, tool, bind.Digest)
 			if err != nil {
-				slog.Error("gateway: grant check failed", "credential", cred.Name, "tool", params.Name, "err", err)
-				h.httpDeny(w, r, cred, name, msg.Method, params.Name, http.StatusServiceUnavailable, "grant check unavailable")
+				slog.Error("gateway: grant check failed", "credential", cred.Name, "tool", tool, "err", err)
+				h.httpDeny(w, r, cred, name, method, tool, http.StatusServiceUnavailable, "grant check unavailable")
 				return
 			}
 			if !ok {
-				// Deny-and-pend (D13): the denial stands AND files a
-				// pending approval request (deduped per credential/
-				// kind/subject). A filing failure never un-denies and
-				// never trips the breaker — denial is the safe state.
-				denyMsg := "tool not permitted by the Kaimahi allowlist"
-				if h.fileRequest(r, cred.Name, "tool", params.Name,
-					"denied tools/call via upstream "+name) {
+				// Deny-and-pend (D13), now carrying the CALL: the request
+				// and its dedup key hold the digest and the summary, so two
+				// attempts with different policy-relevant arguments file TWO
+				// requests and one approval can never cover both. A filing
+				// failure never un-denies and never trips the breaker.
+				denyMsg := "tool not permitted by the Kaimahi allowlist for this call"
+				if outside != "" {
+					denyMsg = "tool call not permitted: outside the standing constraint (" + outside + ")"
+				}
+				filed := store.Filing{Credential: cred.Name, Kind: "tool", Subject: tool,
+					Detail: "denied tools/call via upstream " + name, ArgDigest: bind.Digest, ArgSummary: bind.Summary}
+				if h.fileRequest(r, filed) {
 					denyMsg += "; approval request filed — run 'make approvals'"
 				}
-				h.rpcDeny(w, r, cred, name, msg.Method, params.Name, msg.ID,
-					codeToolNotPermitted, denyMsg)
+				h.rpcDenyCall(w, r, cred, name, method, tool, bind, id, codeToolNotPermitted, denyMsg)
 				return
 			}
 			detail = "granted " + grantID
@@ -352,8 +409,10 @@ func (h *handler) relay(w http.ResponseWriter, r *http.Request) {
 		out := h.forward(w, r, name, up, body)
 		metrics.ObserveUpstream(metrics.SeamGateway, name, time.Since(started))
 		switch {
-		case detail != "":
+		case strings.HasPrefix(detail, "granted "):
 			metrics.Decide(metrics.SeamGateway, metrics.Granted, metrics.ReasonGrant)
+		case detail != "":
+			metrics.Decide(metrics.SeamGateway, metrics.Allowed, metrics.ReasonConstraint)
 		case out.refused:
 			metrics.Decide(metrics.SeamGateway, metrics.Allowed, metrics.ReasonEgressRefused)
 		case out.status >= 200 && out.status < 300:
@@ -363,9 +422,10 @@ func (h *handler) relay(w http.ResponseWriter, r *http.Request) {
 		default:
 			metrics.Decide(metrics.SeamGateway, metrics.Allowed, metrics.ReasonUpstreamError)
 		}
-		// The audit row carries the grant (if any) AND what became of the
-		// forward — an egress refusal or a cut body is recorded on the
-		// row of the call it happened to, not only in a log line.
+		// The audit row carries how the call was admitted (a constraint, a
+		// grant, or the allowlist), the digest and summary of the call
+		// itself — so the approved call and the call that ran are provably
+		// the same one — AND what became of the forward.
 		if out.note != "" {
 			if detail != "" {
 				detail += "; "
@@ -373,37 +433,43 @@ func (h *handler) relay(w http.ResponseWriter, r *http.Request) {
 			detail += out.note
 		}
 		h.audit(r, store.ToolAuditEntry{CredentialName: cred.Name, Upstream: name,
-			Method: msg.Method, Tool: params.Name, Decision: "allowed", Status: out.status, Detail: detail})
+			Method: method, Tool: tool, Decision: "allowed", Status: out.status, Detail: detail,
+			ArgDigest: bind.Digest, ArgSummary: bind.Summary})
 
 	default:
-		h.rpcDeny(w, r, cred, name, msg.Method, "", msg.ID,
+		h.rpcDeny(w, r, cred, name, method, "", id,
 			codeMethodNotAllowed, "method not relayed by the Kaimahi gateway (tools only)")
 	}
 }
 
-// canonicalize re-marshals a JSON-RPC message (and one level of params)
-// from Go's last-key-wins parse — the same parse enforcement decisions
-// were made on — collapsing any duplicated keys before the bytes go
-// upstream.
-func canonicalize(body []byte) ([]byte, error) {
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(body, &top); err != nil {
-		return nil, err
+// rawID re-renders the message id for a JSON-RPC response. It comes
+// from the canonical tree, so the id echoed back is the one enforcement
+// was decided on. Absent (a notification) yields nil, which the deny
+// paths answer with the spec's 202.
+func rawID(msg map[string]any) json.RawMessage {
+	raw, ok := msg["id"]
+	if !ok || raw == nil {
+		return nil
 	}
-	if raw, ok := top["params"]; ok {
-		if t := bytes.TrimSpace(raw); len(t) > 0 && t[0] == '{' {
-			var params map[string]json.RawMessage
-			if err := json.Unmarshal(t, &params); err != nil {
-				return nil, err
-			}
-			rebuilt, err := json.Marshal(params)
-			if err != nil {
-				return nil, err
-			}
-			top["params"] = rebuilt
-		}
+	out, err := marshalCanonical(raw)
+	if err != nil {
+		return nil
 	}
-	return json.Marshal(top)
+	return out
+}
+
+// canonRefusal is the client-facing reason a message was refused before
+// any policy ran. Every one starts with "request body" so reasonFor
+// classifies it as a bad request.
+func canonRefusal(err error) string {
+	if errors.Is(err, errDuplicateKey) {
+		// Refused, not collapsed: see canon.go.
+		return "request body carries a duplicate JSON key"
+	}
+	if errors.Is(err, errTooDeep) || errors.Is(err, errTooLarge) {
+		return "request body is nested too deeply or too complex to canonicalize"
+	}
+	return "request body is not a JSON-RPC message"
 }
 
 // allowlist reads the credential's static tool allowlist, failing the
@@ -436,6 +502,15 @@ func (h *handler) projectable(w http.ResponseWriter, r *http.Request, cred store
 			allowed = append(allowed, g)
 		}
 	}
+	// P12: a tool this credential carries a standing constraint for is
+	// callable right now for arguments inside those bounds, so it is
+	// visible too — the same "visible means callable" rule live grants
+	// follow.
+	for _, c := range h.d.Policy.ConstrainedTools(cred.Name) {
+		if !slices.Contains(allowed, c) {
+			allowed = append(allowed, c)
+		}
+	}
 	return allowed, true
 }
 
@@ -443,12 +518,12 @@ func (h *handler) projectable(w http.ResponseWriter, r *http.Request, cred store
 // (a client disconnect must not drop the filing). Reports whether a
 // request is now pending — freshly filed or already deduped both count;
 // only a store failure (logged) reports false.
-func (h *handler) fileRequest(r *http.Request, credential, kind, subject, detail string) bool {
+func (h *handler) fileRequest(r *http.Request, f store.Filing) bool {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 	defer cancel()
-	if _, err := h.d.Store.FileApprovalRequest(ctx, credential, kind, subject, detail); err != nil {
+	if _, err := h.d.Store.FileApprovalRequest(ctx, f); err != nil {
 		slog.Error("gateway: filing approval request failed (denial stands)",
-			"credential", credential, "kind", kind, "subject", subject, "err", err)
+			"credential", f.Credential, "kind", f.Kind, "subject", f.Subject, "err", err)
 		return false
 	}
 	return true

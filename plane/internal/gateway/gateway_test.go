@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -33,7 +32,11 @@ type fakeStore struct {
 	toolGrants map[string]int
 	grantErr   error
 	filed      []string // "kind/subject" of filed requests
+	filings    []store.Filing
 	fileErr    error
+	// grantDigest, when set, is the call the fake's grants are welded to;
+	// empty stands for a legacy verb-level grant.
+	grantDigest string
 }
 
 func (f *fakeStore) CredentialByTokenHash(_ context.Context, hash []byte) (store.Credential, error) {
@@ -59,11 +62,15 @@ func (f *fakeStore) RecordToolAudit(_ context.Context, e store.ToolAuditEntry) e
 	return nil
 }
 
-func (f *fakeStore) ConsumeToolGrant(_ context.Context, _, tool string) (string, bool, error) {
+// ConsumeToolGrant mirrors the store: a tool grant admits one CALL, so
+// the digest must match the one the grant was minted for (P12). A grant
+// registered with an empty digest is the closed legacy class — a
+// verb-level grant that predates argument binding.
+func (f *fakeStore) ConsumeToolGrant(_ context.Context, _, tool, argDigest string) (string, bool, error) {
 	if f.grantErr != nil {
 		return "", false, f.grantErr
 	}
-	if f.toolGrants[tool] > 0 {
+	if f.toolGrants[tool] > 0 && (f.grantDigest == "" || f.grantDigest == argDigest) {
 		f.toolGrants[tool]--
 		return "grant-1", true, nil
 	}
@@ -83,11 +90,12 @@ func (f *fakeStore) LiveToolGrantSubjects(_ context.Context, _ string) ([]string
 	return out, nil
 }
 
-func (f *fakeStore) FileApprovalRequest(_ context.Context, _, kind, subject, _ string) (bool, error) {
+func (f *fakeStore) FileApprovalRequest(_ context.Context, fl store.Filing) (bool, error) {
 	if f.fileErr != nil {
 		return false, f.fileErr
 	}
-	f.filed = append(f.filed, kind+"/"+subject)
+	f.filed = append(f.filed, fl.Kind+"/"+fl.Subject)
+	f.filings = append(f.filings, fl)
 	return true, nil
 }
 
@@ -373,10 +381,10 @@ func TestAuditDegradationFailsClosedAndRecovers(t *testing.T) {
 	assert.Equal(t, http.StatusOK, post(h, goodToken, call).Code)
 }
 
-func TestDuplicateKeysCannotSmuggle(t *testing.T) {
-	var sawUpstream []byte
+func TestDuplicateKeysAreRefusedNotCollapsed(t *testing.T) {
+	forwarded := 0
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sawUpstream, _ = io.ReadAll(r.Body)
+		forwarded++
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 	}))
@@ -385,22 +393,27 @@ func TestDuplicateKeysCannotSmuggle(t *testing.T) {
 		allow: []string{"k8s_get_resources"}}
 	h := newGateway(t, fs, up)
 
-	// A duplicated "method" key: the gateway decides on the LAST value
-	// (initialize) and must forward bytes carrying only that value, so a
-	// first-key-wins upstream cannot execute the smuggled tools/call.
-	rec := post(h, goodToken,
-		[]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"k8s_delete_resource"},"method":"initialize"}`))
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.NotContains(t, string(sawUpstream), "tools/call")
-	assert.Contains(t, string(sawUpstream), `"method":"initialize"`)
-
-	// A duplicated tool "name" in params: checked last-wins as the
-	// allowed tool, so the forwarded params must carry only that name.
-	rec = post(h, goodToken,
-		[]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"k8s_delete_resource","name":"k8s_get_resources"}}`))
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.NotContains(t, string(sawUpstream), "k8s_delete_resource")
-	assert.Contains(t, string(sawUpstream), "k8s_get_resources")
+	// P12: a duplicated key is a tampering signal, not a typo — Go reads
+	// last-wins and an upstream may read first-wins, so the message is
+	// refused outright at every depth rather than silently collapsed.
+	// Nothing is forwarded, so enforcement and the forwarded bytes cannot
+	// disagree about what the call was.
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"k8s_delete_resource"},"method":"initialize"}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"k8s_delete_resource","name":"k8s_get_resources"}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"k8s_get_resources",` +
+			`"arguments":{"namespace":"default","namespace":"kube-system"}}}`,
+	} {
+		rec := post(h, goodToken, []byte(body))
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.Contains(t, rec.Body.String(), "duplicate JSON key")
+	}
+	assert.Zero(t, forwarded, "a refused message must never reach the upstream")
+	require.Len(t, fs.audits, 3)
+	for _, a := range fs.audits {
+		assert.Equal(t, "denied", a.Decision)
+		assert.Equal(t, http.StatusBadRequest, a.Status)
+	}
 }
 
 func TestUpstreamRedirectRefused(t *testing.T) {

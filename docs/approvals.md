@@ -13,6 +13,12 @@ The model is **deny-and-retry**: no held-open calls, no approval flow
 inside MCP itself. The agent's denial says a request was filed; the
 operator decides; the agent (or the operator) tries again.
 
+Since P12 an approval is about a **call**, not a verb: "may pay invoice
+INV-88134, 32,550 cents, to MER-4471" rather than "may call
+pay_invoice for the next ten minutes". And a credential can carry
+**standing constraints** so routine calls need no approval at all. Both
+are below.
+
 ## The cycle
 
 ```text
@@ -31,6 +37,95 @@ operator decides; the agent (or the operator) tries again.
        │ ───────────────────────────▶│ denied again — an expired    │
        │                             │ grant is not a grant         │
 ```
+
+## The approval binds the call
+
+A denied `tools/call` files a request carrying two things derived from
+the call's canonical arguments (the gateway parses each message once,
+into one normalized form that feeds the policy decision, the digest, the
+audit and the bytes forwarded upstream alike):
+
+- a **digest** — the sha256 of the tool name and its *policy-relevant*
+  argument fields, which the tool declares in the upstream table
+  ([tool-governance.md](tool-governance.md#declaring-what-arguments-mean));
+- a **summary** — the line a human reads:
+  `pay_invoice: invoice_id INV-88134, amount_cents 3255000, payee_id MER-4471`.
+
+Approving mints a grant **welded to that digest**. The gateway admits a
+call only when the digest of its declared policy fields matches a live
+grant for that credential and tool. A mismatch is a denial that files
+its **own** request — never a silent pass, never a re-use of the earlier
+grant, and the earlier grant's uses are untouched.
+
+```text
+  agent ──▶ pay_invoice 48,000 to MER-4471   ▶ DENIED, request A filed
+  human ──▶ make approve ID=A                ▶ grant welded to call A
+  agent ──▶ pay_invoice 48,000 to EVIL-1     ▶ DENIED (grant A is not this call),
+                                               request B filed, A untouched
+  agent ──▶ pay_invoice 48,000 to MER-4471   ▶ ADMITTED under grant A
+```
+
+Consequences worth stating plainly:
+
+- **Two attempts with different policy-relevant arguments file two
+  requests.** Before P12 they deduped into one, and one approval covered
+  both. Genuine repeats of the *same* call still collapse into a single
+  pending request.
+- **`make approvals`, `make grants`, `make tool-audit` and `make
+  approval-audit` all show the call**, and the audit records the digest
+  and summary on the denial *and* on the admitted call — so the call a
+  human approved and the call that ran are provably the same one.
+- **The audit never carries undeclared arguments.** The summary is built
+  from declared fields only, scalars only, one bounded printable line:
+  these tables are in every `make backup`. (`internal/redact` scrubs
+  known secret *values* from logs; it is not a business-data redactor and
+  is not used here.)
+- **A tool request that names no call cannot be approved.** `make
+  request KIND=tool SUBJECT=… ARGS='{"…"}'` names one; without `ARGS` it
+  files the *argument-less* call, never "any call" — with one exception,
+  and it comes from the declaration rather than the request: a tool that
+  declares `policy_fields: []` has said no argument is policy-relevant,
+  so every call to it has the same digest and a grant for one admits any
+  arguments. Grants minted before
+  P12 (the migration's closed legacy class) stay verb-level and keep
+  working; nothing can create another, and `make grants` labels them
+  `verb-level (legacy)`.
+
+## Standing constraints: the calls that need no approval
+
+An approval per routine call would be theatre. A credential may instead
+carry declarative **bounds** on a tool's declared fields — the accounts-
+payable case is *"may call `payment_schedule` when `amount_cents` is at
+most 1,000,000 and the payee is one we know, and never otherwise"*:
+
+```json
+"standing_constraints": {
+  "ap-agent": {
+    "payment_schedule": [
+      {"field": "amount_cents", "op": "lte", "value": 1000000},
+      {"field": "payee_id", "op": "in", "values": ["MER-4471"]}
+    ]
+  }
+}
+```
+
+- A call **inside** the bounds proceeds with **no approval and no
+  grant**, audited as allowed with `within standing constraint` and the
+  call's own summary.
+- A call **outside** them is denied and files a request, exactly as an
+  unlisted tool does — and that request is welded to the call, so the
+  human approves *that* transaction.
+- Where a constraint exists it **binds**: the static allowlist no longer
+  admits that tool for that credential, because "and never otherwise" is
+  the point. A grant is still the way through, one call at a time.
+- The vocabulary is small on purpose — `eq`, `ne`, `lt`, `lte`, `gt`,
+  `gte`, `in`, `not_in` over a tool's declared fields, all rules ANDed.
+  There is no expression language, and there will not be one.
+- Everything is refused at **load**: an unknown op, a non-integer numeric
+  bound, an empty rule list, or a constraint on a field the tool does not
+  declare. A rule the plane cannot enforce is never quietly ignored.
+- Evaluation **fails closed**: a missing field, a wrong-typed value, or a
+  non-integer where an integer bound applies all count as outside.
 
 ## Grants are bounded, or they are not grants
 
@@ -88,14 +183,20 @@ make budget CAP_TOKENS=100      # restore whatever cap you actually want
 
 ## Queue mechanics
 
-- **Auto-filed**: a gateway tool denial files `(credential, tool)`; a
-  budget-cap denial files `(credential, tokens|cents)`. Deduped per
-  `(credential, kind, subject)` while pending, so retry loops cannot
-  spam the queue. A filing failure never un-denies (denial is the safe
+- **Auto-filed**: a gateway tool denial files `(credential, tool, call)`;
+  a budget-cap denial files `(credential, tokens|cents)`. Deduped per
+  `(credential, kind, subject, call digest)` while pending, so retry
+  loops cannot spam the queue — but two different calls are two
+  requests. A filing failure never un-denies (denial is the safe
   state), and the enforcement audit row still writes.
-- **Explicit**: `make request KIND=tool SUBJECT=k8s_get_events`. Tool
-  requests default to the `hello-tools` credential, budget requests to
-  `hello-world`; override with `CRED=`.
+- **Explicit**: `make request KIND=tool SUBJECT=k8s_get_events
+  ARGS='{"namespace": "default"}'`. Tool requests default to the
+  `hello-tools` credential, budget requests to `hello-world`; override
+  with `CRED=`. `ARGS` names the call to pre-approve (the plane computes
+  the digest with the gateway's own code, so this request and the
+  agent's retry are the same call); omitted, it files the argument-less
+  call. A tool declaring `policy_fields: []` is verb-level by
+  declaration, so its grants admit any arguments.
 - **Decide**: `make approvals`, then `make approve ID=… [TTL=…] [USES=…]
   [AMOUNT=…]` or `make deny ID=…`; or, from Slack, `@kaimahi approve <id>`
   ([below](#deciding-from-slack)). A decided request is immutable; fresh
@@ -215,6 +316,23 @@ governed path.
   `make use PRESET=ollama` and `make ungovern-tools` are the explicit
   ways back.
 
+## What this promises, and what it does not
+
+The plane does **not** stop an agent being manipulated. A prompt-injected
+agent can and will attempt whatever it was talked into. What the plane
+stops is a manipulated agent **acting outside the call a human
+approved**: the attempt is denied, it files a request whose summary shows
+the changed amount or the changed payee, and it is audited. It cannot
+ride an earlier approval, because that grant is welded to a different
+call.
+
+Two more honest edges. Argument policy governs *inputs*, not outputs —
+there is no filtering or redaction of tool RESULTS in this project, and
+none is implied. And a tool that declares nothing binds its whole
+canonical argument object: exact, but brittle, since an LLM re-emitting a
+semantically identical call is not byte-stable. Declaring the fields that
+matter is what makes "approve, then it proceeds" deterministic.
+
 ## Limitations
 
 - **Routing is Slack only.** No email or ticket routing; a request is
@@ -233,6 +351,10 @@ governed path.
   where the lag shows up on the demo path.
 - **A burned use does not guarantee a delivered result**, since the use
   is consumed before the forward. The audit row says what happened.
+- **Constraints and declarations are config, not inference.** They live
+  in the committed table, are refused at load when malformed, and the
+  plane never guesses which arguments matter. Fields are top-level
+  argument names; a value nested inside an object is not addressable.
 
 The single table of what is and is not governed across the whole plane
 is in [README.md](README.md#what-is-governed-today-and-what-is-not).

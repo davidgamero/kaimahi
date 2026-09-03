@@ -117,13 +117,26 @@ case "${1:-}" in
     # Three entries on top of the committed table: the stand-in, the
     # same server under a name that will be rebound, and a path that
     # redirects. All three are `internet: true` and trust the throwaway
-    # CA only through ca_file.
+    # CA only through ca_file. The stand-in also carries the P12
+    # declaration and a standing constraint, so CI can prove argument
+    # policy end to end keylessly: `pay_invoice` declares its
+    # policy-relevant fields, and hello-github may call it without asking
+    # anyone while the amount is at or under $10,000 and the payee is the
+    # one named. Anything else is denied and files an approval request
+    # welded to that exact call.
     $KUBECTL -n kaimahi get configmap kaimahi-upstreams -o jsonpath='{.data.upstreams\.json}' > committed.json
     python3 - committed.json <<'PY' > patched.json
 import json, sys
 c = json.load(open(sys.argv[1]))
 ca = "/etc/kaimahi/upstream-ca/mcp-echo.crt"
-c["tool_upstreams"]["mcp-echo"] = {"url": "https://mcp-echo.kaimahi-ci.test/mcp", "internet": True, "ca_file": ca}
+c["tool_upstreams"]["mcp-echo"] = {
+    "url": "https://mcp-echo.kaimahi-ci.test/mcp", "internet": True, "ca_file": ca,
+    "tools": {"pay_invoice": {"policy_fields": ["invoice_id", "amount_cents", "payee_id"]}},
+}
+c["standing_constraints"] = {"hello-github": {"pay_invoice": [
+    {"field": "amount_cents", "op": "lte", "value": 1000000},
+    {"field": "payee_id", "op": "in", "values": ["MER-4471"]},
+]}}
 c["tool_upstreams"]["mcp-echo-rebind"] = {"url": "https://mcp-echo-rebind.kaimahi-ci.test/mcp", "internet": True, "ca_file": ca}
 c["tool_upstreams"]["mcp-echo-redirect"] = {"url": "https://mcp-echo.kaimahi-ci.test/redirect", "internet": True, "ca_file": ca}
 json.dump(c, sys.stdout, indent=2)

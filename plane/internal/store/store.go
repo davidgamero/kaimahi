@@ -118,14 +118,23 @@ func (s *Store) RecordLedger(ctx context.Context, e LedgerEntry, reservationID s
 // the row carries: 'allowed' rows record the upstream's HTTP status,
 // 'denied' rows the gateway's own (like P4a's denied ledger rows).
 type ToolAuditEntry struct {
-	CredentialName string    `json:"credential"`
-	Upstream       string    `json:"upstream"`
-	Method         string    `json:"method"`
-	Tool           string    `json:"tool"`
-	Decision       string    `json:"decision"`
-	Status         int       `json:"status"`
-	Detail         string    `json:"detail"`
-	CreatedAt      time.Time `json:"created_at"`
+	CredentialName string `json:"credential"`
+	Upstream       string `json:"upstream"`
+	Method         string `json:"method"`
+	Tool           string `json:"tool"`
+	Decision       string `json:"decision"`
+	Status         int    `json:"status"`
+	Detail         string `json:"detail"`
+	// ArgDigest/ArgSummary (P12) identify the CALL: the digest an
+	// approval is welded to, and the transaction line built from the
+	// tool's declared policy fields. Present on tools/call rows —
+	// denied and allowed alike, so the approved call and the call that
+	// ran are provably the same one — and empty on other methods.
+	// Arbitrary arguments are never recorded: this table is in every
+	// pg_dump (`make backup`).
+	ArgDigest  string    `json:"arg_digest,omitempty"`
+	ArgSummary string    `json:"arg_summary,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // SetToolAllowlist replaces the credential's whole allowlist (empty
@@ -183,9 +192,9 @@ func (s *Store) ToolAllowlist(ctx context.Context, credentialName string) ([]str
 // construction, like the spend ledger.
 func (s *Store) RecordToolAudit(ctx context.Context, e ToolAuditEntry) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO tool_audit (credential_name, upstream, method, tool, decision, status, detail)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		e.CredentialName, e.Upstream, e.Method, e.Tool, e.Decision, e.Status, e.Detail)
+		`INSERT INTO tool_audit (credential_name, upstream, method, tool, decision, status, detail, arg_digest, arg_summary)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		e.CredentialName, e.Upstream, e.Method, e.Tool, e.Decision, e.Status, e.Detail, e.ArgDigest, e.ArgSummary)
 	return err
 }
 
@@ -196,7 +205,7 @@ func (s *Store) ToolAudit(ctx context.Context, credentialName string, limit int)
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT credential_name, upstream, method, tool, decision, status, detail, created_at
+		`SELECT credential_name, upstream, method, tool, decision, status, detail, arg_digest, arg_summary, created_at
 		 FROM tool_audit
 		 WHERE ($1 = '' OR credential_name = $1)
 		 ORDER BY created_at DESC LIMIT $2`,
@@ -209,7 +218,7 @@ func (s *Store) ToolAudit(ctx context.Context, credentialName string, limit int)
 	for rows.Next() {
 		var e ToolAuditEntry
 		if err := rows.Scan(&e.CredentialName, &e.Upstream, &e.Method, &e.Tool,
-			&e.Decision, &e.Status, &e.Detail, &e.CreatedAt); err != nil {
+			&e.Decision, &e.Status, &e.Detail, &e.ArgDigest, &e.ArgSummary, &e.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

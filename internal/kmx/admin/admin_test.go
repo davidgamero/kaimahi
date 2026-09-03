@@ -284,13 +284,17 @@ func TestGrantsAndAuditsRenderLikeTheScript(t *testing.T) {
 		"/admin/grants": `{"grants": [{"id": "00000000-0000-4000-8000-000000000001",
 		  "credential": "hello-tools", "kind": "tool", "subject": "k8s_get_events",
 		  "live": true, "expires_at": "2026-09-03T02:00:00.5Z", "uses": 0, "max_uses": 1,
-		  "amount": null, "created_at": "2026-09-03T01:50:00Z", "decided_by": null}]}`,
+		  "amount": null, "created_at": "2026-09-03T01:50:00Z", "decided_by": null,
+		  "arg_digest": "8f84e4e9f653abc0000000000000000000000000000000000000000000000000"}]}`,
 		"/admin/tool-audit": `{"entries": [{"created_at": "2026-09-03T01:51:00Z",
 		  "credential": "hello-tools", "upstream": "kagent-tools", "method": "tools/call",
-		  "tool": "k8s_get_resources", "decision": "allowed", "status": 200, "detail": ""}]}`,
+		  "tool": "k8s_get_resources", "decision": "allowed", "status": 200, "detail": "",
+		  "arg_digest": "77245d044835abc0000000000000000000000000000000000000000000000000",
+		  "arg_summary": "k8s_get_resources: namespace default"}]}`,
 		"/admin/approval-audit": `{"entries": [{"created_at": "2026-09-03T01:52:00Z",
 		  "credential": "hello-world", "kind": "budget", "subject": "tokens",
-		  "action": "approved", "decided_by": null, "bounds": "1 use(s)"}]}`,
+		  "action": "approved", "decided_by": null, "bounds": "1 use(s)",
+		  "arg_summary": ""}]}`,
 	}
 	c, _ := open(t, health(func(w http.ResponseWriter, r *http.Request) {
 		body, ok := replies[r.URL.Path]
@@ -307,8 +311,10 @@ func TestGrantsAndAuditsRenderLikeTheScript(t *testing.T) {
 		t.Fatalf("Grants: %v", err)
 	}
 	for _, want := range []string{
-		"live", "expires (UTC)", "decided by",
+		"live", "expires (UTC)", "decided by", "binds",
 		"hello-tools", "k8s_get_events",
+		// P12: a tool grant admits ONE call, and the table says which.
+		"call 8f84e4e9f653",
 		" yes   ",              // liveness is a word, not a JSON bool
 		"0/1",                  // uses/max_uses
 		"2026-09-03T02:00:00 ", // expiry cut to the second, like every other timestamp
@@ -325,6 +331,12 @@ func TestGrantsAndAuditsRenderLikeTheScript(t *testing.T) {
 	var tools bytes.Buffer
 	if err := c.ToolAudit(&tools, ""); err != nil {
 		t.Fatalf("ToolAudit: %v", err)
+	}
+	// The audited call travels with the row: the summary a human reads and
+	// the digest prefix that ties a denial, its approval and the admitted
+	// call together.
+	if !strings.Contains(tools.String(), "k8s_get_resources: namespace default [77245d044835]") {
+		t.Errorf("tool audit does not name the call:\n%s", tools.String())
 	}
 	if !regexp.MustCompile(`hello-tools +kagent-tools +tools/call +k8s_get_resources +allowed +200`).
 		MatchString(tools.String()) {

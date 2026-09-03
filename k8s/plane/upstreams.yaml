@@ -24,6 +24,24 @@
 # never take the plain in-cluster dial by omission. Copilot carries the
 # marker; the LLM proxy and the MCP gateway share the one client.
 #
+# A tool_upstreams entry's optional "tools" block is the P12 argument
+# policy declaration (D29): which of a tool's argument fields are
+# POLICY-RELEVANT. One declaration serves two jobs — an approval's digest
+# binds those fields, so approving "k8s_get_events in default" cannot be
+# spent on another namespace, and the audit's human-readable summary is
+# built from them (and from nothing else: the audit is in every pg_dump).
+# A tool with no declaration binds the WHOLE canonical argument object,
+# which is exact but brittle; "policy_fields": [] declares that no
+# argument is policy-relevant, which is a verb-level binding. See
+# docs/tool-governance.md.
+#
+# standing_constraints (D31) are the other half: declarative bounds a
+# CREDENTIAL carries on a tool's declared fields — a call inside them
+# proceeds with no approval, a call outside them is denied and files a
+# request. None are configured here: the demo's consequential tools are
+# the Slack post and the hosted write tool, and both are meant to need a
+# human. See docs/approvals.md for the format.
+#
 # tool_upstreams is the P4b MCP gateway's table: the ONLY tool servers
 # the gateway will relay to — it forwards nowhere else, which is the
 # egress rule at this layer; k8s/plane/network-policy.yaml is the rule
@@ -133,7 +151,10 @@ data:
       },
       "tool_upstreams": {
         "kagent-tools": {
-          "url": "http://kagent-tools.kagent:8084/mcp"
+          "url": "http://kagent-tools.kagent:8084/mcp",
+          "tools": {
+            "k8s_get_events": {"policy_fields": ["namespace"]}
+          }
         },
         "slack": {
           "url": "http://kaimahi-slack-mcp.kaimahi:13080/mcp",

@@ -125,7 +125,8 @@ func (f *fakeStore) AdmitInboundEvent(_ context.Context, hook, credential, deliv
 	return id, "grant-1", nil
 }
 
-func (f *fakeStore) FileApprovalRequest(_ context.Context, credential, kind, subject, _ string) (bool, error) {
+func (f *fakeStore) FileApprovalRequest(_ context.Context, fl store.Filing) (bool, error) {
+	credential, kind, subject := fl.Credential, fl.Kind, fl.Subject
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.fileErr != nil {

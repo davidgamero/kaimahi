@@ -9,7 +9,13 @@
 # token travels only through pipes and 0600 files (curl reads the auth
 # header from a file) — never argv, env listings, or logs.
 #
-# Usage: tool-denial-probe.sh <tool-name>
+# Since P12 a denial is about a CALL, not a verb: the optional
+# json-arguments name the call to attempt, and the approval request the
+# denial files is welded to it. Two attempts with different
+# policy-relevant arguments therefore file two requests, and the retry
+# after an approval must carry the SAME arguments to be admitted.
+#
+# Usage: tool-denial-probe.sh <tool-name> [json-arguments]
 set -euo pipefail
 umask 077
 
@@ -20,10 +26,15 @@ GOVERNED_SECRET="${GOVERNED_SECRET:-kaimahi-tools-token}"
 GATEWAY_PORT="${GATEWAY_PORT:-18081}"
 UPSTREAM="${UPSTREAM:-kagent-tools}"
 
-tool="${1:?usage: tool-denial-probe.sh <tool-name>}"
+tool="${1:?usage: tool-denial-probe.sh <tool-name> [json-arguments]}"
+args="${2:-{\}}"
 case "$tool" in
   (*[!A-Za-z0-9._-]*|'') echo "invalid tool name '$tool'" >&2; exit 2 ;;
 esac
+python3 -c 'import json,sys
+d = json.loads(sys.argv[1])
+assert isinstance(d, dict), "arguments must be a JSON object"' "$args" \
+  || { echo "invalid json-arguments '$args'" >&2; exit 2; }
 
 # Context safety (P5b): unlike a make target, this script is run directly,
 # so nothing has resolved a context for it — see the "run directly" note in
@@ -66,8 +77,8 @@ done
 curl -fsS -o /dev/null "http://127.0.0.1:$GATEWAY_PORT/healthz" \
   || { echo "gateway port-forward failed" >&2; exit 1; }
 
-printf '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "%s", "arguments": {}}}\n' \
-  "$tool" > "$workdir/req"
+printf '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "%s", "arguments": %s}}\n' \
+  "$tool" "$args" > "$workdir/req"
 status=$(curl -sS -X POST -H @"$workdir/auth-header" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   --data @"$workdir/req" -o "$workdir/resp" -w '%{http_code}' \
