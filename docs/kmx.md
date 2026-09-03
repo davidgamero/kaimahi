@@ -77,6 +77,7 @@ swap plus a credential the agent cannot read past.
 | `kmx up --step <step>` | one step only: `cluster`, `ollama`, `model`, `kagent`, `agent`, `tools-agent` |
 | `kmx agent create <name>` | scaffold `agents/<name>.yaml` and apply it |
 | `kmx agent chat <name> [message]` | ask an agent one question, through `kagent invoke` |
+| `kmx agent chat <name> --json` | the raw A2A task instead of the readable view (piped output is always raw) |
 | `kmx plane` | build the proxy image, bootstrap the plane's secrets, deploy the plane, wait for it to serve |
 | `kmx plane --step <step>` | one step only: `image`, `secrets`, `deploy` |
 | `kmx plane --source <path>` | build the plane from a checkout instead of fetching it (`-` forces the fetch) |
@@ -87,6 +88,15 @@ swap plus a credential the agent cannot read past.
 | `kmx status` | agents, modelconfigs and pods |
 | `kmx down` | delete the kind cluster kmx created |
 | `kmx version` | the pinned kagent and model versions, the plane's image tag, and the revision `kmx plane` would fetch it at |
+
+`kmx agent chat` prints two different shapes on purpose. A terminal gets the
+reply, any tools the agent called, and the token cost. A pipe gets the raw
+A2A task, byte for byte — because things parse it: CI captures this output
+in eight places and `scripts/verify-chat.py` asserts on `status.state`, the
+`function_call` and the `function_response` payload. `--json` forces the raw
+form when a terminal wants it. If the output is not a task kmx recognises —
+a transport error, a usage message — it prints what `kagent` printed rather
+than guessing at a shape that is not there.
 
 Reading, updating and deleting agents are not kmx's job — kubectl and the
 kagent CLI already do them, and `kmx agent list` says so and prints the

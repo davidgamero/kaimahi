@@ -23,11 +23,13 @@ import (
 // App carries the resolved configuration and the streams every command
 // writes to.
 type App struct {
-	Cfg   *config.Config
-	Run   *run.Runner
-	Out   io.Writer
-	Err   io.Writer
-	Stdin *os.File
+	Cfg *config.Config
+	Run *run.Runner
+	Out io.Writer
+	// chatJSON forces raw A2A JSON from `agent chat` on a terminal.
+	chatJSON bool
+	Err      io.Writer
+	Stdin    *os.File
 
 	// guarded records that the context guard has already run in this
 	// process, so a multi-step command asks at most once — the same

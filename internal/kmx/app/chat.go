@@ -57,6 +57,10 @@ var ChatRetryableSafe = regexp.MustCompile(`(?m)` + chatErrorLine + `(` + chatRe
 // --context, so it lands wherever the rest of the invocation was already
 // going to land. Prompting on the most-used command would buy nothing and
 // teach people to type past confirmations.
+// ChatJSON forces the raw A2A task even when a terminal is attached.
+// Piped output is raw regardless — see chatview.go.
+func (a *App) ChatJSON(v bool) { a.chatJSON = v }
+
 func (a *App) Chat(agent, task string) error {
 	if agent == "" {
 		agent = config.DefaultAgent
@@ -109,6 +113,12 @@ func (a *App) Chat(agent, task string) error {
 			a.notef("kagent could not reach agent %q yet (transport error); retry %d/3 in 5s", agent, attempt)
 			time.Sleep(5 * time.Second)
 		}
+	}
+	// A terminal gets the readable view; a pipe gets the bytes, because CI
+	// and scripts/verify-chat.py parse them. Rendering is best-effort: if
+	// this is not a task we recognise, print what kagent printed.
+	if status == 0 && !a.chatJSON && isTerminal(a.Out) && renderChat(a.Out, out) {
+		return nil
 	}
 	fmt.Fprint(a.Out, out)
 	if status != 0 {

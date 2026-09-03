@@ -105,6 +105,35 @@ func TestChatMessageIsJoined(t *testing.T) {
 	}
 }
 
+// `--json` must work where an operator actually types it: at the END, after
+// the agent and the question. flag.Parse stops at the first non-flag
+// argument, so the naive form appended "--json" to the QUESTION and printed
+// the readable view anyway — the flag looked ignored and the agent was asked
+// something slightly different. Caught on a live cluster, not in review.
+func TestChatJSONFlagIsHonouredAfterThePositionals(t *testing.T) {
+	for _, args := range [][]string{
+		{"--json", "hello-world", "Who are you?"},
+		{"hello-world", "Who are you?", "--json"},
+		{"hello-world", "--json", "Who are you?"},
+	} {
+		fs := newFlagSet("agent chat")
+		asJSON := fs.Bool("json", false, "")
+		rest, err := parseInterspersed(fs, args)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if !*asJSON {
+			t.Errorf("%v: --json was not honoured", args)
+		}
+		if len(rest) == 0 || rest[0] != "hello-world" {
+			t.Errorf("%v: agent name lost, got %v", args, rest)
+		}
+		if got := joinArgs(rest[1:]); got != "Who are you?" {
+			t.Errorf("%v: the question must not absorb the flag, got %q", args, got)
+		}
+	}
+}
+
 func TestUsageNamesEveryCommand(t *testing.T) {
 	for _, command := range []string{"ctx", "up", "agent create", "agent chat", "status", "down", "version"} {
 		if !strings.Contains(usage, command) {
