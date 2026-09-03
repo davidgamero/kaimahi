@@ -140,7 +140,7 @@ What happens under that:
 
 **Proven, not asserted.** CI's `plane-upgrade` job
 ([scripts/plane-upgrade-probe.sh](../scripts/plane-upgrade-probe.sh)) installs
-a plane two migrations old straight from the module proxy, seeds it through
+a plane several migrations old straight from the module proxy, seeds it through
 its own admin API with a credential, a budget, a tool allowlist, a grant a
 human approved and a priced ledger row, then starts the current plane on the
 same database and asserts every one of those survived and that the upgraded
@@ -154,6 +154,19 @@ keep their old verb-level meaning — still bounded by the expiry and use count
 their approver set — and the store will not mint another one. So an upgrade
 neither widens an old grant nor silently voids it. Every grant minted after
 the upgrade admits exactly one call.
+
+### And one more: credentials that already exist keep working
+
+Migration `00010` gave credentials an expiry. Credentials that predate it
+carry a NULL one and are **not** expired by the upgrade — expiring a running
+estate at migration time would be an outage, not a control. The class can only
+shrink: every credential issued afterwards has a deadline, and
+`kaimahi_credentials_without_expiry` is the gauge whose job is to trend to
+zero. Renew or re-issue at your own pace ([identity.md](identity.md)).
+
+Both of these follow one rule, which is the rule to expect from any future
+migration here: **an upgrade never silently widens or voids what an operator
+already had.**
 
 ### When a migration fails halfway
 

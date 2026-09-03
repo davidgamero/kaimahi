@@ -635,7 +635,7 @@ jobs:
   # P4a and every e2e shard applies them to an EMPTY database — the one case
   # where a migration cannot lose anything. This job runs the plane's own
   # upgrade: an older released plane, fetched from the module proxy at a
-  # revision two migrations behind, seeded through its own admin API with a
+  # revision several migrations behind, seeded through its own admin API with a
   # credential, a budget, an allowlist, an approved grant and a priced
   # ledger row, then replaced by the plane this PR builds — against the same
   # database. It asserts the rows survived, the schema moved, and the new

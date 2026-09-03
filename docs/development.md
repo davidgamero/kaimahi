@@ -123,7 +123,7 @@ Two more jobs run beside them and need no cluster:
 
 | job | what it proves |
 |---|---|
-| `plane-upgrade` | a plane two migrations old, with a credential, a budget, an allowlist, an approved grant and a priced ledger row in it, upgraded to this checkout's plane on the same database: the data survives, the plane serves, and a migration that cannot apply leaves the plane refusing to start with the rows untouched ([releases.md](releases.md#when-a-migration-fails-halfway)) |
+| `plane-upgrade` | a plane several migrations old, with a credential, a budget, an allowlist, an approved grant and a priced ledger row in it, upgraded to this checkout's plane on the same database: the data survives, the plane serves, and a migration that cannot apply leaves the plane refusing to start with the rows untouched ([releases.md](releases.md#when-a-migration-fails-halfway)) |
 | `release` (own workflow, tags only) | the tagged build: four platforms, checksums, and a binary that reports its own tag ([releases.md](releases.md#cutting-a-release)) |
 
 `plane-upgrade` is not a shard and must not become one: it holds no cluster,

@@ -26,12 +26,23 @@ _Nothing yet._
 
 ## v0.1.0 — 2026-09-03
 
-The first tagged release. Nothing about the product changed with this tag;
-what changed is that the product can now be named, installed and upgraded
-without a commit hash.
+The first tagged release: everything the project has built since P1, at a
+version you can name. Most of what is below is release plumbing — the product
+can now be installed and upgraded without a commit hash — plus the last
+capability to land before the tag was cut.
 
 ### Added
 
+- **An agent's calls record who it acted for, and credentials expire.** A run
+  opened at the inbound door (where a Slack signature has already proved who
+  typed the message) is what joins a governed call to a person, so the ledger
+  and the tool audit carry an actor the plane itself observed — never a claim
+  made by the thing being governed. Every credential issued from now on has a
+  deadline (default 30 days, no way to ask for "never"), enforced at the LLM
+  proxy, the MCP gateway and the inbound door, failing closed and audited.
+  `make credentials` shows what is expiring; `kmx credential renew` moves the
+  date without touching the token, so custody is unchanged
+  ([docs/identity.md](docs/identity.md)).
 - **Tagged releases, built by CI from the tag.** `kmx` binaries for
   linux/amd64, linux/arm64, darwin/amd64 and darwin/arm64, with a
   `checksums.txt` published beside them. The job refuses to publish a build
@@ -57,10 +68,15 @@ without a commit hash.
 - From an untagged `go install …@<sha>` build: install `@latest` and run
   `kmx version`. There is no state in `kmx` itself to migrate.
 - For the **plane**, see [docs/releases.md](docs/releases.md#upgrading-the-plane).
-  Migrations are additive and run at startup under a lock; the one behaviour
-  worth knowing before you upgrade past `00008` is that tool grants minted
-  before argument binding existed keep their old verb-level meaning and no
-  new one can be created — the plane never widens an old grant silently.
+  Migrations are additive and run at startup under a lock. Two behaviours are
+  worth knowing before you upgrade, and both follow the same rule — an
+  upgrade never silently widens or voids what an operator already had:
+  - past `00008`: tool grants minted before argument binding existed keep
+    their old verb-level meaning, and no new one of that kind can be created.
+  - past `00010`: credentials that already exist keep a NULL expiry and keep
+    working. Expiring a running estate at migration time would be an outage,
+    not a control. `kaimahi_credentials_without_expiry` is the gauge for
+    shrinking that set; re-issue or renew at your own pace.
 
 ### Not in this release
 

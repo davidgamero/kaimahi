@@ -2,11 +2,11 @@
 # W28: prove that upgrading the governance plane across a real schema gap
 # keeps the data, and that a half-applied migration cannot serve traffic.
 #
-# The plane has run eight goose migrations since P4a and has never once
-# been tested going from an older version to a newer one. Every e2e shard
-# starts from an empty database, so "the migrations apply" has only ever
-# been proven on an empty database — which is the case where they cannot
-# lose anything.
+# The plane has run goose migrations since P4a and had never once been
+# tested going from an older version to a newer one. Every e2e shard starts
+# from an empty database, so "the migrations apply" had only ever been
+# proven on an empty database — which is the case where they cannot lose
+# anything.
 #
 # What this probe does instead:
 #
@@ -34,26 +34,38 @@
 # is what makes this affordable to run on every PR.
 #
 # Env:
-#   PGHOST/PGPORT/PGUSER/PGDATABASE/PGPASSWORD  the database (PG* defaults
-#                                               match the CI service)
+#   PGHOST/PGPORT/PGUSER/PGDATABASE/PGPASSWORD  the server to work on; the
+#                                               probe creates and drops its
+#                                               OWN databases on it (PG*
+#                                               defaults match the CI service)
 #   OLD_REV      the revision to upgrade FROM (default below)
 #   KEEP_WORKDIR set to keep the scratch directory for inspection
 set -euo pipefail
 umask 077
 
 # The version we upgrade FROM: P8b (#41), the last commit before P9 added
-# the spend-reservation table and P12 added argument binding. Upgrading
-# from here crosses TWO migrations — 00007 and 00008 — and both of them
-# change tables that already hold the seeded rows, which is the case worth
-# testing. Bump it when it stops being a real gap; never bump it to the
-# commit before HEAD, or this proves nothing.
+# the spend-reservation table. Everything since is crossed in one go — at
+# the time of writing 00007 through 00010 — and those migrations alter
+# tables that already hold the seeded rows, which is the case worth
+# testing. The gap therefore WIDENS on its own as migrations land; the
+# assertion below pins the floor (the old plane must stop at
+# OLD_MIGRATIONS) so it can never quietly shrink to nothing. Bump it only
+# when this floor stops being reachable, and never to the commit before
+# HEAD, or this proves nothing.
 OLD_REV="${OLD_REV:-109e08d6e0763c9111b6fe50f0fffebcc4fce412}"
 OLD_MIGRATIONS=6
 
 PGHOST="${PGHOST:-127.0.0.1}"
 PGPORT="${PGPORT:-5432}"
 PGUSER="${PGUSER:-kaimahi}"
+# The database PG* points at is used only to CREATE and DROP the two the
+# probe actually works in. Owning them is what makes this rerunnable: an
+# upgrade probe that assumed a pristine schema would pass once and then
+# refuse ("OLD_REV is no longer a real gap") on the second run against the
+# same Postgres, which is every local run after the first.
 PGDATABASE="${PGDATABASE:-kaimahi}"
+UPGRADE_DB="${UPGRADE_DB:-kaimahi_upgrade_probe}"
+BROKEN_DB="${BROKEN_DB:-kaimahi_upgrade_broken}"
 PGPASSWORD="${PGPASSWORD:-ci-throwaway}"
 export PGHOST PGPORT PGUSER PGPASSWORD
 
@@ -87,6 +99,11 @@ psql_q() { # psql_q <database> <sql> -> one value
 }
 
 # ---------------------------------------------------------------- fixtures
+
+for db in "$UPGRADE_DB" "$BROKEN_DB"; do
+  psql_q "$PGDATABASE" "drop database if exists $db" >/dev/null
+  psql_q "$PGDATABASE" "create database $db" >/dev/null
+done
 
 mkdir -p "$work/secrets"
 printf '%s' "$PGPASSWORD" > "$work/secrets/pgpassword"
@@ -237,17 +254,17 @@ GOBIN="$work/oldbin" GOFLAGS=-mod=mod \
 old_bin="$work/oldbin/kaimahi-proxy"
 test -x "$old_bin" || fail "the old proxy did not install"
 
-say "starting the OLD plane against $PGDATABASE"
-start_proxy "$old_bin" "$PGDATABASE" "$work/old.log"
+say "starting the OLD plane against $UPGRADE_DB"
+start_proxy "$old_bin" "$UPGRADE_DB" "$work/old.log"
 wait_serving "$work/old.log"
 
-applied=$(psql_q "$PGDATABASE" "select max(version_id) from goose_db_version")
+applied=$(psql_q "$UPGRADE_DB" "select max(version_id) from goose_db_version")
 [ "$applied" = "$OLD_MIGRATIONS" ] ||
   fail "expected the old plane to stop at migration $OLD_MIGRATIONS, found $applied — OLD_REV is no longer a real gap"
 echo "old schema: migration $applied" >&2
 
 say "seeding governance state through the OLD plane's own admin API"
-seed "$PGDATABASE"
+seed "$UPGRADE_DB"
 
 stop_proxy
 
@@ -257,18 +274,18 @@ say "building the NEW plane from this checkout"
 (cd "$here/plane" && go build -o "$work/kaimahi-proxy" ./cmd/kaimahi-proxy)
 
 say "starting the NEW plane on the SAME database"
-start_proxy "$work/kaimahi-proxy" "$PGDATABASE" "$work/new.log"
+start_proxy "$work/kaimahi-proxy" "$UPGRADE_DB" "$work/new.log"
 wait_serving "$work/new.log"
 
-now=$(psql_q "$PGDATABASE" "select max(version_id) from goose_db_version")
+now=$(psql_q "$UPGRADE_DB" "select max(version_id) from goose_db_version")
 [ "$now" -gt "$applied" ] || fail "the new plane applied nothing: still at migration $now"
 grep -q 'migrations: applied' "$work/new.log" ||
   fail "the new plane did not log the migrations it applied"
 echo "new schema: migration $now (was $applied)" >&2
 
 say "the data the old version wrote is intact"
-after_rows=$(psql_q "$PGDATABASE" "select count(*) from ledger_entry")
-after_cents=$(psql_q "$PGDATABASE" "select coalesce(sum(cost_cents),0) from ledger_entry")
+after_rows=$(psql_q "$UPGRADE_DB" "select count(*) from ledger_entry")
+after_cents=$(psql_q "$UPGRADE_DB" "select coalesce(sum(cost_cents),0) from ledger_entry")
 [ "$after_rows" = "$seeded_rows" ] || fail "ledger rows changed: $seeded_rows -> $after_rows"
 [ "$after_cents" = "$seeded_cents" ] || fail "ledger cost changed: $seeded_cents -> $after_cents"
 
@@ -295,17 +312,27 @@ assert g["subject"] == "k8s_get_resources", g
 assert g["max_uses"] == 5 and g["uses"] == 0, g
 print("grant intact and live:", g["subject"], "uses", g["uses"], "of", g["max_uses"])
 PY
-legacy=$(psql_q "$PGDATABASE" "select count(*) from permit_grant where arg_digest is null")
+legacy=$(psql_q "$UPGRADE_DB" "select count(*) from permit_grant where arg_digest is null")
 [ "$legacy" = "1" ] ||
   fail "expected the pre-upgrade grant to keep a NULL arg_digest (the closed legacy class), found $legacy"
+
+# The same rule, one migration later: a credential issued before expiry
+# existed keeps a NULL expiry and KEEPS WORKING. Expiring a running estate at
+# migration time would be an outage, not a control — so the closed legacy
+# class is asserted here rather than trusted, on both halves: the column is
+# still NULL, and the governed call below still authenticates with that
+# token.
+legacy_cred=$(psql_q "$UPGRADE_DB" "select count(*) from credential where name = 'upgrade-probe' and expires_at is null")
+[ "$legacy_cred" = "1" ] ||
+  fail "expected the pre-upgrade credential to keep a NULL expiry (the closed legacy class), found $legacy_cred"
 
 budget=$(admin GET '/admin/ledger?credential=upgrade-probe' |
   python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["month_cents"])')
 [ "$budget" = "$seeded_cents" ] || fail "month-to-date changed: $seeded_cents -> $budget"
 
-say "the upgraded plane serves: a fresh governed call, on the migrated schema"
+say "the upgraded plane serves: a fresh governed call, on the migrated schema, with the legacy credential"
 governed_call "$token" >/dev/null
-final_rows=$(psql_q "$PGDATABASE" "select count(*) from ledger_entry")
+final_rows=$(psql_q "$UPGRADE_DB" "select count(*) from ledger_entry")
 [ "$final_rows" -gt "$after_rows" ] || fail "the new plane recorded nothing: $after_rows -> $final_rows"
 echo "served: ledger $after_rows -> $final_rows rows" >&2
 
@@ -314,9 +341,7 @@ stop_proxy
 # ------------------------------- 3: a migration that cannot apply, halfway
 
 say "a migration that fails halfway: the plane must not start, and must not lose data"
-broken_db="kaimahi_upgrade_broken"
-psql_q "$PGDATABASE" "drop database if exists $broken_db" >/dev/null
-psql_q "$PGDATABASE" "create database $broken_db" >/dev/null
+broken_db="$BROKEN_DB"
 
 start_proxy "$old_bin" "$broken_db" "$work/old-broken.log"
 wait_serving "$work/old-broken.log"
@@ -359,6 +384,8 @@ still_cents=$(psql_q "$broken_db" "select coalesce(sum(cost_cents),0) from ledge
   fail "data changed under a failed migration: $broken_rows/$broken_cents -> $still_rows/$still_cents"
 echo "schema still at $stuck, $still_rows ledger row(s) and ${still_cents}c untouched" >&2
 
-psql_q "$PGDATABASE" "drop database $broken_db" >/dev/null
+for db in "$UPGRADE_DB" "$BROKEN_DB"; do
+  psql_q "$PGDATABASE" "drop database if exists $db" >/dev/null
+done
 
 say "plane upgrade $OLD_REV -> this checkout: data intact, plane serving, failure fails closed"
