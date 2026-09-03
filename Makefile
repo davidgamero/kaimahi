@@ -48,14 +48,28 @@ KAGENT_VERSION ?= 0.9.12
 MODEL          ?= qwen2.5:3b
 AGENT          ?= hello-world
 TASK           ?= Hello! Who are you and where are you running?
+ifneq ($(filter environment environment override,$(origin AGENT)),)
+override AGENT := hello-world
+endif
+ifneq ($(filter environment environment override,$(origin TASK)),)
+override TASK := Hello! Who are you and where are you running?
+endif
 KAGENT         ?= bin/kagent
 STATUS_OUTPUT  ?= table
 export KMX_STATUS_OUTPUT := $(STATUS_OUTPUT)
 SESSION        ?=
 export KMX_CHAT_SESSION := $(SESSION)
+export KMX_CHAT_AGENT := $(AGENT)
+export KMX_CHAT_TASK := $(TASK)
+export KMX_KIND_CLUSTER := $(KIND_CLUSTER)
+export KMX_CONTAINER_ENGINE := $(CONTAINER_ENGINE)
+export KMX_KAGENT_VERSION := $(KAGENT_VERSION)
+export KMX_MODEL := $(MODEL)
+export KMX_KAGENT := $(KAGENT)
+export KMX_CONFIRM := $(KAIMAHI_CONFIRM)
 KMX_CHAT_ARGS = $(strip $(if $(filter 1,$(INTERACTIVE)),--interactive) \
-	$(if $(SESSION),--session "$$KMX_CHAT_SESSION") $(AGENT) \
-	$(if $(filter 1,$(INTERACTIVE)),$(if $(filter command line environment override,$(origin TASK)),"$(TASK)"),"$(TASK)"))
+	$(if $(SESSION),--session "$$KMX_CHAT_SESSION") "$$KMX_CHAT_AGENT" \
+	$(if $(filter 1,$(INTERACTIVE)),$(if $(filter command line,$(origin TASK)),"$$KMX_CHAT_TASK"),"$$KMX_CHAT_TASK"))
 
 # ---- kmx (P11, D27) -------------------------------------------------------
 # The developer journey — cluster, model, kagent, the agents, a conversation,
@@ -78,11 +92,12 @@ KMX_ASSETS   := k8s/ollama.yaml k8s/kagent-values.yaml k8s/hello-world.yaml k8s/
 # kmx reads the Makefile's own variable names, so delegation passes them
 # through rather than translating. KAIMAHI_CONFIRM rides along so a
 # confirmation given to make is not asked for again by kmx.
-KMX_ENV       = KIND_CLUSTER='$(KIND_CLUSTER)' KUBE_CTX='$(KUBE_CTX)' \
-		CONTAINER_ENGINE='$(CONTAINER_ENGINE)' KAGENT_VERSION='$(KAGENT_VERSION)' \
-		MODEL='$(MODEL)' $(if $(filter command line environment override,$(origin CHAT_PORT)),CHAT_PORT='$(CHAT_PORT)',) \
-		$(if $(filter command line environment override,$(origin KAGENT)),KAGENT='$(KAGENT)',) \
-		KAIMAHI_CONFIRM='$(KAIMAHI_CONFIRM)'
+KMX_ENV       = KIND_CLUSTER="$$KMX_KIND_CLUSTER" KUBE_CTX="$$KMX_KUBE_CTX" \
+		CONTAINER_ENGINE="$$KMX_CONTAINER_ENGINE" KAGENT_VERSION="$$KMX_KAGENT_VERSION" \
+		MODEL="$$KMX_MODEL" $(if $(filter command line,$(origin CHAT_PORT)),CHAT_PORT="$$KMX_CHAT_PORT",) \
+		$(if $(filter command line environment override,$(origin KAGENT)),KAGENT="$$KMX_KAGENT",) \
+		KAIMAHI_CONFIRM="$$KMX_CONFIRM"
+export KMX_CHAT_PORT := $(CHAT_PORT)
 
 OS   := $(shell uname -s | tr A-Z a-z)
 ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
@@ -125,6 +140,8 @@ COPILOT_EGRESS   ?= 1
 else
 $(error unknown TARGET '$(TARGET)' — expected 'kind' or 'aks')
 endif
+
+export KMX_KUBE_CTX := $(KUBE_CTX)
 
 PLANE_PULL_POLICY ?= IfNotPresent
 KUBECTL        := kubectl --context $(KUBE_CTX)

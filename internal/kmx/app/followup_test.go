@@ -114,8 +114,10 @@ func TestGovernedModelRequiresExactProxyEndpoint(t *testing.T) {
 		want bool
 	}{
 		{"http://kaimahi-proxy.kaimahi:8080/upstream/ollama/v1", true},
+		{"http://kaimahi-proxy.kaimahi.svc.cluster.local:8080/upstream/ollama/v1", true},
 		{"https://kaimahi-proxy.kaimahi:8080/upstream/ollama/v1", false},
 		{"http://example.invalid/kaimahi-proxy.kaimahi:8080/upstream/x", false},
+		{"http://[::1", false},
 	} {
 		if got := usesKaimahiModelProxy(map[string]any{"openAI": map[string]any{"baseUrl": tc.url}}); got != tc.want {
 			t.Errorf("usesKaimahiModelProxy(%q)=%v, want %v", tc.url, got, tc.want)

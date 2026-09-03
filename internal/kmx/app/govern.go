@@ -30,6 +30,9 @@ type GovernOptions struct {
 // that token's hash, and the real keys stay with the proxy. From here every
 // call the agent makes is authenticated, budget-checked and ledgered.
 func (a *App) Govern(credential string, opt GovernOptions) error {
+	if err := a.preflight(depKubectl); err != nil {
+		return err
+	}
 	if err := validCredentialName(credential); err != nil {
 		return err
 	}

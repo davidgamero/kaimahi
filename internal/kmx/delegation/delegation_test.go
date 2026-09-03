@@ -11,6 +11,7 @@ package delegation
 
 import (
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -46,7 +47,7 @@ func TestMakeTargetsDelegateToKmx(t *testing.T) {
 		{"tools-agent", "bin/kmx up --step tools-agent"},
 		{"status", "bin/kmx status"},
 		{"down", "bin/kmx down"},
-		{"chat", `bin/kmx agent chat hello-world "Hello! Who are you and where are you running?"`},
+		{"chat", `bin/kmx agent chat "$KMX_CHAT_AGENT" "$KMX_CHAT_TASK"`},
 		// Milestone 2 (D28): the governance half.
 		{"plane", "bin/kmx plane --source ."},
 		{"plane-image", "bin/kmx plane --step image --source ."},
@@ -89,15 +90,27 @@ func TestBareMakeOnlyBuildsKmx(t *testing.T) {
 func TestDelegationPassesTheOperatorsSettings(t *testing.T) {
 	out := dryRun(t, "up", "KIND_CLUSTER=mine", "CONTAINER_ENGINE=podman", "MODEL=llama3", "CHAT_PORT=9999")
 	for _, want := range []string{
-		"KIND_CLUSTER='mine'",
-		"KUBE_CTX='kind-mine'",
-		"CONTAINER_ENGINE='podman'",
-		"MODEL='llama3'",
-		"CHAT_PORT='9999'",
-		"KAGENT_VERSION='0.9.12'",
+		`KIND_CLUSTER="$KMX_KIND_CLUSTER"`,
+		`KUBE_CTX="$KMX_KUBE_CTX"`,
+		`CONTAINER_ENGINE="$KMX_CONTAINER_ENGINE"`,
+		`MODEL="$KMX_MODEL"`,
+		`CHAT_PORT="$KMX_CHAT_PORT"`,
+		`KAGENT_VERSION="$KMX_KAGENT_VERSION"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("delegation does not pass %s:\n%s", want, out)
+		}
+	}
+	cmd := exec.Command("make", "-pn", "KIND_CLUSTER=mine", "CONTAINER_ENGINE=podman", "MODEL=llama3", "CHAT_PORT=9999")
+	cmd.Dir = "../../.."
+	raw, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make database failed: %v\n%s", err, raw)
+	}
+	db := string(raw)
+	for _, want := range []string{"KMX_KIND_CLUSTER := mine", "KMX_KUBE_CTX := kind-mine", "KMX_CONTAINER_ENGINE := podman", "KMX_MODEL := llama3", "KMX_CHAT_PORT := 9999"} {
+		if !strings.Contains(db, want) {
+			t.Errorf("make did not resolve %s", want)
 		}
 	}
 }
@@ -106,8 +119,34 @@ func TestChatPortIsPassedOnlyWhenExplicit(t *testing.T) {
 	if out := dryRun(t, "chat"); strings.Contains(out, "CHAT_PORT='8083'") {
 		t.Fatalf("implicit fixed chat port was passed to kmx:\n%s", out)
 	}
-	if out := dryRun(t, "chat", "CHAT_PORT=8183"); !strings.Contains(out, "CHAT_PORT='8183'") {
+	if out := dryRun(t, "chat", "CHAT_PORT=8183"); !strings.Contains(out, `CHAT_PORT="$KMX_CHAT_PORT"`) {
 		t.Fatalf("explicit chat port was not passed to kmx:\n%s", out)
+	}
+}
+
+func TestChatInputsAreNotInterpolatedIntoShellSource(t *testing.T) {
+	out := dryRun(t, "chat", "AGENT=hello-world; touch /tmp/agent-pwn", `TASK="; touch /tmp/task-pwn; :`)
+	for _, injected := range []string{"; touch /tmp/agent-pwn", "; touch /tmp/task-pwn"} {
+		if strings.Contains(out, injected) {
+			t.Fatalf("chat input was interpolated into shell source (%q):\n%s", injected, out)
+		}
+	}
+	for _, want := range []string{`"$KMX_CHAT_AGENT"`, `"$KMX_CHAT_TASK"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("chat does not read %s from the environment:\n%s", want, out)
+		}
+	}
+}
+
+func TestExportedContextFollowsTargetDefaults(t *testing.T) {
+	cmd := exec.Command("make", "-pn", "TARGET=aks", "AKS_CLUSTER=aks-demo")
+	cmd.Dir = "../../.."
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make database failed: %v\n%s", err, out)
+	}
+	if !regexp.MustCompile(`(?m)^KMX_KUBE_CTX := aks-demo$`).Match(out) {
+		t.Fatalf("AKS context was exported before target defaults resolved:\n%s", out)
 	}
 }
 
@@ -131,7 +170,7 @@ func TestStatusOutputIsNotInterpolatedIntoShellSource(t *testing.T) {
 // A confirmation given to make must not be asked for again by kmx.
 func TestConfirmationRidesThrough(t *testing.T) {
 	out := dryRun(t, "down", "KIND_CLUSTER=mine", "KAIMAHI_CONFIRM=kind-mine")
-	if !strings.Contains(out, "KAIMAHI_CONFIRM='kind-mine'") {
+	if !strings.Contains(out, `KAIMAHI_CONFIRM="$KMX_CONFIRM"`) {
 		t.Errorf("KAIMAHI_CONFIRM is not passed to kmx:\n%s", out)
 	}
 }
@@ -144,14 +183,14 @@ func TestChatLetsKmxAcquireKagentUnlessOverridden(t *testing.T) {
 		t.Errorf("chat acquired kagent before kmx:\n%s", out)
 	}
 	out = dryRun(t, "chat", "KAGENT=/tmp/kagent")
-	if !strings.Contains(out, "KAGENT='/tmp/kagent'") {
+	if !strings.Contains(out, `KAGENT="$KMX_KAGENT"`) {
 		t.Errorf("chat dropped the explicit KAGENT override:\n%s", out)
 	}
 }
 
 func TestChatPassesInteractiveSettings(t *testing.T) {
 	out := dryRun(t, "chat", "INTERACTIVE=1", "SESSION=session-1", "AGENT=hello-tools")
-	for _, want := range []string{"agent chat --interactive", `--session "$KMX_CHAT_SESSION"`, "hello-tools"} {
+	for _, want := range []string{"agent chat --interactive", `--session "$KMX_CHAT_SESSION"`, `"$KMX_CHAT_AGENT"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("interactive chat does not pass %s:\n%s", want, out)
 		}
@@ -174,7 +213,7 @@ func TestInteractiveChatDoesNotSendTheDefaultTask(t *testing.T) {
 		t.Fatalf("interactive chat sent the default one-shot task:\n%s", out)
 	}
 	out = dryRun(t, "chat", "INTERACTIVE=1", "TASK=explicit first turn")
-	if !strings.Contains(out, `"explicit first turn"`) {
+	if !strings.Contains(out, `"$KMX_CHAT_TASK"`) {
 		t.Fatalf("interactive chat dropped an explicit task:\n%s", out)
 	}
 }

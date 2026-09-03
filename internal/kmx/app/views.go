@@ -42,6 +42,9 @@ func (a *App) Audit(kind, credential string) error {
 // outlived its command would be exactly the stale forward the plumbing
 // refuses to talk through.
 func (a *App) read(do func(*admin.Client) error) error {
+	if err := a.preflight(depKubectl); err != nil {
+		return err
+	}
 	client, err := admin.Open(a, a.Cfg.AdminPort, a.Err)
 	if err != nil {
 		return err
