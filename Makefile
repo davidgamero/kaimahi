@@ -339,8 +339,35 @@ up: $(UP_STEPS)
 
 ifeq ($(TARGET),kind)
 cluster: guard
+ifeq ($(CONTAINER_ENGINE),podman)
+	@if $(KIND_CMD) get clusters 2>/dev/null | grep -qx '$(KIND_CLUSTER)'; then \
+		nodes=$$(podman ps -a \
+			--filter 'label=io.x-k8s.kind.cluster=$(KIND_CLUSTER)' \
+			--format '{{.Names}}'); \
+		test -n "$$nodes" || { \
+			echo "kind lists cluster '$(KIND_CLUSTER)', but podman has no nodes for it" >&2; \
+			exit 1; \
+		}; \
+		podman start $$nodes >/dev/null; \
+	else \
+		$(KIND_CMD) create cluster --name $(KIND_CLUSTER); \
+	fi
+	@ready=; \
+	for _ in $$(seq 1 60); do \
+		if $(KUBECTL) get --raw=/readyz >/dev/null 2>&1; then \
+			ready=1; break; \
+		fi; \
+		sleep 2; \
+	done; \
+	test -n "$$ready" || { \
+		echo "kind cluster '$(KIND_CLUSTER)' API did not become ready after 120s" >&2; \
+		exit 1; \
+	}; \
+	$(KUBECTL) -n kube-system rollout status deployment/coredns --timeout=180s
+else
 	@$(KIND_CMD) get clusters 2>/dev/null | grep -qx '$(KIND_CLUSTER)' || \
 		$(KIND_CMD) create cluster --name $(KIND_CLUSTER)
+endif
 else
 ## cluster (TARGET=aks): resource group + private ACR + AKS, via the az CLI
 cluster: aks-cluster

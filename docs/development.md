@@ -245,9 +245,10 @@ expensive way.
   get clusters` under docker will not list a podman cluster, so the Makefile
   cheerfully tries to create one that already exists. Keep
   `CONTAINER_ENGINE` consistent for a given `KIND_CLUSTER`.
-- **Restarting the podman machine stops kind's node container.** The cluster
-  looks broken and `kubectl` hangs on it; `podman start
-  <cluster>-control-plane` brings it back.
+- **Restarting the podman machine stops kind's node container.** `make
+  cluster CONTAINER_ENGINE=podman` starts every node belonging to the named
+  cluster and waits for both the API server and CoreDNS before returning,
+  so `make up` can safely continue.
 - **First `make up` on podman can fail at the ollama rollout.** Pulling the
   ~1.9GB image through the podman VM took 5m04s here, past the target's
   300s `rollout status` timeout, so make stops even though the pull
