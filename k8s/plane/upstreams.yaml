@@ -228,7 +228,8 @@ data:
       "standing_constraints": {
         "ap-agent": {
           "payment_schedule": [
-            {"field": "amount_cents", "op": "lte", "value": 1000000}
+            {"field": "amount_cents", "op": "lte", "value": 1000000},
+            {"field": "payee_id", "op": "in", "values": ["MER-4471", "HAR-2088"]}
           ]
         }
       }

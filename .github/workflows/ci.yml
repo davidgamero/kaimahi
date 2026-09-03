@@ -298,7 +298,9 @@ jobs:
           assert erp["tools"]["dispute_open"]["policy_fields"] == ["invoice_id", "amount_cents"], erp
           assert erp["tools"]["vendor_notify"]["policy_fields"] == ["vendor_id"], erp
           cs = t["standing_constraints"]["ap-agent"]["payment_schedule"]
-          assert cs == [{"field": "amount_cents", "op": "lte", "value": 1000000}], cs
+          assert cs == [{"field": "amount_cents", "op": "lte", "value": 1000000},
+                        {"field": "payee_id", "op": "in",
+                         "values": ["MER-4471", "HAR-2088"]}], cs
           # The tool the constraint bounds must NOT also be handed out by
           # the allowlist the Makefile sets: a constraint binds, and a
           # reader who saw it allowlisted would draw the wrong conclusion.
@@ -307,7 +309,7 @@ jobs:
           named = allow.group(1).strip().split(",")
           assert named == ["invoice_get", "invoice_list", "po_get", "receiving_get",
                            "contract_get", "payment_policy_get"], named
-          print("ap: erp keyless; payment_schedule bounded at $10,000.00 and not allowlisted")
+          print("ap: erp keyless; payment_schedule bounded at $10,000.00 AND to known payees, not allowlisted")
           EOF
           set +e
           grep -rIn --exclude-dir=.git -E 'github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{30,}' .

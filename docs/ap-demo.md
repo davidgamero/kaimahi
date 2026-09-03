@@ -110,17 +110,44 @@ constraint**, committed in `k8s/plane/upstreams.yaml`:
 "standing_constraints": {
   "ap-agent": {
     "payment_schedule": [
-      {"field": "amount_cents", "op": "lte", "value": 1000000}
+      {"field": "amount_cents", "op": "lte", "value": 1000000},
+      {"field": "payee_id", "op": "in", "values": ["MER-4471", "HAR-2088"]}
     ]
   }
 }
 ```
 
-That is the business rule — *"may pay up to $10,000.00 without asking"* —
-as a rule the plane enforces, rather than a sentence in a prompt that the
-model is asked to respect. And where a constraint exists it **binds**:
-adding `payment_schedule` to the allowlist would change nothing, because
-a constraint is a bound, not another way in ([approvals.md](approvals.md#standing-constraints-the-calls-that-need-no-approval)).
+That is the business rule — *"may pay up to $10,000.00 without asking,
+and only to a vendor we know"* — as a rule the plane enforces, rather
+than a sentence in a prompt that the model is asked to respect. And
+where a constraint exists it **binds**: adding `payment_schedule` to the
+allowlist would change nothing, because a constraint is a bound, not
+another way in ([approvals.md](approvals.md#standing-constraints-the-calls-that-need-no-approval)).
+
+### What the constraint does and does not bound
+
+Be precise about this, because a constraint is only as good as the
+clauses it carries. Every clause is checked, so a call must satisfy all
+of them: at or under $10,000.00 **and** to one of the two known vendors.
+
+The second clause is not decoration. A coordinator run of this demo
+caught the agent making a hundredfold units error — it meant to pay the
+$48,000.00 invoice, called `payment_schedule` with `amount_cents 480000`
+($4,800.00), and addressed it to `MER-4471-payer`, a payee that exists
+nowhere in the corpus. With only the amount clause that call was
+**admitted with no human**, because $4,800.00 is under the bound. An
+error that scales an amount DOWNWARD slips beneath a maximum; only a
+clause about the payee catches it. With both clauses it is denied and
+files a request, and the demo gets a better scene than the script
+planned: the constraint catching a real mistake rather than a rehearsed
+one.
+
+What is still NOT bounded here: the plane does not check that an amount
+matches the invoice it names, or that the payee is the vendor on that
+invoice. Those are relationships between fields and between systems, and
+Kaimahi's constraints are per-field. The control that covers them is the
+approval — a human sees the transaction and binds their decision to that
+exact call.
 
 ## Run it
 
