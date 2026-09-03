@@ -319,12 +319,14 @@ func usesKaimahiModelProxy(spec map[string]any) bool {
 				if strings.EqualFold(key, "baseUrl") || strings.EqualFold(key, "base_url") {
 					if raw, ok := child.(string); ok {
 						parsed, err := url.Parse(raw)
-						if err != nil || parsed == nil {
-							return false
+						if err == nil && parsed != nil {
+							host := parsed.Host
+							validHost := host == "kaimahi-proxy.kaimahi:8080" || host == "kaimahi-proxy.kaimahi.svc.cluster.local:8080"
+							if parsed.Scheme == "http" && validHost && strings.HasPrefix(parsed.Path, "/upstream/") {
+								return true
+							}
 						}
-						host := parsed.Host
-						validHost := host == "kaimahi-proxy.kaimahi:8080" || host == "kaimahi-proxy.kaimahi.svc.cluster.local:8080"
-						return err == nil && parsed.Scheme == "http" && validHost && strings.HasPrefix(parsed.Path, "/upstream/")
+						continue
 					}
 				}
 				if visit(child) {

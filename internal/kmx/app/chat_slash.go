@@ -225,6 +225,10 @@ func readSlashLine(ctx context.Context, in, out *os.File, renderer *chatRenderer
 				line = completeSlash(line, slashMatches(line))
 			}
 			redraw()
+		case 0x1b:
+			if err := discardEscapeSequence(in); err != nil {
+				return "", err
+			}
 		default:
 			if one[0] >= 0x20 && one[0] != 0x7f && len(line) < 64<<10 {
 				utf8Bytes = append(utf8Bytes, one[0])
@@ -237,6 +241,24 @@ func readSlashLine(ctx context.Context, in, out *os.File, renderer *chatRenderer
 					redraw()
 				}
 			}
+		}
+	}
+}
+
+func discardEscapeSequence(in io.Reader) error {
+	var one [1]byte
+	if _, err := io.ReadFull(in, one[:]); err != nil {
+		return err
+	}
+	if one[0] != '[' && one[0] != 'O' {
+		return nil
+	}
+	for {
+		if _, err := io.ReadFull(in, one[:]); err != nil {
+			return err
+		}
+		if one[0] >= 0x40 && one[0] <= 0x7e {
+			return nil
 		}
 	}
 }

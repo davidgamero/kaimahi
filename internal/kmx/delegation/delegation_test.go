@@ -154,8 +154,8 @@ func TestDelegationPassesTheOperatorsSettings(t *testing.T) {
 }
 
 func TestChatPortIsPassedOnlyWhenExplicit(t *testing.T) {
-	if out := dryRun(t, "chat"); strings.Contains(out, "CHAT_PORT='8083'") {
-		t.Fatalf("implicit fixed chat port was passed to kmx:\n%s", out)
+	if out := dryRun(t, "chat"); strings.Contains(out, "CHAT_PORT=") {
+		t.Fatalf("implicit chat port was passed to kmx:\n%s", out)
 	}
 	if out := dryRun(t, "chat", "CHAT_PORT=8183"); !strings.Contains(out, `CHAT_PORT="$KMX_CHAT_PORT"`) {
 		t.Fatalf("explicit chat port was not passed to kmx:\n%s", out)
@@ -217,7 +217,7 @@ func TestConfirmationRidesThrough(t *testing.T) {
 // passed through, but make must not use curl before kmx can run its checks.
 func TestChatLetsKmxAcquireKagentUnlessOverridden(t *testing.T) {
 	out := dryRun(t, "chat")
-	if strings.Contains(out, "curl ") || strings.Contains(out, "KAGENT='bin/kagent'") {
+	if strings.Contains(out, "curl ") || strings.Contains(out, "KAGENT=") {
 		t.Errorf("chat acquired kagent before kmx:\n%s", out)
 	}
 	out = dryRun(t, "chat", "KAGENT=/tmp/kagent")

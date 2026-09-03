@@ -60,7 +60,7 @@ func (a *App) Govern(credential string, opt GovernOptions) error {
 	}
 	defer client.Close()
 
-	if err := a.issueCredential(client, credential, opt, false); err != nil {
+	if err := a.issueCredential(client, credential, opt, false, false); err != nil {
 		return err
 	}
 
@@ -122,7 +122,8 @@ func (a *App) GovernInteractiveModel(agent string) error {
 	if err != nil {
 		return err
 	}
-	if err := a.validateInteractiveResourceOwnership(agent, secret, preset); err != nil {
+	secretExists, err := a.validateInteractiveResourceOwnership(agent, secret, preset)
+	if err != nil {
 		return err
 	}
 	client, err := admin.Open(a, a.Cfg.AdminPort, a.Err)
@@ -130,7 +131,7 @@ func (a *App) GovernInteractiveModel(agent string) error {
 		return err
 	}
 	defer client.Close()
-	if err := a.issueCredential(client, credential, opt, true); err != nil {
+	if err := a.issueCredential(client, credential, opt, true, secretExists); err != nil {
 		return err
 	}
 	manifest, err := interactiveModelManifest(preset, secret, model, true, agent)
@@ -176,7 +177,7 @@ func interactiveModelManifest(preset, secret, model string, governed bool, agent
 // The token is shown EXACTLY ONCE, at issue time, and cannot be recovered.
 // That is what makes both the check before the POST and the 409 branch below
 // more than politeness.
-func (a *App) issueCredential(client *admin.Client, credential string, opt GovernOptions, interactive bool) error {
+func (a *App) issueCredential(client *admin.Client, credential string, opt GovernOptions, interactive, secretExists bool) error {
 	// Whose token is in that Secret? Asked BEFORE issuing, because the
 	// answer can forbid the whole operation: `kmx govern demo` while the
 	// Secret holds hello-world's token would otherwise mint demo's
@@ -225,10 +226,7 @@ func (a *App) issueCredential(client *admin.Client, credential string, opt Gover
 		map[string]string{"kaimahi.dev/credential": credential, "app.kubernetes.io/managed-by": "kmx", "kaimahi.dev/chat-agent": opt.Agent})
 	quiet := *a.Run
 	quiet.Echo = false
-	verb := "apply"
-	if interactive {
-		verb = "create"
-	}
+	verb := credentialSecretVerb(interactive, secretExists)
 	fmt.Fprintf(a.Err, "kubectl --context %s -n %s %s -f - # (Secret %s, from the pipe)\n",
 		a.Cfg.KubeContext, opt.SecretNamespace, verb, opt.Secret)
 	if err := quiet.RunStdin(manifest, "kubectl",
@@ -244,6 +242,13 @@ func (a *App) issueCredential(client *admin.Client, credential string, opt Gover
 			expires, credential)
 	}
 	return nil
+}
+
+func credentialSecretVerb(interactive, secretExists bool) string {
+	if interactive && !secretExists {
+		return "create"
+	}
+	return "apply"
 }
 
 // boundCredential returns the credential the agent-side Secret holds the
@@ -333,18 +338,20 @@ func (a *App) activeModelName(agent string) (string, error) {
 	return model, nil
 }
 
-func (a *App) validateInteractiveResourceOwnership(agent, secret, preset string) error {
+func (a *App) validateInteractiveResourceOwnership(agent, secret, preset string) (bool, error) {
 	if err := a.validateInteractiveModelOwnership(agent, preset); err != nil {
-		return err
+		return false, err
 	}
+	secretExists := false
 	for _, resource := range []struct{ kind, name string }{{"secret", secret}} {
 		raw, err := a.kubectlCapture("-n", config.DefaultNamespace, "get", resource.kind, resource.name, "-o", "json")
 		if err != nil {
 			if isNotFound(err) {
 				continue
 			}
-			return fmt.Errorf("cannot inspect %s %s before governance: %w", resource.kind, resource.name, err)
+			return false, fmt.Errorf("cannot inspect %s %s before governance: %w", resource.kind, resource.name, err)
 		}
+		secretExists = true
 		var current struct {
 			Metadata struct {
 				Annotations map[string]string `json:"annotations"`
@@ -352,16 +359,16 @@ func (a *App) validateInteractiveResourceOwnership(agent, secret, preset string)
 			Data map[string]string `json:"data"`
 		}
 		if json.Unmarshal([]byte(raw), &current) != nil || current.Metadata.Annotations["app.kubernetes.io/managed-by"] != "kmx" || current.Metadata.Annotations["kaimahi.dev/chat-agent"] != agent {
-			return fmt.Errorf("%s %s already exists without matching kmx ownership for agent %s; refusing to overwrite it", resource.kind, resource.name, agent)
+			return false, fmt.Errorf("%s %s already exists without matching kmx ownership for agent %s; refusing to overwrite it", resource.kind, resource.name, agent)
 		}
 		if resource.kind == "secret" {
 			token, err := base64.StdEncoding.DecodeString(current.Data["api-key"])
 			if err != nil || !strings.HasPrefix(string(token), "kmh_") || len(token) != 68 {
-				return fmt.Errorf("Secret %s is owned by kmx but does not contain a valid Kaimahi token; refusing to use it", secret)
+				return false, fmt.Errorf("Secret %s is owned by kmx but does not contain a valid Kaimahi token; refusing to use it", secret)
 			}
 		}
 	}
-	return nil
+	return secretExists, nil
 }
 
 func (a *App) validateInteractiveModelOwnership(agent, preset string) error {

@@ -195,6 +195,18 @@ func TestGovernedResourceNamesRemainValidKubernetesNames(t *testing.T) {
 	}
 }
 
+func TestInteractiveCredentialReplacesOnlyPrevalidatedOwnedSecret(t *testing.T) {
+	if got := credentialSecretVerb(true, false); got != "create" {
+		t.Fatalf("absent interactive Secret uses %q", got)
+	}
+	if got := credentialSecretVerb(true, true); got != "apply" {
+		t.Fatalf("existing owned interactive Secret uses %q", got)
+	}
+	if got := credentialSecretVerb(false, false); got != "apply" {
+		t.Fatalf("ordinary govern behavior changed to %q", got)
+	}
+}
+
 // The rule `make govern` states in a comment and enforces with a grep, here
 // enforced by construction: ONLY a genuine NotFound may skip the switch.
 // Every other failure — an unreachable API server, an expired credential, an

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"reflect"
 	"testing"
 )
@@ -11,6 +12,18 @@ func commandNames(commands []slashCommand) []string {
 		names = append(names, command.name)
 	}
 	return names
+}
+
+func TestDiscardEscapeSequenceConsumesNavigationKeys(t *testing.T) {
+	for _, sequence := range []string{"[A", "[1~", "[3~", "OH"} {
+		reader := bytes.NewBufferString(sequence + "x")
+		if err := discardEscapeSequence(reader); err != nil {
+			t.Fatalf("sequence %q: %v", sequence, err)
+		}
+		if got := reader.String(); got != "x" {
+			t.Fatalf("sequence %q left %q", sequence, got)
+		}
+	}
 }
 
 func TestSlashTrieMatchesPrefixes(t *testing.T) {

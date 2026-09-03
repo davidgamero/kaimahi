@@ -1158,6 +1158,7 @@ $(KMX): $(KMX_SOURCES) $(KMX_ASSETS)
 		echo 'kmx needs a Go toolchain to build from a checkout (https://go.dev/dl/).' >&2; \
 		echo 'Without a clone: go install github.com/kaimahi-agents/kaimahi/cmd/kmx@<sha>' >&2; \
 		exit 1; }
+	@mkdir -p $(dir $@)
 	go build -o $(KMX) ./cmd/kmx
 
 # Pinned kagent CLI, checksum-verified. The release .sha256 files embed a

@@ -119,8 +119,8 @@ make status                              # grouped agents, models, runtime healt
 make down                                # delete the cluster
 ```
 
-`make chat` fetches the pinned kagent CLI to `bin/kagent` (checksum-verified),
-port-forwards the controller, and invokes the agent.
+`make chat` delegates to kmx, which acquires the pinned kagent CLI in its
+cache (checksum-verified), port-forwards the controller, and invokes the agent.
 
 | Consume it as | How |
 |---|---|

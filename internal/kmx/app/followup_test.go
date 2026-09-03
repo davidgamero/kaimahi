@@ -463,6 +463,18 @@ func TestGovernedModelRequiresExactProxyEndpoint(t *testing.T) {
 	}
 }
 
+func TestGovernedModelSearchContinuesPastOtherBaseURLs(t *testing.T) {
+	spec := map[string]any{
+		"direct": map[string]any{"baseUrl": "https://example.invalid/v1"},
+		"nested": []any{map[string]any{"base_url": "http://kaimahi-proxy.kaimahi:8080/upstream/ollama/v1"}},
+	}
+	for i := 0; i < 100; i++ {
+		if !usesKaimahiModelProxy(spec) {
+			t.Fatal("a nonmatching baseUrl stopped discovery of the governed endpoint")
+		}
+	}
+}
+
 func TestUpPreflightReportsAllMissingDependencies(t *testing.T) {
 	dir := t.TempDir()
 	fakeTool(t, dir, "docker", "exit 0")

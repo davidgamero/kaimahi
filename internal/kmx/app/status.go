@@ -225,7 +225,7 @@ func (a *App) statusTable() error {
 	table(a.Out, []string{"NAME", "READY", "PHASE", "RESTARTS"}, podRows)
 	fmt.Fprintln(a.Out, "\nNext")
 	if overall {
-		fmt.Fprintln(a.Out, "  kmx agent chat hello-world")
+		fmt.Fprintf(a.Out, "  kmx agent chat %s\n", agentRows[0][0])
 	} else {
 		fmt.Fprintf(a.Out, "  kubectl --context %s -n kagent get agents,pods\n", a.Cfg.KubeContext)
 	}
