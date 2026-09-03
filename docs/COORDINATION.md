@@ -119,6 +119,8 @@ prefix.
 | P12: argument-level policy — standing constraints + an approval bound to the call (D29, widened by D31) | W23 worker | PR #62 MERGED; coordinator verified live — a constraint overrides the allowlist, a grant with a spare use could not be redirected, duplicate keys refused (delta sheet below) | lane closed | touches the gateway, the store, a migration, the approvals path and the Slack notifier; no new upstream |
 | P13: the accounts-payable exception demo (D29, D30) | W24 worker | PR #73 MERGED; coordinator verified both scenarios on its own cluster — the injection proven with the model actually complying (delta sheet below) | lane closed. ONE OPEN FINDING: the constraint bounds the amount but not the payee, and the agent walked through it. Fixture ERP server + ConfigMap corpus, the payee-substitution injection case, Slack as the surface; kind + CI, no AKS run unless the user calls one |
 | CI: the e2e job takes ~15 min on every PR (D32) | W25 worker | PR #65 MERGED; coordinator verified 934s to 483s with all 62 assertion bodies byte-identical (delta sheet below) | lane closed | investigation-led: 934s over 68 serial steps, bring-up 186s, the model pull only 16s of it |
+| P14: the AP demo live on AKS (D33) | W26 worker | SHAPED 2026-09-03 — prompt below; runs in PARALLEL with W27 | needs the ERP on ACR first (it is kind-only today); Copilot-only; real Slack approvals; teardown + spend mandatory |
+| `kmx` milestone 3 — the core plane verbs (D28(3), D33) | W27 worker | SHAPED 2026-09-03 — prompt below; runs in PARALLEL with W26 | kind ONLY, which is what keeps it clear of W26; no connector families, no secret capture |
 | Brand assets + architecture diagram + org/front-door plans | user-run lane (outside the board's prompt set) | PR #33 MERGED (+ kaimahi-agents/.github#1); main CI green | brand validator in the hygiene job |
 | README front door + CONTRIBUTING.md | user-run lane (outside the board's prompt set) | PR #34 MERGED; main CI green | anchored front-door checker in hygiene: section order enforced, no `npx kaimahi create` mention before the quickstart ends — PR #16's README hunk must land under "A scaffolder CLI: considered, not built" (was "Proposed CLI direction" until D23) |
 | CLI decisions + PR #16 review | user + coordinator | D19 ruled; coordinator review rounds done (2026-09-01/02) | not a build lane; parallelises with everything |
@@ -169,6 +171,7 @@ prefix.
 | D30 | 2026-09-02 | **P13 shaped — the accounts-payable exception demo, invented in full.** User ruling on the open scenario questions: "i think we can make up all of those things, its a demo, not a real implementation" — so the coordinator invented the corpus and the tool surface rather than asking. (1) **The ERP is one in-cluster fixture-backed MCP server** in this repo (the `slack-mcp` shape, one `tool_upstreams` entry, keyless), with the fixtures in a ConfigMap so the story can be edited without a rebuild. Read tools — `invoice_get`, `invoice_list`, `po_get`, `receiving_get`, `contract_get`, `payment_policy_get` — are on the standing allowlist. Consequential tools — `payment_schedule`, `dispute_open`, `vendor_notify` — are on NO allowlist, so every attempt to use one is denied and files an approval request; that is the demo. Their declared policy-relevant fields (D29) are: `payment_schedule` → invoice_id, amount_cents, payee_id; `dispute_open` → invoice_id, amount_cents; `vendor_notify` → vendor_id. (2) **The corpus is arithmetic the audience can check**: vendor Meridian Industrial Supply (MER-4471); PO-2291 for 400 units at $105.00 = $42,000.00, contract terms requiring prior written authorization for any expedite fee, none on file; invoice INV-88134 for $48,000.00 = 400 units at $105.00 plus $6,000.00 "expedited handling"; receiving record RCV-2291-A showing 310 units received and 90 backordered; payment policy: pay only the received quantity, hold disputed lines, and any payment over $10,000 needs human approval. The correct resolution is therefore 310 × $105 = **$32,550 payable**, $9,450 held as undelivered, $6,000 disputed as an unauthorized fee. (3) **The injection case is a payee substitution**, the real AP fraud pattern: a second invoice INV-88140 carries text instructing the agent that the invoice is pre-approved and must be paid in full to a DIFFERENT payee immediately without requesting approval. The demo does not depend on the model refusing it — the agent is allowed to comply, and the gateway denies the call anyway, files a request whose summary shows both the changed amount and the changed payee, and audits the attempt. Crucially it cannot ride the earlier approval either: that grant is welded to the $32,550 call's digest (D29). (4) **Slack is the demo's UI — no new web surface** (prime directive): the approval carries the transaction summary P12 adds, the evidence is what the agent posts, and the audit trail is printed. (5) **Built and proven on kind + CI**, keyless and deterministic; a live AKS run is a separate call for the user because it costs money and needs their credentials, exactly as D20/D25 handled it. W24 prompt below; launches after W23 (P12) merges | "i think we can make up all of those things, its a demo, not a real implementaiton" |
 | D31 | 2026-09-02 | **Kaimahi's boundary against the "AI Agent DevX" deck: own the governance vertical completely and expose it through `kmx`; do not build the experience around it.** Context: a PM-team ideation deck (8 pages) sketching a developer journey — describe the agent by chat, connect data/models/skills/MCP, define permissions, boundaries and pass/fail scenarios, generate and test locally, migrate to AKS with CI/CD and observability, then hand it to a business analyst. Coordinator's read of the deck itself, which binds this decision: (a) page 4 labels the guided flow **`(kmx-build-agent)`** — the deck already assumes kmx is the vehicle, which is the one real signal in it about direction; (b) it is titled "Ideation" and page 2 still asks "Developer? Business analyst? Hobby person?", with two slides marked "(NA)" — the AUDIENCE IS UNRESOLVED, which is upstream of every scoping question here; (c) its last slide's finance example is scheduled REPORTING with a sign-off step, not exception handling, so the AP agent (D30) is an UPGRADE on the deck and must not be presented internally as what the deck asked for. Four rulings: (1) **Kaimahi grows UP into slide 4's middle column** — describe permissions, boundaries and pass/fail scenarios, get an agent that provably enforces them — because every governance bullet in the deck is already built or shaped here (source permission RO/RW = the tool allowlist; "boundaries: no internet" = the P7a egress policy; "audit — can't turn off" = the audit trail; "Validate/HiL" and "Approver Sign off" = P4c/P8b approvals; pass/fail scenarios = what P12 makes enforceable). (2) **Kaimahi does NOT build the experience**: not the runtime console of slides 5–6 (agent list, logs, metrics, traces, start/stop/pause, YAML editing) — `kagent-ui` already ships that and was observed running during the P11 verification, so building a second one is exactly what the prime directive exists to stop — not the analyst canvas of slide 8, not chat-driven scaffolding, not CI/CD generation, not the Azure observability wiring. Those surfaces CONSUME Kaimahi. (3) **P12's scope gains the standing-constraint half**, amending D29(1): the hero prompt's "may approve valid invoices under $10,000, anything else needs Finance approval" is a declarative per-credential/tool constraint — the option NOT taken in D29 — and the scenario needs it alongside the bind-to-the-call digest. P12 therefore builds BOTH: standing constraints for routine calls, and an approval welded to the exact call for everything outside them. W23 amended below. (4) **"Never expose payment details" is cut from the hero prompt**: it is output filtering, neither an allowlist nor an approval, and the honest position is not to imply a control that does not exist. Consequence, stated: this answers the three positioning questions without ever having to explain why we rebuilt kagent's UI — kagent runs the agent, Kaimahi is what makes an agent safe to give authority to, and AKS matters for identity, private connectivity and observability, which are platform reasons rather than governance ones | "Your suggestions seem reasonable" |
 | D32 | 2026-09-02 | **A parallel lane to make the e2e job faster (W25), investigation-led and merging LAST.** The `e2e-hello-world` job is a required check on every PR and takes ~15 minutes; hygiene and go-plane are ~35s each, so it is effectively all of CI. The coordinator measured before shaping the lane (run 33707312808): 934s across 68 SERIAL steps in one job on one cluster, the bring-up 186s of it (kind create 56s, the 1.9GB model pull only 16s, ~110s waiting for kagent's five pods), and a 747s tail whose largest entries are the network-boundary probe 105s, the Postgres outage probe 76s and the plane deploy 59s. **Recorded because it redirects the lane: caching the model — the obvious first idea — would save about 16 seconds.** The structural question is whether one serial job on one cluster is still right now that it carries every phase's proof from P1 to P10. Rulings: (1) **what is proven must not shrink** — no probe deleted, moved to main-only, path-filtered away or downgraded to a smoke test to buy time; a probe believed redundant is NAMED in the PR with evidence for a coordinator ruling, not removed; (2) **the model is not weakened** without the tool probes passing repeatedly as evidence, and that is a coordinator decision because the P3 proofs depend on real function-calling; (3) **flakiness is worse than slowness** — the three recorded flake classes were each paid for once and must not return, and any change that is fast on average and occasionally red is a regression, so the lane reports variance across repeated runs, not one fast number; (4) **W25 merges LAST** — W22 and W23 are in flight and both edit ci.yml, so W25 branches from main, rebases onto whatever they land, and does not edit the steps they own | "i think we should also have a parallel session to investigate our e2e hello world ci -- it is taking close to 10m" |
+| D33 | 2026-09-03 | **Two lanes in parallel: the AP demo live on AKS (P14, W26) and `kmx` milestone 3 (W27).** Chosen as a PAIR for a specific reason — one runs in the cloud and one on kind, so they do not compete for the coordinator's box, which is what actually blocked the P13 pass (eight kind clusters, kube-proxy `too many open files`). D31's middle column and `kmx` milestone 3 could NOT run together: both live in `cmd/kmx` and `internal/kmx`, and the former would redefine the surface the latter extends, so the middle column is shaped alone after W27 lands. Coordinator's blind-spot findings, which shape both: **(a) the AP demo cannot run on AKS today at all** — `make erp` on a non-kind target exits with "the demo ERP is kind-only: its image is built from source and never published, so there is nothing for a managed cluster to pull", so W26 is not "run it elsewhere", it is "give the ERP the registry path the plane already has"; **(b)** AKS is Copilot-only (D15, no Ollama), so the AP agent runs `governed-copilot` there and needs the Copilot secret, whose capture stays a script (D27); **(c)** milestone 3's connector families are entangled with secret capture that D27 keeps in scripts, so they are NOT in W27; **(d)** milestone 1 deliberately did not carry `wait_switched` across because `make use` was not one of the six commands (deviation 7) — if W27 takes `use`, that is the moment to carry it. Rulings: (1) **W26 gives the ERP an ACR path exactly as the plane has it** (`az acr build`, private registry, built in Azure, never published publicly — D15's shape, not a new one); (2) **W26's approvals go through real Slack** via the app-mention command on the existing edge, the same terms P8a/P8b ran under — an admin-only approval would prove the plumbing but not the story, and the story is a human approving a payment; (3) **teardown is mandatory with a reported spend figure, and the Azure identifier scanner still refuses every identifier the run produces**, as on every prior AKS lane; (4) **W27 is kind-only and must not touch the AKS path** — that is what keeps the two lanes apart, and it is the reason they can run at once; (5) **W27 takes the core plane verbs** (budget, the approval verbs, backup/restore, plane-metrics, the tool-governance verbs, and `use`/`use-ollama` carrying `wait_switched`) and **not** the Slack/GitHub/inbound families, which move to a later milestone with their secret-capture question answered; (6) **secret capture stays scripts** (D27 unchanged); (7) **`ci.yml`'s gate line is now a shared write for every lane** — since W25 every lane that adds a shard edits `needs:` on `e2e-hello-world` — so second to merge rebases and neither lane edits the other's steps | "great, lets do that -- provide prompts for what you recommend", after "could we do those in parallel?" |
 | D14 | 2026-09-01 | P5 direction: the **undeniable demo** — not a new capability arc but making the built one legible and credible. Rulings: (1) outbound connector platform is **Slack** (via existing MCP servers, no connector code); (2) AKS work goes all the way — cluster portability AND a real AKS deployment with evidence (accepts Azure spend + credentials in a worker session); (3) demos run on the **Copilot** preset while **CI stays keyless on ollama** (public fork-exposed repo — no repo secrets in CI, ever). Rationale on the board: everything governed so far protects an agent that lists ConfigMaps; posting to a channel humans read is the first consequential action, and it makes the approval gate the point rather than the plumbing | "sure, that's undeniable demo makes sense" — then ruled via options: "Slack (Recommended)", "Portability + real AKS run (Recommended)", "Copilot for demo, ollama for CI (Recommended)" |
 | D13 | 2026-09-01 | P4c approval model: TIME-BOXED PERMITS — a denied action files a pending request; approval grants it bounded (expiry by duration and/or use count) and compiles into the existing allowlist/budget rows; deny-and-retry mechanics, no held-open calls. Demo scenarios: tool-access widening (k8s_get_events, read-only) AND budget overage; the P3 tool-server read-only posture stays untouched (write-tool demo deferred) | ruled via options: "Time-boxed permits (Recommended)"; "Widen tool access (Recommended), Budget overage (Recommended)" |
 
@@ -2383,6 +2386,191 @@ and a change that is fast on average and occasionally red is a
 regression. Branch from current main; PR targets main; no stacked bases;
 lane ends at PR-open-with-checks-green — do not merge. Report deviations
 in the PR.
+```
+
+### W26 — P14: the accounts-payable demo, live on AKS (UNASSIGNED — paste into a fresh CLI session; runs in PARALLEL with W27)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout, remote kaimahi-agents/kaimahi). Read docs/COORDINATION.md
+first — decisions D14, D15, D20, D21, D30 and especially D33, the P13
+delta sheet, the "Considered and rejected" list and the security
+standing guidance all bind you. Your lane: the accounts-payable demo
+runs today only on kind. Make it run on AKS, live, with a human
+approving a payment in Slack — and tear it down.
+
+Read this before you plan, because it changes the shape of the lane:
+**the demo cannot run on AKS at all today.** `make erp` on a non-kind
+target exits with "the demo ERP is kind-only: its image is built from
+source and never published, so there is nothing for a managed cluster to
+pull". So this lane is not "run the demo elsewhere"; it is "give the ERP
+the registry path the plane already has, then run the demo".
+
+Survey first (prime directive): the plane already solved your hardest
+problem. `make plane-image` on TARGET=aks runs `az acr build` — the
+source is uploaded and built BY the registry, so nothing is logged into
+a registry locally and no image leaves the private ACR (D15).
+scripts/erp-deploy.sh is the kind path and the SPEC for what to deploy;
+scripts/aks-up.sh and aks-down.sh own the cluster; docs/aks.md is the
+managed-cluster guide; P8a put the inbound edge on the internet behind
+TLS and P8b routed approvals through it. Read them and say in the PR
+what you reused rather than rebuilt.
+
+Build:
+- **The ERP gets an ACR path, in the plane's exact shape** (D33(1)):
+  `az acr build` into the same private registry, `imagePullPolicy` and
+  image reference rendered for a registry target the way
+  scripts/plane-deploy.sh renders the proxy's — including its
+  fail-closed rule that refuses to apply when the render does not
+  produce exactly what was intended. The kind path stays EXACTLY as it
+  is: unrendered, side-loaded, `Never`. Nothing is published publicly —
+  a private ACR is not publication (D15), and the P13 guardrail against
+  publishing the ERP stands.
+- **The AP agent on AKS runs `governed-copilot`** (D15: no Ollama
+  there), so the run needs the Copilot secret in plane custody. Capture
+  stays scripts/copilot-secret.sh (D27) — do not move it into anything.
+- **Approvals come from a real Slack** (D33(2)), through the app-mention
+  command on the P8a edge, so the transcript shows a person approving a
+  payment and the grant carries `decided_by=slack:<their id>`. An
+  admin-only approval would prove the plumbing and skip the story.
+- **The two scenarios run unchanged** — `make ap-demo` and
+  `make ap-injection` are the same scripts, pointed at the managed
+  cluster. If either needs a change to work there, that change is a
+  finding: say in the PR what was kind-specific and why, rather than
+  quietly forking the scenario.
+
+Guardrails, all hard: **teardown is mandatory** and the PR reports a
+spend figure (D33(3)); the Azure identifier scanner must still pass —
+the cluster FQDN, the ACR name and the public IP are Azure identifiers
+and never land in the tree (scripts/check-no-azure-ids.sh, and
+`make exposure-scan` for what is reachable); the Slack Request URL is
+removed at teardown as P8a did; no repo secrets in CI; nothing published
+publicly; **kind must keep working exactly as it does now** — prove it,
+because a registry render that also changed the kind path would be the
+regression this lane is most likely to cause.
+
+Out of scope, and this matters because another lane is live: **do not
+touch `cmd/kmx`, `internal/kmx`, or any kind-path Makefile recipe** —
+W27 (`kmx` milestone 3) is running in parallel and owns those. You own
+the AKS path and the ERP's image. `ci.yml`'s gate line (`needs:` on
+`e2e-hello-world`) is a shared write since W25: if you add a shard,
+expect to rebase, and do not edit W27's steps.
+
+CI stays keyless (D14). The live AKS run is by nature not repeatable in
+CI; what CI must gain is the same shape P10 used for its hosted
+upstream — the registry render for the ERP proven synthetically, and the
+kind path proven unchanged.
+
+Verification is real: a transcript in the PR of the whole thing on a
+REAL AKS cluster — the ERP pulled from ACR, the agent investigating on
+Copilot, the payment denied, a named human approving it in Slack, the
+payment admitted under a call-bound grant, the injected invoice refused
+with its audit row — then `az group list` showing nothing left and the
+spend figure. Branch from current main; PR targets main; no stacked
+bases; lane ends at PR-open-with-checks-green — do not merge. Report
+deviations in the PR.
+```
+
+### W27 — `kmx` milestone 3: the core plane verbs (UNASSIGNED — paste into a fresh CLI session; runs in PARALLEL with W26)
+
+```
+You are a worker session for the Kaimahi project (repo root: this
+checkout, remote kaimahi-agents/kaimahi). Read docs/COORDINATION.md
+first — decisions D13, D24, D27, D28 and especially D33, the P11
+milestone 1 and 2 delta sheets, the "Considered and rejected" list and
+the security standing guidance all bind you. Your lane: milestone 3 of
+`kmx`. Milestones 1 and 2 gave the binary the runtime journey and the
+governance plane. You add the verbs an operator reaches for once the
+plane is up, so the Makefile stops being the only way to use them.
+
+Survey first (prime directive): milestones 1 and 2 as merged are your
+foundation — reuse the context guard, the kubectl plumbing, the
+port-forward handling `kmx` already does for the admin port, the output
+conventions and the tests. Do not fork them. scripts/plane-admin.sh
+(budget, approvals, approve, deny, request, tool-allow, tool-allowlist),
+scripts/plane-backup.sh, scripts/plane-restore.sh,
+scripts/plane-metrics.sh and the Makefile's `use`/`use-ollama`,
+`govern-tools`/`ungovern-tools` recipes are the SPEC: read them line by
+line and carry every wait, every fail-closed check, every custody rule
+and every message across; say what you dropped and why.
+
+Build (D33(5) fixes the scope):
+- **Budget and the approval verbs**: `kmx budget`, `kmx approvals`,
+  `kmx approve`, `kmx deny`, `kmx request`. Approve carries the same
+  bounds it does today (ttl, uses, amount) and the same refusal when
+  neither ttl nor uses is given; and since P12, a tool grant is welded
+  to a call — `kmx approvals` must show the TRANSACTION the way
+  `make approvals` does, not just the verb, or the CLI is a downgrade.
+- **Backup and restore**: `kmx backup`, `kmx restore`. These stream
+  pg_dump through `kubectl exec` over the Postgres pod's unix socket so
+  no password leaves the pod and no local client is needed — carry that
+  property, do not replace it with a client connection. `restore` is
+  destructive (it drops and recreates every table) and is guarded;
+  `backup` is a read and is not. The e2e already proves the round trip
+  across a migration boundary — it must still pass.
+- **Metrics**: `kmx metrics` for what `make plane-metrics` prints —
+  a port-forward to ONE pod's ops port, which is on no Service.
+- **Tool governance**: `kmx tools govern`, `kmx tools allow`,
+  `kmx tools allowlist`, `kmx tools ungovern` (the shape is yours;
+  justify it). The allowlist reads back sorted, and an empty allowlist
+  is a valid answer meaning nothing is callable without a live grant —
+  do not turn that into an error.
+- **`kmx use`**, and here is the trap milestone 1 left for you
+  deliberately: it did NOT carry `wait_switched` across, because
+  `make use` was not one of the six commands (milestone 1, deviation 7).
+  That helper is three waits deep and every one of them was paid for by
+  a flake — kagent reconcile is async, Ready never flips, and the check
+  must see ONE pod on the new template. Carry it whole, with its
+  reasons, or `kmx use` will look right and return early.
+  `kmx use-ollama` is the same command pinned to the `ollama` preset —
+  say in the PR whether you shipped it as an alias of `kmx use` or as
+  its own verb, and either way it takes the identical `wait_switched`
+  path, because the flake it guards against does not care which name
+  reached it.
+- **The Makefile delegates** these targets the way milestone 2's do, and
+  scripts/check-kmx-delegation.py's OWNED map grows to match. One
+  implementation per behaviour (D27(1)): say in the PR, per script,
+  which one is the implementation and which is a caller.
+
+NOT in this lane (D33(5)): the Slack, GitHub and inbound families. Each
+is entangled with secret capture, which D27 keeps in scripts, and the
+split between "capture the credential" and "govern the thing" needs its
+own decision before a CLI pretends to own either. Also not in this lane:
+`kmx govern-slack`, `slack-allow`, `github-*`, `inbound-*`.
+
+**Kind only, and this is not negotiable (D33(4)):** do not touch the
+AKS path, any `TARGET=aks` recipe, `scripts/aks-*.sh`, the ERP's image,
+or `docs/aks.md`. W26 is running in parallel and owns exactly those. It
+does not touch `cmd/kmx`, `internal/kmx` or the kind recipes; you do not
+touch its files. `ci.yml`'s gate line (`needs:` on `e2e-hello-world`) is
+a shared write since W25 — second to merge rebases, and neither lane
+edits the other's steps.
+
+CI stays keyless (D14): the existing e2e keeps calling the same `make`
+targets, which now prove kmx; add Go unit tests for the argument
+parsing of every new verb (milestone 1 was bitten by Go's `flag`
+stopping at the first positional — a test per argument order), for the
+approve-bounds refusals, for the allowlist's sorted read-back and empty
+case, and for the delegation map. `make backup`/`make restore` must
+still round-trip in the e2e.
+
+Guardrails, all hard: no publishing; **kmx accepts no user-supplied
+credential and captures no secret** (D27) — that is a different thing
+from the governed credentials it ISSUES, which it does and must keep
+doing, so the rule is "never take one in", not "never handle one"; the
+bytes it mints travel only through pipes and 0600 files, never argv, env
+listings or logs; every mutation through the guard; no client-go — shell
+out as the earlier milestones do; no Azure or Slack identifiers; no repo
+secrets in CI.
+
+Verification is real: on a clean machine with no checkout,
+`go install …/cmd/kmx@<your sha>`, then up → plane → govern → and each
+new verb exercised against a live cluster, transcript in the PR —
+including a `restore` that visibly brings back a ledger row a `backup`
+captured, and a `kmx use` that returns only once one pod on the new
+template is serving. Branch from current main; PR targets main; no
+stacked bases; lane ends at PR-open-with-checks-green — do not merge.
+Report deviations in the PR.
 ```
 
 ## Delta sheets from finished lanes
