@@ -2196,6 +2196,23 @@ Build:
   constraint with NO human in the loop, audited like any allowed call.
   The demo then shows three outcomes in one run: routine pays itself,
   the exception needs a named human, and the manipulated call is refused.
+- **The config shape P12 actually shipped**, so you do not rediscover it.
+  Both halves live in the same ConfigMap as `tool_upstreams`
+  (k8s/plane/upstreams.yaml). A tool declares its policy-relevant fields
+  beside its upstream — `"payment_schedule": {"policy_fields":
+  ["invoice_id", "amount_cents", "payee_id"]}` — and a credential's
+  bounds go in a sibling `standing_constraints` block, credential then
+  tool then a list of clauses: `{"field": "amount_cents", "op": "lte",
+  "value": 1000000}`, with `op: "in"` taking `values`. A constraint may
+  only name a field the tool DECLARES; naming any other is a load-time
+  error, not a rule that quietly never fires. **The semantics that
+  matter for this demo, verified live by the coordinator: a constraint
+  OVERRIDES the standing allowlist for that tool** — it is a bound, not
+  another way in — so a constrained `payment_schedule` is refused
+  outside its bound whether or not it also appears on the allowlist.
+  `dispute_open` and `vendor_notify` carry no constraint and are on no
+  allowlist, so every call to them is denied and pends, which is what
+  D30 wants.
 - **The agent**: an AP exception agent (k8s/ap-agent.yaml, the shape of
   the existing agents) whose instructions describe the job — investigate
   the mismatch, gather evidence, propose a resolution, act only through
