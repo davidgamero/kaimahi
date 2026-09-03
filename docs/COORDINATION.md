@@ -2094,11 +2094,16 @@ already exists: the P4c approvals cycle (tool denial → request →
 bounded approval → admitted → exhaustion re-denies) must still pass
 end to end — if a digest-bound grant makes it flaky, your binding is
 too brittle and the declared-fields rule (D29) is the fix, not a
-loosened check. Add: two different argument sets file two requests; a
-grant for one digest denies the other and files its own request; a
-duplicate key inside `arguments` cannot make enforcement and the
-forwarded bytes disagree; a malformed declaration is refused at load;
-the summary never carries an undeclared field. Go unit tests for
+loosened check. Add: a call INSIDE a standing constraint proceeds with
+no approval and is audited as allowed, while one a cent outside it is
+denied and files a request (the boundary itself is a test — at, just
+under, and just over); a constraint naming a field the tool does not
+declare is refused at LOAD, not ignored at call time; two different
+argument sets file two requests; a grant for one digest denies the
+other and files its own request; a duplicate key inside `arguments`
+cannot make enforcement and the forwarded bytes disagree; a malformed
+declaration is refused at load; the summary never carries an undeclared
+field. Go unit tests for
 canonicalization and digesting; store tests for the new dedup key
 against the service Postgres, as the existing concurrency tests do.
 
@@ -2120,10 +2125,13 @@ redaction of tool RESULTS (that is not a control this project has — do
 not imply one), and anything on the AKS path. P13 and later.
 
 Verification is real: the full e2e green, plus a transcript in the PR of
-one hand-run cycle on your own kind cluster where an agent is denied a
-call, a human approves THAT call, the agent retries with a DIFFERENT
-argument and is denied again, then retries with the approved one and
-succeeds — with the audit rows for all four. Branch from current main;
+one hand-run cycle on your own kind cluster covering BOTH halves — a
+call inside a standing constraint that proceeds with no human at all,
+then a call outside it that is denied, approved by a human for THAT
+call, retried with a DIFFERENT argument and denied again, and finally
+retried with the approved one and admitted — with the audit rows for
+every step, showing that the no-approval path and the approved path are
+distinguishable in the trail. Branch from current main;
 PR targets main; no stacked bases; lane ends at PR-open-with-checks-
 green — do not merge. Report deviations in the PR.
 ```
