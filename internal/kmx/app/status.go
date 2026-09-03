@@ -131,15 +131,15 @@ func statusReady(allAgents, allModels bool, kReady, kTotal, oReady, oTotal, pRea
 
 // Status prints a grouped human view or kubectl-native JSON/YAML.
 func (a *App) StatusWithOptions(opt StatusOptions) error {
+	format := strings.ToLower(strings.TrimSpace(opt.Output))
+	if format != "" && format != "table" && format != "json" && format != "yaml" {
+		return fmt.Errorf("status output %q is not supported — use table, json, or yaml", opt.Output)
+	}
 	if err := a.preflight(depKubectl); err != nil {
 		return err
 	}
-	format := strings.ToLower(strings.TrimSpace(opt.Output))
 	if format == "" || format == "table" {
 		return a.statusTable()
-	}
-	if format != "json" && format != "yaml" {
-		return fmt.Errorf("status output %q is not supported — use table, json, or yaml", opt.Output)
 	}
 	fmt.Fprintf(a.Err, "# context: %s (from %s)\n", a.Cfg.KubeContext, a.Cfg.ContextSource)
 	return a.kubectlRun("-n", "kagent", "get", "agents,modelconfigs,pods", "-o", format)

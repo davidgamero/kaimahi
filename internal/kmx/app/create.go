@@ -201,12 +201,12 @@ func validateToolServer(tools *scaffold.ToolWiring, generation, observed int64, 
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("RemoteMCPServer %q has not discovered allowlisted tool(s): %s\n  Available tools: %s",
-			tools.Server, strings.Join(missing, ", "), strings.Join(sortedKeys(discovered), ", "))
+			tools.Server, strings.Join(missing, ", "), strings.Join(sortedBoolKeys(discovered), ", "))
 	}
 	return nil
 }
 
-func sortedKeys(values map[string]bool) []string {
+func sortedBoolKeys(values map[string]bool) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)

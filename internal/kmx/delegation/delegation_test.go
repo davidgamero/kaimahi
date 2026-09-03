@@ -189,7 +189,7 @@ func TestChatLetsKmxAcquireKagentUnlessOverridden(t *testing.T) {
 
 func TestChatPassesInteractiveSettings(t *testing.T) {
 	out := dryRun(t, "chat", "INTERACTIVE=1", "SESSION=session-1", "AGENT=hello-tools")
-	for _, want := range []string{"agent chat --interactive", "--session 'session-1'", "hello-tools"} {
+	for _, want := range []string{"agent chat --interactive", `--session "$KMX_CHAT_SESSION"`, "hello-tools"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("interactive chat does not pass %s:\n%s", want, out)
 		}
