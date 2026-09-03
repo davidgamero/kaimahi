@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -26,6 +27,124 @@ const maxControllerResponse = 10 << 20
 
 var controllerClient = &http.Client{Timeout: 30 * time.Second}
 var agentNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+type actorColor string
+
+const (
+	colorBlue    actorColor = "\033[34;1m"
+	colorCyan    actorColor = "\033[36;1m"
+	colorGreen   actorColor = "\033[32;1m"
+	colorMagenta actorColor = "\033[35;1m"
+	colorYellow  actorColor = "\033[33;1m"
+	colorRed     actorColor = "\033[31;1m"
+	colorReset              = "\033[0m"
+)
+
+type chatRenderer struct {
+	out        io.Writer
+	mu         sync.Mutex
+	color      bool
+	cursor     bool
+	openActor  string
+	promptOpen bool
+}
+
+func newChatRenderer(out io.Writer) *chatRenderer {
+	terminal := isInteractiveTerminal(out) && os.Getenv("TERM") != "dumb"
+	plain := os.Getenv("NO_COLOR") != ""
+	return &chatRenderer{out: out, color: terminal && !plain, cursor: terminal && !plain}
+}
+
+func (r *chatRenderer) label(text string, color actorColor) string {
+	text = strings.Join(strings.Fields(safeTerminal(text)), " ")
+	if !r.color {
+		return text
+	}
+	return string(color) + text + colorReset
+}
+
+func indentPayload(value string) string {
+	value = strings.TrimSuffix(safeTerminal(value), "\n")
+	if value == "" {
+		return "  (none)"
+	}
+	return "  " + strings.ReplaceAll(value, "\n", "\n  ")
+}
+
+func (r *chatRenderer) clearLocked() {
+	if r.cursor {
+		fmt.Fprint(r.out, "\r\033[2K")
+	}
+}
+
+func (r *chatRenderer) closeLocked() {
+	if r.promptOpen {
+		fmt.Fprintln(r.out)
+		r.promptOpen = false
+	}
+	if r.openActor != "" {
+		fmt.Fprintln(r.out)
+		r.openActor = ""
+	}
+}
+
+func (r *chatRenderer) block(label string, color actorColor, payload string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clearLocked()
+	r.closeLocked()
+	fmt.Fprintf(r.out, "%s\n%s\n\n", r.label(label, color), indentPayload(payload))
+}
+
+func (r *chatRenderer) assistant(agent, text string, start bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clearLocked()
+	if start || r.openActor != agent {
+		r.closeLocked()
+		fmt.Fprintf(r.out, "%s\n  ", r.label("ASSISTANT "+safeTerminal(agent), colorGreen))
+		r.openActor = agent
+	}
+	fmt.Fprint(r.out, strings.ReplaceAll(safeTerminal(text), "\n", "\n  "))
+}
+
+func (r *chatRenderer) prompt() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clearLocked()
+	r.closeLocked()
+	fmt.Fprintf(r.out, "%s ", r.label("YOU >", colorCyan))
+	r.promptOpen = true
+}
+
+func (r *chatRenderer) submitted(inputWasTerminal bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.promptOpen && !inputWasTerminal {
+		fmt.Fprintln(r.out)
+	}
+	r.promptOpen = false
+}
+
+func (r *chatRenderer) spinner(agent, frame string, elapsed time.Duration) {
+	if !r.cursor {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.openActor != "" {
+		return
+	}
+	r.clearLocked()
+	fmt.Fprintf(r.out, "%s %s %ds", r.label("WORKING", colorBlue), safeTerminal(agent)+" "+frame, int(elapsed.Seconds()))
+}
+
+func (r *chatRenderer) finish() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clearLocked()
+	r.closeLocked()
+}
 
 func safeTerminal(s string) string {
 	var out strings.Builder
@@ -134,6 +253,7 @@ type streamView struct {
 	partials                             string
 	approvalErr                          error
 	visible                              atomic.Bool
+	renderer                             *chatRenderer
 }
 
 type hitlRequest struct {
@@ -181,44 +301,45 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 	}
 	defer stop()
 	base := "http://127.0.0.1:" + port
-	fmt.Fprintf(a.Out, "Active agent: %s\n/exit or Ctrl-C to exit\n", safeTerminal(agent))
+	renderer := newChatRenderer(a.Out)
+	toolMode := "summary"
+	renderer.block("CHAT", colorBlue, "Agent: "+safeTerminal(agent)+"\n/exit or Ctrl-C to exit")
 	if err := a.showChatPosture(agent); err != nil {
 		return err
 	}
 	if session != "" {
-		if err := a.showSessionHistory(base, session, agent); err != nil {
+		if err := a.showSessionHistory(base, session, agent, toolMode); err != nil {
 			return err
 		}
 	}
-	fmt.Fprintln(a.Out)
 
 	reader := bufio.NewScanner(a.Stdin)
 	last := ""
-	toolMode := "summary"
 	for {
 		if err := ctx.Err(); err != nil {
-			fmt.Fprintln(a.Out, "Chat ended.")
+			renderer.block("CHAT", colorBlue, "Ended")
 			return nil
 		}
 		message := ""
 		if initialTask != "" {
 			message, initialTask = initialTask, ""
-			fmt.Fprintf(a.Out, "You: %s\n", safeTerminal(message))
+			renderer.block("YOU", colorCyan, message)
 		} else {
-			fmt.Fprint(a.Out, "You: ")
+			renderer.prompt()
 			line, err := scanLine(ctx, reader)
 			if err != nil {
 				if err == io.EOF || ctx.Err() != nil {
-					fmt.Fprintln(a.Out, "Chat ended.")
+					renderer.block("CHAT", colorBlue, "Ended")
 					return nil
 				}
 				return err
 			}
 			message = strings.TrimSpace(line)
+			renderer.submitted(isInteractiveTerminal(a.Stdin))
 		}
 		switch {
 		case message == "/exit" || message == "/quit" || message == "\x1b":
-			fmt.Fprintln(a.Out, "Chat ended.")
+			renderer.block("CHAT", colorBlue, "Ended")
 			return nil
 		case message == "/session":
 			fmt.Fprintln(a.Out, map[bool]string{true: session, false: "No active session."}[session != ""])
@@ -235,7 +356,7 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 		case message == "/history":
 			if session == "" {
 				fmt.Fprintln(a.Out, "No active session.")
-			} else if err := a.showSessionHistory(base, session, agent); err != nil {
+			} else if err := a.showSessionHistory(base, session, agent, toolMode); err != nil {
 				fmt.Fprintf(a.Err, "history: %s\n", safeTerminal(err.Error()))
 			}
 			continue
@@ -250,7 +371,7 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 			continue
 		case strings.HasPrefix(message, "/resume "):
 			candidate := strings.TrimSpace(strings.TrimPrefix(message, "/resume "))
-			if err := a.showSessionHistory(base, candidate, agent); err != nil {
+			if err := a.showSessionHistory(base, candidate, agent, toolMode); err != nil {
 				fmt.Fprintf(a.Err, "cannot resume: %v\n", err)
 				continue
 			}
@@ -270,7 +391,7 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 		default:
 			last = message
 		}
-		view, err := a.invokeStream(ctx, kagent, base, agent, message, session, toolMode)
+		view, err := a.invokeStream(ctx, kagent, base, agent, message, session, toolMode, renderer)
 		if err != nil {
 			if !isInteractiveTerminal(a.Stdin) {
 				return err
@@ -292,11 +413,11 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 					}
 				}
 			}
-			decision, err := a.promptHITL(ctx, reader, view.approval)
+			decision, err := a.promptHITL(ctx, reader, view.approval, renderer)
 			if err != nil {
 				return err
 			}
-			view, err = a.sendHITL(ctx, base, agent, view.approval, decision)
+			view, err = a.sendHITL(ctx, base, agent, view.approval, decision, toolMode, renderer)
 			if err != nil {
 				return err
 			}
@@ -306,13 +427,12 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 		}
 		if view.denied {
 			if view.requestFiled {
-				fmt.Fprintln(a.Out, "Governance: Kaimahi denied a tool call and filed an approval request.")
-				fmt.Fprintln(a.Out, "  Run `make approvals`, approve separately, then type /retry.")
+				renderer.block("GOVERNANCE", colorYellow, "Decision: denied\nApproval request: filed\nNext: run `make approvals`, approve separately, then type /retry")
 			} else {
-				fmt.Fprintln(a.Out, "Governance: Kaimahi denied a tool call; no approval request was confirmed.")
+				renderer.block("GOVERNANCE", colorYellow, "Decision: denied\nApproval request: not confirmed")
 			}
 		}
-		fmt.Fprintln(a.Out)
+		renderer.finish()
 	}
 }
 
@@ -341,7 +461,7 @@ func scanLine(ctx context.Context, reader *bufio.Scanner) (string, error) {
 	}
 }
 
-func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, session, toolMode string) (*streamView, error) {
+func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, session, toolMode string, renderer *chatRenderer) (*streamView, error) {
 	args := []string{"--kagent-url", base, "invoke", "--stream", "--agent", agent, "--task", task}
 	if session != "" {
 		args = append(args, "--session", session)
@@ -360,11 +480,14 @@ func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, sessi
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	view := &streamView{agent: agent, toolCalls: map[string]string{}, messageText: map[string]string{}, toolMode: toolMode}
+	view := &streamView{agent: agent, toolCalls: map[string]string{}, messageText: map[string]string{}, toolMode: toolMode, renderer: renderer}
 	done := make(chan struct{})
+	spinnerDone := make(chan struct{})
+	started := time.Now()
 	spinner := isInteractiveTerminal(a.Err)
 	if spinner {
 		go func() {
+			defer close(spinnerDone)
 			frames := []string{"|", "/", "-", "\\"}
 			for i := 0; ; i++ {
 				select {
@@ -372,16 +495,19 @@ func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, sessi
 					return
 				case <-time.After(250 * time.Millisecond):
 					if !view.visible.Load() {
-						fmt.Fprintf(a.Err, "\r%s: thinking %s", safeTerminal(agent), frames[i%len(frames)])
+						renderer.spinner(agent, frames[i%len(frames)], time.Since(started))
 					}
 				}
 			}
 		}()
+	} else {
+		close(spinnerDone)
 	}
 	decodeErr := a.consumeStream(stdout, view)
 	close(done)
+	<-spinnerDone
 	if spinner {
-		fmt.Fprint(a.Err, "\r\033[2K")
+		renderer.finish()
 	}
 	if decodeErr != nil && cmd.Process != nil {
 		_ = cmd.Process.Kill()
@@ -479,12 +605,18 @@ func (v *streamView) consume(event streamEvent, out io.Writer) {
 					}
 					if previous == "" {
 						v.visible.Store(true)
-						fmt.Fprintf(out, "%s: ", safeTerminal(v.agent))
 					}
 					if v.partials != "" && strings.HasPrefix(part.Text, v.partials) {
 						addition = strings.TrimPrefix(part.Text, v.partials)
 					}
-					fmt.Fprint(out, safeTerminal(addition))
+					if v.renderer != nil {
+						v.renderer.assistant(v.agent, addition, previous == "")
+					} else {
+						if previous == "" {
+							fmt.Fprintf(out, "%s: ", safeTerminal(v.agent))
+						}
+						fmt.Fprint(out, safeTerminal(addition))
+					}
 					v.messageText[status.Message.MessageID] = part.Text
 					v.reply += addition
 					if status.Message.Metadata.Partial || status.Message.Metadata.ADKPartial {
@@ -519,17 +651,25 @@ func (v *streamView) consume(event streamEvent, out io.Writer) {
 	}
 	if addition != "" {
 		v.visible.Store(true)
-		if v.reply == "" {
-			fmt.Fprintf(out, "%s: ", safeTerminal(v.agent))
+		if v.renderer != nil {
+			v.renderer.assistant(v.agent, addition, v.reply == "")
+		} else {
+			if v.reply == "" {
+				fmt.Fprintf(out, "%s: ", safeTerminal(v.agent))
+			}
+			fmt.Fprint(out, safeTerminal(addition))
 		}
-		fmt.Fprint(out, safeTerminal(addition))
 		v.reply += addition
 	}
 	if event.LastChunk && len(text) >= len(v.reply) {
 		v.reply = text
 	}
 	if event.Final && v.reply != "" {
-		fmt.Fprintln(out)
+		if v.renderer != nil {
+			v.renderer.finish()
+		} else {
+			fmt.Fprintln(out)
+		}
 	}
 }
 
@@ -591,7 +731,15 @@ func (v *streamView) consumeTool(kind string, longRunning bool, raw json.RawMess
 		v.toolCalls[data.ID] = data.Name
 		if v.toolMode != "off" {
 			v.visible.Store(true)
-			fmt.Fprintf(out, "Tool: %s %s\n", safeTerminal(data.Name), safeTerminal(strings.TrimSpace(string(data.Args))))
+			payload := "Status: running"
+			if v.toolMode == "verbose" {
+				payload += "\nArguments:\n" + indentPayload(truncatePayload(strings.TrimSpace(string(data.Args)), 16<<10))
+			}
+			if v.renderer != nil {
+				v.renderer.block("TOOL "+safeTerminal(data.Name), colorMagenta, payload)
+			} else {
+				fmt.Fprintf(out, "Tool: %s %s\n", safeTerminal(data.Name), safeTerminal(truncatePayload(strings.TrimSpace(string(data.Args)), 16<<10)))
+			}
 		}
 	case "function_response":
 		name := v.toolCalls[data.ID]
@@ -610,12 +758,27 @@ func (v *streamView) consumeTool(kind string, longRunning bool, raw json.RawMess
 		}
 		if v.toolMode != "off" {
 			v.visible.Store(true)
-			fmt.Fprintf(out, "Tool: %s %s\n", safeTerminal(name), state)
+			payload := "Status: " + state
 			if v.toolMode == "verbose" {
-				fmt.Fprintf(out, "  result: %s\n", safeTerminal(body))
+				payload += "\nResult:\n" + indentPayload(truncatePayload(body, 16<<10))
+			}
+			if v.renderer != nil {
+				v.renderer.block("TOOL "+safeTerminal(name), colorMagenta, payload)
+			} else {
+				fmt.Fprintf(out, "Tool: %s %s\n", safeTerminal(name), state)
+				if v.toolMode == "verbose" {
+					fmt.Fprintf(out, "  result: %s\n", safeTerminal(truncatePayload(body, 16<<10)))
+				}
 			}
 		}
 	}
+}
+
+func truncatePayload(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "\n[truncated; use one-shot --json for full output]"
 }
 
 func (a *App) waitExistingTask(ctx context.Context, base string, view *streamView) error {
@@ -642,10 +805,15 @@ func (a *App) waitExistingTask(ctx context.Context, base string, view *streamVie
 					addition = strings.TrimPrefix(value, view.reply)
 				}
 				if addition != "" {
-					if view.reply == "" {
-						fmt.Fprintf(a.Out, "%s: ", safeTerminal(view.agent))
+					if view.renderer != nil {
+						view.renderer.assistant(view.agent, addition, view.reply == "")
+						view.renderer.finish()
+					} else {
+						if view.reply == "" {
+							fmt.Fprintf(a.Out, "%s: ", safeTerminal(view.agent))
+						}
+						fmt.Fprintln(a.Out, safeTerminal(addition))
 					}
-					fmt.Fprintln(a.Out, safeTerminal(addition))
 					view.reply += addition
 				}
 			}
@@ -701,11 +869,11 @@ func getTask(ctx context.Context, base, agent, id string) (*interactiveTask, err
 	return &envelope.Result, nil
 }
 
-func (a *App) promptHITL(ctx context.Context, reader *bufio.Scanner, request *hitlRequest) (map[string]any, error) {
+func (a *App) promptHITL(ctx context.Context, reader *bufio.Scanner, request *hitlRequest, renderer *chatRenderer) (map[string]any, error) {
 	decisions := map[string]string{}
 	reasons := map[string]string{}
 	if request.Hint != "" {
-		fmt.Fprintf(a.Out, "Human approval required: %s\n", safeTerminal(request.Hint))
+		renderer.block("APPROVAL", colorYellow, "Human approval required\nHint: "+request.Hint)
 	}
 	for _, call := range request.Calls {
 		if call.Name == "ask_user" {
@@ -716,9 +884,9 @@ func (a *App) promptHITL(ctx context.Context, reader *bufio.Scanner, request *hi
 				return nil, fmt.Errorf("ask_user request has no valid questions")
 			}
 			answers := make([]map[string][]string, 0, len(request.Questions))
-			fmt.Fprintln(a.Out, "Agent needs your input")
+			renderer.block("APPROVAL", colorYellow, "Agent needs your input")
 			for _, question := range request.Questions {
-				fmt.Fprintf(a.Out, "  %s\n", safeTerminal(question.Question))
+				renderer.block("QUESTION", colorYellow, question.Question)
 				if len(question.Choices) > 0 {
 					fmt.Fprintf(a.Out, "  Choices: %s\n", safeTerminal(strings.Join(question.Choices, ", ")))
 				}
@@ -737,7 +905,8 @@ func (a *App) promptHITL(ctx context.Context, reader *bufio.Scanner, request *hi
 			}
 			return map[string]any{"decision_type": "approve", "ask_user_answers": answers}, nil
 		}
-		fmt.Fprintf(a.Out, "Human approval required\n  Tool: %s\n  Args: %s\n  Approve? [y/N]: ", safeTerminal(call.Name), safeTerminal(strings.TrimSpace(string(call.Args))))
+		renderer.block("APPROVAL", colorYellow, "Tool: "+safeTerminal(call.Name)+"\nArguments:\n"+indentPayload(truncatePayload(string(call.Args), 16<<10)))
+		fmt.Fprint(a.Out, "Approve? [y/N]: ")
 		answerLine, err := scanLine(ctx, reader)
 		if err != nil {
 			return nil, err
@@ -769,7 +938,7 @@ func (a *App) promptHITL(ctx context.Context, reader *bufio.Scanner, request *hi
 	return result, nil
 }
 
-func (a *App) sendHITL(ctx context.Context, base, agent string, approval *hitlRequest, decision map[string]any) (*streamView, error) {
+func (a *App) sendHITL(ctx context.Context, base, agent string, approval *hitlRequest, decision map[string]any, toolMode string, renderer *chatRenderer) (*streamView, error) {
 	messageID := fmt.Sprintf("kmx-%d", time.Now().UnixNano())
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": messageID, "method": "message/stream", "params": map[string]any{"message": map[string]any{
 		"kind": "message", "role": "user", "messageId": messageID, "taskId": approval.TaskID, "contextId": approval.ContextID,
@@ -791,7 +960,7 @@ func (a *App) sendHITL(ctx context.Context, base, agent string, approval *hitlRe
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HITL decision answered HTTP %d", resp.StatusCode)
 	}
-	view := &streamView{agent: agent, toolCalls: map[string]string{}, messageText: map[string]string{}, toolMode: "summary"}
+	view := &streamView{agent: agent, toolCalls: map[string]string{}, messageText: map[string]string{}, toolMode: toolMode, renderer: renderer}
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
 	for scanner.Scan() {
@@ -863,14 +1032,15 @@ func (a *App) showSessions(base string) error {
 		}
 		items = wrapped.Sessions
 	}
-	fmt.Fprintln(a.Out, "Recent sessions")
+	renderer := newChatRenderer(a.Out)
 	for _, item := range items {
-		fmt.Fprintf(a.Out, "  %s  %s  %s\n", safeTerminal(item.ID), safeTerminal(strings.ReplaceAll(strings.TrimPrefix(item.AgentID, "kagent__NS__"), "_", "-")), safeTerminal(item.Name))
+		agent := strings.ReplaceAll(strings.TrimPrefix(item.AgentID, "kagent__NS__"), "_", "-")
+		renderer.block("SESSION "+safeTerminal(item.ID), colorBlue, "Agent: "+safeTerminal(agent)+"\nName: "+safeTerminal(item.Name))
 	}
 	return nil
 }
 
-func (a *App) showSessionHistory(base, id, agent string) error {
+func (a *App) showSessionHistory(base, id, agent, toolMode string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("session ID is empty")
 	}
@@ -901,7 +1071,8 @@ func (a *App) showSessionHistory(base, id, agent string) error {
 		return fmt.Errorf("session belongs to %s, not %s", safeTerminal(envelope.Data.Session.AgentID), safeTerminal(agent))
 	}
 	sort.SliceStable(envelope.Data.Events, func(i, j int) bool { return envelope.Data.Events[i].CreatedAt < envelope.Data.Events[j].CreatedAt })
-	fmt.Fprintf(a.Out, "History for %s (%s)\n", agent, id)
+	renderer := newChatRenderer(a.Out)
+	renderer.block("HISTORY", colorBlue, "Agent: "+safeTerminal(agent)+"\nSession: "+safeTerminal(id))
 	for _, wrapper := range envelope.Data.Events {
 		var event struct {
 			Author  string `json:"author"`
@@ -932,13 +1103,25 @@ func (a *App) showSessionHistory(base, id, agent string) error {
 				if sender == "" && event.Content.Role == "model" {
 					sender = agent
 				}
-				fmt.Fprintf(a.Out, "%s: %s\n", safeTerminal(sender), safeTerminal(part.Text))
+				label, color := "ASSISTANT "+safeTerminal(sender), colorGreen
+				if sender == "You" {
+					label, color = "YOU", colorCyan
+				}
+				renderer.block(label, color, part.Text)
 			}
 			if part.FunctionCall != nil {
-				fmt.Fprintf(a.Out, "Tool: %s %s\n", safeTerminal(part.FunctionCall.Name), safeTerminal(string(part.FunctionCall.Args)))
+				if toolMode == "verbose" {
+					renderer.block("TOOL "+safeTerminal(part.FunctionCall.Name), colorMagenta, "Status: called\nArguments:\n"+indentPayload(truncatePayload(string(part.FunctionCall.Args), 16<<10)))
+				} else if toolMode == "summary" {
+					renderer.block("TOOL "+safeTerminal(part.FunctionCall.Name), colorMagenta, "Status: called")
+				}
 			}
 			if part.FunctionResponse != nil {
-				fmt.Fprintf(a.Out, "Tool: %s result %s\n", safeTerminal(part.FunctionResponse.Name), safeTerminal(string(part.FunctionResponse.Response)))
+				if toolMode == "verbose" {
+					renderer.block("TOOL "+safeTerminal(part.FunctionResponse.Name), colorMagenta, "Status: result\nPayload:\n"+indentPayload(truncatePayload(string(part.FunctionResponse.Response), 16<<10)))
+				} else if toolMode == "summary" {
+					renderer.block("TOOL "+safeTerminal(part.FunctionResponse.Name), colorMagenta, "Status: result")
+				}
 			}
 		}
 	}
@@ -1007,18 +1190,23 @@ func (a *App) showChatPosture(agent string) error {
 		return fmt.Errorf("ModelConfig %q is not currently Accepted", model)
 	}
 	modelPosture := "direct, not Kaimahi-governed"
+	direct := true
 	if usesKaimahiModelProxy(modelResource.Spec) {
 		if !a.planeReady("kaimahi-proxy") {
 			return fmt.Errorf("agent uses %q but the Kaimahi plane is not Ready", model)
 		}
 		modelPosture = "governed by Kaimahi; plane Ready"
+		direct = false
 	}
-	fmt.Fprintf(a.Out, "Model: %s (%s)\n", safeTerminal(model), modelPosture)
+	renderer := newChatRenderer(a.Out)
+	renderer.block("MODEL", colorBlue, safeTerminal(model)+"\nPosture: "+modelPosture)
 	if len(resource.Spec.Declarative.Tools) == 0 {
-		fmt.Fprintln(a.Out, "Tools: none")
+		renderer.block("TOOLS", colorMagenta, "None")
+		if direct {
+			renderer.block("WARNING", colorRed, "Model is direct. Kaimahi budgets and spend ledger do not apply.")
+		}
 		return nil
 	}
-	fmt.Fprintln(a.Out, "Tools:")
 	for _, tool := range resource.Spec.Declarative.Tools {
 		serverRaw, err := a.kubectlCapture("-n", "kagent", "get", "remotemcpserver", tool.MCPServer.Name, "-o", "json")
 		if err != nil {
@@ -1052,6 +1240,8 @@ func (a *App) showChatPosture(agent string) error {
 				return fmt.Errorf("RemoteMCPServer %q points at Kaimahi but the plane is not Ready", tool.MCPServer.Name)
 			}
 			posture = "governed by Kaimahi; plane Ready"
+		} else {
+			direct = true
 		}
 		selected := append([]string(nil), tool.MCPServer.ToolNames...)
 		if len(selected) == 0 {
@@ -1068,14 +1258,19 @@ func (a *App) showChatPosture(agent string) error {
 		if err := validateToolServer(wiring, server.Metadata.Generation, server.Status.ObservedGeneration, server.Status.Conditions, discoveredSet); err != nil {
 			return err
 		}
-		fmt.Fprintf(a.Out, "  %s (%s)\n", safeTerminal(tool.MCPServer.Name), posture)
+		var details strings.Builder
+		fmt.Fprintf(&details, "Server: %s\nPosture: %s\nAllowed:", safeTerminal(tool.MCPServer.Name), posture)
 		for _, name := range selected {
 			if description, ok := discovered[name]; ok {
-				fmt.Fprintf(a.Out, "    %s - %s\n", safeTerminal(name), safeTerminal(description))
+				fmt.Fprintf(&details, "\n- %s - %s", safeTerminal(name), safeTerminal(description))
 			} else {
-				fmt.Fprintf(a.Out, "    %s - selected but not currently discovered\n", safeTerminal(name))
+				fmt.Fprintf(&details, "\n- %s - selected but not currently discovered", safeTerminal(name))
 			}
 		}
+		renderer.block("TOOLS", colorMagenta, details.String())
+	}
+	if direct {
+		renderer.block("WARNING", colorRed, "One or more seams are direct. Kaimahi budgets, gateway policy, or audit may not apply.")
 	}
 	return nil
 }

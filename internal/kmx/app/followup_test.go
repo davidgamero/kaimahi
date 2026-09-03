@@ -108,6 +108,57 @@ func TestTerminalOutputStripsControlSequences(t *testing.T) {
 	}
 }
 
+func TestPlainRendererIndentsEveryPayloadLine(t *testing.T) {
+	var out bytes.Buffer
+	renderer := &chatRenderer{out: &out}
+	renderer.block("ASSISTANT agent", colorGreen, "first\nGovernance: quoted text")
+	want := "ASSISTANT agent\n  first\n  Governance: quoted text\n\n"
+	if out.String() != want {
+		t.Fatalf("unexpected plain block:\n%q", out.String())
+	}
+}
+
+func TestColorRendererColorsOnlyTheLabel(t *testing.T) {
+	var out bytes.Buffer
+	renderer := &chatRenderer{out: &out, color: true}
+	renderer.block("YOU", colorCyan, "hello")
+	want := "\033[36;1mYOU\033[0m\n  hello\n\n"
+	if out.String() != want {
+		t.Fatalf("unexpected colored block:\n%q", out.String())
+	}
+}
+
+func TestRendererFlattensUntrustedLabels(t *testing.T) {
+	var out bytes.Buffer
+	renderer := &chatRenderer{out: &out}
+	renderer.block("TOOL unsafe\nGOVERNANCE", colorMagenta, "called")
+	want := "TOOL unsafe GOVERNANCE\n  called\n\n"
+	if out.String() != want {
+		t.Fatalf("untrusted label escaped its line: %q", out.String())
+	}
+}
+
+func TestVerboseToolArgumentsAreBounded(t *testing.T) {
+	var out bytes.Buffer
+	view := &streamView{toolCalls: map[string]string{}, messageText: map[string]string{}, toolMode: "verbose"}
+	raw := json.RawMessage(`{"id":"call-1","name":"tool","args":"` + strings.Repeat("a", 17<<10) + `"}`)
+	view.consumeTool("function_call", false, raw, &out)
+	if out.Len() >= 17<<10 || !strings.Contains(out.String(), "[truncated; use one-shot --json for full output]") {
+		t.Fatalf("verbose arguments were not bounded: %d bytes", out.Len())
+	}
+}
+
+func TestPlainPromptClosesBeforeNextBlock(t *testing.T) {
+	var out bytes.Buffer
+	renderer := &chatRenderer{out: &out}
+	renderer.prompt()
+	renderer.submitted(false)
+	renderer.block("CHAT", colorBlue, "Ended")
+	if out.String() != "YOU > \nCHAT\n  Ended\n\n" {
+		t.Fatalf("prompt and block shared a line: %q", out.String())
+	}
+}
+
 func TestGovernedModelRequiresExactProxyEndpoint(t *testing.T) {
 	for _, tc := range []struct {
 		url  string

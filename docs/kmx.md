@@ -265,6 +265,11 @@ closes while a task is still working, kmx polls that exact task ID; it never
 resends the tool call. A Kaimahi governance denial still requires a separate
 operator approval, followed by explicit `/retry`.
 
+Capable terminals color semantic labels without relying on color alone: YOU
+(cyan), ASSISTANT (green), TOOL (magenta), GOVERNANCE (yellow), and WARNING
+(red). Every payload line is indented so model/tool text cannot impersonate a
+trusted label. Set `NO_COLOR=1` or use `TERM=dumb` for plain output.
+
 Native kagent `requireApproval` pauses are rendered in the terminal and resumed
 with a structured approve/reject response. Kaimahi approvals remain a separate
 security boundary; chat cannot approve its own Kaimahi request.
