@@ -254,7 +254,7 @@ jobs:
       - name: Hosted upstreams are marked, keyed from plane custody, and no GitHub token is in the tree
         run: |
           python3 - <<'EOF'
-          import json, pathlib, sys, yaml
+          import json, pathlib, re, sys, yaml
           from urllib.parse import urlparse
           cm = yaml.safe_load(pathlib.Path("k8s/plane/upstreams.yaml").read_text())
           t = json.loads(cm["data"]["upstreams.json"])
@@ -285,6 +285,29 @@ jobs:
           assert len(tools) == 1 and tools[0]["mcpServer"]["name"] == "kaimahi-github", tools
           assert agent["spec"]["declarative"]["modelConfig"] == "governed-copilot", "the demo agent is not on a governed model preset"
           print("hosted upstreams: copilot + github marked internet; every unmarked entry in-cluster; github wiring Secret-only")
+          # P13: the accounts-payable demo is CONFIGURATION, and this is
+          # where that configuration is checked — the ERP holds no
+          # credential of any kind, its consequential tools declare the
+          # fields an approval binds and an audit summary reads, and the
+          # AP agent's payments are bounded at $10,000.00. A silent edit
+          # to any of it fails here, on every PR, with no cluster.
+          erp = t["tool_upstreams"]["erp"]
+          assert not any(k in erp for k in ("credential_file", "credential", "token", "api_key")), erp
+          assert not erp.get("internet"), erp
+          assert erp["tools"]["payment_schedule"]["policy_fields"] == ["invoice_id", "amount_cents", "payee_id"], erp
+          assert erp["tools"]["dispute_open"]["policy_fields"] == ["invoice_id", "amount_cents"], erp
+          assert erp["tools"]["vendor_notify"]["policy_fields"] == ["vendor_id"], erp
+          cs = t["standing_constraints"]["ap-agent"]["payment_schedule"]
+          assert cs == [{"field": "amount_cents", "op": "lte", "value": 1000000}], cs
+          # The tool the constraint bounds must NOT also be handed out by
+          # the allowlist the Makefile sets: a constraint binds, and a
+          # reader who saw it allowlisted would draw the wrong conclusion.
+          allow = re.search(r"^AP_TOOLS\s*\?=\s*(.+)$", pathlib.Path("Makefile").read_text(), re.M)
+          assert allow, "AP_TOOLS is gone from the Makefile"
+          named = allow.group(1).strip().split(",")
+          assert named == ["invoice_get", "invoice_list", "po_get", "receiving_get",
+                           "contract_get", "payment_policy_get"], named
+          print("ap: erp keyless; payment_schedule bounded at $10,000.00 and not allowlisted")
           EOF
           set +e
           grep -rIn --exclude-dir=.git -E 'github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{30,}' .
@@ -476,7 +499,7 @@ jobs:
           grep -q -- '--- PASS: TestMigrateTwiceConcurrentlyIsSerialAndIdempotent' test.out
           grep -q -- '--- PASS: TestEveryLabelIsFromTheFixedVocabularyOrAnAllowedShape' test.out
 
-  # ---- the end-to-end proof, in four shards (W25) --------------------------
+  # ---- the end-to-end proof, in five shards (W25, P13) ---------------------
   #
   # Everything P1 through P12 proves about a running cluster lives below.
   # It used to be ONE job of 68 serial steps on one cluster (P12 branch,
@@ -484,7 +507,9 @@ jobs:
   # serial tail of probes — hygiene and go-plane are ~40s each, so this job
   # WAS CI's wall-clock. It is now four jobs that each bring up their own
   # cluster and run one part of the tail, plus an aggregator (`e2e-hello-world`, the name the protect-main
-  # ruleset requires) that reports whether all four passed.
+  # ruleset requires) that reports whether all of them passed. P13 added a
+  # FIFTH for the accounts-payable demo — new proof rather than moved
+  # proof; that job's own header says why it is a shard and not a tail.
   #
   # The arithmetic, from measured runs and not estimates (run 33707312808
   # for the baseline; the lab runs on PR #65 for the parts):
@@ -1571,7 +1596,7 @@ jobs:
           rc=$?
           set -e
           test "$rc" -eq 1 || { echo "possible Slack token committed (or scanner failed: exit $rc)"; exit 1; }
-      - name: Gateway upstream table — Slack and kagent-tools in-cluster, GitHub the one hosted entry (marked)
+      - name: Gateway upstream table — three in-cluster entries, GitHub the one hosted one (marked)
         if: steps.changes.outputs.docs_only != 'true'
         run: |
           kubectl --context kind-kaimahi-p1 -n kaimahi get configmap kaimahi-upstreams \
@@ -1580,7 +1605,7 @@ jobs:
           import json, sys
           from urllib.parse import urlparse
           t = json.load(open("upstreams.json"))["tool_upstreams"]
-          assert set(t) == {"kagent-tools", "slack", "github"}, t
+          assert set(t) == {"kagent-tools", "slack", "erp", "github"}, t
           # P10: an internet-facing entry exists now, and ONLY under the
           # marker that routes it through the hardened dialer; every
           # unmarked entry is still in-cluster (the plane refuses the
@@ -1596,6 +1621,13 @@ jobs:
           slack = t["slack"]
           assert slack["credential_file"].startswith("/etc/kaimahi/upstream-creds/"), slack
           assert not any(k for k in slack if k in ("credential", "token", "api_key")), slack
+          # P13: the demo's ERP is the one entry with NO credential at all
+          # — there is nothing to hold. Asserted here so a credential
+          # quietly appearing on it would fail on the deployed table, not
+          # only in the file.
+          erp = t["erp"]
+          assert not any(k in erp for k in ("credential_file", "credential", "token", "api_key")), erp
+          assert not erp.get("internet"), erp
           print("tool upstreams:", {k: urlparse(v["url"]).hostname for k, v in t.items()})
           EOF
       - name: Issue the Slack credential with a READ-ONLY allowlist
@@ -2134,6 +2166,296 @@ jobs:
   # one: the moment a checkout exists, kmx auto-detects it as a source and
   # the job stops proving the thing it exists to prove.
 
+  # SHARD 5 of 5 — the accounts-payable exception demo (P13): the fixture
+  # ERP behind the gateway, a standing constraint doing visible work, three
+  # consequential calls each needing their own approval from a named human,
+  # and a manipulated invoice that cannot spend an approval it did not earn.
+  #
+  # WHY A FIFTH SHARD, given W25's arithmetic. That arithmetic was about
+  # SPLITTING an existing tail: a fifth shard would have bought a whole
+  # bring-up to move ~50s of work. This is NEW proof, not moved proof.
+  # Appended to a shard it would be serial tail on CI's longest job; as its
+  # own shard it runs in parallel and costs wall clock only if it exceeds
+  # the current maximum. It also needs cluster state no other shard has (a
+  # third agent, a keyless ERP, a credential carrying a standing
+  # constraint) and would otherwise leak that state into their assertions.
+  #
+  # EVERY ASSERTION HERE IS THE GATEWAY'S, NOT THE MODEL'S. The scenario is
+  # driven with fixed arguments (scripts/ap-demo.sh, scripts/ap-injection.sh,
+  # both with AP_AGENT_TURN=0) and asserted on decisions and audit rows. The
+  # real agent runs in ONE step at the end, judged the way
+  # scripts/verify-chat.py judges a turn — a tool call, a successful tool
+  # response and a completed task, never prose. A model that words things
+  # differently, or reaches the wrong number, cannot redden this job.
+  #
+  # Approvals go through `make slack-mention`: the synthetic, correctly
+  # signed app_mention that is already CI's stand-in for a person typing in
+  # the channel, so the AP scenario proves the P8b approver-identity path
+  # and not just the admin one. CI never reaches a real Slack workspace —
+  # delivery, and how the approval renders to a human, are manual-run
+  # coverage only (docs/ap-demo.md).
+  e2e-ap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Classify the change (docs-only short-circuit, fail closed)
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.sha }}
+        run: |
+          set +e
+          docs_only=false
+          reason=""
+          files=""
+          case "$BASE" in
+            ""|0000000000000000000000000000000000000000) reason="no base commit for $EVENT" ;;
+          esac
+          if [ -z "$reason" ] && ! git fetch --no-tags --depth=1 origin "$BASE"; then
+            reason="cannot fetch base $BASE"
+          fi
+          if [ -z "$reason" ]; then
+            if files=$(git diff --name-only --no-renames "$BASE" "$HEAD") && [ -n "$files" ]; then
+              docs_only=true
+              while IFS= read -r f; do
+                case "$f" in
+                  docs/*|*.md) ;;
+                  *) docs_only=false; reason="non-doc change: $f"; break ;;
+                esac
+              done <<<"$files"
+              if [ "$docs_only" = true ]; then
+                reason="every changed file is documentation"
+              fi
+            else
+              reason="cannot diff $BASE..$HEAD, or the diff is empty"
+            fi
+          fi
+          echo "event=$EVENT base=$BASE head=$HEAD"
+          echo "changed files:"
+          echo "${files:-(undetermined)}" | sed 's/^/  /'
+          echo "docs_only=$docs_only ($reason)"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+      - name: Install kind
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          curl -sSfLo kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          chmod +x kind && sudo mv kind /usr/local/bin/kind
+      - uses: actions/setup-go@v5
+        if: steps.changes.outputs.docs_only != 'true'
+        with:
+          go-version-file: go.mod
+      - name: Build kmx (the Makefile's kind path delegates to it)
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make bin/kmx
+      - name: Cluster + Ollama + model + kagent + agent
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make up
+      - name: Shrink hello-world requests so preset switches can surge
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          kubectl --context kind-kaimahi-p1 -n kagent patch agent hello-world \
+            --type merge -p '{"spec":{"declarative":{"deployment":{"resources":{"requests":{"cpu":"50m","memory":"320Mi"},"limits":{"memory":"1Gi"}}}}}}'
+          kubectl --context kind-kaimahi-p1 -n kagent rollout status deploy/hello-world --timeout=300s
+      - name: Deploy the governance plane
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make plane
+      - name: Issue governed credential (ap-agent runs the governed ollama preset)
+        if: steps.changes.outputs.docs_only != 'true'
+        run: make govern
+      # The runner has 2 CPUs and this shard adds a THIRD agent pod.
+      # hello-tools is proven in e2e-tools and nothing here touches it, so
+      # its Agent is removed rather than left competing for the node.
+      - name: Free the node — this shard's agent is ap-agent
+        if: steps.changes.outputs.docs_only != 'true'
+        run: kubectl --context kind-kaimahi-p1 -n kagent delete agent hello-tools --ignore-not-found
+      # P13, keyless: the fixture ERP. Built from source and side-loaded
+      # (its image is never published), its corpus a ConfigMap, and it
+      # refuses to start on a corpus whose arithmetic does not add up — so
+      # "corpus loaded" in its log is an assertion, not a log line.
+      - name: "AP: the fixture ERP is up, holds no credential, and reaches nothing"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make erp
+          kubectl --context kind-kaimahi-p1 -n kaimahi logs -l app=kaimahi-erp --tail=20 | tee erp-boot.out
+          grep -qE 'corpus loaded.*invoices=3' erp-boot.out
+          python3 - <<'EOF'
+          import json, subprocess
+          spec = json.loads(subprocess.check_output([
+              "kubectl", "--context", "kind-kaimahi-p1", "-n", "kaimahi",
+              "get", "deploy/kaimahi-erp", "-o", "json"]))["spec"]["template"]["spec"]
+          for c in spec["containers"]:
+              assert not c.get("envFrom"), c
+              assert not c.get("env"), c
+          vols = {v["name"]: v for v in spec.get("volumes", [])}
+          assert set(vols) == {"fixtures"}, vols
+          assert vols["fixtures"].get("configMap", {}).get("name") == "kaimahi-erp-fixtures", vols
+          assert spec.get("automountServiceAccountToken") is False, spec
+          print("the ERP holds no credential: no env, no secret volume, no service-account token")
+          pol = json.loads(subprocess.check_output([
+              "kubectl", "--context", "kind-kaimahi-p1", "-n", "kaimahi",
+              "get", "networkpolicy/kaimahi-erp", "-o", "json"]))["spec"]
+          assert sorted(pol["policyTypes"]) == ["Egress", "Ingress"], pol
+          assert not pol.get("egress"), f"the ERP has an egress allowance: {pol.get('egress')}"
+          ing = pol["ingress"]
+          assert len(ing) == 1 and ing[0]["from"] == [
+              {"podSelector": {"matchLabels": {"app": "kaimahi-proxy"}}}], ing
+          assert [p["port"] for p in ing[0]["ports"]] == [8085], ing
+          print("the ERP: proxy-only ingress on 8085, zero egress")
+          EOF
+      # The credential is the whole configuration of this demo: six READ
+      # tools on the standing allowlist, and payment_schedule NOT on it —
+      # bounded instead by the standing constraint in the committed table,
+      # because where a constraint exists it binds rather than admits.
+      - name: "AP: the credential is six reads; payment_schedule is bounded, not allowlisted"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make govern-ap
+          make tool-allowlist CRED_TOOLS=ap-agent | tee ap-allowlist.out
+          # The allowlist reads back sorted, not in the order it was set.
+          grep -qx 'ap-agent: contract_get, invoice_get, invoice_list, payment_policy_get, po_get, receiving_get' ap-allowlist.out
+          for t in payment_schedule dispute_open vendor_notify; do
+            if grep -q "$t" ap-allowlist.out; then
+              echo "$t is allowlisted — it must be bounded or approved, not configured" >&2; exit 1
+            fi
+          done
+          n=$(kubectl --context kind-kaimahi-p1 -n kagent get secret kaimahi-ap-token \
+            -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
+          test "$n" = 1
+          # What the committed table DECLARES is asserted in the hygiene
+          # job, on the file, with no cluster — so it also runs on a
+          # docs-only PR. Here the subject is the deployed credential.
+      - name: "AP: all six read tools are callable, audited under the agent's own name"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          set -- 'invoice_get|{"invoice_id": "INV-88134"}' \
+                 'invoice_list|{"vendor_id": "MER-4471"}' \
+                 'po_get|{"po_id": "PO-2291"}' \
+                 'receiving_get|{"po_id": "PO-2291"}' \
+                 'contract_get|{"vendor_id": "MER-4471"}' \
+                 'payment_policy_get|{}'
+          for spec in "$@"; do
+            KUBECTL="kubectl --context kind-kaimahi-p1" GOVERNED_SECRET=kaimahi-ap-token UPSTREAM=erp \
+              bash scripts/tool-call-probe.sh "${spec%%|*}" "${spec#*|}"
+          done
+          make ap-audit | tee ap-reads.out
+          for tool in invoice_get invoice_list po_get receiving_get contract_get payment_policy_get; do
+            grep -qE "ap-agent +erp +tools/call +$tool +allowed +200" ap-reads.out \
+              || { echo "$tool did not audit as allowed" >&2; exit 1; }
+          done
+      # P8b's approver path, so this scenario's approvals carry a person's
+      # identity and not the admin bearer's. The same setup e2e-tools does:
+      # this shard has its own cluster and none of that state. No Slack
+      # workspace is reached and no bot token exists.
+      - name: "AP: the approver path (approver file, the plane's own credential, a signed hook)"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make inbound-credential CRED_INBOUND=inbound-slack
+          make inbound-secret HOOK=slack-events GENERATE=1
+          kubectl --context kind-kaimahi-p1 -n kaimahi create secret generic kaimahi-slack-bot \
+            --from-literal=SLACK_MCP_ADD_MESSAGE_TOOL=C0CIONLY \
+            --dry-run=client -o yaml | kubectl --context kind-kaimahi-p1 apply -f -
+          printf 'U0CIAPPROVER\n' | make slack-approvers
+          make notify-slack
+          kubectl --context kind-kaimahi-p1 -n kaimahi rollout restart deploy/kaimahi-proxy
+          kubectl --context kind-kaimahi-p1 -n kaimahi rollout status deploy/kaimahi-proxy --timeout=300s
+          for _ in $(seq 1 60); do
+            EXPECT=403 bash scripts/slack-mention-probe.sh U0NOBODY "approve 00000000" >/dev/null 2>&1 && break
+            sleep 3
+          done
+          EXPECT=403 bash scripts/slack-mention-probe.sh U0NOBODY "approve 00000000"
+      # The scenario itself, driven with fixed arguments and no model in
+      # the loop. The script asserts as it goes — the constraint admitting
+      # the routine payment with no request filed, each consequential call
+      # denied and filed under its own summary, each approval minting a
+      # grant welded to one call. The step after it asserts the rows that
+      # make those claims checkable by a person.
+      - name: "AP: routine pays itself, the exception needs a named human, each call its own approval"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: AP_AGENT_TURN=0 make ap-demo SLACK_USER=U0CIAPPROVER
+      - name: "AP: the audit and the approvals carry the transaction and the approver"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make ap-audit | tee ap-audit.out
+          grep -E 'ap-agent +erp +tools/call +payment_schedule +allowed +200 +within standing constraint .*amount_cents 412000, payee_id HAR-2088' ap-audit.out
+          grep -E 'ap-agent +erp +tools/call +payment_schedule +denied +403 +tool call not permitted: outside the standing constraint .*amount_cents 3255000, payee_id MER-4471' ap-audit.out
+          grep -E 'ap-agent +erp +tools/call +payment_schedule +allowed +200 +granted .*amount_cents 3255000, payee_id MER-4471' ap-audit.out
+          # The denial and the admitted call share one digest: the call a
+          # human approved is provably the call that ran.
+          python3 - <<'EOF'
+          import re
+          rows = [l for l in open("ap-audit.out") if "payment_schedule" in l and "3255000" in l]
+          digests = {d for l in rows for d in re.findall(r"\[([0-9a-f]{12})\]", l)}
+          assert len(rows) >= 2, rows
+          assert len(digests) == 1, f"the denied and the granted call are not the same call: {digests}"
+          print(f"denied and granted rows share one digest: {digests.pop()}")
+          EOF
+          grep -E 'ap-agent +erp +tools/call +dispute_open +denied +403' ap-audit.out
+          grep -E 'ap-agent +erp +tools/call +dispute_open +allowed +200 +granted' ap-audit.out
+          grep -E 'ap-agent +erp +tools/call +vendor_notify +denied +403' ap-audit.out
+          grep -E 'ap-agent +erp +tools/call +vendor_notify +allowed +200 +granted' ap-audit.out
+          # Three grants, each welded to a call, each decided by the SLACK
+          # approver — the P8b identity path, not the admin bearer.
+          make grants | tee ap-grants.out
+          for tool in payment_schedule dispute_open vendor_notify; do
+            grep -qE "ap-agent +tool +$tool .*slack:U0CIAPPROVER +call [0-9a-f]{12}" ap-grants.out \
+              || { echo "no slack-decided, call-bound grant for $tool" >&2; exit 1; }
+          done
+          make approval-audit | tee ap-approval-audit.out
+          grep -E 'ap-agent +tool +payment_schedule +approved +slack:U0CIAPPROVER .*payment_schedule: invoice_id INV-88134, amount_cents 3255000, payee_id MER-4471' ap-approval-audit.out
+          grep -E 'ap-agent +tool +dispute_open +approved +slack:U0CIAPPROVER .*dispute_open: invoice_id INV-88134, amount_cents 600000' ap-approval-audit.out
+          grep -E 'ap-agent +tool +vendor_notify +approved +slack:U0CIAPPROVER .*vendor_notify: vendor_id MER-4471' ap-approval-audit.out
+      # The manipulated invoice. The model is not in the loop here either:
+      # the injected call is driven directly, which is what the lane brief
+      # requires so the guarantee holds whether or not a model complies.
+      - name: "AP: the injected call is denied, audited with its changed payee, and spends no approval"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          AP_AGENT_TURN=0 make ap-injection SLACK_USER=U0CIAPPROVER
+          make ap-audit | tee ap-audit-2.out
+          grep -E 'ap-agent +erp +tools/call +payment_schedule +denied +403 .*amount_cents 4800000, payee_id MER-9911' ap-audit-2.out
+          if grep -E 'payment_schedule +allowed' ap-audit-2.out | grep -q 'MER-9911'; then
+            echo "a payment to the substituted payee was allowed" >&2; exit 1
+          fi
+          make approvals | tee ap-approvals-2.out
+          grep -E 'ap-agent +tool +payment_schedule .*amount_cents 4800000, payee_id MER-9911' ap-approvals-2.out
+          make grants | tee ap-grants-2.out
+          grep -E 'ap-agent +tool +payment_schedule +yes .* 1/2 .*slack:U0CIAPPROVER +call [0-9a-f]{12}' ap-grants-2.out
+      # KEPT SEPARATE, and last: the only step where a model runs. It proves
+      # the agent can reach the ERP through the gateway and produce a turn —
+      # a function_call, a successful function_response carrying payload
+      # that could only have come from a live round-trip, and a completed
+      # task. Its prose is printed and asserted on in no way.
+      - name: "AP: a bounded smoke run of the real agent on ollama (tool path only, never its prose)"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make chat AGENT=ap-agent \
+            TASK='Call invoice_get for invoice INV-88134 and report its total.' | tee ap-chat.out
+          python3 scripts/verify-chat.py ap-chat.out invoice_get 'Expedited handling'
+          make ap-audit | tee ap-audit-3.out
+          grep -E 'ap-agent +erp +tools/call +invoice_get +allowed +200' ap-audit-3.out
+      - name: Cluster state on failure
+        if: failure() && steps.changes.outputs.docs_only != 'true'
+        run: |
+          kubectl --context kind-kaimahi-p1 get pods -A || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agent ap-agent || true
+          kubectl --context kind-kaimahi-p1 -n kagent logs deploy/ap-agent --tail=100 || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe remotemcpserver kaimahi-erp || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get pods -o wide || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi logs -l app=kaimahi-erp --tail=100 || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi logs -l app=kaimahi-proxy --tail=100 --prefix || true
+          kubectl --context kind-kaimahi-p1 -n kaimahi get networkpolicy || true
+      - name: Docs-only change — cluster steps skipped, job reports success
+        id: docs-only-summary
+        if: steps.changes.outputs.docs_only == 'true'
+        run: echo "every changed file is documentation; no cluster booted"
+
   # The REQUIRED check (the protect-main ruleset names `e2e-hello-world`).
   # It owns no cluster of its own: it reports whether every e2e shard
   # above succeeded, so the ruleset keeps gating on one context while the
@@ -2141,7 +2463,7 @@ jobs:
   # reports, and a required check that never reports blocks every merge.
   e2e-hello-world:
     runs-on: ubuntu-latest
-    needs: [e2e-runtime, e2e-spend, e2e-tools, e2e-resilience]
+    needs: [e2e-runtime, e2e-spend, e2e-tools, e2e-resilience, e2e-ap]
     if: always()
     steps:
       - name: Every e2e shard succeeded

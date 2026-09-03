@@ -1,0 +1,17 @@
+# The ERP image is built from the repository root (the module root), so
+# keep the build context to the Go module. Everything below is either
+# irrelevant to a `go build` or must never enter an image: git history,
+# local credential scratch, run output, brand binaries, built binaries.
+.git
+.gitignore
+.env
+bin/
+backups/
+brand/
+docs/
+k8s/
+.github/
+.synthetic-upstream/
+__pycache__/
+*.out
+*.md

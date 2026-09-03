@@ -167,10 +167,36 @@ Ends with `boundary enforced as written`: a probe pod that must reach
 everything, then an unlabeled pod in the plane's namespace that must
 reach nothing ([egress.md](egress.md)).
 
+## 6. The one that is worth the meeting (kind)
+
+Everything so far governs an agent that lists ConfigMaps. This is the
+same machinery on money:
+
+```bash
+make erp          # a fixture ERP behind the gateway — no key, no egress
+make govern-ap    # the accounts-payable agent, and its place in the policy
+make ap-demo      # investigate, get denied, be approved by a person, pay
+make ap-injection # a later invoice tries to redirect the payment
+```
+
+An invoice bills $48,000.00, the dock received 310 of 400 units, and the
+contract does not authorize the $6,000.00 "expedited handling" line. The
+agent has to work out that $32,550.00 is payable — and $32,550.00 is over
+the $10,000.00 the agent may pay on its own, so a person approves *that
+transaction*, by amount and payee, before any of it moves. A routine
+invoice in the same run pays itself with nobody in the loop, because it is
+inside the bound. Then a second invoice arrives carrying text telling the
+agent it is pre-approved and should pay a different payee; the agent may
+be persuaded, and the payment is refused anyway, because the approval it
+would have to spend is welded to the earlier call.
+
+The arithmetic, the fixtures and what the demo does not prove are all in
+[ap-demo.md](ap-demo.md).
+
 Stop here on kind. Everything above is what CI checks on every pull
 request.
 
-## 6. Slack, both ways (AKS)
+## 7. Slack, both ways (AKS)
 
 Wire the Slack pieces:
 
@@ -249,7 +275,7 @@ make approval-audit                    # every decision, with the approver's Sla
 make tool-audit CRED_TOOLS=kaimahi-plane   # the plane's own announcements, audited like anyone's
 ```
 
-## 7. Tear it down
+## 8. Tear it down
 
 AKS:
 

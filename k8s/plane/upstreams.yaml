@@ -38,20 +38,32 @@
 # standing_constraints (D31) are the other half: declarative bounds a
 # CREDENTIAL carries on a tool's declared fields — a call inside them
 # proceeds with no approval, a call outside them is denied and files a
-# request. None are configured here: the demo's consequential tools are
-# the Slack post and the hosted write tool, and both are meant to need a
-# human. See docs/approvals.md for the format.
+# request. ONE is configured here (P13, docs/ap-demo.md): the
+# accounts-payable agent may schedule a payment at or under $10,000.00
+# and never otherwise — the business rule its brief states, as a rule the
+# plane enforces rather than a sentence the model is asked to respect.
+# Note what that buys and what it costs: `payment_schedule` is NOT on the
+# ap-agent allowlist and must not be, because where a constraint exists
+# it BINDS — it is a bound, not another way in.
 #
 # tool_upstreams is the P4b MCP gateway's table: the ONLY tool servers
 # the gateway will relay to — it forwards nowhere else, which is the
 # egress rule at this layer; k8s/plane/network-policy.yaml is the rule
-# at the network. Three entries, two in-cluster and one hosted:
+# at the network. Four entries, three in-cluster and one hosted:
 #   - kagent-tools: kagent's chart-managed tool server (P4b).
 #   - slack:        the Slack MCP server this repo deploys (P5a,
 #                   k8s/slack-mcp.yaml). The gateway's reach to it is
 #                   in-cluster, but that POD talks to api.slack.com, the
 #                   first deliberate internet egress in this repo. See
 #                   docs/slack.md.
+#   - erp:          the accounts-payable demo's fixture ERP (P13,
+#                   k8s/erp-mcp.yaml) — nine tools over a corpus in a
+#                   ConfigMap. Keyless: no credential_file, because there
+#                   is no credential; it reaches nothing and its
+#                   NetworkPolicy admits the proxy alone. Six read tools
+#                   are on the ap-agent allowlist; the three with
+#                   consequences are not, and one of those carries the
+#                   standing constraint. See docs/ap-demo.md.
 #   - github:       GitHub's HOSTED MCP server (P10) — the first upstream
 #                   the gateway itself reaches over the internet, through
 #                   the hardened dialer. credential_file names (never
@@ -160,6 +172,20 @@ data:
           "url": "http://kaimahi-slack-mcp.kaimahi:13080/mcp",
           "credential_file": "/etc/kaimahi/upstream-creds/slack/SLACK_MCP_API_KEY"
         },
+        "erp": {
+          "url": "http://kaimahi-erp-mcp.kaimahi:8085/mcp",
+          "tools": {
+            "invoice_get":        {"policy_fields": ["invoice_id"]},
+            "invoice_list":       {"policy_fields": ["vendor_id"]},
+            "po_get":             {"policy_fields": ["po_id"]},
+            "receiving_get":      {"policy_fields": ["po_id"]},
+            "contract_get":       {"policy_fields": ["vendor_id"]},
+            "payment_policy_get": {"policy_fields": []},
+            "payment_schedule":   {"policy_fields": ["invoice_id", "amount_cents", "payee_id"]},
+            "dispute_open":       {"policy_fields": ["invoice_id", "amount_cents"]},
+            "vendor_notify":      {"policy_fields": ["vendor_id"]}
+          }
+        },
         "github": {
           "url": "https://api.githubcopilot.com/mcp/",
           "internet": true,
@@ -198,5 +224,12 @@ data:
         "tool": "conversations_add_message",
         "credential_file": "/etc/kaimahi/notifier/api-key",
         "channel_file": "/etc/kaimahi/slack/channel"
+      },
+      "standing_constraints": {
+        "ap-agent": {
+          "payment_schedule": [
+            {"field": "amount_cents", "op": "lte", "value": 1000000}
+          ]
+        }
       }
     }

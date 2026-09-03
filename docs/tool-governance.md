@@ -73,13 +73,21 @@ fields.
   "kagent-tools": {
     "url": "http://kagent-tools.kagent:8084/mcp",
     "tools": {
-      "k8s_get_events":  {"policy_fields": ["namespace"]},
-      "payment_schedule": {"policy_fields": ["invoice_id", "amount_cents", "payee_id"]},
-      "invoice_get":     {"policy_fields": []}
+      "k8s_get_events":  {"policy_fields": ["namespace"]}
+    }
+  },
+  "erp": {
+    "url": "http://kaimahi-erp-mcp.kaimahi:8085/mcp",
+    "tools": {
+      "payment_schedule":   {"policy_fields": ["invoice_id", "amount_cents", "payee_id"]},
+      "payment_policy_get": {"policy_fields": []}
     }
   }
 }
 ```
+
+Both of those are live entries in `k8s/plane/upstreams.yaml`; the ERP one
+is what the accounts-payable demo runs on ([ap-demo.md](ap-demo.md)).
 
 - **`policy_fields` is required** in a declaration. `[]` is a real answer
   — "no argument of this tool is policy-relevant", a verb-level binding —

@@ -143,6 +143,17 @@ spec:
       ports:
         - protocol: TCP
           port: 13080
+    # P13: the demo's fixture ERP (k8s/erp-mcp.yaml), the fourth
+    # in-cluster tool upstream. Pinned to its pod by label, on its port.
+    # Present whether or not the ERP is deployed: an allowance to a pod
+    # that does not exist opens nothing.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kaimahi-erp
+      ports:
+        - protocol: TCP
+          port: 8085
     # P7b: the inbound bridge invokes agents through the kagent
     # controller's A2A endpoint (the one origin it dials, docs/inbound.md).
     # The controller only, on 8083 — not the agent pods, not the rest of
@@ -298,3 +309,38 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+---
+# 5. The demo's fixture ERP (P13, k8s/erp-mcp.yaml). The mirror image of
+#    the Slack server: that pod needs the internet, this one needs
+#    nothing at all.
+#
+# In: the proxy only, on 8085. So the ONLY route to the invoices, the
+# purchase orders and — the part that matters — `payment_schedule` is
+# through the gateway, where the allowlist, the standing constraint, the
+# call-bound grants and the audit are. A pod that could reach 8085
+# directly could schedule any payment it liked, and the demo's whole
+# claim would be a convention.
+#
+# Out: NOTHING. Egress is listed with no rules on purpose, the way the
+# ledger's is: this server answers from a ConfigMap it read at boot, so
+# it has nobody to look up and nowhere to go. It is the strongest
+# statement available that the ERP holds no credential and reaches no
+# real system — there is no path for one to be used.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kaimahi-erp
+  namespace: kaimahi
+spec:
+  podSelector:
+    matchLabels:
+      app: kaimahi-erp
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: kaimahi-proxy
+      ports:
+        - protocol: TCP
+          port: 8085

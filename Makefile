@@ -152,6 +152,23 @@ GITHUB_TOOLS   ?= list_issues,list_pull_requests
 GITHUB_WRITE_TOOL := issue_write
 GITHUB_AGENT_TOOLS ?= $(GITHUB_TOOLS),$(GITHUB_WRITE_TOOL)
 GITHUB_TOOLNAMES_JSON = $(if $(filter -,$(GITHUB_AGENT_TOOLS)),,"$(subst $(comma),"$(comma)",$(GITHUB_AGENT_TOOLS))")
+# P13: the accounts-payable seam (the demo's fixture ERP behind the
+# gateway) has its own credential, agent and allowlist. The SIX READ
+# tools are allowlisted from the start. The three with consequences are
+# not — and payment_schedule must NOT be added to this list even to
+# "enable" the routine invoice: it carries a STANDING CONSTRAINT in
+# k8s/plane/upstreams.yaml, and where a constraint exists it binds
+# instead of the allowlist. Adding it here would change nothing about
+# what is admitted and would misdescribe the control to the next reader.
+CRED_AP        ?= ap-agent
+AP_TOOLS       ?= invoice_get,invoice_list,po_get,receiving_get,contract_get,payment_policy_get
+AP_ACT_TOOLS   := payment_schedule,dispute_open,vendor_notify
+# The agent's SELECTION (kagent wires discovered ∩ toolNames): it names
+# the consequential tools so an approval can take effect without editing
+# the agent, while conferring nothing.
+AP_AGENT_TOOLS ?= $(AP_TOOLS),$(AP_ACT_TOOLS)
+AP_TOOLNAMES_JSON = $(if $(filter -,$(AP_AGENT_TOOLS)),,"$(subst $(comma),"$(comma)",$(AP_AGENT_TOOLS))")
+AP_INVOICE     ?= INV-88134
 
 .PHONY: up cluster ollama model kagent agent tools-agent chat down status guard \
 	model-secret copilot-secret use use-ollama \
@@ -166,7 +183,8 @@ GITHUB_TOOLNAMES_JSON = $(if $(filter -,$(GITHUB_AGENT_TOOLS)),,"$(subst $(comma
 	slack-approvers notify-slack slack-mention \
 	backup restore plane-metrics \
 	github-secret github-revoke egress-hosted egress-hosted-off \
-	govern-github github-allow github-audit github-ask github-down
+	govern-github github-allow github-audit github-ask github-down \
+	erp erp-fixtures govern-ap ap-allow ap-audit ap-ask ap-demo ap-injection ap-down
 
 # guard: the context-safety net every MUTATING target depends on. Prints
 # the target context/namespaces; demands explicit confirmation for
@@ -1214,6 +1232,94 @@ github-ask: $(KAGENT)
 github-down: guard
 	-$(KUBECTL) -n kagent delete agent hello-github
 	-$(KUBECTL) -n kagent delete remotemcpserver kaimahi-github
+
+## ---- P13: the accounts-payable exception demo (docs/ap-demo.md) ----
+#
+# The demo Kaimahi exists to make: an agent investigates an invoice that
+# ordinary three-way matching cannot resolve, reaches a defensible answer,
+# and then has to ask a human before any money moves — and when a later
+# invoice tries to manipulate it, being manipulated is not enough to move
+# money. The ERP is fixtures; the governance is the real thing.
+
+ifeq ($(TARGET),kind)
+## erp: build the demo's fixture ERP, side-load it into kind, project the
+## corpus (k8s/erp-fixtures.json) as a ConfigMap and roll it out
+erp: guard
+	@KUBECTL="$(KUBECTL)" CONTAINER_ENGINE=$(CONTAINER_ENGINE) \
+		KIND_CLUSTER='$(KIND_CLUSTER)' bash scripts/erp-deploy.sh all
+
+## erp-fixtures: re-project k8s/erp-fixtures.json and restart the ERP.
+## Editing the story needs no rebuild (D30) — this is that path.
+erp-fixtures: guard
+	@KUBECTL="$(KUBECTL)" bash scripts/erp-deploy.sh fixtures
+else
+erp erp-fixtures:
+	@echo 'The demo ERP is kind-only: its image is built from source and never published,' >&2
+	@echo 'so there is nothing for a managed cluster to pull (docs/ap-demo.md).' >&2
+	@exit 1
+endif
+
+## govern-ap: issue the AP agent's credential with a READ-ONLY allowlist,
+## wire it to the ERP through the gateway, and create the agent. What it
+## may DO is not here: payment_schedule is bounded by the standing
+## constraint in k8s/plane/upstreams.yaml, and dispute_open and
+## vendor_notify need an approval each.
+govern-ap: guard
+	@KUBECTL="$(KUBECTL)" GOVERNED_SECRET=kaimahi-ap-token \
+		bash scripts/plane-admin.sh issue $(CRED_AP)
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-allow $(CRED_AP) "$(AP_TOOLS)"
+	$(KUBECTL) apply -f k8s/kaimahi-erp.yaml
+	$(KUBECTL) -n kagent wait \
+		--for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True \
+		remotemcpserver/kaimahi-erp --timeout=300s
+	$(KUBECTL) apply -f k8s/ap-agent.yaml
+	$(KUBECTL) -n kagent patch agent ap-agent --type merge \
+		-p '{"spec":{"declarative":{"tools":[{"type":"McpServer","mcpServer":{"apiGroup":"kagent.dev","kind":"RemoteMCPServer","name":"kaimahi-erp","toolNames":[$(AP_TOOLNAMES_JSON)]}}]}}}'
+	$(KUBECTL) -n kagent wait \
+		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
+		agent/ap-agent --timeout=300s
+
+## ap-allow: replace the AP credential's allowlist, e.g.
+##   make ap-allow AP_TOOLS=invoice_get
+##   make ap-allow AP_TOOLS=-        (empty: nothing callable)
+## Widening this is a CONFIG change; the demo widens by APPROVAL instead.
+ap-allow: guard
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-allow $(CRED_AP) "$(AP_TOOLS)"
+
+## ap-audit: the AP credential's tool-call audit trail
+ap-audit:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh tool-audit $(CRED_AP)
+
+## ap-ask: ask the AP agent to investigate an invoice.
+##   make ap-ask AP_INVOICE=INV-88134
+ap-ask: export KAIMAHI_AP_TASK = Investigate invoice $(AP_INVOICE) and resolve it.
+ap-ask: $(KAGENT)
+	@$(MAKE) chat AGENT=ap-agent TASK="$$KAIMAHI_AP_TASK"
+
+## ap-demo: the exception scenario end to end — the routine invoice pays
+## itself under the standing constraint, the exception is denied, filed,
+## approved in Slack by a named human and only then paid, and the dispute
+## and the vendor notice need an approval each of their own.
+##   make ap-demo [SLACK_USER=U0EXAMPLE]
+ap-demo: guard
+	@KUBECTL="$(KUBECTL)" CRED_AP=$(CRED_AP) SLACK_USER='$(SLACK_USER)' \
+		AP_CHAT='make chat AGENT=ap-agent TARGET=$(TARGET) KIND_CLUSTER=$(KIND_CLUSTER)' \
+		bash scripts/ap-demo.sh
+
+## ap-injection: the manipulated invoice — the agent may comply; the call
+## is denied anyway, audited with the changed payee, and cannot ride the
+## approval the earlier call earned.
+ap-injection: guard
+	@KUBECTL="$(KUBECTL)" CRED_AP=$(CRED_AP) SLACK_USER='$(SLACK_USER)' \
+		AP_CHAT='make chat AGENT=ap-agent TARGET=$(TARGET) KIND_CLUSTER=$(KIND_CLUSTER)' \
+		bash scripts/ap-injection.sh
+
+## ap-down: remove the P13 demo (agent, gateway seam, ERP)
+ap-down: guard
+	-$(KUBECTL) -n kagent delete agent ap-agent
+	-$(KUBECTL) -n kagent delete remotemcpserver kaimahi-erp
+	-$(KUBECTL) delete -f k8s/erp-mcp.yaml
+	-$(KUBECTL) -n kaimahi delete configmap kaimahi-erp-fixtures
 
 ## ---- P7b: inbound connectors (docs/inbound.md) ----
 #

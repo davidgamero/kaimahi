@@ -96,7 +96,9 @@ Consequences worth stating plainly:
 An approval per routine call would be theatre. A credential may instead
 carry declarative **bounds** on a tool's declared fields — the accounts-
 payable case is *"may call `payment_schedule` when `amount_cents` is at
-most 1,000,000 and the payee is one we know, and never otherwise"*:
+most 1,000,000 and the payee is one we know, and never otherwise"*
+(the shipped one is the amount clause alone; the demo it drives is
+[ap-demo.md](ap-demo.md)):
 
 ```json
 "standing_constraints": {

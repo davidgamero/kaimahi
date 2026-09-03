@@ -133,10 +133,14 @@ c["tool_upstreams"]["mcp-echo"] = {
     "url": "https://mcp-echo.kaimahi-ci.test/mcp", "internet": True, "ca_file": ca,
     "tools": {"pay_invoice": {"policy_fields": ["invoice_id", "amount_cents", "payee_id"]}},
 }
-c["standing_constraints"] = {"hello-github": {"pay_invoice": [
+# ADD to whatever the committed table already carries, never replace it:
+# since P13 that block holds the AP agent's real constraint, and a patch
+# that dropped it would quietly test a different policy than the one that
+# ships.
+c.setdefault("standing_constraints", {})["hello-github"] = {"pay_invoice": [
     {"field": "amount_cents", "op": "lte", "value": 1000000},
     {"field": "payee_id", "op": "in", "values": ["MER-4471"]},
-]}}
+]}
 c["tool_upstreams"]["mcp-echo-rebind"] = {"url": "https://mcp-echo-rebind.kaimahi-ci.test/mcp", "internet": True, "ca_file": ca}
 c["tool_upstreams"]["mcp-echo-redirect"] = {"url": "https://mcp-echo.kaimahi-ci.test/redirect", "internet": True, "ca_file": ca}
 json.dump(c, sys.stdout, indent=2)
