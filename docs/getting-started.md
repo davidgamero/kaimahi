@@ -79,7 +79,7 @@ also carries checksum-verified binaries — see [releases.md](releases.md).
 ```bash
 kmx up      # kind cluster + Ollama + model pull + kagent + two agents (first run ~5-10 min)
 kmx agent chat hello-world "Who are you and where are you running?"
-kmx status  # agents, modelconfigs, pods
+kmx status  # grouped agents, models, runtime health, next actions
 kmx down    # delete the kind cluster (and everything in it, ledger included)
 ```
 
@@ -158,9 +158,15 @@ in any form, and refuses to write a manifest with anything key-shaped in it.
 why.
 
 ```bash
-make status   # agents, modelconfigs, pods
+make status   # grouped agents, models, runtime health, next actions
 make down     # delete the kind cluster (and everything in it, ledger included)
 ```
+
+`make status` groups the selected context, agent-to-model/tool wiring, runtime
+health across kagent/Ollama/the optional plane, pod restarts, and next actions.
+For kubectl-native machine-readable Agents, ModelConfigs, and kagent-namespace
+Pods, use `kmx status -o json`, `kmx status -o yaml`, or from Make:
+`make status STATUS_OUTPUT=yaml`.
 
 On the clone path the governed half is `make plane` and `make govern`, which
 are the same kmx commands with the checkout passed as the plane's source —

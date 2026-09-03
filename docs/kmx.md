@@ -128,7 +128,8 @@ swap plus a credential the agent cannot read past.
 | `kmx backup [<file>]` | `pg_dump` the plane's database to a local file (default `backups/kaimahi-<UTC>.sql`, mode 0600) |
 | `kmx restore <file>` | **replace** the plane's database from a backup — every table dropped and recreated |
 | `kmx metrics [--pod <name>]` | one proxy replica's Prometheus exposition; the replica's name goes to stderr so stdout stays machine-readable |
-| `kmx status` | agents, modelconfigs and pods |
+| `kmx status` | grouped context, agent/model wiring, runtime health, restarts, and next actions |
+| `kmx status -o json\|yaml` | kubectl-native combined Agents, ModelConfigs, and kagent-namespace Pods for automation |
 | `kmx down` | delete the kind cluster kmx created |
 | `kmx version` | the pinned kagent and model versions, the plane's image tag, and the revision `kmx plane` would fetch it at |
 

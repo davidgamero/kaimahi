@@ -115,7 +115,7 @@ make chat   # talk to the default agent
 make chat TASK="What are you defined in?"
 make chat AGENT=hello-tools TASK="What pods are running in the ollama namespace?"
 make govern                              # route the agent's model calls through the governed proxy
-make status                              # agents, modelconfigs, pods
+make status                              # grouped agents, models, runtime health, next actions
 make down                                # delete the cluster
 ```
 
@@ -218,7 +218,7 @@ this table — it was prototyped and shelved, not built.
 |---|---|
 | `make up` | cluster → Ollama → model pull → kagent → agents → status |
 | `make chat [AGENT=… TASK=…]` | one question to an agent via the kagent CLI |
-| `make status` | `get agents,modelconfigs` + pods |
+| `make status` | grouped context, agent/model wiring, runtime health, restarts, and next actions |
 | `make down` | delete the kind cluster |
 | `make use PRESET=<name>` | point the agent at a model preset from `k8s/models/` |
 | `make use-ollama` | back to the keyless in-cluster model |

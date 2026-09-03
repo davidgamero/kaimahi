@@ -65,7 +65,7 @@ COMMANDS
   backup [<file>]              pg_dump the plane's database to a local file
   restore <file>               REPLACE the plane's database from a backup
   metrics                      one proxy replica's Prometheus exposition
-  status                       agents, modelconfigs and pods
+  status                       grouped agent/model wiring and runtime health
   down                         delete the kind cluster kmx created
   version                      this build's version, and the versions it installs
 
@@ -329,7 +329,16 @@ func run(argv []string) error {
 		return a.Metrics(pod)
 
 	case "status":
-		return a.Status()
+		fs := newFlagSet("status")
+		output := fs.String("o", "table", "output: table|json|yaml")
+		fs.StringVar(output, "output", "table", "output: table|json|yaml")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return errors.New("usage: kmx status [-o table|json|yaml]")
+		}
+		return a.StatusWithOptions(app.StatusOptions{Output: *output})
 
 	case "down":
 		return a.Down()
