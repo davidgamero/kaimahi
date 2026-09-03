@@ -77,7 +77,8 @@ KMX_ASSETS   := k8s/ollama.yaml k8s/kagent-values.yaml k8s/hello-world.yaml k8s/
 # confirmation given to make is not asked for again by kmx.
 KMX_ENV       = KIND_CLUSTER='$(KIND_CLUSTER)' KUBE_CTX='$(KUBE_CTX)' \
 		CONTAINER_ENGINE='$(CONTAINER_ENGINE)' KAGENT_VERSION='$(KAGENT_VERSION)' \
-		MODEL='$(MODEL)' $(if $(filter command line environment override,$(origin CHAT_PORT)),CHAT_PORT='$(CHAT_PORT)',) KAGENT='$(KAGENT)' \
+		MODEL='$(MODEL)' $(if $(filter command line environment override,$(origin CHAT_PORT)),CHAT_PORT='$(CHAT_PORT)',) \
+		$(if $(filter command line environment override,$(origin KAGENT)),KAGENT='$(KAGENT)',) \
 		KAIMAHI_CONFIRM='$(KAIMAHI_CONFIRM)'
 
 OS   := $(shell uname -s | tr A-Z a-z)
@@ -546,7 +547,7 @@ endif
 # port-forward on an explicit port, and the same two retry classes. The
 # define itself stays because `slack-post` and `github-ask` still use it,
 # with the narrower refused-only class a non-idempotent action needs.
-chat: $(KMX) $(KAGENT)
+chat: $(KMX)
 	@$(KMX_ENV) $(KMX) agent chat $(if $(filter 1,$(INTERACTIVE)),--interactive,) \
 		$(if $(SESSION),--session "$$KMX_CHAT_SESSION",) $(AGENT) \
 		$(if $(filter 1,$(INTERACTIVE)),$(if $(filter command line environment override,$(origin TASK)),"$(TASK)",),"$(TASK)")

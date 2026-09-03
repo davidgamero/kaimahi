@@ -81,7 +81,7 @@ swap plus a credential the agent cannot read past.
 |---|---|
 | `kmx ctx` | print the context kmx will act on, where that came from, and its posture |
 | `kmx ctx <context>` | select that context for later commands (recorded in kmx's config directory — `~/.config/kmx/context` on Linux; set `KMX_HOME` to put it elsewhere) |
-| `kmx up` | preflight all host dependencies, create the kind cluster, deploy Ollama, pull the pinned model, install kagent by helm, apply both agents, wait for each to be Ready, print status |
+| `kmx up` | check all host dependencies in one pass before the guard or first use, create the kind cluster, deploy Ollama, pull the pinned model, install kagent by helm, apply both agents, wait for each to be Ready, print status |
 | `kmx up --step <step>` | one step only: `cluster`, `ollama`, `model`, `kagent`, `agent`, `tools-agent` |
 | `kmx agent create <name>` | scaffold `agents/<name>.yaml` and apply it |
 | `kmx agent chat <name> [message]` | ask an agent one question, through `kagent invoke` |
@@ -213,11 +213,15 @@ kmx agent chat --interactive hello-tools
 ```
 
 The header names the active agent and shows its effective selected/discovered
-tools, descriptions, and whether each MCP server is direct or Kaimahi-governed.
-Text and correlated tool call/completion events render as kagent streams them.
-The returned context ID is reused for each turn.
+tools, descriptions, and whether each model/tool seam is direct or
+Kaimahi-governed. A governed label requires current MCP discovery plus ready
+plane replicas and Service endpoints; unknown posture refuses rather than
+claiming governance. Every user message is labelled `You`; each reply carries
+the active agent name. Text and correlated tool call/completion events render
+as kagent streams them. The returned context ID is reused for each turn.
 
-Commands: `/session`, `/sessions`, `/resume <id>`, `/new`, `/retry`, `/exit`.
+Commands: `/session`, `/sessions`, `/history`, `/resume <id>`, `/new`, `/retry`,
+`/tools off|summary|verbose`, `/exit`.
 `--session <id>` resumes a known session and displays its history. If a stream
 closes while a task is still working, kmx polls that exact task ID; it never
 resends the tool call. A Kaimahi governance denial still requires a separate

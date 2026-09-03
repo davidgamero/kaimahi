@@ -82,6 +82,9 @@ func (a *App) ChatWithOptions(opt ChatOptions) error {
 	if task == "" && !opt.Interactive {
 		task = config.DefaultTask
 	}
+	if err := a.preflight(depKubectl); err != nil {
+		return err
+	}
 
 	cache, err := config.CacheDir()
 	if err != nil {

@@ -15,8 +15,11 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
+
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/scaffold"
 )
 
 const maxControllerResponse = 10 << 20
@@ -77,17 +80,60 @@ func safeTerminal(s string) string {
 	return out.String()
 }
 
+func controllerRequest(ctx context.Context, method, endpoint string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-user-id", "admin@kagent.dev")
+	return controllerClient.Do(req)
+}
+
+func usesKaimahiModelProxy(spec map[string]any) bool {
+	var visit func(any) bool
+	visit = func(value any) bool {
+		switch value := value.(type) {
+		case map[string]any:
+			for key, child := range value {
+				if strings.EqualFold(key, "baseUrl") || strings.EqualFold(key, "base_url") {
+					if raw, ok := child.(string); ok {
+						parsed, err := url.Parse(raw)
+						return err == nil && parsed.Scheme == "http" && parsed.Host == "kaimahi-proxy.kaimahi:8080" && strings.HasPrefix(parsed.Path, "/upstream/")
+					}
+				}
+				if visit(child) {
+					return true
+				}
+			}
+		case []any:
+			for _, child := range value {
+				if visit(child) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return visit(spec)
+}
+
 type streamView struct {
 	agent, context, taskID, state, reply string
 	toolCalls                            map[string]string
+	messageText                          map[string]string
+	toolMode                             string
 	denied                               bool
+	requestFiled                         bool
 	approval                             *hitlRequest
 	partials                             string
 	approvalErr                          error
+	visible                              atomic.Bool
 }
 
 type hitlRequest struct {
 	TaskID, ContextID string
+	Hint              string
 	Calls             []hitlCall
 }
 
@@ -131,7 +177,9 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 	defer stop()
 	base := "http://127.0.0.1:" + a.Cfg.ChatPort
 	fmt.Fprintf(a.Out, "Active agent: %s\n/exit or Ctrl-C to exit\n", safeTerminal(agent))
-	a.showActiveTools(agent)
+	if err := a.showChatPosture(agent); err != nil {
+		return err
+	}
 	if session != "" {
 		if err := a.showSessionHistory(base, session, agent); err != nil {
 			return err
@@ -141,6 +189,7 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 
 	reader := bufio.NewScanner(a.Stdin)
 	last := ""
+	toolMode := "summary"
 	for {
 		if err := ctx.Err(); err != nil {
 			fmt.Fprintln(a.Out, "Chat ended.")
@@ -178,6 +227,22 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 				fmt.Fprintf(a.Err, "sessions: %v\n", err)
 			}
 			continue
+		case message == "/history":
+			if session == "" {
+				fmt.Fprintln(a.Out, "No active session.")
+			} else if err := a.showSessionHistory(base, session, agent); err != nil {
+				fmt.Fprintf(a.Err, "history: %s\n", safeTerminal(err.Error()))
+			}
+			continue
+		case strings.HasPrefix(message, "/tools "):
+			mode := strings.TrimSpace(strings.TrimPrefix(message, "/tools "))
+			if mode != "off" && mode != "summary" && mode != "verbose" {
+				fmt.Fprintln(a.Out, "Usage: /tools off|summary|verbose")
+			} else {
+				toolMode = mode
+				fmt.Fprintf(a.Out, "Tool display: %s\n", mode)
+			}
+			continue
 		case strings.HasPrefix(message, "/resume "):
 			candidate := strings.TrimSpace(strings.TrimPrefix(message, "/resume "))
 			if err := a.showSessionHistory(base, candidate, agent); err != nil {
@@ -195,17 +260,19 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 		case message == "":
 			continue
 		case strings.HasPrefix(message, "/"):
-			fmt.Fprintln(a.Out, "Commands: /session /sessions /resume <id> /new /retry /exit")
+			fmt.Fprintln(a.Out, "Commands: /session /sessions /history /resume <id> /new /retry /tools off|summary|verbose /exit")
 			continue
 		default:
 			last = message
 		}
-		view, err := a.invokeStream(ctx, kagent, base, agent, message, session)
+		view, err := a.invokeStream(ctx, kagent, base, agent, message, session, toolMode)
 		if err != nil {
 			fmt.Fprintf(a.Err, "chat: %v\n", err)
 			continue
 		}
-		session = view.context
+		if view.context != "" {
+			session = view.context
+		}
 		for view.approval != nil {
 			if view.approvalErr != nil {
 				return view.approvalErr
@@ -225,10 +292,17 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 			if err != nil {
 				return err
 			}
-			session = view.context
+			if view.context != "" {
+				session = view.context
+			}
 		}
 		if view.denied {
-			fmt.Fprintln(a.Out, "Kaimahi denied a tool call. Approve separately, then type /retry.")
+			if view.requestFiled {
+				fmt.Fprintln(a.Out, "Governance: Kaimahi denied a tool call and filed an approval request.")
+				fmt.Fprintln(a.Out, "  Run `make approvals`, approve separately, then type /retry.")
+			} else {
+				fmt.Fprintln(a.Out, "Governance: Kaimahi denied a tool call; no approval request was confirmed.")
+			}
 		}
 		fmt.Fprintln(a.Out)
 	}
@@ -259,7 +333,7 @@ func scanLine(ctx context.Context, reader *bufio.Scanner) (string, error) {
 	}
 }
 
-func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, session string) (*streamView, error) {
+func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, session, toolMode string) (*streamView, error) {
 	args := []string{"--kagent-url", base, "invoke", "--stream", "--agent", agent, "--task", task}
 	if session != "" {
 		args = append(args, "--session", session)
@@ -278,7 +352,7 @@ func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, sessi
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	view := &streamView{agent: agent, toolCalls: map[string]string{}}
+	view := &streamView{agent: agent, toolCalls: map[string]string{}, messageText: map[string]string{}, toolMode: toolMode}
 	done := make(chan struct{})
 	spinner := isTerminal(a.Err)
 	if spinner {
@@ -289,7 +363,9 @@ func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, sessi
 				case <-done:
 					return
 				case <-time.After(250 * time.Millisecond):
-					fmt.Fprintf(a.Err, "\r%s: thinking %s", agent, frames[i%len(frames)])
+					if !view.visible.Load() {
+						fmt.Fprintf(a.Err, "\r%s: thinking %s", safeTerminal(agent), frames[i%len(frames)])
+					}
 				}
 			}
 		}()
@@ -321,6 +397,9 @@ func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, sessi
 			return nil, view.approvalErr
 		}
 		return view, nil
+	}
+	if view.state == "input-required" {
+		return nil, fmt.Errorf("task %s requires input, but its HITL request could not be decoded", view.taskID)
 	}
 	if view.state != "completed" || view.reply == "" {
 		return nil, fmt.Errorf("task did not complete with a reply (state %q)", view.state)
@@ -362,17 +441,21 @@ func (v *streamView) consume(event streamEvent, out io.Writer) {
 		var status struct {
 			State   string `json:"state"`
 			Message struct {
-				Role     string `json:"role"`
-				Metadata struct {
-					Partial bool `json:"kagent_adk_partial"`
+				Role      string `json:"role"`
+				MessageID string `json:"messageId"`
+				Metadata  struct {
+					Partial    bool `json:"kagent_adk_partial"`
+					ADKPartial bool `json:"adk_partial"`
 				} `json:"metadata"`
 				Parts []struct {
 					Kind     string          `json:"kind"`
 					Text     string          `json:"text"`
 					Data     json.RawMessage `json:"data"`
 					Metadata struct {
-						Type        string `json:"kagent_type"`
-						LongRunning bool   `json:"kagent_is_long_running"`
+						Type           string `json:"kagent_type"`
+						ADKType        string `json:"adk_type"`
+						LongRunning    bool   `json:"kagent_is_long_running"`
+						ADKLongRunning bool   `json:"adk_is_long_running"`
 					} `json:"metadata"`
 				} `json:"parts"`
 			} `json:"message"`
@@ -381,23 +464,33 @@ func (v *streamView) consume(event streamEvent, out io.Writer) {
 			v.state = status.State
 			for _, part := range status.Message.Parts {
 				if part.Kind == "text" && status.Message.Role == "agent" && part.Text != "" {
-					if v.reply == "" {
+					previous := v.messageText[status.Message.MessageID]
+					addition := part.Text
+					if strings.HasPrefix(part.Text, previous) {
+						addition = strings.TrimPrefix(part.Text, previous)
+					}
+					if previous == "" {
+						v.visible.Store(true)
 						fmt.Fprintf(out, "%s: ", safeTerminal(v.agent))
 					}
-					addition := part.Text
 					if v.partials != "" && strings.HasPrefix(part.Text, v.partials) {
 						addition = strings.TrimPrefix(part.Text, v.partials)
 					}
 					fmt.Fprint(out, safeTerminal(addition))
+					v.messageText[status.Message.MessageID] = part.Text
 					v.reply += addition
-					if status.Message.Metadata.Partial {
+					if status.Message.Metadata.Partial || status.Message.Metadata.ADKPartial {
 						v.partials += addition
 					} else {
 						v.partials = ""
 					}
 				}
 				if part.Kind == "data" {
-					v.consumeTool(part.Metadata.Type, part.Metadata.LongRunning, part.Data, out)
+					kind := part.Metadata.Type
+					if kind == "" {
+						kind = part.Metadata.ADKType
+					}
+					v.consumeTool(kind, part.Metadata.LongRunning || part.Metadata.ADKLongRunning, part.Data, out)
 				}
 			}
 		}
@@ -417,6 +510,7 @@ func (v *streamView) consume(event streamEvent, out io.Writer) {
 		addition = ""
 	}
 	if addition != "" {
+		v.visible.Store(true)
 		if v.reply == "" {
 			fmt.Fprintf(out, "%s: ", safeTerminal(v.agent))
 		}
@@ -448,6 +542,7 @@ func (v *streamView) consumeTool(kind string, longRunning bool, raw json.RawMess
 		var args struct {
 			Original     hitlCall `json:"originalFunctionCall"`
 			Confirmation struct {
+				Hint    string `json:"hint"`
 				Payload struct {
 					Parts []struct {
 						Original hitlCall `json:"originalFunctionCall"`
@@ -457,7 +552,7 @@ func (v *streamView) consumeTool(kind string, longRunning bool, raw json.RawMess
 		}
 		if json.Unmarshal(data.Args, &args) == nil {
 			if v.approval == nil {
-				v.approval = &hitlRequest{TaskID: v.taskID, ContextID: v.context}
+				v.approval = &hitlRequest{TaskID: v.taskID, ContextID: v.context, Hint: args.Confirmation.Hint}
 			}
 			if len(args.Confirmation.Payload.Parts) > 0 {
 				for _, part := range args.Confirmation.Payload.Parts {
@@ -486,7 +581,10 @@ func (v *streamView) consumeTool(kind string, longRunning bool, raw json.RawMess
 	switch kind {
 	case "function_call":
 		v.toolCalls[data.ID] = data.Name
-		fmt.Fprintf(out, "Tool: %s %s\n", safeTerminal(data.Name), safeTerminal(strings.TrimSpace(string(data.Args))))
+		if v.toolMode != "off" {
+			v.visible.Store(true)
+			fmt.Fprintf(out, "Tool: %s %s\n", safeTerminal(data.Name), safeTerminal(strings.TrimSpace(string(data.Args))))
+		}
 	case "function_response":
 		name := v.toolCalls[data.ID]
 		if name == "" {
@@ -496,10 +594,18 @@ func (v *streamView) consumeTool(kind string, longRunning bool, raw json.RawMess
 		if data.Response.IsError {
 			state = "failed"
 		}
-		fmt.Fprintf(out, "Tool: %s %s\n", safeTerminal(name), state)
 		body := string(data.Response.Content)
-		if strings.Contains(body, "approval request filed") || strings.Contains(body, "not permitted") {
+		if strings.Contains(body, "approval request filed") {
+			v.denied, v.requestFiled = true, true
+		} else if strings.Contains(body, "not permitted") || strings.Contains(body, "denied") {
 			v.denied = true
+		}
+		if v.toolMode != "off" {
+			v.visible.Store(true)
+			fmt.Fprintf(out, "Tool: %s %s\n", safeTerminal(name), state)
+			if v.toolMode == "verbose" {
+				fmt.Fprintf(out, "  result: %s\n", safeTerminal(body))
+			}
 		}
 	}
 }
@@ -589,6 +695,10 @@ func getTask(ctx context.Context, base, agent, id string) (*a2aTask, error) {
 
 func (a *App) promptHITL(ctx context.Context, reader *bufio.Scanner, request *hitlRequest) (map[string]any, error) {
 	decisions := map[string]string{}
+	reasons := map[string]string{}
+	if request.Hint != "" {
+		fmt.Fprintf(a.Out, "Human approval required: %s\n", safeTerminal(request.Hint))
+	}
 	for _, call := range request.Calls {
 		if call.Name == "ask_user" {
 			var request struct {
@@ -629,14 +739,26 @@ func (a *App) promptHITL(ctx context.Context, reader *bufio.Scanner, request *hi
 			decisions[call.ID] = "approve"
 		} else {
 			decisions[call.ID] = "reject"
+			fmt.Fprint(a.Out, "  Rejection reason (optional): ")
+			reason, err := scanLine(ctx, reader)
+			if err != nil {
+				return nil, err
+			}
+			if reason = strings.TrimSpace(reason); reason != "" {
+				reasons[call.ID] = reason
+			}
 		}
 	}
-	if len(decisions) == 1 {
+	if len(decisions) == 1 && len(reasons) == 0 {
 		for _, decision := range decisions {
 			return map[string]any{"decision_type": decision}, nil
 		}
 	}
-	return map[string]any{"decision_type": "batch", "decisions": decisions}, nil
+	result := map[string]any{"decision_type": "batch", "decisions": decisions}
+	if len(reasons) > 0 {
+		result["rejection_reasons"] = reasons
+	}
+	return result, nil
 }
 
 func (a *App) sendHITL(ctx context.Context, base, agent string, approval *hitlRequest, decision map[string]any) (*streamView, error) {
@@ -661,7 +783,7 @@ func (a *App) sendHITL(ctx context.Context, base, agent string, approval *hitlRe
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HITL decision answered HTTP %d", resp.StatusCode)
 	}
-	view := &streamView{agent: agent, toolCalls: map[string]string{}}
+	view := &streamView{agent: agent, toolCalls: map[string]string{}, messageText: map[string]string{}, toolMode: "summary"}
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
 	for scanner.Scan() {
@@ -708,7 +830,7 @@ func (a *App) sendHITL(ctx context.Context, base, agent string, approval *hitlRe
 }
 
 func (a *App) showSessions(base string) error {
-	resp, err := controllerClient.Get(base + "/api/sessions")
+	resp, err := controllerRequest(context.Background(), http.MethodGet, base+"/api/sessions", nil)
 	if err != nil {
 		return err
 	}
@@ -716,14 +838,25 @@ func (a *App) showSessions(base string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("sessions answered HTTP %d", resp.StatusCode)
 	}
+	type sessionItem struct{ ID, Name, AgentID string }
 	var envelope struct {
-		Data []struct{ ID, Name, AgentID string } `json:"data"`
+		Data json.RawMessage `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxControllerResponse)).Decode(&envelope); err != nil {
 		return err
 	}
+	var items []sessionItem
+	if err := json.Unmarshal(envelope.Data, &items); err != nil {
+		var wrapped struct {
+			Sessions []sessionItem `json:"sessions"`
+		}
+		if err := json.Unmarshal(envelope.Data, &wrapped); err != nil {
+			return fmt.Errorf("sessions returned an unknown shape")
+		}
+		items = wrapped.Sessions
+	}
 	fmt.Fprintln(a.Out, "Recent sessions")
-	for _, item := range envelope.Data {
+	for _, item := range items {
 		fmt.Fprintf(a.Out, "  %s  %s  %s\n", safeTerminal(item.ID), safeTerminal(strings.ReplaceAll(strings.TrimPrefix(item.AgentID, "kagent__NS__"), "_", "-")), safeTerminal(item.Name))
 	}
 	return nil
@@ -733,7 +866,7 @@ func (a *App) showSessionHistory(base, id, agent string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("session ID is empty")
 	}
-	resp, err := controllerClient.Get(base + "/api/sessions/" + url.PathEscape(id))
+	resp, err := controllerRequest(context.Background(), http.MethodGet, base+"/api/sessions/"+url.PathEscape(id), nil)
 	if err != nil {
 		return err
 	}
@@ -767,7 +900,15 @@ func (a *App) showSessionHistory(base, id, agent string) error {
 			Content struct {
 				Role  string `json:"role"`
 				Parts []struct {
-					Text string `json:"text"`
+					Text         string `json:"text"`
+					FunctionCall *struct {
+						Name string
+						Args json.RawMessage
+					} `json:"function_call"`
+					FunctionResponse *struct {
+						Name     string
+						Response json.RawMessage
+					} `json:"function_response"`
 				} `json:"parts"`
 			} `json:"content"`
 		}
@@ -775,29 +916,37 @@ func (a *App) showSessionHistory(base, id, agent string) error {
 			continue
 		}
 		for _, part := range event.Content.Parts {
-			if part.Text == "" {
-				continue
+			if part.Text != "" {
+				sender := event.Author
+				if event.Content.Role == "user" && event.Author == "user" {
+					sender = "You"
+				}
+				if sender == "" && event.Content.Role == "model" {
+					sender = agent
+				}
+				fmt.Fprintf(a.Out, "%s: %s\n", safeTerminal(sender), safeTerminal(part.Text))
 			}
-			if event.Content.Role == "user" && event.Author == "user" {
-				fmt.Fprintf(a.Out, "You: %s\n", safeTerminal(part.Text))
-			} else if event.Content.Role == "model" {
-				fmt.Fprintf(a.Out, "%s: %s\n", safeTerminal(agent), safeTerminal(part.Text))
+			if part.FunctionCall != nil {
+				fmt.Fprintf(a.Out, "Tool: %s %s\n", safeTerminal(part.FunctionCall.Name), safeTerminal(string(part.FunctionCall.Args)))
+			}
+			if part.FunctionResponse != nil {
+				fmt.Fprintf(a.Out, "Tool: %s result %s\n", safeTerminal(part.FunctionResponse.Name), safeTerminal(string(part.FunctionResponse.Response)))
 			}
 		}
 	}
 	return nil
 }
 
-func (a *App) showActiveTools(agent string) {
+func (a *App) showChatPosture(agent string) error {
 	raw, err := a.kubectlCapture("-n", "kagent", "get", "agent", agent, "-o", "json")
 	if err != nil {
-		fmt.Fprintf(a.Err, "Tools: unavailable: %s\n", safeTerminal(err.Error()))
-		return
+		return fmt.Errorf("cannot validate active agent: %w", err)
 	}
 	var resource struct {
 		Spec struct {
 			Declarative struct {
-				Tools []struct {
+				ModelConfig string `json:"modelConfig"`
+				Tools       []struct {
 					MCPServer struct {
 						Name      string
 						ToolNames []string
@@ -806,28 +955,73 @@ func (a *App) showActiveTools(agent string) {
 			} `json:"declarative"`
 		} `json:"spec"`
 	}
-	if json.Unmarshal([]byte(raw), &resource) != nil || len(resource.Spec.Declarative.Tools) == 0 {
+	if err := json.Unmarshal([]byte(raw), &resource); err != nil {
+		return fmt.Errorf("agent %q returned invalid JSON: %w", agent, err)
+	}
+	model := resource.Spec.Declarative.ModelConfig
+	modelRaw, err := a.kubectlCapture("-n", "kagent", "get", "modelconfig", model, "-o", "json")
+	if err != nil {
+		return fmt.Errorf("cannot validate ModelConfig %q: %w", model, err)
+	}
+	var modelResource struct {
+		Metadata struct {
+			Generation int64 `json:"generation"`
+		} `json:"metadata"`
+		Spec   map[string]any `json:"spec"`
+		Status struct {
+			ObservedGeneration int64             `json:"observedGeneration"`
+			Conditions         []serverCondition `json:"conditions"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(modelRaw), &modelResource); err != nil {
+		return fmt.Errorf("ModelConfig %q returned invalid JSON: %w", model, err)
+	}
+	accepted := false
+	for _, condition := range modelResource.Status.Conditions {
+		if condition.Type == "Accepted" && condition.Status == "True" &&
+			(condition.ObservedGeneration == 0 || condition.ObservedGeneration == modelResource.Metadata.Generation) {
+			accepted = true
+		}
+	}
+	if modelResource.Status.ObservedGeneration != modelResource.Metadata.Generation || !accepted {
+		return fmt.Errorf("ModelConfig %q is not currently Accepted", model)
+	}
+	modelPosture := "direct, not Kaimahi-governed"
+	if strings.HasPrefix(model, "governed-") {
+		if !usesKaimahiModelProxy(modelResource.Spec) {
+			return fmt.Errorf("ModelConfig %q has a governed name but does not point at the Kaimahi proxy", model)
+		}
+		if !a.planeReady("kaimahi-proxy") {
+			return fmt.Errorf("agent uses %q but the Kaimahi plane is not Ready", model)
+		}
+		modelPosture = "governed by Kaimahi; plane Ready"
+	}
+	fmt.Fprintf(a.Out, "Model: %s (%s)\n", safeTerminal(model), modelPosture)
+	if len(resource.Spec.Declarative.Tools) == 0 {
 		fmt.Fprintln(a.Out, "Tools: none")
-		return
+		return nil
 	}
 	fmt.Fprintln(a.Out, "Tools:")
 	for _, tool := range resource.Spec.Declarative.Tools {
 		serverRaw, err := a.kubectlCapture("-n", "kagent", "get", "remotemcpserver", tool.MCPServer.Name, "-o", "json")
 		if err != nil {
-			fmt.Fprintf(a.Out, "  %s: unavailable (%s)\n", safeTerminal(tool.MCPServer.Name), safeTerminal(err.Error()))
-			continue
+			return fmt.Errorf("cannot validate RemoteMCPServer %q: %w", tool.MCPServer.Name, err)
 		}
 		var server struct {
+			Metadata struct {
+				Generation int64 `json:"generation"`
+			} `json:"metadata"`
 			Spec struct {
 				URL string `json:"url"`
 			} `json:"spec"`
 			Status struct {
-				Discovered []struct{ Name, Description string } `json:"discoveredTools"`
+				ObservedGeneration int64                                `json:"observedGeneration"`
+				Conditions         []serverCondition                    `json:"conditions"`
+				Discovered         []struct{ Name, Description string } `json:"discoveredTools"`
 			} `json:"status"`
 		}
-		if json.Unmarshal([]byte(serverRaw), &server) != nil {
-			fmt.Fprintf(a.Out, "  %s: invalid discovery status\n", safeTerminal(tool.MCPServer.Name))
-			continue
+		if err := json.Unmarshal([]byte(serverRaw), &server); err != nil {
+			return fmt.Errorf("RemoteMCPServer %q returned invalid JSON: %w", tool.MCPServer.Name, err)
 		}
 		discovered := map[string]string{}
 		for _, item := range server.Status.Discovered {
@@ -836,10 +1030,28 @@ func (a *App) showActiveTools(agent string) {
 		posture := "direct, not Kaimahi-governed"
 		parsed, _ := url.Parse(server.Spec.URL)
 		if parsed != nil && parsed.Scheme == "http" && parsed.Host == "kaimahi-mcp-gateway.kaimahi:8081" && strings.HasPrefix(parsed.Path, "/upstream/") {
-			posture = "governed by Kaimahi"
+			if !a.planeReady("kaimahi-mcp-gateway") {
+				return fmt.Errorf("RemoteMCPServer %q points at Kaimahi but the plane is not Ready", tool.MCPServer.Name)
+			}
+			posture = "governed by Kaimahi; plane Ready"
+		}
+		selected := append([]string(nil), tool.MCPServer.ToolNames...)
+		if len(selected) == 0 {
+			for name := range discovered {
+				selected = append(selected, name)
+			}
+			sort.Strings(selected)
+		}
+		wiring := &scaffold.ToolWiring{Server: tool.MCPServer.Name, Tools: selected}
+		discoveredSet := map[string]bool{}
+		for name := range discovered {
+			discoveredSet[name] = true
+		}
+		if err := validateToolServer(wiring, server.Metadata.Generation, server.Status.ObservedGeneration, server.Status.Conditions, discoveredSet); err != nil {
+			return err
 		}
 		fmt.Fprintf(a.Out, "  %s (%s)\n", safeTerminal(tool.MCPServer.Name), posture)
-		for _, name := range tool.MCPServer.ToolNames {
+		for _, name := range selected {
 			if description, ok := discovered[name]; ok {
 				fmt.Fprintf(a.Out, "    %s - %s\n", safeTerminal(name), safeTerminal(description))
 			} else {
@@ -847,4 +1059,41 @@ func (a *App) showActiveTools(agent string) {
 			}
 		}
 	}
+	return nil
+}
+
+func (a *App) planeReady(service string) bool {
+	raw, err := a.kubectlCapture("-n", "kaimahi", "get", "deployment", "kaimahi-proxy", "-o", "json")
+	if err != nil {
+		return false
+	}
+	var deployment struct {
+		Spec struct {
+			Replicas int32 `json:"replicas"`
+		} `json:"spec"`
+		Status struct {
+			ReadyReplicas int32 `json:"readyReplicas"`
+		} `json:"status"`
+	}
+	if json.Unmarshal([]byte(raw), &deployment) != nil || deployment.Spec.Replicas == 0 || deployment.Status.ReadyReplicas != deployment.Spec.Replicas {
+		return false
+	}
+	endpoints, err := a.kubectlCapture("-n", "kaimahi", "get", "endpoints", service, "-o", "json")
+	if err != nil {
+		return false
+	}
+	var ready struct {
+		Subsets []struct {
+			Addresses []json.RawMessage `json:"addresses"`
+		} `json:"subsets"`
+	}
+	if json.Unmarshal([]byte(endpoints), &ready) != nil {
+		return false
+	}
+	for _, subset := range ready.Subsets {
+		if len(subset.Addresses) > 0 {
+			return true
+		}
+	}
+	return false
 }

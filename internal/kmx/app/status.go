@@ -131,6 +131,9 @@ func statusReady(allAgents, allModels bool, kReady, kTotal, oReady, oTotal, pRea
 
 // Status prints a grouped human view or kubectl-native JSON/YAML.
 func (a *App) StatusWithOptions(opt StatusOptions) error {
+	if err := a.preflight(depKubectl); err != nil {
+		return err
+	}
 	format := strings.ToLower(strings.TrimSpace(opt.Output))
 	if format == "" || format == "table" {
 		return a.statusTable()

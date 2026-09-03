@@ -140,9 +140,12 @@ INTERACTIVE=1 make chat AGENT=hello-tools
 # or directly: kmx agent chat --interactive hello-tools
 ```
 
-The header names the active agent and its available selected tools. Use
-`/sessions` and `/resume <id>` for prior conversations, `/new` for a fresh
-session, and `/exit` to leave. See [kmx.md](kmx.md#interactive-chat).
+The header names the active agent, model/tool governance posture, and effective
+selected tools. Messages are labelled `You` and replies with the active agent;
+tool calls and completion state appear inline. Use `/tools verbose` for full
+tool results, `/sessions`, `/history`, and `/resume <id>` for prior
+conversations, `/new` for a fresh session, and `/exit` to leave. See
+[kmx.md](kmx.md#interactive-chat).
 
 The tools agent is covered in [tools.md](tools.md), including why its
 prose summary is less reliable than the tool call underneath it.

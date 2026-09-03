@@ -136,12 +136,16 @@ func TestConfirmationRidesThrough(t *testing.T) {
 	}
 }
 
-// In a checkout there is one kagent binary, not two: make fetches it, kmx is
-// told where it is.
-func TestChatHandsKmxTheCheckoutsKagentBinary(t *testing.T) {
+// By default kmx owns the verified kagent download. An explicit override is
+// passed through, but make must not use curl before kmx can run its checks.
+func TestChatLetsKmxAcquireKagentUnlessOverridden(t *testing.T) {
 	out := dryRun(t, "chat")
-	if !strings.Contains(out, "KAGENT='bin/kagent'") {
-		t.Errorf("chat does not hand kmx bin/kagent:\n%s", out)
+	if strings.Contains(out, "curl ") || strings.Contains(out, "KAGENT='bin/kagent'") {
+		t.Errorf("chat acquired kagent before kmx:\n%s", out)
+	}
+	out = dryRun(t, "chat", "KAGENT=/tmp/kagent")
+	if !strings.Contains(out, "KAGENT='/tmp/kagent'") {
+		t.Errorf("chat dropped the explicit KAGENT override:\n%s", out)
 	}
 }
 
