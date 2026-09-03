@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,12 +18,18 @@ import (
 	"golang.org/x/term"
 )
 
+var errCreateCancelled = errors.New("agent creation cancelled")
+
 func (a *App) CreateAgentInteractive(opt CreateOptions) error {
 	errFile, visible := a.Err.(*os.File)
 	if a.Stdin == nil || !visible || !term.IsTerminal(int(a.Stdin.Fd())) || !term.IsTerminal(int(errFile.Fd())) {
 		return fmt.Errorf("kmx agent create needs a name in non-interactive input: kmx agent create <name> [flags]")
 	}
 	completed, err := collectCreateOptions(bufio.NewScanner(a.Stdin), a.Err, opt)
+	if errors.Is(err, errCreateCancelled) {
+		a.notef("Agent creation cancelled. Nothing was written or applied.")
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -30,15 +37,17 @@ func (a *App) CreateAgentInteractive(opt CreateOptions) error {
 }
 
 func collectCreateOptions(scanner lineScanner, out io.Writer, opt CreateOptions) (CreateOptions, error) {
-	description, err := promptValue(scanner, out, "Describe this agent", opt.Description, true)
-	if err != nil {
-		return opt, err
+	var err error
+	if opt.Description == "" {
+		opt.Description, err = promptValue(scanner, out, "Describe this agent", "", true)
+		if err != nil {
+			return opt, err
+		}
 	}
-	opt.Description = description
 
 	defaultName := opt.Name
 	if defaultName == "" {
-		defaultName = slugAgentName(description)
+		defaultName = slugAgentName(opt.Description)
 	}
 	for {
 		opt.Name, err = promptValue(scanner, out, "Agent name", defaultName, true)
@@ -52,32 +61,17 @@ func collectCreateOptions(scanner lineScanner, out io.Writer, opt CreateOptions)
 		}
 		break
 	}
-	opt.Namespace, err = promptValue(scanner, out, "Namespace", valueOr(opt.Namespace, config.DefaultNamespace), true)
-	if err != nil {
-		return opt, err
-	}
-	opt.ModelConfig, err = promptValue(scanner, out, "ModelConfig (blank = detect governed/default)", opt.ModelConfig, false)
-	if err != nil {
-		return opt, err
-	}
-	opt.Tools, err = promptValue(scanner, out, "Tools (blank = none; server:tool,tool)", opt.Tools, false)
-	if err != nil {
-		return opt, err
-	}
 	if _, err := scaffold.ParseTools(opt.Tools); err != nil {
 		return opt, err
 	}
-	opt.Instructions, err = promptValue(scanner, out, "Instructions file (blank = generated default)", opt.Instructions, false)
-	if err != nil {
-		return opt, err
+	if opt.Instructions == "" {
+		opt.InstructionText = "You are " + opt.Name + ". Your purpose is: " + opt.Description + "\nAnswer briefly and say plainly when you do not know something."
 	}
-	defaultOut := opt.Out
-	if defaultOut == "" {
-		defaultOut = filepath.Join("agents", opt.Name+".yaml")
+	if opt.Namespace == "" {
+		opt.Namespace = config.DefaultNamespace
 	}
-	opt.Out, err = promptValue(scanner, out, "Output file", defaultOut, true)
-	if err != nil {
-		return opt, err
+	if opt.Out == "" {
+		opt.Out = filepath.Join("agents", opt.Name+".yaml")
 	}
 	if opt.Out == "-" || opt.NoApply {
 		opt.NoApply = true
@@ -86,12 +80,21 @@ func collectCreateOptions(scanner lineScanner, out io.Writer, opt CreateOptions)
 	if opt.DryRun {
 		return opt, nil
 	}
-	apply, err := promptValue(scanner, out, "Apply after writing? (y/N)", "n", true)
-	if err != nil {
-		return opt, err
+	for {
+		apply, err := promptValue(scanner, out, "Create and apply to "+opt.Namespace+"? (Y/n)", "y", true)
+		if err != nil {
+			return opt, err
+		}
+		switch strings.ToLower(apply) {
+		case "y", "yes":
+			opt.NoApply = false
+			return opt, nil
+		case "n", "no":
+			return opt, errCreateCancelled
+		default:
+			fmt.Fprintln(out, "  Answer y or n.")
+		}
 	}
-	opt.NoApply = !strings.EqualFold(apply, "y") && !strings.EqualFold(apply, "yes")
-	return opt, nil
 }
 
 func promptValue(scanner lineScanner, out io.Writer, label, fallback string, required bool) (string, error) {

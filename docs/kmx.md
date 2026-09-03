@@ -278,11 +278,15 @@ The reserved names `hello-world` and `hello-tools` are refused: they are
 artifact that the next `kmx up` would replace right back.
 
 Running `kmx agent create` without a name on a terminal starts a local wizard.
-It asks for a description, proposes a Kubernetes-safe name, then walks through
-namespace, ModelConfig, an optional explicit tool allowlist, instructions file,
-and output path. The wizard defaults to writing only; applying requires an
-explicit final `yes`, after which the ordinary create guard, preflights, apply,
-and Ready wait run unchanged. Non-interactive use still requires a name.
+It asks `Describe this agent:`, proposes a Kubernetes-safe name, and asks once
+before creating and applying it. Enter accepts the default and applies, matching
+named `agent create`; answering no cancels without writing. `--no-apply` remains
+the explicit artifact-only path. The
+description seeds both metadata and the agent's instructions. Namespace, model,
+tools, instructions file, and output customization remain available through the
+existing flags rather than turning the common path into a questionnaire. The
+ordinary create guard, preflights, apply, and Ready wait run unchanged.
+Non-interactive use still requires a name.
 
 `kmx agent edit <name>` treats `agents/<name>.yaml` as the source of truth and
 opens a secure temporary copy with `$VISUAL` or `$EDITOR`. It refuses symlinks

@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,10 +27,8 @@ func (s *sliceScanner) Scan() bool {
 func (s *sliceScanner) Text() string { return s.values[s.index-1] }
 func (s *sliceScanner) Err() error   { return nil }
 
-func TestCreateWizardCollectsSafeDefaultsAndDoesNotApplyByDefault(t *testing.T) {
-	scanner := &sliceScanner{values: []string{
-		"Reports unhealthy workloads", "", "", "", "", "", "", "",
-	}}
+func TestCreateWizardCollectsSafeDefaultsAndAppliesByDefault(t *testing.T) {
+	scanner := &sliceScanner{values: []string{"Reports unhealthy workloads", "", ""}}
 	var out bytes.Buffer
 	opt, err := collectCreateOptions(scanner, &out, CreateOptions{})
 	if err != nil {
@@ -38,22 +37,45 @@ func TestCreateWizardCollectsSafeDefaultsAndDoesNotApplyByDefault(t *testing.T) 
 	if opt.Description != "Reports unhealthy workloads" || opt.Name != "reports-unhealthy-workloads" || opt.Namespace != "kagent" {
 		t.Fatalf("unexpected wizard options: %+v", opt)
 	}
-	if opt.Out != filepath.Join("agents", opt.Name+".yaml") || !opt.NoApply {
-		t.Fatalf("wizard should default to write-only: %+v", opt)
+	if opt.Out != filepath.Join("agents", opt.Name+".yaml") || opt.NoApply {
+		t.Fatalf("wizard should apply by default: %+v", opt)
+	}
+	if !strings.Contains(opt.InstructionText, "Reports unhealthy workloads") {
+		t.Fatalf("description did not configure instructions: %q", opt.InstructionText)
 	}
 	if !strings.HasPrefix(out.String(), "Describe this agent: ") {
 		t.Fatalf("first prompt is not the requested description prompt: %q", out.String())
 	}
 }
 
-func TestCreateWizardExplicitApply(t *testing.T) {
-	scanner := &sliceScanner{values: []string{"Cluster reporter", "cluster-reporter", "kagent", "hello-world-model", "", "", "", "yes"}}
-	opt, err := collectCreateOptions(scanner, &bytes.Buffer{}, CreateOptions{})
+func TestCreateWizardExplicitNoApplySkipsConfirmation(t *testing.T) {
+	scanner := &sliceScanner{values: []string{"Cluster reporter", "cluster-reporter"}}
+	opt, err := collectCreateOptions(scanner, &bytes.Buffer{}, CreateOptions{NoApply: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opt.NoApply {
-		t.Fatal("explicit yes did not enable apply")
+	if !opt.NoApply {
+		t.Fatal("explicit --no-apply was lost")
+	}
+}
+
+func TestCreateWizardDeclineCancels(t *testing.T) {
+	scanner := &sliceScanner{values: []string{"Cluster reporter", "cluster-reporter", "no"}}
+	_, err := collectCreateOptions(scanner, &bytes.Buffer{}, CreateOptions{})
+	if !errors.Is(err, errCreateCancelled) {
+		t.Fatalf("decline did not cancel creation: %v", err)
+	}
+}
+
+func TestCreateWizardRepromptsInvalidConfirmation(t *testing.T) {
+	scanner := &sliceScanner{values: []string{"Cluster reporter", "cluster-reporter", "maybe", "yes"}}
+	var out bytes.Buffer
+	opt, err := collectCreateOptions(scanner, &out, CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opt.NoApply || !strings.Contains(out.String(), "Answer y or n") {
+		t.Fatalf("invalid confirmation was not reprompted: %+v %q", opt, out.String())
 	}
 }
 

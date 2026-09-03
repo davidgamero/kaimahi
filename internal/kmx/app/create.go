@@ -23,10 +23,13 @@ type CreateOptions struct {
 	Description  string
 	ModelConfig  string // empty: resolved against the cluster
 	Instructions string // path to a file
-	Tools        string // server:tool1,tool2
-	Out          string // empty: agents/<name>.yaml
-	NoApply      bool
-	DryRun       bool
+	// InstructionText is populated by the interactive wizard and passes
+	// through the same credential-shape and YAML safety checks.
+	InstructionText string
+	Tools           string // server:tool1,tool2
+	Out             string // empty: agents/<name>.yaml
+	NoApply         bool
+	DryRun          bool
 }
 
 type serverCondition struct {
@@ -42,6 +45,9 @@ type serverCondition struct {
 // with the file whether or not the cluster accepts it. Applying goes through
 // the same context guard as every other mutation.
 func (a *App) CreateAgent(opt CreateOptions) error {
+	if opt.Out == "-" {
+		opt.NoApply = true
+	}
 	if opt.NoApply && opt.DryRun {
 		return fmt.Errorf("--no-apply and --dry-run cannot be used together")
 	}
@@ -52,7 +58,7 @@ func (a *App) CreateAgent(opt CreateOptions) error {
 	if err != nil {
 		return err
 	}
-	instructions := ""
+	instructions := opt.InstructionText
 	if opt.Instructions != "" {
 		body, err := os.ReadFile(opt.Instructions)
 		if err != nil {
@@ -68,9 +74,6 @@ func (a *App) CreateAgent(opt CreateOptions) error {
 	// `--out -` prints and stops, so it is the same kind of action as
 	// --no-apply: a pure generate that must still work with no cluster in
 	// reach (a GitOps checkout, say).
-	if opt.Out == "-" {
-		opt.NoApply = true
-	}
 	if !opt.NoApply {
 		if err := a.preflight(depKubectl); err != nil {
 			return err
