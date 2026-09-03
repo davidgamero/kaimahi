@@ -119,6 +119,18 @@ one part of the end-to-end proof:
 | `e2e-tools` | the tool gateway, tool approvals, the governed Slack path, approvals from Slack, the exact races and metrics |
 | `e2e-resilience` | a replica killed mid-cycle, a Postgres outage, both replicas restarted, backup and restore |
 
+Two more jobs run beside them and need no cluster:
+
+| job | what it proves |
+|---|---|
+| `plane-upgrade` | a plane two migrations old, with a credential, a budget, an allowlist, an approved grant and a priced ledger row in it, upgraded to this checkout's plane on the same database: the data survives, the plane serves, and a migration that cannot apply leaves the plane refusing to start with the rows untouched ([releases.md](releases.md#when-a-migration-fails-halfway)) |
+| `release` (own workflow, tags only) | the tagged build: four platforms, checksums, and a binary that reports its own tag ([releases.md](releases.md#cutting-a-release)) |
+
+`plane-upgrade` is not a shard and must not become one: it holds no cluster,
+so the docs-only short-circuit and the aggregator's `needs` do not apply to
+it. If you want it to gate merges, add it to the branch ruleset's required
+checks — the workflow cannot do that for you.
+
 Adding a probe: put it in the shard whose state it needs. The shards are
 drawn along state lineage — a denial in one step is what files the approval
 the next step approves — so a probe that reads what another step wrote

@@ -31,6 +31,8 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/version"
 )
 
 // RuntimeBase is the image the proxy binary is packaged onto when kmx builds
@@ -64,9 +66,10 @@ func Dockerfile() string {
 
 // Revision returns the module version to fetch the plane at: kmx's own.
 //
-// A binary installed from the proxy carries a pseudo-version in
-// Main.Version; one built from a checkout carries vcs.revision instead. Both
-// are accepted by `go install …@<version>`.
+// A RELEASE binary carries its tag (W28); a binary installed from the proxy
+// carries a pseudo-version in Main.Version; one built from a checkout carries
+// vcs.revision instead. All three are accepted by `go install …@<version>` —
+// the tag because the release pushes plane/vX.Y.Z alongside it.
 //
 // A DIRTY checkout build is refused rather than silently downgraded to its
 // last commit: the whole contract of this path is that the plane is built at
@@ -75,6 +78,19 @@ func Dockerfile() string {
 // checkout gets automatically anyway.
 func Revision(info *debug.BuildInfo, ok bool) (string, error) {
 	const advice = "\n  Build the plane from a checkout instead: kmx plane --source <path to the repo>"
+	// A RELEASE binary knows its version from the tag stamped into it, and
+	// the release job refuses to publish unless the plane module's matching
+	// tag (plane/vX.Y.Z) exists at the same commit. Prefer it over the
+	// build info: the tag is the source of truth, it is what a `go install
+	// …/cmd/kmx@vX.Y.Z` binary resolves to anyway (Main.Version IS the
+	// tag), and it does not depend on VCS stamping surviving the build.
+	// W28 found out why that last clause matters: the release job wrote one
+	// file into its own checkout before building, the toolchain recorded
+	// vcs.modified=true, and every released binary refused to name a
+	// revision at all.
+	if tag := strings.TrimSpace(version.Tag); tag != "" {
+		return tag, nil
+	}
 	if !ok || info == nil {
 		return "", fmt.Errorf("kmx has no build information, so it cannot tell which revision to fetch the plane at." + advice)
 	}
@@ -93,11 +109,12 @@ func Revision(info *debug.BuildInfo, ok bool) (string, error) {
 		}
 		return rev, nil
 	}
-	version := info.Main.Version
-	if version == "" || version == "(devel)" {
-		return "", fmt.Errorf("kmx was built without a recorded version (%q), so it cannot tell which revision to fetch the plane at."+advice, version)
+	// Not `version`: that is the package this function's first check reads.
+	moduleVersion := info.Main.Version
+	if moduleVersion == "" || moduleVersion == "(devel)" {
+		return "", fmt.Errorf("kmx was built without a recorded version (%q), so it cannot tell which revision to fetch the plane at."+advice, moduleVersion)
 	}
-	return version, nil
+	return moduleVersion, nil
 }
 
 func short(rev string) string {

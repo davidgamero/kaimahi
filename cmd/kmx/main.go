@@ -4,9 +4,12 @@
 // the Makefile's kind path delegates to this binary rather than keeping a
 // second copy of it.
 //
-// Install (the only install path — nothing is published, D26/D27/D28):
+// Install (W28 — releases are tagged, so no sha has to be named):
 //
-//	go install github.com/kaimahi-agents/kaimahi/cmd/kmx@<sha>
+//	go install github.com/kaimahi-agents/kaimahi/cmd/kmx@latest
+//
+// or download a checksum-verified binary from the GitHub release. Both are
+// in docs/releases.md, and neither claims a package-manager namespace.
 //
 // kmx does not duplicate kagent's CLI. `kmx agent chat` is a passthrough to
 // `kagent invoke`, and the pinned kagent binary is fetched and
@@ -26,6 +29,7 @@ import (
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/app"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/planebuild"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/version"
 )
 
 const usage = `kmx — create and run governed agents on Kubernetes.
@@ -59,7 +63,7 @@ COMMANDS
   metrics                      one proxy replica's Prometheus exposition
   status                       agents, modelconfigs and pods
   down                         delete the kind cluster kmx created
-  version                      print the pinned versions kmx installs
+  version                      this build's version, and the versions it installs
 
 GLOBAL FLAGS
   --context <name>   act on this kube context for one command (beats KUBE_CTX)
@@ -115,11 +119,17 @@ func run(argv []string) error {
 		// it cannot. An operator asking "which plane will this deploy?"
 		// should not have to run a deploy to find out.
 		revision := "unknown (kmx plane needs --source <checkout>)"
-		if rev, err := planebuild.Revision(debug.ReadBuildInfo()); err == nil {
+		info, ok := debug.ReadBuildInfo()
+		if rev, err := planebuild.Revision(info, ok); err == nil {
 			revision = rev
 		}
-		fmt.Printf("kmx (kaimahi milestone 3)\n  kagent   %s\n  model    %s\n  plane    %s, built from %s\n",
-			config.DefaultKagentVersion, config.DefaultModel, app.PlaneImage, revision)
+		// The first line is the binary's own identity (W28). Everything
+		// under it is what this build would INSTALL, which is a different
+		// question and was the only one this command used to answer.
+		build := version.Resolve(info, ok)
+		fmt.Printf("kmx %s\n  kaimahi is pre-1.0 and incubating: minor versions may break behaviour, and say so in CHANGELOG.md\n"+
+			"  kagent   %s\n  model    %s\n  plane    %s, built from %s\n",
+			build, config.DefaultKagentVersion, config.DefaultModel, app.PlaneImage, revision)
 		return nil
 	}
 

@@ -29,12 +29,18 @@ key, none of which kmx does (see [aks.md](aks.md)).
 ## Install
 
 ```bash
-go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main
+go install github.com/kaimahi-agents/kaimahi/cmd/kmx@latest
 ```
 
-That is the only install path in this milestone: no Homebrew tap, no
-release, no npm or PyPI package. Pin a reviewed commit rather than a branch
-if you care what you are running — `@<sha>` works the same way.
+`@latest` is the newest tagged release; `@v0.1.0` pins one. No Homebrew tap,
+no npm, crates or PyPI package — the Go module proxy and its checksum
+database are the whole distribution, and no namespace of ours is claimed
+(see [NAMING.md](NAMING.md)).
+
+Without a Go toolchain, each release also carries checksum-verified binaries
+for linux and macOS on amd64 and arm64. The download, the version scheme and
+the upgrade path — including what happens when a migration fails — are in
+[releases.md](releases.md).
 
 From a clone, `make bin/kmx` builds the same binary and every `make` target
 below uses it.

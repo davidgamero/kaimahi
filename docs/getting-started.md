@@ -69,8 +69,12 @@ keyless). Hosted models are in [models.md](models.md).
 Install `kmx` — one binary, no clone:
 
 ```bash
-go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main
+go install github.com/kaimahi-agents/kaimahi/cmd/kmx@latest
 ```
+
+`@latest` is the newest tagged release, and `kmx version` says which one you
+have. If you would rather not build it, or have no Go toolchain, each release
+also carries checksum-verified binaries — see [releases.md](releases.md).
 
 ```bash
 kmx up      # kind cluster + Ollama + model pull + kagent + two agents (first run ~5-10 min)

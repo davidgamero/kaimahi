@@ -10,7 +10,7 @@ live-verified, the doc says so in those words.
 ## Start here
 
 ```bash
-go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main
+go install github.com/kaimahi-agents/kaimahi/cmd/kmx@latest
 kmx up                                    # kind cluster + local model + kagent + two agents (~5-10 min)
 kmx agent chat hello-world "Who are you?"
 
@@ -42,6 +42,7 @@ what `kmx up` actually does, the agent YAML, and how to talk to it.
 | Be told in Slack that a request is waiting, and approve or deny it from Slack as yourself | [approvals.md](approvals.md#deciding-from-slack) | `make slack-approvers`, `make notify-slack`, `make slack-mention` |
 | See what the plane's pods can and cannot reach, and prove it | [egress.md](egress.md) | `make netpol-verify`, `make egress-copilot`, `make egress-copilot-off` |
 | Let the agent read issues and pull requests through GitHub's hosted MCP server, with the token in plane custody | [hosted-upstreams.md](hosted-upstreams.md) | `make github-secret`, `make govern-github`, `make github-ask`, `make github-revoke` |
+| Install a specific version, check what I am running, and upgrade — including the plane, with data in it | [releases.md](releases.md) | `go install …/cmd/kmx@v0.1.0`, `kmx version`, `kmx backup`, `kmx plane` |
 | Give the demo, start to finish, in about thirty minutes | [demo.md](demo.md) | the order of the steps above and what each should print |
 | Show the whole thing on money: an invoice that does not match, an answer a person has to approve by amount and payee, and a later invoice that tries to redirect the payment — or [tell it without running it](ap-demo.md#telling-it-without-running-it) | [ap-demo.md](ap-demo.md) | `make erp`, `make govern-ap`, `make ap-demo`, `make ap-injection` |
 | Run the plane for real: replicas, probes, metrics, back up and restore the ledger | [operations.md](operations.md) | `make backup`, `make restore`, `make plane-metrics` |

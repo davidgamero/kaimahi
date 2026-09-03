@@ -6,6 +6,8 @@ import (
 	"runtime/debug"
 	"strings"
 	"testing"
+
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/version"
 )
 
 func settings(pairs ...string) []debug.BuildSetting {
@@ -14,6 +16,56 @@ func settings(pairs ...string) []debug.BuildSetting {
 		s = append(s, debug.BuildSetting{Key: pairs[i], Value: pairs[i+1]})
 	}
 	return s
+}
+
+// A RELEASED binary fetches the plane at its TAG, and must do so even when
+// the build info is unhelpful. This is not hypothetical: the first release
+// candidate shipped with vcs.modified=true (the job wrote its notes into its
+// own checkout before building), so every binary in it refused to name a
+// revision and `kmx plane` was dead on arrival. The tag is the source of
+// truth precisely so that a build-info accident cannot take the plane down
+// with it — the release job proves plane/<tag> exists before publishing.
+func TestAReleasedBinaryFetchesThePlaneAtItsTag(t *testing.T) {
+	previous := version.Tag
+	version.Tag = "v0.1.0"
+	defer func() { version.Tag = previous }()
+
+	for _, tc := range []struct {
+		name string
+		info *debug.BuildInfo
+		ok   bool
+	}{
+		{
+			name: "a clean release build",
+			info: &debug.BuildInfo{
+				Main:     debug.Module{Version: "(devel)"},
+				Settings: settings("vcs.revision", "ffed1ee20737abcdef0123456789abcdef012345", "vcs.modified", "false"),
+			},
+			ok: true,
+		},
+		{
+			name: "a release build the toolchain called dirty",
+			info: &debug.BuildInfo{
+				Main:     debug.Module{Version: "(devel)"},
+				Settings: settings("vcs.revision", "ffed1ee20737abcdef0123456789abcdef012345", "vcs.modified", "true"),
+			},
+			ok: true,
+		},
+		{
+			name: "a release build with no build information at all",
+			ok:   false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Revision(tc.info, tc.ok)
+			if err != nil {
+				t.Fatalf("Revision() = %v, want the tag", err)
+			}
+			if got != "v0.1.0" {
+				t.Fatalf("Revision() = %q, want the stamped tag", got)
+			}
+		})
+	}
 }
 
 // Which revision the plane is fetched at is the whole safety property of the

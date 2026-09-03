@@ -73,6 +73,42 @@ jobs:
         run: python3 scripts/check-readme-front-door.py
       - name: README front-door checker self-test
         run: python3 scripts/check-readme-front-door-test.py
+      # W28: the release job's notes come from CHANGELOG.md and it REFUSES
+      # to publish a version with no section there. That refusal is the only
+      # thing making "every release has notes" true, so the extractor is
+      # tested here rather than discovered on a tag.
+      - name: Release-notes extractor self-test
+        run: python3 scripts/release-notes.py --selftest
+      - name: The unreleased section exists, and the release job stays keyless
+        run: |
+          python3 - <<'EOF'
+          import re, sys, yaml
+          changelog = open("CHANGELOG.md").read()
+          if not re.search(r"^## Unreleased$", changelog, re.M):
+              print("CHANGELOG.md needs an '## Unreleased' section to write the next release into")
+              sys.exit(1)
+          wf = yaml.safe_load(open(".github/workflows/release.yml"))
+          # D14: this repository is public and fork-exposed, and CI carries
+          # no repository secret. A release does not change that — the only
+          # credential it may use is the token GitHub mints for the run.
+          # `github.token` and `secrets.GITHUB_TOKEN` are that same token;
+          # anything else named under secrets. would be a new one.
+          used = set(re.findall(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)", open(".github/workflows/release.yml").read()))
+          if used - {"GITHUB_TOKEN"}:
+              print(f"the release job uses repository secrets: {sorted(used - {'GITHUB_TOKEN'})}")
+              sys.exit(1)
+          # Least privilege, stated: the workflow reads, and only the job
+          # that publishes may write contents.
+          if wf.get("permissions") != {"contents": "read"}:
+              print(f"release.yml must default to contents: read, got {wf.get('permissions')}")
+              sys.exit(1)
+          for name, job in wf["jobs"].items():
+              extra = set(job.get("permissions", {})) - {"contents"}
+              if extra:
+                  print(f"release job {name} asks for more than contents: {sorted(extra)}")
+                  sys.exit(1)
+          print("release workflow: no repository secrets, contents-only permissions, changelog ready")
+          EOF
       # P5b: the context guard is pure policy — every branch of it decides
       # whether to touch somebody's cluster — but the e2e job below can only
       # ever exercise the one branch it runs on (local kind). These tests
@@ -588,6 +624,56 @@ jobs:
           grep -q -- '--- PASS: TestConcurrentAdmissionsAgainstOneMoreCallAdmitExactlyOne' test.out
           grep -q -- '--- PASS: TestMigrateTwiceConcurrentlyIsSerialAndIdempotent' test.out
           grep -q -- '--- PASS: TestEveryLabelIsFromTheFixedVocabularyOrAnAllowedShape' test.out
+
+  # W28: the upgrade nobody had tested. Eight migrations have shipped since
+  # P4a and every e2e shard applies them to an EMPTY database — the one case
+  # where a migration cannot lose anything. This job runs the plane's own
+  # upgrade: an older released plane, fetched from the module proxy at a
+  # revision two migrations behind, seeded through its own admin API with a
+  # credential, a budget, an allowlist, an approved grant and a priced
+  # ledger row, then replaced by the plane this PR builds — against the same
+  # database. It asserts the rows survived, the schema moved, and the new
+  # plane serves; then, on a second database, that a migration which cannot
+  # apply leaves the plane refusing to start with the data untouched.
+  #
+  # No cluster: the proxy is env-configured and file-fed, so both versions
+  # are plain processes against the service Postgres. That is why this can
+  # run on every PR instead of being a release-day ritual. Keyless (D14) —
+  # the only credentials are a throwaway database password and a throwaway
+  # admin token the probe generates for itself.
+  plane-upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: kaimahi
+          POSTGRES_PASSWORD: ci-throwaway
+          POSTGRES_DB: kaimahi
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kaimahi -d kaimahi"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: plane/go.mod
+          cache-dependency-path: plane/go.sum
+      - name: Upgrade an older plane, with data in it, to this one
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGUSER: kaimahi
+          PGDATABASE: kaimahi
+          PGPASSWORD: ci-throwaway
+        run: bash scripts/plane-upgrade-probe.sh
 
   # ---- the end-to-end proof, in five shards (W25, P13) ---------------------
   #

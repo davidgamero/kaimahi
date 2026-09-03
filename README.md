@@ -69,7 +69,7 @@ clone, because it fetches the plane at its own revision from the public Go
 proxy.
 
 ```bash
-go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main
+go install github.com/kaimahi-agents/kaimahi/cmd/kmx@latest
 kmx up      # kind cluster + local model + kagent + agents (~5–10 minutes)
 kmx agent chat hello-world "Who are you?"
 
@@ -84,6 +84,12 @@ kind cluster running an in-cluster Ollama model, and the governed half is
 keyless too. Create your own agent with `kmx agent create <name>`, which
 writes reviewable YAML and applies it.
 
+`@latest` is the newest tagged release; `kmx version` tells you which one you
+got. Without a Go toolchain, download a checksum-verified binary from the
+[releases](https://github.com/kaimahi-agents/kaimahi/releases) instead — the
+verified download, the version scheme and the upgrade path are in
+[docs/releases.md](docs/releases.md).
+
 Continue with the [getting-started guide](docs/getting-started.md), or choose
 a capability from the [documentation index](docs/README.md).
 
@@ -96,7 +102,7 @@ make chat   # talk to the default agent
 
 | Prerequisite | Why | Install |
 |---|---|---|
-| Go 1.26+ | builds/installs `kmx` | <https://go.dev/dl/> |
+| Go 1.26+ | installs `kmx` (a released binary needs it only for `kmx plane`) | <https://go.dev/dl/> |
 | Docker | kind runs Kubernetes in containers | <https://docs.docker.com/get-docker/> |
 | kind | local Kubernetes cluster | <https://kind.sigs.k8s.io/docs/user/quick-start/#installation> |
 | kubectl | cluster interaction | <https://kubernetes.io/docs/tasks/tools/> |
@@ -140,8 +146,9 @@ port-forwards the controller, and invokes the agent.
 | 9 | Run it for real: two stateless replicas, exact budgets, metrics | **runs** — two replicas behind every seam, every budget and grant decision serialized per credential in Postgres (N concurrent calls against a cap with room for one admit exactly one, asserted across both replicas in CI), a replica killed mid-cycle and Postgres restarted without a proxy restart, migrations under a lock, Prometheus on its own port, `make backup` / `make restore` ([docs/operations.md](docs/operations.md)) |
 | 10 | Hosted tool upstreams — the gateway reaches GitHub's MCP server on the internet through one hardened dialer | **runs** — `make github-secret` → `make govern-github`; the dialer's refusals, a synthetic public upstream, the opt-in allowance and the fail-closed negative asserted keyless in CI; GitHub itself verified once on kind ([docs/hosted-upstreams.md](docs/hosted-upstreams.md)) |
 | 12 | Argument-level policy — an approval binds the CALL, and standing constraints let routine calls through | **runs** — a tool declares which argument fields are policy-relevant; a credential may carry declarative bounds on them (a call inside proceeds with no human, one outside is denied and files a request); the request, the grant and the audit carry the call's digest and a readable summary, so an approval for one transaction cannot be spent on another. Asserted keyless in CI ([docs/approvals.md](docs/approvals.md#the-approval-binds-the-call)) |
-| 11 | `kmx` — the developer journey as one command | **runs** — `go install …/cmd/kmx@main`, then `kmx up`, `kmx agent create`, `kmx agent chat`, `kmx plane`, `kmx govern`, `kmx ledger`, `kmx status`, `kmx down`; the Makefile's kind path delegates to it, so CI proves it on every PR, and a post-merge job drives the whole journey from an installed binary with no checkout ([docs/kmx.md](docs/kmx.md)). Milestone 3: the runtime, the plane, **and** the operator verbs — `use`, `budget`, `approvals`/`approve`/`deny`/`request`, `tools`, `backup`/`restore`, `metrics` — on kind |
+| 11 | `kmx` — the developer journey as one command | **runs** — `go install …/cmd/kmx@latest`, then `kmx up`, `kmx agent create`, `kmx agent chat`, `kmx plane`, `kmx govern`, `kmx ledger`, `kmx status`, `kmx down`; the Makefile's kind path delegates to it, so CI proves it on every PR, and a post-merge job drives the whole journey from an installed binary with no checkout ([docs/kmx.md](docs/kmx.md)). Milestone 3: the runtime, the plane, **and** the operator verbs — `use`, `budget`, `approvals`/`approve`/`deny`/`request`, `tools`, `backup`/`restore`, `metrics` — on kind |
 
+| 13 | Tagged releases, a verified download, and a proven upgrade | **runs** — CI builds four platforms from the tag with `checksums.txt`, refuses a tag whose version has no changelog section or whose binary does not report its own tag, and upgrades a two-migration-old plane with live data in it on every PR; the failure case (a migration that cannot apply) is documented and asserted ([docs/releases.md](docs/releases.md)) |
 **Limitations, stated plainly.** The plane does not stop an agent being
 manipulated; it stops a manipulated agent acting outside the call a human
 approved, and it governs tool INPUTS only — nothing filters or redacts a
