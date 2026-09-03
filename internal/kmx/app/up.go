@@ -140,51 +140,21 @@ func (a *App) upOverlapped() error {
 }
 
 func (a *App) preflightUp(steps []string) error {
-	type dependency struct {
-		step, tool, why, install string
-	}
-	dependencies := []dependency{
-		{"cluster", "kind", "to create the local Kubernetes cluster", "https://kind.sigs.k8s.io/docs/user/quick-start/#installation"},
-		{"cluster", "kubectl", "to talk to the cluster", "https://kubernetes.io/docs/tasks/tools/"},
-		{"ollama", "kubectl", "to deploy Ollama", "https://kubernetes.io/docs/tasks/tools/"},
-		{"model", "kubectl", "to pull the model", "https://kubernetes.io/docs/tasks/tools/"},
-		{"kagent", "helm", "to install kagent", "https://helm.sh/docs/intro/install/"},
-		{"kagent", "kubectl", "to wait for kagent", "https://kubernetes.io/docs/tasks/tools/"},
-		{"agent", "kubectl", "to apply the agent", "https://kubernetes.io/docs/tasks/tools/"},
-		{"tools-agent", "kubectl", "to apply the tools agent", "https://kubernetes.io/docs/tasks/tools/"},
-	}
 	wanted := map[string]bool{}
 	for _, step := range steps {
 		wanted[step] = true
 	}
-	var problems []string
-	seen := map[string]bool{}
-	for _, dep := range dependencies {
-		if !wanted[dep.step] || seen[dep.tool] {
-			continue
-		}
-		seen[dep.tool] = true
-		if err := run.MustExist(dep.tool, dep.why, dep.install); err != nil {
-			problems = append(problems, err.Error())
-		}
-	}
+	var dependencies []dependency
 	if wanted["cluster"] {
-		engine := a.Cfg.ContainerEngine
-		if err := run.MustExist(engine, "as the selected kind container engine",
-			"https://docs.docker.com/get-docker/ (Docker) or https://podman.io/docs/installation (Podman)"); err != nil {
-			problems = append(problems, err.Error())
-		} else if _, err := a.Run.Capture(engine, "info"); err != nil {
-			problems = append(problems, fmt.Sprintf("%s is installed but unavailable — start it or fix access, then run `%s info`: %v", engine, engine, err))
-		}
+		dependencies = append(dependencies, depKind, depKubectl, a.engineDependency())
 	}
-	if len(problems) == 0 {
-		return nil
+	if wanted["ollama"] || wanted["model"] || wanted["agent"] || wanted["tools-agent"] {
+		dependencies = append(dependencies, depKubectl)
 	}
-	noun := "dependency"
-	if len(problems) != 1 {
-		noun = "dependencies"
+	if wanted["kagent"] {
+		dependencies = append(dependencies, depHelm, depKubectl)
 	}
-	return fmt.Errorf("preflight: %d missing or unusable %s:\n\n- %s", len(problems), noun, strings.Join(problems, "\n- "))
+	return a.preflight(dependencies...)
 }
 
 // ---- cluster --------------------------------------------------------------
@@ -201,14 +171,6 @@ func (a *App) preflightUp(steps []string) error {
 // "running", and a cluster whose nodes were stopped has to be started rather
 // than re-created.
 func (a *App) stepCluster() error {
-	if err := run.MustExist("kind", "to create the local Kubernetes cluster",
-		"https://kind.sigs.k8s.io/docs/user/quick-start/#installation"); err != nil {
-		return err
-	}
-	if err := run.MustExist("kubectl", "to talk to the cluster",
-		"https://kubernetes.io/docs/tasks/tools/"); err != nil {
-		return err
-	}
 	existing, err := a.Run.Capture("kind", "get", "clusters")
 	if err != nil {
 		return fmt.Errorf("`kind get clusters` failed — refusing to guess whether %q exists (is the %s daemon running?): %w",
@@ -298,9 +260,6 @@ func (a *App) stepModel() error {
 // ---- kagent ---------------------------------------------------------------
 
 func (a *App) stepKagent() error {
-	if err := run.MustExist("helm", "to install kagent", "https://helm.sh/docs/intro/install/"); err != nil {
-		return err
-	}
 	version := a.Cfg.KagentVersion
 	if err := a.Run.Run("helm", "upgrade", "--install", "kagent-crds",
 		"oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds",
