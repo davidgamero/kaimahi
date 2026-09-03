@@ -26,9 +26,15 @@
 # the filing dedupes on the call.)
 #
 # Usage:  make ap-demo [SLACK_USER=U0EXAMPLE]
-#   SLACK_USER      approve as that Slack user through the signed
-#                   app_mention path (P8b) instead of the admin bearer.
-#                   CI uses U0CIAPPROVER; a live cluster uses a real id.
+#   SLACK_USER      the Slack user id that approves. CI uses the invented
+#                   U0CIAPPROVER and the mention is SYNTHESISED, correctly
+#                   signed, by scripts/slack-mention-probe.sh.
+#   AP_HUMAN=1      with SLACK_USER, do not synthesise anything: print the
+#                   line and WAIT for that person to type it in Slack
+#                   (scripts/ap-await-approval.sh). This is the only
+#                   honest setting against a real workspace — a signed
+#                   event forged in a named colleague's name would prove
+#                   nothing about a human approving a payment.
 #   AP_AGENT_TURN=0 skip the agent's investigation entirely.
 set -euo pipefail
 umask 077
@@ -36,6 +42,7 @@ umask 077
 KUBECTL="${KUBECTL:-kubectl}"
 CRED_AP="${CRED_AP:-ap-agent}"
 SLACK_USER="${SLACK_USER:-}"
+AP_HUMAN="${AP_HUMAN:-0}"
 AP_AGENT_TURN="${AP_AGENT_TURN:-1}"
 # The chat command, handed down by the Makefile so the agent turn lands
 # on the SAME cluster as everything else — a bare `make chat` here would
@@ -93,22 +100,40 @@ audit() { admin tool-audit "$CRED_AP"; }
 # request_id <tool> <summary substring> -> the pending request for THAT
 # call. Selected by its summary, never by position: several requests for
 # one tool can be pending at once, which is exactly the P12 guarantee.
+#
+# The substring must name EVERY policy-relevant field of the call, not
+# just the memorable ones. A grant is welded to the exact call (P12), so
+# a selector that is less specific than the digest can pick a DIFFERENT
+# pending request that happens to share the fields it does name — and
+# then a human approves one call while the script makes another. That is
+# not hypothetical: on the first live AKS run the agent's own turn had
+# filed payment_schedule for INV-88140 at the same amount and payee as
+# the scripted INV-88134 call, and the approval landed on the wrong one.
+# CI never saw it because CI runs with AP_AGENT_TURN=0.
 request_id() {
   admin approvals > "$work/approvals.out"
   awk -v cred="$CRED_AP" -v tool="$1" -v want="$2" \
     '$3==cred && $4=="tool" && $5==tool && index($0, want) {print $1; exit}' "$work/approvals.out"
 }
 
-# approve <id> — through Slack when an approver is named (the P8b path: a
-# correctly signed app_mention, decided_by slack:<id>), otherwise through
-# the admin bearer. Both mint the same call-bound grant.
+# approve <id> [uses] — three ways in, all minting the same call-bound
+# grant, differing only in who decides and how the decision arrives:
+#
+#   AP_HUMAN=1 + SLACK_USER   a real person types it in a real Slack; this
+#                             script only waits and verifies.
+#   SLACK_USER                a SYNTHETIC, correctly signed app_mention as
+#                             that id (kind and CI, where Slack cannot
+#                             reach the cluster).
+#   neither                   the admin bearer.
 approve() {
-  local id=$1
-  if [ -n "$SLACK_USER" ]; then
+  local id=$1 uses=${2:-1}
+  if [ -n "$SLACK_USER" ] && [ "$AP_HUMAN" = 1 ]; then
+    CRED_AP="$CRED_AP" bash "$here/ap-await-approval.sh" "$id" "$SLACK_USER" "$uses"
+  elif [ -n "$SLACK_USER" ]; then
     WANT="approved request $id" bash "$here/slack-mention-probe.sh" \
-      "$SLACK_USER" "approve ${id%%-*} uses=1 ttl=10m"
+      "$SLACK_USER" "approve ${id%%-*} uses=$uses ttl=10m"
   else
-    admin approve "$id" 10m 1 -
+    admin approve "$id" 10m "$uses" -
   fi
 }
 
@@ -160,7 +185,7 @@ note "Paid. No approval request, no grant, no human. Audited with the constraint
 step "The exception: paying \$32,550.00 on $EXC_INVOICE is above the \$10,000.00 bound"
 deny payment_schedule \
   "{\"invoice_id\": \"$EXC_INVOICE\", \"amount_cents\": $EXC_PAY_CENTS, \"payee_id\": \"$EXC_PAYEE\"}"
-pay_id=$(request_id payment_schedule "amount_cents $EXC_PAY_CENTS, payee_id $EXC_PAYEE")
+pay_id=$(request_id payment_schedule "invoice_id $EXC_INVOICE, amount_cents $EXC_PAY_CENTS, payee_id $EXC_PAYEE")
 [ -n "$pay_id" ] || { cat "$work/approvals.out" >&2; fail "no request was filed for the \$32,550.00 payment"; }
 note "Request $pay_id — and what a human is asked is the TRANSACTION:"
 grep -F "$pay_id" "$work/approvals.out" >&2
@@ -184,7 +209,7 @@ note "approved is provably the call that ran."
 # --- 4. the dispute needs its own approval ------------------------------
 step "The \$6,000.00 fee: dispute_open is on no allowlist, so it is denied too"
 deny dispute_open "{\"invoice_id\": \"$EXC_INVOICE\", \"amount_cents\": $EXC_FEE_CENTS, \"reason\": \"expedite fee not authorized on PO-2291\"}"
-dis_id=$(request_id dispute_open "amount_cents $EXC_FEE_CENTS")
+dis_id=$(request_id dispute_open "invoice_id $EXC_INVOICE, amount_cents $EXC_FEE_CENTS")
 [ -n "$dis_id" ] || { cat "$work/approvals.out" >&2; fail "no request was filed for the dispute"; }
 [ "$dis_id" != "$pay_id" ] || fail "the dispute reused the payment's request"
 note "Its OWN request $dis_id — the payment's approval does not cover it."

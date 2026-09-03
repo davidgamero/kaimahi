@@ -90,6 +90,14 @@ PLANE_IMAGE_TAG  ?= p10
 # image build context carries no .git. "unknown" outside a checkout.
 PLANE_VERSION    ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 
+# The demo ERP's image (P13, k8s/erp-mcp.yaml). Same rules as the plane's:
+# the tag moves with the phase that owns the image, so a stale one can
+# never satisfy a newer manifest silently. On kind this is not used at all
+# — that path side-loads the committed `kaimahi-erp:dev` tag and applies
+# k8s/erp-mcp.yaml exactly as committed.
+ERP_IMAGE_REPO   ?= kaimahi-erp
+ERP_IMAGE_TAG    ?= p13
+
 # ---- environment-dependent settings --------------------------------------
 # Everything that genuinely differs between kind and a managed cluster is
 # collected here, so the recipes below stay readable.
@@ -111,6 +119,11 @@ KUBE_CTX         ?= $(AKS_CLUSTER)
 # a public image.
 PLANE_IMAGE      ?= $(ACR_NAME).azurecr.io/$(PLANE_IMAGE_REPO):$(PLANE_IMAGE_TAG)
 PLANE_TARGET     := registry
+# The demo ERP travels the same road as the proxy: built by the registry,
+# pulled by the kubelet identity, never published. A private ACR is not
+# publication (D15) and the P13 guardrail against publishing the ERP holds.
+ERP_IMAGE        ?= $(ACR_NAME).azurecr.io/$(ERP_IMAGE_REPO):$(ERP_IMAGE_TAG)
+ERP_TARGET       := registry
 # D15: Copilot-only on AKS. No Ollama is deployed there, so the agent goes
 # straight onto the governed Copilot preset rather than the ollama one.
 AGENT_MODELCONFIG ?= governed-copilot
@@ -122,6 +135,7 @@ $(error unknown TARGET '$(TARGET)' — expected 'kind' or 'aks')
 endif
 
 PLANE_PULL_POLICY ?= IfNotPresent
+ERP_PULL_POLICY   ?= IfNotPresent
 KUBECTL        := kubectl --context $(KUBE_CTX)
 CRED           ?= hello-world
 CRED_TOOLS     ?= hello-tools
@@ -171,6 +185,10 @@ AP_ACT_TOOLS   := payment_schedule,dispute_open,vendor_notify
 AP_AGENT_TOOLS ?= $(AP_TOOLS),$(AP_ACT_TOOLS)
 AP_TOOLNAMES_JSON = $(if $(filter -,$(AP_AGENT_TOOLS)),,"$(subst $(comma),"$(comma)",$(AP_AGENT_TOOLS))")
 AP_INVOICE     ?= INV-88134
+# 1 = the approvals in `make ap-demo` / `make ap-injection` wait for a real
+# person in a real Slack rather than a synthesised app_mention (P8b). The
+# default keeps kind and CI exactly as they were.
+AP_HUMAN       ?= 0
 
 .PHONY: up cluster ollama model kagent agent tools-agent chat down status guard \
 	model-secret copilot-secret use use-ollama \
@@ -186,7 +204,7 @@ AP_INVOICE     ?= INV-88134
 	backup restore plane-metrics \
 	github-secret github-revoke egress-hosted egress-hosted-off \
 	govern-github github-allow github-audit github-ask github-down \
-	erp erp-fixtures govern-ap ap-allow ap-audit ap-ask ap-demo ap-injection ap-down
+	erp erp-image erp-fixtures govern-ap ap-allow ap-audit ap-ask ap-demo ap-injection ap-down
 
 # guard: the context-safety net every MUTATING target depends on. Prints
 # the target context/namespaces; demands explicit confirmation for
@@ -1328,10 +1346,34 @@ erp: guard
 erp-fixtures: guard
 	@KUBECTL="$(KUBECTL)" bash scripts/erp-deploy.sh fixtures
 else
-erp erp-fixtures:
-	@echo 'The demo ERP is kind-only: its image is built from source and never published,' >&2
-	@echo 'so there is nothing for a managed cluster to pull (docs/ap-demo.md).' >&2
-	@exit 1
+## erp-image (TARGET=aks): build the fixture ERP IN Azure with ACR Tasks.
+## No local docker build, no `docker push`, no registry login on this
+## machine — the source is uploaded and built BY the private registry,
+## exactly as `make plane-image` does for the proxy. Nothing is published:
+## the image never leaves that private ACR (D15).
+erp-image:
+	@test -n "$(ACR_NAME)" || \
+		{ echo 'ACR_NAME is required for TARGET=aks (see docs/aks.md)' >&2; exit 1; }
+	az acr build --registry $(ACR_NAME) \
+		--image $(ERP_IMAGE_REPO):$(ERP_IMAGE_TAG) \
+		--file cmd/kaimahi-erp/Dockerfile .
+
+## erp (TARGET=aks): build the ERP in the registry, project the corpus
+## (k8s/erp-fixtures.json) as a ConfigMap and roll it out PULLING that
+## image. scripts/erp-deploy.sh renders k8s/erp-mcp.yaml's image reference
+## and pull policy for a registry target; the committed manifest keeps
+## `imagePullPolicy: Never`, which is correct for kind and never edited.
+erp: guard erp-image
+	@KUBECTL="$(KUBECTL)" ERP_TARGET=$(ERP_TARGET) \
+		ERP_IMAGE='$(ERP_IMAGE)' ERP_PULL_POLICY=$(ERP_PULL_POLICY) \
+		bash scripts/erp-deploy.sh fixtures
+
+## erp-fixtures (TARGET=aks): re-project k8s/erp-fixtures.json and restart
+## the ERP. Editing the story needs no rebuild (D30) — this is that path.
+erp-fixtures: guard
+	@KUBECTL="$(KUBECTL)" ERP_TARGET=$(ERP_TARGET) \
+		ERP_IMAGE='$(ERP_IMAGE)' ERP_PULL_POLICY=$(ERP_PULL_POLICY) \
+		bash scripts/erp-deploy.sh fixtures
 endif
 
 ## govern-ap: issue the AP agent's credential with a READ-ONLY allowlist,
@@ -1348,8 +1390,15 @@ govern-ap: guard
 		--for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True \
 		remotemcpserver/kaimahi-erp --timeout=300s
 	$(KUBECTL) apply -f k8s/ap-agent.yaml
+	@# The modelConfig rides the SAME merge patch as the tool selection.
+	@# k8s/ap-agent.yaml commits `governed-ollama` (D14: the kind demo and
+	@# CI stay keyless), and that ModelConfig does not exist on a
+	@# Copilot-only managed cluster (D15) — the agent would never reach
+	@# Ready and the wait below would time out. GOVERNED_PRESET is
+	@# `governed-ollama` on kind, so this patch is a no-op there and the
+	@# committed file still names the preset kind uses.
 	$(KUBECTL) -n kagent patch agent ap-agent --type merge \
-		-p '{"spec":{"declarative":{"tools":[{"type":"McpServer","mcpServer":{"apiGroup":"kagent.dev","kind":"RemoteMCPServer","name":"kaimahi-erp","toolNames":[$(AP_TOOLNAMES_JSON)]}}]}}}'
+		-p '{"spec":{"declarative":{"modelConfig":"$(GOVERNED_PRESET)","tools":[{"type":"McpServer","mcpServer":{"apiGroup":"kagent.dev","kind":"RemoteMCPServer","name":"kaimahi-erp","toolNames":[$(AP_TOOLNAMES_JSON)]}}]}}}'
 	$(KUBECTL) -n kagent wait \
 		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
 		agent/ap-agent --timeout=300s
@@ -1375,9 +1424,15 @@ ap-ask: $(KAGENT)
 ## itself under the standing constraint, the exception is denied, filed,
 ## approved in Slack by a named human and only then paid, and the dispute
 ## and the vendor notice need an approval each of their own.
-##   make ap-demo [SLACK_USER=U0EXAMPLE]
+##   make ap-demo [SLACK_USER=U0EXAMPLE] [AP_HUMAN=1]
+##
+## AP_HUMAN=1 is the live-workspace setting: the scenario prints each
+## approval line and WAITS for that person to type it in Slack, instead of
+## synthesising a signed app_mention in their name. See
+## scripts/ap-await-approval.sh.
 ap-demo: guard
 	@KUBECTL="$(KUBECTL)" CRED_AP=$(CRED_AP) SLACK_USER='$(SLACK_USER)' \
+		AP_HUMAN='$(AP_HUMAN)' \
 		AP_CHAT='make chat AGENT=ap-agent TARGET=$(TARGET) KIND_CLUSTER=$(KIND_CLUSTER)' \
 		bash scripts/ap-demo.sh
 
@@ -1386,6 +1441,7 @@ ap-demo: guard
 ## approval the earlier call earned.
 ap-injection: guard
 	@KUBECTL="$(KUBECTL)" CRED_AP=$(CRED_AP) SLACK_USER='$(SLACK_USER)' \
+		AP_HUMAN='$(AP_HUMAN)' \
 		AP_CHAT='make chat AGENT=ap-agent TARGET=$(TARGET) KIND_CLUSTER=$(KIND_CLUSTER)' \
 		bash scripts/ap-injection.sh
 

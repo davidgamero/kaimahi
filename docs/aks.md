@@ -303,6 +303,49 @@ refuses both shapes). When the cluster goes, the label is free for
 anyone to claim: remove the Request URL from the Slack app when you
 tear down.
 
+### 6c. Optional: the accounts-payable demo
+
+The [accounts-payable exception demo](ap-demo.md) runs here, and this is
+where it is worth running: a real model doing the investigating, and a
+real person approving the payment in Slack.
+
+```bash
+make erp          # az acr build the fixture ERP; project the corpus; roll it out
+make govern-ap    # the AP agent, its credential, and its place in the policy
+make ap-demo      SLACK_USER=<your Slack user id> AP_HUMAN=1
+make ap-injection SLACK_USER=<your Slack user id> AP_HUMAN=1
+```
+
+Three things differ from kind, and only these three:
+
+- **The ERP image is built by the registry.** `make erp` runs `az acr
+  build` — the source is uploaded and built *in Azure*, so no image is
+  built locally, pushed, or logged into a registry from your machine —
+  and `scripts/erp-deploy.sh` renders `k8s/erp-mcp.yaml`'s image
+  reference and pull policy for a registry target. The committed manifest
+  keeps `imagePullPolicy: Never`, which is correct for kind and is never
+  edited. Nothing is published: the image never leaves the private ACR.
+- **The agent runs on Copilot.** `k8s/ap-agent.yaml` commits
+  `governed-ollama` so the kind demo and CI stay keyless; `make govern-ap`
+  patches the agent onto `$(GOVERNED_PRESET)`, which is `governed-ollama`
+  on kind (a no-op) and `governed-copilot` here. Investigation of this
+  kind is beyond `qwen2.5:3b`, so this is the first time the demo's
+  narrative — read the invoice, the PO, the receiving record and the
+  contract, then reconcile them — is carried by a model that can do it.
+- **`AP_HUMAN=1` means a person really decides.** Without it, `SLACK_USER`
+  synthesises a correctly signed `app_mention` as that id — right for CI,
+  and a forgery against a real workspace. With it, the scenario prints
+  each approval line, waits for that person to type it in the channel,
+  and verifies the plane recorded *their* decision. See
+  [ap-demo.md](ap-demo.md#approvals-in-slack).
+
+Needs step 6b: the Request URL has to point at this cluster's edge for a
+Slack message to reach the plane at all.
+
+```bash
+make ap-down      # the agent, the gateway seam, the ERP and its corpus
+```
+
 Or the whole journey in one command, once the exports from step 1 are set:
 
 ```bash
@@ -366,12 +409,14 @@ The dominant risk to the bill is not the rate. It is forgetting step 7.
 |---|---|---|
 | **Model** | Ollama `qwen2.5:3b`, keyless, in-cluster | **Copilot only.** No Ollama is deployed; `make ollama` refuses rather than half-deploying it. |
 | **Plane image** | `docker build` + `kind load`, `imagePullPolicy: Never` | `az acr build` into a **private** ACR, pulled via the kubelet identity's `AcrPull` |
+| **Demo ERP image** | the same: `docker build` + `kind load`, `imagePullPolicy: Never` | the same as the plane's: `az acr build` into that private ACR, pulled by the same identity. Never published either way |
 | **Agent's initial model** | starts on the keyless preset, governed later | created **on** `governed-copilot`; governance precedes the agents |
 | **Storage** | the kind default `standard` provisioner | the cluster's default StorageClass, which on AKS 1.35.7 is one literally **named `default`** (`disk.csi.azure.com`), *not* `managed-csi`, which also exists but is not marked default. The PVC deliberately sets **no** `storageClassName`, so it takes whichever class the cluster defaults to; it bound `1Gi RWO` first try. Verified, not assumed: the assumption going in was `managed-csi`. |
 | **NetworkPolicy** | enforced by kindnetd (kube-network-policies), nothing to configure | enforced **only** because `aks-up.sh` provisions a policy engine (Cilium by default). A cluster created without one applies the same manifests and blocks nothing. `make netpol-verify` is the proof either way. |
 | **Mutating commands** | proceed with a banner | require confirmation naming the context |
 | **`make down`** | `kind delete cluster` | deletes the whole tagged resource group |
-| **Slack** | demonstrated ([slack.md](slack.md)) | **deliberately not deployed.** Putting a real workspace token into a temporary cloud cluster is credential exposure for little added proof. The wiring is plain CRDs plus one `tool_upstreams` entry, nothing kind-specific, but it is not demonstrated here. |
+| **Slack** | demonstrated ([slack.md](slack.md)) | **opt-in** (step 6b). It is the only way an approval can come from a real person, so the accounts-payable run needs it; a run that does not need it should leave it off, because a real workspace token in a temporary cloud cluster is credential exposure for no added proof. |
+| **Approvals** | admin bearer, or a **synthetic** signed `app_mention` | a person typing in Slack (`AP_HUMAN=1`). The synthetic path is a forgery here and the scenarios refuse to pretend otherwise |
 | **Cost** | free | see above |
 | **CI** | every PR | never. No Azure credential belongs in a public, fork-exposed repo. |
 

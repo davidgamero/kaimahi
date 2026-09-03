@@ -94,9 +94,32 @@ make erp          # build the fixture ERP, side-load it, project the corpus
 make govern-ap    # the AP agent, its credential, and its place in the policy
 ```
 
-`make erp` is kind-only on purpose: the image is built from source in this
-repo and is never published, so there is nothing for a managed cluster to
-pull.
+`make erp` builds the ERP from source in this repo, and that image is
+**never published** — no public registry, no `docker push`, no registry
+login on your machine. How it reaches the cluster is the only thing that
+changes with the target:
+
+| | kind | AKS |
+|---|---|---|
+| built | `docker build` locally | `az acr build` — the source is uploaded and built **by** a private ACR |
+| delivered | `kind load` side-loads a local tag | pulled by the cluster's kubelet identity from that private ACR |
+| manifest | `k8s/erp-mcp.yaml` applied exactly as committed, `imagePullPolicy: Never` | image reference and pull policy rendered at deploy time by `scripts/erp-deploy.sh` |
+
+This is the road the governance plane's own image has taken since P5b, and
+the ERP simply travels it too. A private ACR is **not** publication
+([D15](COORDINATION.md)): nothing leaves it, and the guardrail against
+publishing the demo ERP is untouched. See
+[aks.md](aks.md#6c-optional-the-accounts-payable-demo) for the managed-cluster run.
+
+To see exactly what a registry target would apply, without a cluster:
+
+```bash
+ERP_TARGET=registry ERP_IMAGE=<registry-host>/kaimahi-erp:p13 \
+  bash scripts/erp-deploy.sh render
+```
+
+(`ERP_PULL_POLICY` defaults to `IfNotPresent`. Without `ERP_TARGET=registry`
+the script refuses, because the kind path renders nothing.)
 
 What `make govern-ap` configures is worth reading out loud, because it is
 the entire demo:
@@ -299,11 +322,29 @@ The honest sentence for this slide is not *the agent refused*. It is:
 
 ## Approvals in Slack
 
-On kind, `make ap-demo` approves through the admin bearer by default. To
-run the P8b approver path — a signed `app_mention`, the approver's own
-Slack identity on the grant and in the audit — wire it as
-[approvals.md](approvals.md#deciding-from-slack) describes and pass
-`SLACK_USER`.
+There are three ways an approval can arrive, and which one you are using
+matters, because only one of them involves a person.
+
+| | who decides | how |
+|---|---|---|
+| default | you, at the terminal | the admin bearer (`make approve`) |
+| `SLACK_USER=<id>` | nobody | a **synthetic**, correctly signed `app_mention` as that id (`scripts/slack-mention-probe.sh`) |
+| `SLACK_USER=<id> AP_HUMAN=1` | that person | the scenario prints the line and **waits** for them to type it in Slack (`scripts/ap-await-approval.sh`) |
+
+The middle row is right on kind and in CI, where Slack cannot reach the
+cluster and the id is invented (`U0CIAPPROVER`). It is exactly wrong
+against a real workspace: a signed event forged in a named colleague's
+name is not a demonstration of a human approving a payment. **Against a
+real Slack, use `AP_HUMAN=1`** — then nothing in this repo can approve
+anything, and the run stops until somebody does.
+
+`AP_HUMAN=1` fails closed. It gives up after `AP_HUMAN_TIMEOUT` seconds
+(default 900), and a request that was *decided* but not *approved by that
+person* is a failure, not a reason to continue.
+
+To wire the approver path at all — a signed `app_mention`, the approver's
+own Slack identity on the grant and in the audit — follow
+[approvals.md](approvals.md#deciding-from-slack).
 
 **CI never reaches a real Slack workspace.** It delivers a synthetic,
 correctly signed `app_mention` to the plane (`make slack-mention`, user

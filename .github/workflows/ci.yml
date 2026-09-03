@@ -134,6 +134,87 @@ jobs:
           assert policies == ["Never"], f"committed proxy pull policy: {policies}"
           EOF
 
+      # The demo ERP (P13) travels the proxy's road since the AKS run:
+      # built BY a private registry and PULLED, instead of side-loaded.
+      # The live path cannot be proven here — no Azure credential belongs
+      # in a public, fork-exposed repo (D14) — so it is proven the way P10
+      # proved its hosted upstream: synthetically, in full, with no
+      # cluster. `erp-deploy.sh render` runs the identical validation and
+      # transform the deploy path runs and prints the result.
+      #
+      # The KIND path is not asserted here because it is asserted for
+      # REAL: the e2e-ap shard below runs `make erp` on a kind cluster
+      # every PR and requires the pod to report its loaded corpus. What
+      # this step adds is the half CI could otherwise never see.
+      - name: ERP registry render swaps image and pull policy, and refuses everything else
+        run: |
+          ERP_TARGET=registry ERP_IMAGE=registry.example/kaimahi-erp:test \
+            bash scripts/erp-deploy.sh render > erp-render.yaml 2> erp-render.err
+          grep -q 'image=registry.example/kaimahi-erp:test pullPolicy=IfNotPresent' erp-render.err
+          # Parsed, not grepped: what matters is the FIELD, and the file's
+          # own comments name both values.
+          python3 - <<'EOF'
+          import yaml
+          docs = [d for d in yaml.safe_load_all(open("erp-render.yaml")) if d]
+          dep = [d for d in docs if d["kind"] == "Deployment"]
+          assert len(dep) == 1, dep
+          spec = dep[0]["spec"]["template"]["spec"]
+          c, = [c for c in spec["containers"] if c["name"] == "erp"]
+          assert c["image"] == "registry.example/kaimahi-erp:test", c["image"]
+          assert c["imagePullPolicy"] == "IfNotPresent", c["imagePullPolicy"]
+          # The render must carry the whole document, not just the pod: a
+          # transform that dropped the Service would leave the gateway's
+          # `erp` upstream pointing at nothing.
+          assert {d["kind"] for d in docs} == {"Deployment", "Service"}, [d["kind"] for d in docs]
+          # ...and the posture the ERP's safety rests on.
+          assert spec["automountServiceAccountToken"] is False, spec
+          assert spec["volumes"][0]["configMap"]["name"] == "kaimahi-erp-fixtures", spec["volumes"]
+          EOF
+          # Every refusal, each asserting WHY it failed rather than merely
+          # that it did: any nonzero exit would satisfy a bare rc check,
+          # including a ModuleNotFoundError that never reached the check.
+          refuse() { # <want> <env assignments...>
+            local want="$1"; shift
+            set +e
+            env "$@" bash scripts/erp-deploy.sh render >refuse.out 2>&1
+            local rc=$?
+            set -e
+            test "$rc" -ne 0 || { echo "accepted, expected refusal: $*"; cat refuse.out; exit 1; }
+            grep -qF "$want" refuse.out || { echo "wrong refusal for: $*"; cat refuse.out; exit 1; }
+          }
+          # `Never` off kind is ErrImageNeverPull forever.
+          refuse "refusing pull policy 'Never'" \
+            ERP_TARGET=registry ERP_IMAGE=registry.example/kaimahi-erp:test ERP_PULL_POLICY=Never
+          # No image, and the kind side-load tag, are the same mistake.
+          refuse "ERP_IMAGE is required" ERP_TARGET=registry
+          refuse "ERP_IMAGE is required" ERP_TARGET=registry ERP_IMAGE=kaimahi-erp:dev
+          # Exactly the shape an unset ACR_NAME expands to.
+          refuse "malformed ERP_IMAGE" ERP_TARGET=registry ERP_IMAGE=.azurecr.io/kaimahi-erp:p13
+          refuse "names no registry" ERP_TARGET=registry ERP_IMAGE=kaimahi-erp:p13
+          # A SLASH IS NOT A REGISTRY. Both of these resolve through Docker
+          # Hub, a public registry this project never uses (D15), from a
+          # name a stranger can register.
+          refuse "names no registry" ERP_TARGET=registry ERP_IMAGE=team/erp:p13
+          refuse "names no registry" ERP_TARGET=registry ERP_IMAGE=nginx:latest
+          refuse "carries a URL scheme" ERP_TARGET=registry ERP_IMAGE=https://reg.example/erp:p13
+          refuse "unknown ERP_TARGET" ERP_TARGET=aks ERP_IMAGE=registry.example/kaimahi-erp:test
+          # And a kind target renders NOTHING: that path applies the
+          # committed document, which is the claim this step exists to
+          # keep true.
+          refuse "nothing to render on a kind target" ERP_TARGET=kind
+          # The committed manifest itself must still be the kind one.
+          python3 - <<'EOF'
+          import yaml
+          policies = [
+              (c["image"], c["imagePullPolicy"])
+              for d in yaml.safe_load_all(open("k8s/erp-mcp.yaml"))
+              if d and d.get("kind") == "Deployment"
+              for c in d["spec"]["template"]["spec"]["containers"]
+              if c["name"] == "erp"
+          ]
+          assert policies == [("kaimahi-erp:dev", "Never")], f"committed erp image/policy: {policies}"
+          EOF
+
       # P7a: the boundary's shape, asserted without a cluster. Parsed,
       # not grepped (the file's comments name every rule). Three things
       # must stay true or the enforced-boundary step below would be

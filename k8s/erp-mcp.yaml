@@ -4,11 +4,15 @@
 # WHY THIS IS NOT AN MCPServer LIKE k8s/slack-mcp.yaml. That one deploys a
 # published third-party image through kagent's CRD, digest-pinned. This
 # image is OURS and is deliberately never published (P13 guardrail), so it
-# is built from source and side-loaded into kind by `make erp`
-# (scripts/erp-deploy.sh) and runs as a plain Deployment. The POSTURE is
-# the same one and that is what matters: it holds no credential, it dials
-# nothing, and its NetworkPolicy admits the proxy and no one else
-# (k8s/plane/network-policy.yaml, rule 5).
+# is built from source by `make erp` (scripts/erp-deploy.sh) and runs as a
+# plain Deployment. The POSTURE is the same one and that is what matters:
+# it holds no credential, it dials nothing, and its NetworkPolicy admits
+# the proxy and no one else (k8s/plane/network-policy.yaml, rule 5).
+#
+# "Never published" is not "kind only". On a managed cluster the image is
+# built BY a PRIVATE registry (`az acr build`, the same road the proxy
+# takes since P5b) and pulled by the kubelet identity — a private ACR is
+# not publication (D15), and no image ever leaves it.
 #
 # THE CORPUS IS NOT IN THIS FILE AND NOT IN THE IMAGE. It is
 # k8s/erp-fixtures.json, projected as the ConfigMap kaimahi-erp-fixtures
@@ -45,10 +49,18 @@ spec:
           type: RuntimeDefault
       containers:
         - name: erp
+          # Side-loaded into kind by `make erp` and never pulled there.
+          #
+          # `Never` is deliberate and stays the committed default: a
+          # side-loaded LOCAL tag must never quietly fall back to PULLING
+          # a squattable public name. It is also what makes this file
+          # unusable as-is off kind — so, exactly as k8s/plane/proxy.yaml
+          # does, the image reference and the pull policy are made
+          # environment-dependent rather than edited here: for a
+          # registry-backed cluster scripts/erp-deploy.sh renders both
+          # from ERP_IMAGE / ERP_PULL_POLICY at deploy time, and the kind
+          # path applies this document exactly as committed.
           image: kaimahi-erp:dev
-          # kind only: the image is side-loaded, never pulled. A registry
-          # target would need a pushed image and a pull policy to match;
-          # the demo runs on kind (P13 guardrail).
           imagePullPolicy: Never
           args: ["-addr", ":8085", "-fixtures", "/etc/kaimahi/erp/fixtures.json"]
           ports:
