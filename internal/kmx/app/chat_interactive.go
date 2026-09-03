@@ -113,7 +113,7 @@ func (r *chatRenderer) statusStart(agent string) {
 	defer r.mu.Unlock()
 	r.clearLocked()
 	r.closeLocked()
-	fmt.Fprintf(r.out, "CHAT STATUS\n------------\n  Agent: %s\n  Commands: /session /sessions /history /resume /new /retry /tools /govern /ungovern /exit\n", safeTerminal(agent))
+	fmt.Fprintf(r.out, "CHAT STATUS\n------------\n  Agent: %s\n  Commands: %s\n", safeTerminal(agent), slashCommandSummary())
 }
 
 func (r *chatRenderer) statusSection(label, payload string) {
@@ -427,6 +427,7 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 	}
 
 	reader := bufio.NewScanner(a.Stdin)
+	input := newChatInput(reader, a.Stdin, a.Out, renderer)
 	last := ""
 	for {
 		if err := ctx.Err(); err != nil {
@@ -439,7 +440,7 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 			renderer.block("YOU", colorCyan, message)
 		} else {
 			renderer.prompt()
-			line, err := scanLine(ctx, reader)
+			line, err := input.readLine(ctx, true)
 			if err != nil {
 				if err == io.EOF || ctx.Err() != nil {
 					renderer.operation("CHAT", "", colorBlue, "Status: ended")
@@ -546,7 +547,7 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 		case message == "":
 			continue
 		case strings.HasPrefix(message, "/"):
-			renderer.operation("CHAT", "", colorBlue, "Commands: /session /sessions /history /resume <id> /new /retry /tools off|summary|verbose /govern /ungovern /exit")
+			renderer.operation("CHAT", "", colorBlue, "Commands: "+slashCommandSummary())
 			continue
 		default:
 			last = message
@@ -580,7 +581,7 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 					}
 				}
 			}
-			decision, err := a.promptHITL(ctx, reader, view.approval, renderer)
+			decision, err := a.promptHITL(ctx, input, view.approval, renderer)
 			if err != nil {
 				return err
 			}
@@ -623,7 +624,7 @@ func (a *App) prepareInteractiveMutation() error {
 	return nil
 }
 
-func scanLine(ctx context.Context, reader *bufio.Scanner) (string, error) {
+func scanLine(ctx context.Context, reader lineScanner) (string, error) {
 	type result struct {
 		line string
 		err  error
@@ -1142,7 +1143,7 @@ func getTask(ctx context.Context, base, agent, id string) (*interactiveTask, err
 	return &envelope.Result, nil
 }
 
-func (a *App) promptHITL(ctx context.Context, reader *bufio.Scanner, request *hitlRequest, renderer *chatRenderer) (map[string]any, error) {
+func (a *App) promptHITL(ctx context.Context, input *chatInput, request *hitlRequest, renderer *chatRenderer) (map[string]any, error) {
 	decisions := map[string]string{}
 	reasons := map[string]string{}
 	if request.Hint != "" {
@@ -1163,7 +1164,7 @@ func (a *App) promptHITL(ctx context.Context, reader *bufio.Scanner, request *hi
 					payload += "\nChoices: " + strings.Join(question.Choices, " | ")
 				}
 				renderer.operationPrompt("NATIVE QUESTION", colorYellow, payload, "Answer:")
-				answer, err := scanLine(ctx, reader)
+				answer, err := input.readLine(ctx, false)
 				if err != nil {
 					return nil, err
 				}
@@ -1180,7 +1181,7 @@ func (a *App) promptHITL(ctx context.Context, reader *bufio.Scanner, request *hi
 		}
 		payload := "Tool: " + safeTerminal(call.Name) + "\nArguments:\n" + indentPayload(truncatePayload(string(call.Args), 16<<10))
 		renderer.operationPrompt("NATIVE APPROVAL", colorYellow, payload, "Approve? [y/N]:")
-		answerLine, err := scanLine(ctx, reader)
+		answerLine, err := input.readLine(ctx, false)
 		if err != nil {
 			return nil, err
 		}
@@ -1191,7 +1192,7 @@ func (a *App) promptHITL(ctx context.Context, reader *bufio.Scanner, request *hi
 		} else {
 			decisions[call.ID] = "reject"
 			renderer.operationPrompt("NATIVE APPROVAL", colorYellow, "Decision: reject", "Rejection reason (optional):")
-			reason, err := scanLine(ctx, reader)
+			reason, err := input.readLine(ctx, false)
 			if err != nil {
 				return nil, err
 			}

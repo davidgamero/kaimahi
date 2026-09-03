@@ -154,8 +154,11 @@ Completion queries are read-only and side-effect-free: they never run guards,
 downloads, port-forwards, or mutations. Static command/flag completion works
 offline. Kube-context and agent-name completion use bounded read-only `kubectl`
 queries and quietly fall back when kubectl or the selected cluster is unavailable.
-This is shell completion for `kmx ...`; interactive chat still uses terminal
-line input and does not yet intercept Tab for slash-command completion.
+This is shell completion for `kmx ...`. Interactive chat also provides local,
+network-free slash-command IntelliSense on capable terminals: typing `/` shows
+the available commands, each additional character narrows the list through a
+prefix trie, and Tab completes a unique or common prefix. `NO_COLOR`,
+`TERM=dumb`, redirected input, and pipes retain the ordinary line-input path.
 
 `kmx agent chat` prints two different shapes on purpose. A terminal gets the
 reply, any tools the agent called, and the token cost. A pipe gets the raw
