@@ -20,6 +20,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/guard"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/scaffold"
 )
 
@@ -94,6 +95,49 @@ func (r *chatRenderer) block(label string, color actorColor, payload string) {
 	r.clearLocked()
 	r.closeLocked()
 	fmt.Fprintf(r.out, "%s\n%s\n\n", r.label(label, color), indentPayload(payload))
+}
+
+func (r *chatRenderer) statusStart(agent string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clearLocked()
+	r.closeLocked()
+	fmt.Fprintf(r.out, "CHAT STATUS\n------------\n  Agent: %s\n  Commands: /session /sessions /history /resume /new /retry /tools /govern /ungovern /exit\n", safeTerminal(agent))
+}
+
+func (r *chatRenderer) statusSection(label, payload string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	label = strings.Join(strings.Fields(safeTerminal(label)), " ")
+	payload = strings.TrimSuffix(safeTerminal(payload), "\n")
+	fmt.Fprintf(r.out, "  %s\n", label)
+	if payload != "" {
+		fmt.Fprintf(r.out, "    %s\n", strings.ReplaceAll(payload, "\n", "\n    "))
+	}
+}
+
+func (r *chatRenderer) statusEnd() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	fmt.Fprintln(r.out, "------------------------------------------------------------")
+	fmt.Fprintln(r.out)
+}
+
+func (r *chatRenderer) operation(kind, subject string, color actorColor, payload string) {
+	label := "[" + kind + "]"
+	if subject != "" {
+		payload = "Tool: " + safeTerminal(subject) + "\n" + payload
+	}
+	r.block(label, color, payload)
+}
+
+func (r *chatRenderer) operationPrompt(kind string, color actorColor, payload, prompt string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clearLocked()
+	r.closeLocked()
+	fmt.Fprintf(r.out, "%s\n%s\n  %s ", r.label("["+kind+"]", color), indentPayload(payload), safeTerminal(prompt))
+	r.promptOpen = true
 }
 
 func (r *chatRenderer) assistant(agent, text string, start bool) {
@@ -254,6 +298,18 @@ type streamView struct {
 	approvalErr                          error
 	visible                              atomic.Bool
 	renderer                             *chatRenderer
+	modelGoverned                        bool
+	governedTools                        map[string]bool
+	modelDenialShown                     bool
+	seenToolCalls                        map[string]bool
+	seenToolResponses                    map[string]bool
+	ambiguousToolCalls                   map[string]bool
+}
+
+type chatGovernancePosture struct {
+	modelGoverned bool
+	governedTools map[string]bool
+	toolRoutes    map[string]uint8
 }
 
 type hitlRequest struct {
@@ -303,8 +359,8 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 	base := "http://127.0.0.1:" + port
 	renderer := newChatRenderer(a.Out)
 	toolMode := "summary"
-	renderer.block("CHAT", colorBlue, "Agent: "+safeTerminal(agent)+"\n/exit or Ctrl-C to exit")
-	if err := a.showChatPosture(agent); err != nil {
+	posture, err := a.refreshChatPosture(agent, renderer)
+	if err != nil {
 		return err
 	}
 	if session != "" {
@@ -317,7 +373,7 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 	last := ""
 	for {
 		if err := ctx.Err(); err != nil {
-			renderer.block("CHAT", colorBlue, "Ended")
+			renderer.operation("CHAT", "", colorBlue, "Status: ended")
 			return nil
 		}
 		message := ""
@@ -329,7 +385,7 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 			line, err := scanLine(ctx, reader)
 			if err != nil {
 				if err == io.EOF || ctx.Err() != nil {
-					renderer.block("CHAT", colorBlue, "Ended")
+					renderer.operation("CHAT", "", colorBlue, "Status: ended")
 					return nil
 				}
 				return err
@@ -339,14 +395,14 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 		}
 		switch {
 		case message == "/exit" || message == "/quit" || message == "\x1b":
-			renderer.block("CHAT", colorBlue, "Ended")
+			renderer.operation("CHAT", "", colorBlue, "Status: ended")
 			return nil
 		case message == "/session":
-			fmt.Fprintln(a.Out, map[bool]string{true: session, false: "No active session."}[session != ""])
+			renderer.operation("CHAT", "", colorBlue, map[bool]string{true: "Session: " + session, false: "Session: none"}[session != ""])
 			continue
 		case message == "/new":
 			session, last = "", ""
-			fmt.Fprintln(a.Out, "Started a new session.")
+			renderer.operation("CHAT", "", colorBlue, "Session: new")
 			continue
 		case message == "/sessions":
 			if err := a.showSessions(base); err != nil {
@@ -355,7 +411,7 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 			continue
 		case message == "/history":
 			if session == "" {
-				fmt.Fprintln(a.Out, "No active session.")
+				renderer.operation("CHAT", "", colorBlue, "Session: none")
 			} else if err := a.showSessionHistory(base, session, agent, toolMode); err != nil {
 				fmt.Fprintf(a.Err, "history: %s\n", safeTerminal(err.Error()))
 			}
@@ -366,8 +422,55 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 				fmt.Fprintln(a.Out, "Usage: /tools off|summary|verbose")
 			} else {
 				toolMode = mode
-				fmt.Fprintf(a.Out, "Tool display: %s\n", mode)
+				renderer.operation("CHAT", "", colorBlue, "Tool display: "+mode)
 			}
+			continue
+		case message == "/govern":
+			last = ""
+			if err := a.prepareInteractiveMutation(); err != nil {
+				renderer.operation("CHAT MUTATION", "", colorRed, "Model governance: unchanged\nError: "+err.Error())
+				continue
+			}
+			a.guarded = false
+			credential := governedResourceName("kmx-model", agent)
+			renderer.operation("CHAT MUTATION", "", colorYellow, "Model governance: enabling\nCredential: "+credential+"\nTools: unchanged\nRetry history: cleared")
+			if err := a.GovernInteractiveModel(agent); err != nil {
+				renderer.operation("CHAT MUTATION", "", colorRed, "Model governance: change failed\nError: "+err.Error()+"\nPosture: revalidating")
+				_, _ = a.refreshChatPosture(agent, renderer)
+				return fmt.Errorf("model governance may have changed incompletely; chat stopped: %w", err)
+			}
+			refreshed, err := a.refreshChatPosture(agent, renderer)
+			if err != nil {
+				return fmt.Errorf("model governance changed, but refreshed posture could not be verified: %w", err)
+			}
+			if !refreshed.modelGoverned {
+				return fmt.Errorf("model governance switch completed, but the refreshed serving posture is direct; chat stopped")
+			}
+			posture = refreshed
+			renderer.operation("CHAT MUTATION", "", colorYellow, "Model governance: enabled\nCredential: "+credential+"\nTools: unchanged\nRetry history: cleared")
+			continue
+		case message == "/ungovern":
+			last = ""
+			if err := a.prepareInteractiveMutation(); err != nil {
+				renderer.operation("CHAT MUTATION", "", colorRed, "Model governance: unchanged\nError: "+err.Error())
+				continue
+			}
+			a.guarded = false
+			renderer.operation("CHAT MUTATION", "", colorYellow, "Model governance: disabling\nTarget: keyless Ollama\nTools: unchanged\nRetry history: cleared")
+			if err := a.UngovernModel(agent); err != nil {
+				renderer.operation("CHAT MUTATION", "", colorRed, "Model governance: change failed\nError: "+err.Error()+"\nPosture: revalidating")
+				_, _ = a.refreshChatPosture(agent, renderer)
+				return fmt.Errorf("model governance may have changed incompletely; chat stopped: %w", err)
+			}
+			refreshed, err := a.refreshChatPosture(agent, renderer)
+			if err != nil {
+				return fmt.Errorf("model governance changed, but refreshed posture could not be verified: %w", err)
+			}
+			if refreshed.modelGoverned {
+				return fmt.Errorf("model ungovern switch completed, but the refreshed serving posture is still governed; chat stopped")
+			}
+			posture = refreshed
+			renderer.operation("CHAT MUTATION", "", colorYellow, "Model governance: disabled\nModel: ollama (direct)\nCredentials and history: retained\nTools: unchanged\nRetry history: cleared")
 			continue
 		case strings.HasPrefix(message, "/resume "):
 			candidate := strings.TrimSpace(strings.TrimPrefix(message, "/resume "))
@@ -379,19 +482,22 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 			continue
 		case message == "/retry":
 			if last == "" {
-				fmt.Fprintln(a.Out, "Nothing to retry.")
+				renderer.operation("CHAT", "", colorBlue, "Retry: no previous message")
 				continue
 			}
 			message = last
 		case message == "":
 			continue
 		case strings.HasPrefix(message, "/"):
-			fmt.Fprintln(a.Out, "Commands: /session /sessions /history /resume <id> /new /retry /tools off|summary|verbose /exit")
+			renderer.operation("CHAT", "", colorBlue, "Commands: /session /sessions /history /resume <id> /new /retry /tools off|summary|verbose /govern /ungovern /exit")
 			continue
 		default:
 			last = message
 		}
-		view, err := a.invokeStream(ctx, kagent, base, agent, message, session, toolMode, renderer)
+		if posture.modelGoverned {
+			renderer.operation("KAIMAHI ROUTE", "", colorYellow, "Seam: model proxy\nConfiguration: verified through ready plane at chat start\nPer-call decision: not exposed by kagent stream")
+		}
+		view, err := a.invokeStream(ctx, kagent, base, agent, message, session, toolMode, renderer, posture)
 		if err != nil {
 			if !isInteractiveTerminal(a.Stdin) {
 				return err
@@ -406,6 +512,9 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 			if view.approvalErr != nil {
 				return view.approvalErr
 			}
+			if view.approval.TaskID == "" || view.approval.ContextID == "" {
+				return fmt.Errorf("HITL request is missing its task or context ID")
+			}
 			if len(view.approval.Calls) > 1 {
 				for _, call := range view.approval.Calls {
 					if call.Name == "ask_user" {
@@ -417,7 +526,7 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 			if err != nil {
 				return err
 			}
-			view, err = a.sendHITL(ctx, base, agent, view.approval, decision, toolMode, renderer)
+			view, err = a.sendHITL(ctx, base, agent, view, decision, toolMode, renderer, posture)
 			if err != nil {
 				return err
 			}
@@ -425,15 +534,35 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 				session = view.context
 			}
 		}
-		if view.denied {
-			if view.requestFiled {
-				renderer.block("GOVERNANCE", colorYellow, "Decision: denied\nApproval request: filed\nNext: run `make approvals`, approve separately, then type /retry")
-			} else {
-				renderer.block("GOVERNANCE", colorYellow, "Decision: denied\nApproval request: not confirmed")
-			}
-		}
 		renderer.finish()
 	}
+}
+
+func (a *App) refreshChatPosture(agent string, renderer *chatRenderer) (*chatGovernancePosture, error) {
+	posture := &chatGovernancePosture{governedTools: map[string]bool{}, toolRoutes: map[string]uint8{}}
+	renderer.statusStart(agent)
+	if err := a.showChatPosture(agent, renderer, posture); err != nil {
+		renderer.statusSection("Status", "Incomplete: "+err.Error())
+		renderer.statusEnd()
+		return nil, err
+	}
+	renderer.statusEnd()
+	return posture, nil
+}
+
+func (a *App) prepareInteractiveMutation() error {
+	cfg, err := a.kubeconfig()
+	if err != nil {
+		return err
+	}
+	posture, err := guard.Classify(cfg, a.Cfg.KubeContext)
+	if err != nil {
+		return err
+	}
+	if !posture.Local && a.Cfg.Confirm != a.Cfg.KubeContext {
+		return fmt.Errorf("in-chat mutations on context %q require KAIMAHI_CONFIRM=%s before chat starts", a.Cfg.KubeContext, a.Cfg.KubeContext)
+	}
+	return nil
 }
 
 func scanLine(ctx context.Context, reader *bufio.Scanner) (string, error) {
@@ -461,7 +590,7 @@ func scanLine(ctx context.Context, reader *bufio.Scanner) (string, error) {
 	}
 }
 
-func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, session, toolMode string, renderer *chatRenderer) (*streamView, error) {
+func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, session, toolMode string, renderer *chatRenderer, posture *chatGovernancePosture) (*streamView, error) {
 	args := []string{"--kagent-url", base, "invoke", "--stream", "--agent", agent, "--task", task}
 	if session != "" {
 		args = append(args, "--session", session)
@@ -480,7 +609,7 @@ func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, sessi
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	view := &streamView{agent: agent, toolCalls: map[string]string{}, messageText: map[string]string{}, toolMode: toolMode, renderer: renderer}
+	view := newStreamView(agent, toolMode, renderer, posture)
 	done := make(chan struct{})
 	spinnerDone := make(chan struct{})
 	started := time.Now()
@@ -541,6 +670,18 @@ func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, sessi
 	return view, nil
 }
 
+func newStreamView(agent, toolMode string, renderer *chatRenderer, posture *chatGovernancePosture) *streamView {
+	view := &streamView{
+		agent: agent, toolCalls: map[string]string{}, messageText: map[string]string{}, toolMode: toolMode,
+		renderer: renderer, governedTools: map[string]bool{}, seenToolCalls: map[string]bool{}, seenToolResponses: map[string]bool{}, ambiguousToolCalls: map[string]bool{},
+	}
+	if posture != nil {
+		view.modelGoverned = posture.modelGoverned
+		view.governedTools = posture.governedTools
+	}
+	return view
+}
+
 func isInteractiveTerminal(writer io.Writer) bool {
 	file, ok := writer.(*os.File)
 	if !ok {
@@ -597,6 +738,18 @@ func (v *streamView) consume(event streamEvent, out io.Writer) {
 		if json.Unmarshal(event.Status, &status) == nil {
 			v.state = status.State
 			for _, part := range status.Message.Parts {
+				if status.State == "failed" && status.Message.Role == "agent" && part.Kind == "text" && v.modelGoverned && !v.modelDenialShown {
+					if reason, filed, ok := modelGovernanceDenial(part.Text); ok {
+						payload := "Seam: model proxy\nSignal: response text matches a Kaimahi denial\nProvenance: unverified; kagent exposes no plane receipt\nReason: " + reason
+						if filed {
+							payload += "\nApproval request: reported in response text\nNext: run `make approvals` and verify the request"
+						}
+						if v.renderer != nil {
+							v.renderer.operation("POSSIBLE KAIMAHI DENIAL", "", colorYellow, payload)
+						}
+						v.modelDenialShown = true
+					}
+				}
 				if part.Kind == "text" && status.Message.Role == "agent" && part.Text != "" {
 					previous := v.messageText[status.Message.MessageID]
 					addition := part.Text
@@ -674,6 +827,18 @@ func (v *streamView) consume(event streamEvent, out io.Writer) {
 }
 
 func (v *streamView) consumeTool(kind string, longRunning bool, raw json.RawMessage, out io.Writer) {
+	if v.seenToolCalls == nil {
+		v.seenToolCalls = map[string]bool{}
+	}
+	if v.seenToolResponses == nil {
+		v.seenToolResponses = map[string]bool{}
+	}
+	if v.ambiguousToolCalls == nil {
+		v.ambiguousToolCalls = map[string]bool{}
+	}
+	if v.governedTools == nil {
+		v.governedTools = map[string]bool{}
+	}
 	var data struct {
 		ID       string          `json:"id"`
 		Name     string          `json:"name"`
@@ -728,7 +893,20 @@ func (v *streamView) consumeTool(kind string, longRunning bool, raw json.RawMess
 	}
 	switch kind {
 	case "function_call":
-		v.toolCalls[data.ID] = data.Name
+		if data.ID != "" {
+			if previous, exists := v.toolCalls[data.ID]; exists && previous != data.Name {
+				v.ambiguousToolCalls[data.ID] = true
+			} else if !exists {
+				v.toolCalls[data.ID] = data.Name
+			}
+		}
+		validID := data.ID != "" && !v.ambiguousToolCalls[data.ID]
+		if validID && v.governedTools[data.Name] && v.renderer != nil && !v.seenToolCalls[data.ID] {
+			v.renderer.operation("KAIMAHI ROUTE", "", colorYellow, "Seam: MCP gateway\nTool: "+safeTerminal(data.Name)+"\nConfiguration: verified through ready plane at chat start\nPer-call decision: not exposed by kagent stream")
+		}
+		if data.ID != "" {
+			v.seenToolCalls[data.ID] = true
+		}
 		if v.toolMode != "off" {
 			v.visible.Store(true)
 			payload := "Status: running"
@@ -736,25 +914,37 @@ func (v *streamView) consumeTool(kind string, longRunning bool, raw json.RawMess
 				payload += "\nArguments:\n" + indentPayload(truncatePayload(strings.TrimSpace(string(data.Args)), 16<<10))
 			}
 			if v.renderer != nil {
-				v.renderer.block("TOOL "+safeTerminal(data.Name), colorMagenta, payload)
+				v.renderer.operation("TOOL CALL", data.Name, colorMagenta, payload)
 			} else {
 				fmt.Fprintf(out, "Tool: %s %s\n", safeTerminal(data.Name), safeTerminal(truncatePayload(strings.TrimSpace(string(data.Args)), 16<<10)))
 			}
 		}
 	case "function_response":
-		name := v.toolCalls[data.ID]
+		name, correlated := v.toolCalls[data.ID]
 		if name == "" {
 			name = data.Name
 		}
+		correlated = correlated && data.ID != "" && !v.ambiguousToolCalls[data.ID] && (data.Name == "" || data.Name == name)
 		state := "completed"
 		if data.Response.IsError {
 			state = "failed"
 		}
 		body := string(data.Response.Content)
-		if strings.Contains(body, "approval request filed") {
-			v.denied, v.requestFiled = true, true
-		} else if strings.Contains(body, "not permitted") || strings.Contains(body, "denied") {
-			v.denied = true
+		governanceDenied, requestFiled := governanceDenial(data.Response.IsError, body)
+		if governanceDenied && correlated && v.governedTools[name] && !v.seenToolResponses[data.ID] {
+			v.denied, v.requestFiled = true, requestFiled
+			if v.renderer != nil {
+				payload := "Seam: MCP gateway\nSignal: response text matches a Kaimahi denial\nProvenance: unverified; kagent exposes no plane receipt"
+				if requestFiled {
+					payload += "\nApproval request: reported in response text\nNext: run `make approvals` and verify the request"
+				} else {
+					payload += "\nApproval request: not mentioned in response text"
+				}
+				v.renderer.operation("POSSIBLE KAIMAHI DENIAL", name, colorYellow, payload)
+			}
+		}
+		if data.ID != "" {
+			v.seenToolResponses[data.ID] = true
 		}
 		if v.toolMode != "off" {
 			v.visible.Store(true)
@@ -763,7 +953,7 @@ func (v *streamView) consumeTool(kind string, longRunning bool, raw json.RawMess
 				payload += "\nResult:\n" + indentPayload(truncatePayload(body, 16<<10))
 			}
 			if v.renderer != nil {
-				v.renderer.block("TOOL "+safeTerminal(name), colorMagenta, payload)
+				v.renderer.operation("TOOL RESULT", name, colorMagenta, payload)
 			} else {
 				fmt.Fprintf(out, "Tool: %s %s\n", safeTerminal(name), state)
 				if v.toolMode == "verbose" {
@@ -772,6 +962,33 @@ func (v *streamView) consumeTool(kind string, longRunning bool, raw json.RawMess
 			}
 		}
 	}
+}
+
+func governanceDenial(isError bool, body string) (denied, requestFiled bool) {
+	if !isError {
+		return false, false
+	}
+	lower := strings.ToLower(body)
+	filed := strings.Contains(lower, "approval request filed")
+	denied = filed || strings.Contains(lower, "tool not permitted") || strings.Contains(lower, "tool call not permitted")
+	return denied, filed
+}
+
+func modelGovernanceDenial(message string) (reason string, requestFiled, ok bool) {
+	lower := strings.ToLower(message)
+	filed := strings.Contains(lower, "approval request filed")
+	for _, signature := range []string{
+		"monthly token budget reached",
+		"monthly budget reached",
+		"metering unavailable",
+		"spend ledger unavailable",
+		"model has no configured price",
+	} {
+		if strings.Contains(lower, signature) {
+			return signature, filed, true
+		}
+	}
+	return "", false, false
 }
 
 func truncatePayload(value string, limit int) string {
@@ -873,7 +1090,7 @@ func (a *App) promptHITL(ctx context.Context, reader *bufio.Scanner, request *hi
 	decisions := map[string]string{}
 	reasons := map[string]string{}
 	if request.Hint != "" {
-		renderer.block("APPROVAL", colorYellow, "Human approval required\nHint: "+request.Hint)
+		renderer.operation("NATIVE APPROVAL", "", colorYellow, "Human approval required\nHint: "+request.Hint)
 	}
 	for _, call := range request.Calls {
 		if call.Name == "ask_user" {
@@ -884,17 +1101,17 @@ func (a *App) promptHITL(ctx context.Context, reader *bufio.Scanner, request *hi
 				return nil, fmt.Errorf("ask_user request has no valid questions")
 			}
 			answers := make([]map[string][]string, 0, len(request.Questions))
-			renderer.block("APPROVAL", colorYellow, "Agent needs your input")
 			for _, question := range request.Questions {
-				renderer.block("QUESTION", colorYellow, question.Question)
+				payload := "Question: " + question.Question
 				if len(question.Choices) > 0 {
-					fmt.Fprintf(a.Out, "  Choices: %s\n", safeTerminal(strings.Join(question.Choices, ", ")))
+					payload += "\nChoices: " + strings.Join(question.Choices, " | ")
 				}
-				fmt.Fprint(a.Out, "  Answer: ")
+				renderer.operationPrompt("NATIVE QUESTION", colorYellow, payload, "Answer:")
 				answer, err := scanLine(ctx, reader)
 				if err != nil {
 					return nil, err
 				}
+				renderer.submitted(isInteractiveTerminal(a.Stdin))
 				var values []string
 				for _, value := range strings.Split(answer, ",") {
 					if value = strings.TrimSpace(value); value != "" {
@@ -905,22 +1122,24 @@ func (a *App) promptHITL(ctx context.Context, reader *bufio.Scanner, request *hi
 			}
 			return map[string]any{"decision_type": "approve", "ask_user_answers": answers}, nil
 		}
-		renderer.block("APPROVAL", colorYellow, "Tool: "+safeTerminal(call.Name)+"\nArguments:\n"+indentPayload(truncatePayload(string(call.Args), 16<<10)))
-		fmt.Fprint(a.Out, "Approve? [y/N]: ")
+		payload := "Tool: " + safeTerminal(call.Name) + "\nArguments:\n" + indentPayload(truncatePayload(string(call.Args), 16<<10))
+		renderer.operationPrompt("NATIVE APPROVAL", colorYellow, payload, "Approve? [y/N]:")
 		answerLine, err := scanLine(ctx, reader)
 		if err != nil {
 			return nil, err
 		}
+		renderer.submitted(isInteractiveTerminal(a.Stdin))
 		answer := strings.ToLower(strings.TrimSpace(answerLine))
 		if answer == "y" || answer == "yes" {
 			decisions[call.ID] = "approve"
 		} else {
 			decisions[call.ID] = "reject"
-			fmt.Fprint(a.Out, "  Rejection reason (optional): ")
+			renderer.operationPrompt("NATIVE APPROVAL", colorYellow, "Decision: reject", "Rejection reason (optional):")
 			reason, err := scanLine(ctx, reader)
 			if err != nil {
 				return nil, err
 			}
+			renderer.submitted(isInteractiveTerminal(a.Stdin))
 			if reason = strings.TrimSpace(reason); reason != "" {
 				reasons[call.ID] = reason
 			}
@@ -938,7 +1157,11 @@ func (a *App) promptHITL(ctx context.Context, reader *bufio.Scanner, request *hi
 	return result, nil
 }
 
-func (a *App) sendHITL(ctx context.Context, base, agent string, approval *hitlRequest, decision map[string]any, toolMode string, renderer *chatRenderer) (*streamView, error) {
+func (a *App) sendHITL(ctx context.Context, base, agent string, previous *streamView, decision map[string]any, toolMode string, renderer *chatRenderer, posture *chatGovernancePosture) (*streamView, error) {
+	approval := previous.approval
+	if approval == nil || approval.TaskID == "" || approval.ContextID == "" {
+		return nil, fmt.Errorf("HITL request is missing its task or context ID")
+	}
 	messageID := fmt.Sprintf("kmx-%d", time.Now().UnixNano())
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": messageID, "method": "message/stream", "params": map[string]any{"message": map[string]any{
 		"kind": "message", "role": "user", "messageId": messageID, "taskId": approval.TaskID, "contextId": approval.ContextID,
@@ -960,7 +1183,12 @@ func (a *App) sendHITL(ctx context.Context, base, agent string, approval *hitlRe
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HITL decision answered HTTP %d", resp.StatusCode)
 	}
-	view := &streamView{agent: agent, toolCalls: map[string]string{}, messageText: map[string]string{}, toolMode: toolMode, renderer: renderer}
+	view := newStreamView(agent, toolMode, renderer, posture)
+	view.toolCalls = previous.toolCalls
+	view.seenToolCalls = previous.seenToolCalls
+	view.seenToolResponses = previous.seenToolResponses
+	view.ambiguousToolCalls = previous.ambiguousToolCalls
+	view.modelDenialShown = previous.modelDenialShown
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64<<10), 4<<20)
 	for scanner.Scan() {
@@ -1111,16 +1339,16 @@ func (a *App) showSessionHistory(base, id, agent, toolMode string) error {
 			}
 			if part.FunctionCall != nil {
 				if toolMode == "verbose" {
-					renderer.block("TOOL "+safeTerminal(part.FunctionCall.Name), colorMagenta, "Status: called\nArguments:\n"+indentPayload(truncatePayload(string(part.FunctionCall.Args), 16<<10)))
+					renderer.operation("TOOL CALL", part.FunctionCall.Name, colorMagenta, "Status: called\nArguments:\n"+indentPayload(truncatePayload(string(part.FunctionCall.Args), 16<<10)))
 				} else if toolMode == "summary" {
-					renderer.block("TOOL "+safeTerminal(part.FunctionCall.Name), colorMagenta, "Status: called")
+					renderer.operation("TOOL CALL", part.FunctionCall.Name, colorMagenta, "Status: called")
 				}
 			}
 			if part.FunctionResponse != nil {
 				if toolMode == "verbose" {
-					renderer.block("TOOL "+safeTerminal(part.FunctionResponse.Name), colorMagenta, "Status: result\nPayload:\n"+indentPayload(truncatePayload(string(part.FunctionResponse.Response), 16<<10)))
+					renderer.operation("TOOL RESULT", part.FunctionResponse.Name, colorMagenta, "Status: result\nPayload:\n"+indentPayload(truncatePayload(string(part.FunctionResponse.Response), 16<<10)))
 				} else if toolMode == "summary" {
-					renderer.block("TOOL "+safeTerminal(part.FunctionResponse.Name), colorMagenta, "Status: result")
+					renderer.operation("TOOL RESULT", part.FunctionResponse.Name, colorMagenta, "Status: result")
 				}
 			}
 		}
@@ -1128,7 +1356,7 @@ func (a *App) showSessionHistory(base, id, agent, toolMode string) error {
 	return nil
 }
 
-func (a *App) showChatPosture(agent string) error {
+func (a *App) showChatPosture(agent string, renderer *chatRenderer, posture *chatGovernancePosture) error {
 	raw, err := a.kubectlCapture("-n", "kagent", "get", "agent", agent, "-o", "json")
 	if err != nil {
 		return fmt.Errorf("cannot validate active agent: %w", err)
@@ -1196,14 +1424,14 @@ func (a *App) showChatPosture(agent string) error {
 			return fmt.Errorf("agent uses %q but the Kaimahi plane is not Ready", model)
 		}
 		modelPosture = "governed by Kaimahi; plane Ready"
+		posture.modelGoverned = true
 		direct = false
 	}
-	renderer := newChatRenderer(a.Out)
-	renderer.block("MODEL", colorBlue, safeTerminal(model)+"\nPosture: "+modelPosture)
+	renderer.statusSection("Model", "Name: "+safeTerminal(model)+"\nPosture: "+modelPosture)
 	if len(resource.Spec.Declarative.Tools) == 0 {
-		renderer.block("TOOLS", colorMagenta, "None")
+		renderer.statusSection("Tools", "None")
 		if direct {
-			renderer.block("WARNING", colorRed, "Model is direct. Kaimahi budgets and spend ledger do not apply.")
+			renderer.statusSection("Warning", "Model is direct. Kaimahi budgets and spend ledger do not apply.")
 		}
 		return nil
 	}
@@ -1232,14 +1460,16 @@ func (a *App) showChatPosture(agent string) error {
 		for _, item := range server.Status.Discovered {
 			discovered[item.Name] = item.Description
 		}
-		posture := "direct, not Kaimahi-governed"
+		serverPosture := "direct, not Kaimahi-governed"
+		governedServer := false
 		parsed, _ := url.Parse(server.Spec.URL)
 		gatewayHost := parsed != nil && (parsed.Host == "kaimahi-mcp-gateway.kaimahi:8081" || parsed.Host == "kaimahi-mcp-gateway.kaimahi.svc.cluster.local:8081")
 		if parsed != nil && parsed.Scheme == "http" && gatewayHost && strings.HasPrefix(parsed.Path, "/upstream/") {
 			if !a.planeReady("kaimahi-mcp-gateway") {
 				return fmt.Errorf("RemoteMCPServer %q points at Kaimahi but the plane is not Ready", tool.MCPServer.Name)
 			}
-			posture = "governed by Kaimahi; plane Ready"
+			serverPosture = "governed by Kaimahi; plane Ready"
+			governedServer = true
 		} else {
 			direct = true
 		}
@@ -1258,19 +1488,27 @@ func (a *App) showChatPosture(agent string) error {
 		if err := validateToolServer(wiring, server.Metadata.Generation, server.Status.ObservedGeneration, server.Status.Conditions, discoveredSet); err != nil {
 			return err
 		}
+		for _, name := range selected {
+			if governedServer {
+				posture.toolRoutes[name] |= 1
+			} else {
+				posture.toolRoutes[name] |= 2
+			}
+			posture.governedTools[name] = posture.toolRoutes[name] == 1
+		}
 		var details strings.Builder
-		fmt.Fprintf(&details, "Server: %s\nPosture: %s\nAllowed:", safeTerminal(tool.MCPServer.Name), posture)
+		fmt.Fprintf(&details, "Server: %s\nPosture: %s\nAllowed:", safeTerminal(tool.MCPServer.Name), serverPosture)
 		for _, name := range selected {
 			if description, ok := discovered[name]; ok {
-				fmt.Fprintf(&details, "\n- %s - %s", safeTerminal(name), safeTerminal(description))
+				fmt.Fprintf(&details, "\n  - %s - %s", safeTerminal(name), safeTerminal(description))
 			} else {
-				fmt.Fprintf(&details, "\n- %s - selected but not currently discovered", safeTerminal(name))
+				fmt.Fprintf(&details, "\n  - %s - selected but not currently discovered", safeTerminal(name))
 			}
 		}
-		renderer.block("TOOLS", colorMagenta, details.String())
+		renderer.statusSection("Tools", details.String())
 	}
 	if direct {
-		renderer.block("WARNING", colorRed, "One or more seams are direct. Kaimahi budgets, gateway policy, or audit may not apply.")
+		renderer.statusSection("Warning", "One or more seams are direct. Kaimahi budgets, gateway policy, or audit may not apply.")
 	}
 	return nil
 }

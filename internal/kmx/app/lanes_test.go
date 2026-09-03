@@ -69,6 +69,11 @@ func TestEveryLaneRunsEvenAfterOneFails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "broken: helm exploded") {
 		t.Errorf("the failure must name its lane, got %v", err)
 	}
+	for _, want := range []string{"[broken] START", "[broken] FAILED (", "[fine] START", "[fine] DONE ("} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("lane lifecycle lacks %q:\n%s", want, out.String())
+		}
+	}
 }
 
 func TestBothLaneFailuresAreReported(t *testing.T) {
@@ -164,7 +169,10 @@ func TestLinesFromDifferentLanesAreNeverSpliced(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, line := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
-		if line != "[a] aaaaaaaa" && line != "[b] bbbbbbbb" {
+		payload := line == "[a] aaaaaaaa" || line == "[b] bbbbbbbb"
+		lifecycle := strings.HasPrefix(line, "[a] START") || strings.HasPrefix(line, "[a] DONE (") ||
+			strings.HasPrefix(line, "[b] START") || strings.HasPrefix(line, "[b] DONE (")
+		if !payload && !lifecycle {
 			t.Fatalf("spliced line %q", line)
 		}
 	}

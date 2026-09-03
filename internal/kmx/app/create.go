@@ -287,20 +287,18 @@ func (a *App) preflightModelConfig(name, namespace string) error {
 		name, namespace, a.Cfg.KubeContext, namespace, extra)
 }
 
-// RefuseUnknownAgentVerb is the CRUD boundary made concrete: `create` is the
-// only letter with a real gap, and R/U/D print the tool that already does the
-// job rather than growing a worse copy of it.
+// RefuseUnknownAgentVerb keeps update and delete in kubectl rather than
+// growing weaker copies after kmx's focused list/create/chat surface.
 func RefuseUnknownAgentVerb(verb, kubeContext string) error {
 	ctx := ""
 	if kubeContext != "" {
 		ctx = " --context " + kubeContext
 	}
 	return fmt.Errorf("kmx: unknown command 'agent %s'.\n"+
-		"Only 'agent create' and 'agent chat' exist. Reading, updating and deleting\n"+
-		"agents is kubectl and the kagent CLI's job:\n"+
-		"  kubectl%s -n kagent get agents\n"+
+		"Use `kmx agent list`, `kmx agent create`, or `kmx agent chat`. Updating and\n"+
+		"deleting agents remains kubectl's job:\n"+
 		"  kubectl%s -n kagent edit agent <name>\n"+
 		"  kubectl%s -n kagent delete agent <name>\n"+
 		"  kubectl%s apply -f agents/<name>.yaml",
-		verb, ctx, ctx, ctx, ctx)
+		verb, ctx, ctx, ctx)
 }

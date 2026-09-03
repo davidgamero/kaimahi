@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"time"
 
 	kaimahi "github.com/kaimahi-agents/kaimahi"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
@@ -30,6 +31,8 @@ type App struct {
 	chatJSON bool
 	Err      io.Writer
 	Stdin    *os.File
+	// now is injectable so progress timing can be tested without sleeping.
+	now func() time.Time
 
 	// guarded records that the context guard has already run in this
 	// process, so a multi-step command asks at most once — the same

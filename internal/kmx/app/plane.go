@@ -76,6 +76,7 @@ type PlaneOptions struct {
 // scripts/plane-deploy.sh), with one difference that is the point of the
 // milestone: the image does not need a clone. See planebuild.
 func (a *App) Plane(opt PlaneOptions) error {
+	started := a.timeNow()
 	steps := PlaneSteps
 	if opt.Step != "" {
 		found := false
@@ -121,23 +122,28 @@ func (a *App) Plane(opt PlaneOptions) error {
 		return err
 	}
 
-	for _, s := range steps {
+	for i, s := range steps {
 		var err error
-		switch s {
-		case "image":
-			err = a.planeImage(opt)
-		case "secrets":
-			err = a.planeSecrets()
-		case "deploy":
-			err = a.planeDeploy()
-		}
+		name := map[string]string{"image": "Build and load proxy image", "secrets": "Reconcile plane secrets", "deploy": "Deploy and verify plane"}[s]
+		err = a.runPhase(phase{current: i + 1, total: len(steps), name: name}, func() error {
+			switch s {
+			case "image":
+				return a.planeImage(opt)
+			case "secrets":
+				return a.planeSecrets()
+			case "deploy":
+				return a.planeDeploy()
+			}
+			return nil
+		})
 		if err != nil {
 			return err
 		}
 	}
 
 	if opt.Step == "" {
-		a.notef("\nThe plane is up. Nothing is governed by it yet:\n"+
+		a.complete("Governance plane ready", started)
+		a.notef("\nNEXT  Nothing is governed by the plane yet:\n"+
 			"  kmx govern %s      # issue the credential and put the agent behind the plane\n"+
 			"  kmx ledger            # what it has spent", a.Cfg.Credential)
 	}

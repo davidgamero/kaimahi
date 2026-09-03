@@ -1,6 +1,8 @@
 package app
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -58,7 +60,7 @@ func (a *App) Govern(credential string, opt GovernOptions) error {
 	}
 	defer client.Close()
 
-	if err := a.issueCredential(client, credential, opt); err != nil {
+	if err := a.issueCredential(client, credential, opt, false); err != nil {
 		return err
 	}
 
@@ -99,6 +101,72 @@ func (a *App) Govern(credential string, opt GovernOptions) error {
 	}
 }
 
+// GovernInteractiveModel gives the active agent its own credential, Secret,
+// and ModelConfig so in-chat governance cannot merge one agent's spend and
+// budget identity with another's.
+func (a *App) GovernInteractiveModel(agent string) error {
+	if err := a.preflight(depKubectl); err != nil {
+		return err
+	}
+	if err := validCredentialName(agent); err != nil {
+		return err
+	}
+	secret := governedResourceName("kmx-token", agent)
+	preset := governedResourceName("kmx-governed-ollama", agent)
+	credential := governedResourceName("kmx-model", agent)
+	opt := GovernOptions{Agent: agent, Preset: preset, Secret: secret, SecretNamespace: config.DefaultNamespace}
+	if err := a.Guard(fmt.Sprintf("govern agent %q's model seam through the Kaimahi plane (credential %q)", agent, credential), "kmx agent chat --interactive "+agent); err != nil {
+		return err
+	}
+	model, err := a.activeModelName(agent)
+	if err != nil {
+		return err
+	}
+	if err := a.validateInteractiveResourceOwnership(agent, secret, preset); err != nil {
+		return err
+	}
+	client, err := admin.Open(a, a.Cfg.AdminPort, a.Err)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	if err := a.issueCredential(client, credential, opt, true); err != nil {
+		return err
+	}
+	manifest, err := interactiveModelManifest(preset, secret, model, true, agent)
+	if err != nil {
+		return err
+	}
+	return a.usePreset(agent, preset, func() error {
+		fmt.Fprintf(a.Err, "kubectl --context %s apply -f - # (agent-specific governed ModelConfig %s)\n", a.Cfg.KubeContext, preset)
+		quiet := *a.Run
+		quiet.Echo = false
+		return quiet.RunStdin(manifest, "kubectl", a.kubectl("apply", "-f", "-")...)
+	})
+}
+
+func interactiveModelManifest(preset, secret, model string, governed bool, agent string) ([]byte, error) {
+	spec := map[string]any{"model": model}
+	if governed {
+		spec["provider"] = "OpenAI"
+		spec["apiKeySecret"] = secret
+		spec["apiKeySecretKey"] = "api-key"
+		spec["openAI"] = map[string]string{"baseUrl": "http://kaimahi-proxy.kaimahi.svc.cluster.local:8080/upstream/ollama/v1"}
+	} else {
+		spec["provider"] = "Ollama"
+		spec["ollama"] = map[string]string{"host": "http://ollama.ollama.svc.cluster.local:11434"}
+	}
+	return json.Marshal(map[string]any{
+		"apiVersion": "kagent.dev/v1alpha2",
+		"kind":       "ModelConfig",
+		"metadata": map[string]any{
+			"name": preset, "namespace": config.DefaultNamespace,
+			"annotations": map[string]string{"app.kubernetes.io/managed-by": "kmx", "kaimahi.dev/chat-agent": agent},
+		},
+		"spec": spec,
+	})
+}
+
 // issueCredential mints the credential and stores its token as the
 // agent-side Secret, reconciling the already-issued case as
 // scripts/plane-admin.sh does (minus its `GOVERNED_SECRET=-` form, which
@@ -108,7 +176,7 @@ func (a *App) Govern(credential string, opt GovernOptions) error {
 // The token is shown EXACTLY ONCE, at issue time, and cannot be recovered.
 // That is what makes both the check before the POST and the 409 branch below
 // more than politeness.
-func (a *App) issueCredential(client *admin.Client, credential string, opt GovernOptions) error {
+func (a *App) issueCredential(client *admin.Client, credential string, opt GovernOptions, interactive bool) error {
 	// Whose token is in that Secret? Asked BEFORE issuing, because the
 	// answer can forbid the whole operation: `kmx govern demo` while the
 	// Secret holds hello-world's token would otherwise mint demo's
@@ -135,7 +203,7 @@ func (a *App) issueCredential(client *admin.Client, credential string, opt Gover
 	}
 
 	if status == http.StatusConflict {
-		return a.reconcileExistingCredential(credential, opt)
+		return a.reconcileExistingCredential(credential, opt, interactive)
 	}
 	if status != http.StatusCreated {
 		return fmt.Errorf("issuing credential %q failed (HTTP %d): %s",
@@ -154,13 +222,17 @@ func (a *App) issueCredential(client *admin.Client, credential string, opt Gover
 		// Bind the Secret to its credential, so a later issue of a
 		// DIFFERENT name detects the mismatch instead of silently reusing
 		// this token.
-		map[string]string{"kaimahi.dev/credential": credential})
+		map[string]string{"kaimahi.dev/credential": credential, "app.kubernetes.io/managed-by": "kmx", "kaimahi.dev/chat-agent": opt.Agent})
 	quiet := *a.Run
 	quiet.Echo = false
-	fmt.Fprintf(a.Err, "kubectl --context %s -n %s apply -f - # (Secret %s, from the pipe)\n",
-		a.Cfg.KubeContext, opt.SecretNamespace, opt.Secret)
+	verb := "apply"
+	if interactive {
+		verb = "create"
+	}
+	fmt.Fprintf(a.Err, "kubectl --context %s -n %s %s -f - # (Secret %s, from the pipe)\n",
+		a.Cfg.KubeContext, opt.SecretNamespace, verb, opt.Secret)
 	if err := quiet.RunStdin(manifest, "kubectl",
-		a.kubectl("-n", opt.SecretNamespace, "apply", "-f", "-")...); err != nil {
+		a.kubectl("-n", opt.SecretNamespace, verb, "-f", "-")...); err != nil {
 		return err
 	}
 	a.notef("Governed credential %q issued; Secret %s/%s created.", credential, opt.SecretNamespace, opt.Secret)
@@ -210,7 +282,7 @@ func (a *App) wrongCredentialError(bound, credential string, opt GovernOptions) 
 
 // reconcileExistingCredential decides what an HTTP 409 means, given what the
 // agent-side Secret is bound to.
-func (a *App) reconcileExistingCredential(credential string, opt GovernOptions) error {
+func (a *App) reconcileExistingCredential(credential string, opt GovernOptions, interactive bool) error {
 	bound, err := a.boundCredential(opt)
 	if err != nil {
 		return err
@@ -220,6 +292,9 @@ func (a *App) reconcileExistingCredential(credential string, opt GovernOptions) 
 		a.notef("Credential %q already issued and %s is bound to it; keeping both.", credential, opt.Secret)
 		return nil
 	case "":
+		if interactive {
+			return fmt.Errorf("credential %q already exists, but the agent-specific Secret %s is not safely bound to it; refusing to delete or replace either resource", credential, opt.Secret)
+		}
 		return fmt.Errorf("credential %q exists in the plane but Secret %s is missing (or unlabeled).\n"+
 			"  The token is shown exactly once at issue time and cannot be recovered;\n"+
 			"  delete the row and re-run:\n"+
@@ -229,6 +304,83 @@ func (a *App) reconcileExistingCredential(credential string, opt GovernOptions) 
 	default:
 		return a.wrongCredentialError(bound, credential, opt)
 	}
+}
+
+func (a *App) activeModelName(agent string) (string, error) {
+	modelConfig, err := a.liveModelConfig(agent)
+	if err != nil {
+		return "", err
+	}
+	raw, err := a.kubectlCapture("-n", config.DefaultNamespace, "get", "modelconfig", modelConfig, "-o", "json")
+	if err != nil {
+		return "", fmt.Errorf("cannot read active ModelConfig %q: %w", modelConfig, err)
+	}
+	var resource struct {
+		Spec map[string]any `json:"spec"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resource); err != nil {
+		return "", fmt.Errorf("active ModelConfig %q returned invalid JSON", modelConfig)
+	}
+	model, _ := resource.Spec["model"].(string)
+	provider, _ := resource.Spec["provider"].(string)
+	compatible := strings.EqualFold(provider, "Ollama") || usesKaimahiModelProxy(resource.Spec)
+	if strings.TrimSpace(model) == "" {
+		return "", fmt.Errorf("active ModelConfig %q does not expose a model name", modelConfig)
+	}
+	if !compatible {
+		return "", fmt.Errorf("active ModelConfig %q uses provider %q, not Ollama or the Kaimahi Ollama proxy; refusing to change its route", modelConfig, provider)
+	}
+	return model, nil
+}
+
+func (a *App) validateInteractiveResourceOwnership(agent, secret, preset string) error {
+	if err := a.validateInteractiveModelOwnership(agent, preset); err != nil {
+		return err
+	}
+	for _, resource := range []struct{ kind, name string }{{"secret", secret}} {
+		raw, err := a.kubectlCapture("-n", config.DefaultNamespace, "get", resource.kind, resource.name, "-o", "json")
+		if err != nil {
+			if isNotFound(err) {
+				continue
+			}
+			return fmt.Errorf("cannot inspect %s %s before governance: %w", resource.kind, resource.name, err)
+		}
+		var current struct {
+			Metadata struct {
+				Annotations map[string]string `json:"annotations"`
+			} `json:"metadata"`
+			Data map[string]string `json:"data"`
+		}
+		if json.Unmarshal([]byte(raw), &current) != nil || current.Metadata.Annotations["app.kubernetes.io/managed-by"] != "kmx" || current.Metadata.Annotations["kaimahi.dev/chat-agent"] != agent {
+			return fmt.Errorf("%s %s already exists without matching kmx ownership for agent %s; refusing to overwrite it", resource.kind, resource.name, agent)
+		}
+		if resource.kind == "secret" {
+			token, err := base64.StdEncoding.DecodeString(current.Data["api-key"])
+			if err != nil || !strings.HasPrefix(string(token), "kmh_") || len(token) != 68 {
+				return fmt.Errorf("Secret %s is owned by kmx but does not contain a valid Kaimahi token; refusing to use it", secret)
+			}
+		}
+	}
+	return nil
+}
+
+func (a *App) validateInteractiveModelOwnership(agent, preset string) error {
+	raw, err := a.kubectlCapture("-n", config.DefaultNamespace, "get", "modelconfig", preset, "-o", "json")
+	if err != nil {
+		if isNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("cannot inspect modelconfig %s before changing governance: %w", preset, err)
+	}
+	var current struct {
+		Metadata struct {
+			Annotations map[string]string `json:"annotations"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal([]byte(raw), &current) != nil || current.Metadata.Annotations["app.kubernetes.io/managed-by"] != "kmx" || current.Metadata.Annotations["kaimahi.dev/chat-agent"] != agent {
+		return fmt.Errorf("modelconfig %s already exists without matching kmx ownership for agent %s; refusing to overwrite it", preset, agent)
+	}
+	return nil
 }
 
 // validCredentialName is the script's check_name, kept because these names

@@ -24,6 +24,7 @@ var UpSteps = []string{"cluster", "ollama", "model", "kagent", "agent", "tools-a
 // governance plane (D27), and says so at the end rather than leaving anyone
 // to discover it from an empty ledger.
 func (a *App) Up(step string) error {
+	started := a.timeNow()
 	steps := UpSteps
 	if step != "" {
 		found := false
@@ -51,48 +52,63 @@ func (a *App) Up(step string) error {
 	}
 
 	if step != "" {
-		for _, s := range steps {
-			var err error
-			switch s {
-			case "cluster":
-				err = a.stepCluster()
-			case "ollama":
-				err = a.stepOllama()
-			case "model":
-				err = a.stepModel()
-			case "kagent":
-				err = a.stepKagent()
-			case "agent":
-				err = a.stepAgent()
-			case "tools-agent":
-				err = a.stepToolsAgent()
-			}
-			if err != nil {
-				return err
-			}
+		if err := a.runPhase(phase{current: 1, total: 1, name: upPhaseName(step)}, func() error {
+			return a.runUpStep(step)
+		}); err != nil {
+			return err
 		}
 	} else if err := a.upOverlapped(); err != nil {
 		return err
 	}
 
 	if step == "" {
-		if err := a.Status(); err != nil {
+		if err := a.runPhase(phase{current: 6, total: 6, name: "Collect runtime status"}, a.Status); err != nil {
 			return err
 		}
+		a.complete("Runtime setup finished", started)
 		// One line: `kmx up` is the RUNTIME. Governance is a deliberate
 		// second step, and saying nothing here would leave an operator to
 		// infer it from an empty ledger.
 		// The credential is the RESOLVED one, not the default: with CRED set,
 		// a copied `kmx govern hello-world` would govern a different
 		// credential than the one `kmx govern` and `kmx ledger` then use.
-		a.notef("\nRuntime only: the Kaimahi governance plane is NOT deployed yet.\n"+
+		a.notef("\nNEXT  Runtime only: the Kaimahi governance plane is NOT deployed yet.\n"+
 			"Nothing is metered, budgeted or ledgered until it is:\n"+
 			"  kmx plane       # the proxy and its ledger\n"+
 			"  kmx govern %s  # put %s behind it (docs/spend.md)",
 			a.Cfg.Credential, config.DefaultAgent)
-		a.notef("\nTalk to the agent:  kmx agent chat %s \"%s\"", config.DefaultAgent, config.DefaultTask)
+		a.notef("\nTRY   kmx agent chat %s \"%s\"", config.DefaultAgent, config.DefaultTask)
 	}
 	return nil
+}
+
+func upPhaseName(step string) string {
+	return map[string]string{
+		"cluster":     "Prepare kind cluster",
+		"ollama":      "Deploy Ollama",
+		"model":       "Pull model",
+		"kagent":      "Install kagent",
+		"agent":       "Deploy hello-world agent",
+		"tools-agent": "Deploy hello-tools agent",
+	}[step]
+}
+
+func (a *App) runUpStep(step string) error {
+	switch step {
+	case "cluster":
+		return a.stepCluster()
+	case "ollama":
+		return a.stepOllama()
+	case "model":
+		return a.stepModel()
+	case "kagent":
+		return a.stepKagent()
+	case "agent":
+		return a.stepAgent()
+	case "tools-agent":
+		return a.stepToolsAgent()
+	}
+	return fmt.Errorf("unknown up step %q", step)
 }
 
 // upOverlapped is the whole journey, with the two agents brought up
@@ -120,22 +136,26 @@ func (a *App) Up(step string) error {
 // preservation check the serial version ran still runs, with the same
 // timeouts.
 func (a *App) upOverlapped() error {
-	if err := a.stepCluster(); err != nil {
+	if err := a.runPhase(phase{current: 1, total: 6, name: upPhaseName("cluster")}, a.stepCluster); err != nil {
 		return err
 	}
-	if err := a.stepOllama(); err != nil {
+	if err := a.runPhase(phase{current: 2, total: 6, name: upPhaseName("ollama")}, a.stepOllama); err != nil {
 		return err
 	}
-	if err := a.stepModel(); err != nil {
+	if err := a.runPhase(phase{current: 3, total: 6, name: upPhaseName("model")}, a.stepModel); err != nil {
 		return err
 	}
-	if err := a.stepKagent(); err != nil {
+	if err := a.runPhase(phase{current: 4, total: 6, name: upPhaseName("kagent")}, a.stepKagent); err != nil {
 		return err
 	}
-	a.notef("\nbringing up both agents together (each lane's output is tagged)")
-	return a.runLanes([]lane{
-		{"agent", func(b *App) error { return b.stepAgent() }},
-		{"tools-agent", func(b *App) error { return b.stepToolsAgent() }},
+	// The two independently addressable agent steps form one operator-facing
+	// phase in a full run because they start and finish as one parallel group.
+	return a.runPhase(phase{current: 5, total: 6, name: "Deploy agents in parallel"}, func() error {
+		a.notef("Two lanes are running; every output line is tagged.")
+		return a.runLanes([]lane{
+			{"agent", func(b *App) error { return b.stepAgent() }},
+			{"tools-agent", func(b *App) error { return b.stepToolsAgent() }},
+		})
 	})
 }
 

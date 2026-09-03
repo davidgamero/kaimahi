@@ -41,6 +41,7 @@ USAGE
 COMMANDS
   ctx [<context>]              show, or select, the kube context kmx acts on
   up                           kind cluster + Ollama + the model + kagent + the agents
+  agent list                   list agents and their active model/tool wiring
   agent create <name>          scaffold agents/<name>.yaml and apply it
   agent chat <name> [message]  ask an agent one question (via ` + "`kagent invoke`" + `)
                                add --json for the raw A2A task; piped output
@@ -67,6 +68,7 @@ COMMANDS
   metrics                      one proxy replica's Prometheus exposition
   status                       grouped agent/model wiring and runtime health
   down                         delete the kind cluster kmx created
+  completion bash|zsh|fish     print a shell completion script
   version                      this build's version, and the versions it installs
 
 GLOBAL FLAGS
@@ -100,6 +102,13 @@ func main() {
 }
 
 func run(argv []string) error {
+	// Completion sees deliberately incomplete command lines. It must bypass
+	// normal flag validation and configuration loading, both for correctness
+	// and so pressing Tab can never trigger command behavior.
+	if len(argv) > 0 && argv[0] == "__complete" {
+		printCandidates(argv[1:])
+		return nil
+	}
 	// A global --context may appear before or after the command, so it is
 	// pulled out of the argument list rather than parsed by a FlagSet that
 	// would have to be threaded through every subcommand.
@@ -135,6 +144,11 @@ func run(argv []string) error {
 			"  kagent   %s\n  model    %s\n  plane    %s, built from %s\n",
 			build, config.DefaultKagentVersion, config.DefaultModel, app.PlaneImage, revision)
 		return nil
+	case "completion":
+		if len(args) != 1 {
+			return errors.New("usage: kmx completion bash|zsh|fish")
+		}
+		return printCompletionScript(args[0])
 	}
 
 	cfg, err := config.Load(contextFlag)
@@ -365,9 +379,20 @@ func optionalCredential(command string, args []string, fallback string) (string,
 
 func agentCommand(a *app.App, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: kmx agent create <name> | kmx agent chat <name> [message]")
+		return errors.New("usage: kmx agent list | kmx agent create <name> | kmx agent chat <name> [message]")
 	}
 	switch args[0] {
+	case "list":
+		fs := newFlagSet("agent list")
+		output := fs.String("o", "table", "output: table|json|yaml")
+		fs.StringVar(output, "output", "table", "output: table|json|yaml")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return errors.New("usage: kmx agent list [-o table|json|yaml]")
+		}
+		return a.ListAgents(*output)
 	case "create":
 		return agentCreate(a, args[1:])
 	case "chat":

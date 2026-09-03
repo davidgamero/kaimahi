@@ -1,6 +1,7 @@
 package app
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"strconv"
 	"strings"
@@ -42,6 +43,17 @@ const config_kagentNamespace = "kagent"
 // generation across the apply, so applying it beforehand would make that
 // comparison always read "unchanged" and skip the wait it exists to trigger.
 func (a *App) UsePreset(agent, preset string, apply []string) error {
+	return a.usePreset(agent, preset, func() error {
+		for _, name := range apply {
+			if err := a.apply(name); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (a *App) usePreset(agent, preset string, apply func() error) error {
 	// Three values from BEFORE the apply and the patch, because the waits
 	// afterwards are all comparisons against them.
 	presetGen, err := a.generation("modelconfig/" + preset)
@@ -60,10 +72,8 @@ func (a *App) UsePreset(agent, preset string, apply []string) error {
 		return err
 	}
 
-	for _, name := range apply {
-		if err := a.apply(name); err != nil {
-			return err
-		}
+	if err := apply(); err != nil {
+		return err
 	}
 	if err := a.patchModelConfig(agent, preset); err != nil {
 		return err
@@ -105,7 +115,55 @@ func (a *App) UsePreset(agent, preset string, apply []string) error {
 	if err := a.waitSwitched(agent); err != nil {
 		return err
 	}
-	return a.waitAgentReady(agent)
+	if err := a.waitAgentReady(agent); err != nil {
+		return err
+	}
+	current, err := a.liveModelConfig(agent)
+	if err != nil {
+		return err
+	}
+	if current != preset {
+		return fmt.Errorf("agent %s settled on modelConfig %q, not requested %q", agent, current, preset)
+	}
+	return nil
+}
+
+// UngovernModel moves only the agent's model seam back to keyless in-cluster
+// Ollama. Credentials, ledger history, grants, and tool wiring are retained.
+func (a *App) UngovernModel(agent string) error {
+	if err := a.preflight(depKubectl); err != nil {
+		return err
+	}
+	if err := a.Guard(fmt.Sprintf("move agent %q's model seam outside the Kaimahi plane", agent), "kmx agent chat --interactive "+agent); err != nil {
+		return err
+	}
+	model, err := a.activeModelName(agent)
+	if err != nil {
+		return err
+	}
+	preset := governedResourceName("kmx-direct-ollama", agent)
+	if err := a.validateInteractiveModelOwnership(agent, preset); err != nil {
+		return err
+	}
+	manifest, err := interactiveModelManifest(preset, "", model, false, agent)
+	if err != nil {
+		return err
+	}
+	return a.usePreset(agent, preset, func() error {
+		fmt.Fprintf(a.Err, "kubectl --context %s apply -f - # (agent-specific direct ModelConfig %s)\n", a.Cfg.KubeContext, preset)
+		quiet := *a.Run
+		quiet.Echo = false
+		return quiet.RunStdin(manifest, "kubectl", a.kubectl("apply", "-f", "-")...)
+	})
+}
+
+func governedResourceName(prefix, agent string) string {
+	name := prefix + "-" + agent
+	if len(name) <= 63 {
+		return name
+	}
+	sum := fmt.Sprintf("%x", sha256.Sum256([]byte(agent)))[:8]
+	return name[:63-len(sum)-1] + "-" + sum
 }
 
 // waitSwitched is `wait_switched`: reconcile, rollout, and then exactly one

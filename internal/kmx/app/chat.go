@@ -172,6 +172,9 @@ func (a *App) ChatWithOptions(opt ChatOptions) error {
 // second forward. This replaced a `sleep 3`; padding is not a readiness
 // check.
 func (a *App) waitServable(agent string) error {
+	if err := a.ensureAgentExists(agent); err != nil {
+		return err
+	}
 	path := fmt.Sprintf("/api/v1/namespaces/kagent/services/%s:8080/proxy/.well-known/agent-card.json", agent)
 	// 120 tries a second apart — `for _ in $(seq 1 120); do … sleep 1; done`.
 	ok := run.Poll(120, time.Second, func() bool {
@@ -180,6 +183,29 @@ func (a *App) waitServable(agent string) error {
 	if !ok {
 		return fmt.Errorf("agent %q is not answering through its Service after 120s — refusing to invoke\n"+
 			"  (invoking now would fail with a transport error from the controller)", agent)
+	}
+	return nil
+}
+
+func (a *App) ensureAgentExists(agent string) error {
+	if _, err := a.kubectlCapture("-n", "kagent", "get", "agent", agent, "-o", "name"); err != nil {
+		if !isNotFound(err) {
+			return fmt.Errorf("cannot verify agent %q before chat: %w", agent, err)
+		}
+		available, listErr := a.kubectlCapture("-n", "kagent", "get", "agents", "-o", "name")
+		if listErr != nil {
+			return fmt.Errorf("agent %q does not exist in namespace kagent", agent)
+		}
+		var names []string
+		for _, line := range strings.Split(available, "\n") {
+			if _, name, ok := strings.Cut(strings.TrimSpace(line), "/"); ok && name != "" {
+				names = append(names, name)
+			}
+		}
+		if len(names) == 0 {
+			return fmt.Errorf("agent %q does not exist in namespace kagent; no agents are installed", agent)
+		}
+		return fmt.Errorf("agent %q does not exist in namespace kagent; available agents: %s", agent, strings.Join(names, ", "))
 	}
 	return nil
 }
