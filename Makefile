@@ -16,11 +16,10 @@
 # cluster. Fail closed — no confirmation, no action.
 TARGET         ?= kind
 
-# `up` is the default goal, as it has always been. Stated explicitly
-# because it is no longer the first rule in the file: make takes the first
-# non-dot target, which is now `guard`, so a bare `make` would otherwise
-# print a banner and exit 0 — a no-op that looks like a successful run.
-.DEFAULT_GOAL := up
+# A bare `make` is build-only. Provisioning a cluster is consequential and
+# stays behind the explicit `make up`; the default builds kmx and prints where
+# it was written.
+.DEFAULT_GOAL := build
 
 # Container engine for the kind path. Explicit rather than auto-detected:
 # which engine built an image is exactly the kind of thing that should be
@@ -52,6 +51,9 @@ TASK           ?= Hello! Who are you and where are you running?
 KAGENT         ?= bin/kagent
 SESSION        ?=
 export KMX_CHAT_SESSION := $(SESSION)
+KMX_CHAT_ARGS = $(strip $(if $(filter 1,$(INTERACTIVE)),--interactive) \
+	$(if $(SESSION),--session "$$KMX_CHAT_SESSION") $(AGENT) \
+	$(if $(filter 1,$(INTERACTIVE)),$(if $(filter command line environment override,$(origin TASK)),"$(TASK)"),"$(TASK)"))
 
 # ---- kmx (P11, D27) -------------------------------------------------------
 # The developer journey — cluster, model, kagent, the agents, a conversation,
@@ -172,7 +174,7 @@ AP_AGENT_TOOLS ?= $(AP_TOOLS),$(AP_ACT_TOOLS)
 AP_TOOLNAMES_JSON = $(if $(filter -,$(AP_AGENT_TOOLS)),,"$(subst $(comma),"$(comma)",$(AP_AGENT_TOOLS))")
 AP_INVOICE     ?= INV-88134
 
-.PHONY: up cluster ollama model kagent agent tools-agent chat down status guard \
+.PHONY: build up cluster ollama model kagent agent tools-agent chat down status guard \
 	model-secret copilot-secret use use-ollama \
 	plane plane-image plane-secrets govern budget ledger plane-copilot-secret \
 	govern-tools ungovern-tools tool-allow tool-allowlist tool-audit \
@@ -187,6 +189,10 @@ AP_INVOICE     ?= INV-88134
 	github-secret github-revoke egress-hosted egress-hosted-off \
 	govern-github github-allow github-audit github-ask github-down \
 	erp erp-fixtures govern-ap ap-allow ap-audit ap-ask ap-demo ap-injection ap-down
+
+## build: build kmx from this checkout and print the resulting path
+build: $(KMX)
+	@echo "kmx ready: $(abspath $(KMX))"
 
 # guard: the context-safety net every MUTATING target depends on. Prints
 # the target context/namespaces; demands explicit confirmation for
@@ -542,9 +548,7 @@ endif
 # define itself stays because `slack-post` and `github-ask` still use it,
 # with the narrower refused-only class a non-idempotent action needs.
 chat: $(KMX)
-	@$(KMX_ENV) $(KMX) agent chat $(if $(filter 1,$(INTERACTIVE)),--interactive,) \
-		$(if $(SESSION),--session "$$KMX_CHAT_SESSION",) $(AGENT) \
-		$(if $(filter 1,$(INTERACTIVE)),$(if $(filter command line environment override,$(origin TASK)),"$(TASK)",),"$(TASK)")
+	@$(KMX_ENV) $(KMX) agent chat $(KMX_CHAT_ARGS)
 
 ## model-secret: store an API key as a K8s Secret, stdin-only (paste, Enter, Ctrl-D).
 # The key never touches argv, env listings, YAML, or logs; tr strips the

@@ -36,6 +36,14 @@ if you care what you are running — `@<sha>` works the same way.
 From a clone, `make bin/kmx` builds the same binary and every `make` target
 below uses it.
 
+Plain `make` is build-only and prints the resulting binary path. It never
+creates or changes a cluster; provisioning requires the explicit command:
+
+```bash
+make       # build bin/kmx
+make up    # build if stale, then create/update the local runtime
+```
+
 | Prerequisite | Why |
 |---|---|
 | Go 1.26+ | to install or build kmx — and to build the plane, which kmx fetches at its own revision |

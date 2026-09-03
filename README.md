@@ -87,9 +87,11 @@ writes reviewable YAML and applies it.
 Continue with the [getting-started guide](docs/getting-started.md), or choose
 a capability from the [documentation index](docs/README.md).
 
-From a clone, `make` runs the same binary:
+From a clone, `make` builds the same binary without touching a cluster;
+provisioning stays explicit:
 
 ```bash
+make        # build bin/kmx and print its path
 make up     # kind cluster + local model + kagent + agents (~5–10 minutes)
 make chat   # talk to the default agent
 ```

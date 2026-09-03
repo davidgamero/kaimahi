@@ -110,6 +110,7 @@ same `kmx` binary — the Makefile builds it from the checkout. Use whichever
 you prefer; they run the same code.
 
 ```bash
+make        # build bin/kmx and print its path; no cluster changes
 make up     # kind cluster + Ollama + model pull + kagent + two agents (first run ~5-10 min)
 make chat   # ask the default question
 ```
