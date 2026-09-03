@@ -196,6 +196,103 @@ clone from the archive when P4 port evaluation needs the source.
   an explicit user-answered classification (GitHub Models has opt-in paid
   billing).
 
+## Positioning: agentdesktop, and what it shows we are missing
+
+Recorded 2026-09-03 because this comparison will otherwise be
+re-derived, badly, in a meeting. Read from the project itself
+(github.com/agentdesktop-dev/agentdesktop and its README), not inferred
+from the name.
+
+**What it is.** A management layer for AI developer tools on employee
+WORKSTATIONS: a daemon on each machine discovers Claude Code, Codex and
+VS Code extensions, inventories their MCP servers and skills, applies
+tool-native sandbox policy, and enrols the device against an LLM gateway
+that can issue short-lived JWTs instead of shipping long-lived provider
+keys to laptops. **That JWT path is controller-managed mode**: the
+controller is optional, and in standalone mode there is no controller and
+no device identity — "authenticate the user directly to a compatible LLM
+gateway". Apache-2.0, and early: created 2026-07-31, read 2026-09-03.
+
+**The one genuine overlap**, and we should concede it rather than argue
+it: short-lived credentials instead of distributed API keys is the same
+idea as our proxy holding the real key and handing the agent a `kmh_`
+token.
+
+**Where it diverges — structurally, not by feature count.** Its control
+surface is configuration, identity and credential issuance: gatekeeping
+BEFORE the agent runs. Its README documents no runtime allowlist or
+argument validation per call, no human-in-the-loop approval for a denied
+action, no spend metering or caps, and no audit of individual tool
+invocations; sandbox policy is static, translated into what Claude Code
+and Codex natively support. That layer is our entire product: every LLM
+call metered against a budget, every tool call checked against an
+allowlist AND its arguments (P12), a denial that files a request a human
+decides, and a grant welded to that exact call.
+
+**The sharper framing is who the agent works for.** Theirs sits behind a
+developer at a keyboard, in a workstation context where a person is
+present at the session even if not at every call, and the risk is
+credential sprawl and shadow tooling. Ours runs unattended with
+authority to act, where nobody is watching the individual call and the
+risk is that it DOES something. Their controls are about access; ours
+are about effects.
+
+**The line:** *agentdesktop governs the agents your employees run;
+Kaimahi governs the agents you deploy.* Complementary layers, and saying
+so is more credible than manufacturing a rivalry — a company plausibly
+wants both. Do not build messaging that assumes the boundary holds: their
+gateway is the natural place to grow metering and per-call policy, and we
+are a natural place to grow toward the developer's machine.
+
+**Where they are genuinely ahead**, and we should say so when asked:
+OIDC device enrolment, fleet inventory and per-device identity. Kaimahi
+cannot tell you which laptops are running which MCP servers, and that is
+not our problem to solve. Their problem is also more immediately felt —
+many enterprises have ungoverned Claude Code installs today, while
+deployed agents with spending authority are still mostly ahead of us.
+
+### What they have that would make sense here (NOT GO — candidates)
+
+Each verified against this repo before it was written down.
+
+1. **Identity on the call — who the agent acted FOR.** `ledger_entry`
+   and `tool_audit` key on `credential_name` and nothing else; no
+   migration anywhere carries a user, actor or on-behalf-of column. The
+   only human in our data is `decided_by` on an approval — the approver,
+   never the requester. So we can say "ap-agent spent $4.10" and never
+   "on whose behalf". This matters most on the inbound path, where a
+   webhook or a Slack mention means a PERSON triggered the run, and it
+   is what makes per-person budgets and attribution possible at all.
+   Highest value of the four, and it extends tables we already have.
+2. **Credentials that expire.** The `credential` table has no expiry
+   column: a governed token is bounded by allowlist, budget and
+   constraint, but never by TIME, and lives until its row is deleted.
+   Theirs are short-lived in controller-managed mode (not in standalone,
+   which has no controller and no device identity) — so the comparison
+   is with their managed deployment, not with the tool as such. On AKS
+   the platform-native
+   answer is workload identity, which also answers "why AKS" better than
+   observability does.
+3. **A posture view.** We hold everything needed and expose it only as
+   separate reads (`ledger`, `grants`, `tool-allowlist`, the audits).
+   There is no single answer to "what is governed right now, what may it
+   do, what has it been granted, what has it spent" — which is the first
+   thing a security reviewer asks and the first screen an auditor wants.
+   Cheapest of the four: a read over data already stored.
+4. **The agent pod's own constraints.** `k8s/plane/proxy.yaml` and
+   `k8s/erp-mcp.yaml` set `runAsNonRoot`, `allowPrivilegeEscalation:
+   false` and `readOnlyRootFilesystem`. `k8s/ap-agent.yaml` and
+   `k8s/hello-world.yaml` set none — they are Agent CRDs, so the pod
+   spec is kagent's. **We harden everything we own, and the workload
+   that actually executes model output is the least constrained thing in
+   the cluster.** Prime directive applies (it is kagent's pod spec, not
+   ours to rewrite), so the honest first move is to assert and prove
+   what kagent gives us, and say so, rather than to fork it.
+
+Deliberately NOT on this list: multi-cluster policy distribution and
+reconciliation from a central controller. Real for a fleet, premature
+for a project whose story is one cluster.
+
 ## Under consideration (not GO — do not build yet)
 
 - **`make up` guard for governed agents** (W6 finding, 2026-09-01):
