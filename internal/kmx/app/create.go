@@ -68,6 +68,11 @@ func (a *App) CreateAgent(opt CreateOptions) error {
 	if opt.Out == "-" {
 		opt.NoApply = true
 	}
+	if !opt.NoApply {
+		if err := a.preflight(depKubectl); err != nil {
+			return err
+		}
+	}
 
 	modelConfig, governed, err := a.resolveModelConfig(opt, namespace)
 	if err != nil {

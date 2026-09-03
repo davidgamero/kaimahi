@@ -15,6 +15,9 @@ import (
 // and a non-interactive shell with no KAIMAHI_CONFIRM refuses rather than
 // records a choice nobody made.
 func (a *App) Ctx(context string) error {
+	if err := a.preflight(depKubectl); err != nil {
+		return err
+	}
 	if context == "" {
 		return a.showCtx()
 	}
