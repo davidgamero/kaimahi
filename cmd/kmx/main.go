@@ -58,7 +58,7 @@ ENVIRONMENT (the names the Makefile and the scripts already use)
   CONTAINER_ENGINE  docker | podman                     (docker)
   KAGENT_VERSION    pinned kagent chart and CLI         (0.9.12)
   MODEL             model pulled into Ollama            (qwen2.5:3b)
-  CHAT_PORT         local port for the controller       (8083)
+  CHAT_PORT         local controller port; unset = free port automatically
   ADMIN_PORT        local port for the plane's admin    (19091)
   CRED              credential govern issues, ledger reads  (hello-world)
   KAIMAHI_CONFIRM   confirm a non-kind context by name  (unset)

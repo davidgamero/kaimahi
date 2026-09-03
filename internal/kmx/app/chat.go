@@ -87,13 +87,13 @@ func (a *App) Chat(agent, task string) error {
 		return err
 	}
 
-	stop, err := a.portForward()
+	port, stop, err := a.portForward()
 	if err != nil {
 		return err
 	}
 	defer stop()
 
-	url := "http://127.0.0.1:" + a.Cfg.ChatPort
+	url := "http://127.0.0.1:" + port
 	// The CLI defaults to localhost:8083; name the port we actually opened
 	// so it can never fall back to someone else's.
 	args := []string{"--kagent-url", url, "invoke", "--agent", agent, "--task", task}
@@ -173,10 +173,10 @@ func (a *App) waitServable(agent string) error {
 // protect this path, because the aiming happens at the socket, not at
 // kubectl. So: wait for kubectl's own "Forwarding from" line, and refuse if
 // it never appears.
-func (a *App) portForward() (func(), error) {
+func (a *App) portForward() (string, func(), error) {
 	log, err := os.CreateTemp("", "kmx-port-forward-*.log")
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	logPath := log.Name()
 	log.Close()
@@ -184,18 +184,22 @@ func (a *App) portForward() (func(), error) {
 	sink, err := os.OpenFile(logPath, os.O_WRONLY, 0o600)
 	if err != nil {
 		os.Remove(logPath)
-		return nil, err
+		return "", nil, err
 	}
 
 	forward := *a.Run
 	forward.Echo = false
+	portSpec := a.Cfg.ChatPort + ":8083"
+	if a.Cfg.ChatPort == "auto" {
+		portSpec = ":8083"
+	}
 	cmd := forward.Command("kubectl", a.kubectl("-n", "kagent", "port-forward",
-		"--address", "127.0.0.1", "svc/kagent-controller", a.Cfg.ChatPort+":8083")...)
+		"--address", "127.0.0.1", "svc/kagent-controller", portSpec)...)
 	cmd.Stdout, cmd.Stderr = sink, sink
 	if err := cmd.Start(); err != nil {
 		sink.Close()
 		os.Remove(logPath)
-		return nil, err
+		return "", nil, err
 	}
 	// Waited on in the background so the readiness loop can tell "not up
 	// yet" from "already dead" — the shell's `kill -0 $pf || break`.
@@ -218,7 +222,10 @@ func (a *App) portForward() (func(), error) {
 		os.Remove(logPath)
 	}
 
-	want := "Forwarding from 127.0.0.1:" + a.Cfg.ChatPort
+	want := "Forwarding from 127.0.0.1:"
+	if a.Cfg.ChatPort != "auto" {
+		want += a.Cfg.ChatPort
+	}
 	// 80 tries a quarter-second apart — `for _ in $(seq 1 80); do … sleep 0.25`.
 	run.Poll(80, 250*time.Millisecond, func() bool {
 		body, _ := os.ReadFile(logPath)
@@ -235,10 +242,25 @@ func (a *App) portForward() (func(), error) {
 	body, _ := os.ReadFile(logPath)
 	if !strings.Contains(string(body), want) {
 		stop()
-		return nil, fmt.Errorf("port-forward to kagent-controller never came up on 127.0.0.1:%s:\n  %s\n"+
+		return "", nil, fmt.Errorf("port-forward to kagent-controller never came up on 127.0.0.1:%s:\n  %s\n"+
 			"  Refusing to invoke: if another cluster's forward holds this port,\n"+
 			"  the task would have run THERE. Use CHAT_PORT=<free port>.",
 			a.Cfg.ChatPort, string(body))
 	}
-	return stop, nil
+	port, err := forwardedPort(string(body))
+	if err != nil {
+		stop()
+		return "", nil, err
+	}
+	return port, stop, nil
+}
+
+var forwardingLine = regexp.MustCompile(`(?m)^Forwarding from 127\.0\.0\.1:([0-9]+) -> 8083$`)
+
+func forwardedPort(output string) (string, error) {
+	match := forwardingLine.FindStringSubmatch(output)
+	if len(match) != 2 {
+		return "", fmt.Errorf("kubectl did not report the selected loopback port")
+	}
+	return match[1], nil
 }

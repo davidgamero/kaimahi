@@ -253,17 +253,17 @@ and `TARGET` (`kind` by default, or `aks`).
 
 `make chat` downloads the pinned kagent CLI to `bin/kagent`
 (checksum-verified against the release's `.sha256` file), checks that the
-agent answers through its Service, port-forwards the kagent controller to
-`localhost:8083` (`CHAT_PORT`), and runs:
+agent answers through its Service, asks kubectl for a free loopback port, and
+port-forwards the kagent controller there. Set `CHAT_PORT` only when a fixed
+port is required.
 
 ```bash
 bin/kagent invoke --agent hello-world --task "Hello! Who are you and where are you running?"
 ```
 
-If the port-forward does not come up on the port it asked for, `make chat`
-refuses rather than invoking, because another cluster's forward on that
-port would happily answer with a plausible reply from the wrong cluster.
-Use `CHAT_PORT=<free port> make chat` when two clusters are up at once.
+An explicit occupied `CHAT_PORT` still fails rather than falling back: an
+explicit value is a deterministic contract. With the default automatic port,
+stale forwards and concurrent chats do not collide.
 
 Other ways in, all shipped by kagent:
 
