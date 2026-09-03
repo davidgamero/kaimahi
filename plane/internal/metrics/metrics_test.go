@@ -15,8 +15,13 @@ import (
 )
 
 type fakeSource struct {
-	totals []metrics.LedgerTotal
-	err    error
+	totals    []metrics.LedgerTotal
+	deadlines []metrics.CredentialDeadline
+	err       error
+}
+
+func (f *fakeSource) CredentialDeadlines(context.Context, time.Time) ([]metrics.CredentialDeadline, error) {
+	return f.deadlines, f.err
 }
 
 func (f *fakeSource) LedgerMonthTotals(_ context.Context, _ time.Time) ([]metrics.LedgerTotal, error) {

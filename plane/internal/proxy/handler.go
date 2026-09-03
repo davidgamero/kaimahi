@@ -67,6 +67,19 @@ func (h *handler) record(r *http.Request, e store.LedgerEntry, reservation strin
 	metrics.SetDegraded(metrics.SeamProxy, false)
 }
 
+// attribute resolves who the call is being made for. A store failure is
+// an attribution that was LOST, not an absence of one: it is stamped
+// 'unknown' and logged, and the request continues — attribution
+// describes a call, it does not authorise one.
+func (h *handler) attribute(r *http.Request, cred store.Credential) store.Attribution {
+	att, err := h.d.Store.ActorFor(r.Context(), cred.Name)
+	if err != nil {
+		slog.Error("proxy: attribution read failed; the call is recorded as unknown",
+			"credential", cred.Name, "err", err)
+	}
+	return att
+}
+
 // reasonFor classifies a refusal for the decisions metric — a fixed
 // vocabulary keyed on the messages this package writes, never the
 // message itself (free text is not a label value).
@@ -88,6 +101,8 @@ func reasonFor(status int, msg string) metrics.Reason {
 		return metrics.ReasonUpstreamCredential
 	case strings.HasPrefix(msg, "upstream request build failed"):
 		return metrics.ReasonUpstreamUnreachable
+	case strings.HasPrefix(msg, store.ExpiredPrefix):
+		return metrics.ReasonCredentialExpired
 	case status == http.StatusUnauthorized:
 		return metrics.ReasonUnauthorized
 	case status == http.StatusTooManyRequests:
@@ -102,13 +117,15 @@ func reasonFor(status int, msg string) metrics.Reason {
 // admission (no upstream credential, an unbuildable request) releases
 // it through the same ledger write; empty before admission.
 func (h *handler) deny(w http.ResponseWriter, r *http.Request, cred store.Credential,
-	upstream, model string, status int, msg string, reservation string) {
+	att store.Attribution, upstream, model string, status int, msg string, reservation string) {
 	h.record(r, store.LedgerEntry{
 		CredentialName: cred.Name,
 		Upstream:       upstream,
 		Model:          model,
 		CostSource:     "denied",
 		Status:         status,
+		ActedFor:       att.ActedFor,
+		RunID:          att.RunID,
 	}, reservation)
 	metrics.Decide(metrics.SeamProxy, metrics.Denied, reasonFor(status, msg))
 	http.Error(w, msg, status)
@@ -139,22 +156,40 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Identity on the call: who this credential is acting for RIGHT NOW,
+	// resolved once, at the door, and stamped on every row this request
+	// writes — denials included. Resolution is not enforcement: a failed
+	// read is stamped 'unknown' ("we cannot say"), never 'none' ("nobody
+	// was there"), and never admits or denies anything on its own.
+	att := h.attribute(r, cred)
+
+	name := r.PathValue("name")
+
+	// Credentials expire. A token bounded by allowlist, budget and
+	// constraint but not by TIME lives until someone deletes its row,
+	// which is the one thing nobody does. Checked here rather than
+	// filtered out of the lookup above, so an operator is told what is
+	// actually wrong instead of hunting an "unknown token".
+	if cred.Expired(time.Now()) {
+		h.deny(w, r, cred, att, name, "", http.StatusForbidden, store.ExpiredMessage(cred), "")
+		return
+	}
+
 	// Authorize the route. One (method, path) per upstream IS the blast
 	// radius: anything else is denied before any upstream contact.
-	name := r.PathValue("name")
 	up, ok := h.d.Config.Upstreams[name]
 	if !ok {
-		h.deny(w, r, cred, name, "", http.StatusForbidden, "unknown upstream", "")
+		h.deny(w, r, cred, att, name, "", http.StatusForbidden, "unknown upstream", "")
 		return
 	}
 	if r.PathValue("path") != up.Path {
-		h.deny(w, r, cred, name, "", http.StatusForbidden, "path not allowed", "")
+		h.deny(w, r, cred, att, name, "", http.StatusForbidden, "path not allowed", "")
 		return
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
 	if err != nil {
-		h.deny(w, r, cred, name, "", http.StatusBadRequest, "request body unreadable or too large", "")
+		h.deny(w, r, cred, att, name, "", http.StatusBadRequest, "request body unreadable or too large", "")
 		return
 	}
 	var req struct {
@@ -162,7 +197,7 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request) {
 		Stream bool   `json:"stream"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
-		h.deny(w, r, cred, name, "", http.StatusBadRequest, "request body is not valid JSON", "")
+		h.deny(w, r, cred, att, name, "", http.StatusBadRequest, "request body is not valid JSON", "")
 		return
 	}
 
@@ -172,7 +207,7 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request) {
 	// budget still governs unpriced models.
 	price, priced := up.Prices[req.Model]
 	if up.Classification == config.ClassMetered && cred.CapCents != nil && !priced {
-		h.deny(w, r, cred, name, req.Model, http.StatusForbidden,
+		h.deny(w, r, cred, att, name, req.Model, http.StatusForbidden,
 			"model has no configured price; a cents budget requires one (set a price or use a token budget)", "")
 		return
 	}
@@ -181,7 +216,7 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request) {
 	// ledger sums, so spend that cannot be recorded must not happen. The
 	// denial's own record attempt is the recovery probe.
 	if h.ledgerDegraded.Load() {
-		h.deny(w, r, cred, name, req.Model, http.StatusServiceUnavailable, "spend ledger unavailable", "")
+		h.deny(w, r, cred, att, name, req.Model, http.StatusServiceUnavailable, "spend ledger unavailable", "")
 		return
 	}
 
@@ -212,7 +247,7 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request) {
 			}
 			cancel()
 		}
-		h.deny(w, r, cred, name, req.Model, status, msg, "")
+		h.deny(w, r, cred, att, name, req.Model, status, msg, "")
 		return
 	}
 
@@ -225,7 +260,7 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request) {
 		secret = strings.TrimSpace(string(raw))
 		if err != nil || secret == "" {
 			slog.Error("proxy: upstream credential unavailable", "upstream", name, "err", err)
-			h.deny(w, r, cred, name, req.Model, http.StatusServiceUnavailable,
+			h.deny(w, r, cred, att, name, req.Model, http.StatusServiceUnavailable,
 				"upstream credential unavailable", res.ID)
 			return
 		}
@@ -236,7 +271,7 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request) {
 	outBody := body
 	if req.Stream {
 		if outBody, err = withIncludeUsage(body); err != nil {
-			h.deny(w, r, cred, name, req.Model, http.StatusBadRequest, "request body is not a JSON object", res.ID)
+			h.deny(w, r, cred, att, name, req.Model, http.StatusBadRequest, "request body is not a JSON object", res.ID)
 			return
 		}
 	}
@@ -244,7 +279,7 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request) {
 	outReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
 		strings.TrimSuffix(up.BaseURL, "/")+"/"+up.Path, bytes.NewReader(outBody))
 	if err != nil {
-		h.deny(w, r, cred, name, req.Model, http.StatusBadGateway, "upstream request build failed", res.ID)
+		h.deny(w, r, cred, att, name, req.Model, http.StatusBadGateway, "upstream request build failed", res.ID)
 		return
 	}
 	copyRequestHeaders(outReq.Header, r.Header)
@@ -286,7 +321,7 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request) {
 		// The attempt is ledgered even though it failed — spend is
 		// recorded before failures are honored (standing guidance); a
 		// transport failure has no usage to bill, so tokens are zero.
-		h.record(r, ledgerFor(cred, name, req.Model, up, priced, price, usage{}, http.StatusBadGateway), res.ID)
+		h.record(r, ledgerFor(cred, att, name, req.Model, up, priced, price, usage{}, http.StatusBadGateway), res.ID)
 		http.Error(w, "upstream unreachable", http.StatusBadGateway)
 		return
 	}
@@ -309,7 +344,7 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request) {
 			slog.Error("proxy: upstream response cut; failing closed", "upstream", name, "err", err)
 			metrics.ObserveUpstream(metrics.SeamProxy, name, time.Since(started))
 			metrics.Decide(metrics.SeamProxy, admitted, metrics.ReasonUpstreamError)
-			h.record(r, ledgerFor(cred, name, req.Model, up, priced, price, usage{}, http.StatusBadGateway), res.ID)
+			h.record(r, ledgerFor(cred, att, name, req.Model, up, priced, price, usage{}, http.StatusBadGateway), res.ID)
 			http.Error(w, "upstream response cut", http.StatusBadGateway)
 			return
 		}
@@ -328,7 +363,7 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request) {
 	} else {
 		metrics.Decide(metrics.SeamProxy, admitted, metrics.ReasonUpstreamError)
 	}
-	h.record(r, ledgerFor(cred, name, req.Model, up, priced, price, u, resp.StatusCode), res.ID)
+	h.record(r, ledgerFor(cred, att, name, req.Model, up, priced, price, u, resp.StatusCode), res.ID)
 }
 
 type usage struct {
@@ -339,7 +374,7 @@ type usage struct {
 // ledgerFor prices one forwarded call. cost_source is explicit: 'free' is
 // a classification, never an inference; 'unpriced' keeps the token counts
 // honest when a metered model has no configured price.
-func ledgerFor(cred store.Credential, upstream, model string, up config.Upstream,
+func ledgerFor(cred store.Credential, att store.Attribution, upstream, model string, up config.Upstream,
 	priced bool, price pricing.Price, u usage, status int) store.LedgerEntry {
 	// Usage is upstream-reported input, not truth: clamp to the ledger's
 	// valid range so a hostile count can neither wrap the cost math nor
@@ -355,6 +390,8 @@ func ledgerFor(cred store.Credential, upstream, model string, up config.Upstream
 		InputTokens:    in,
 		OutputTokens:   out,
 		Status:         status,
+		ActedFor:       att.ActedFor,
+		RunID:          att.RunID,
 	}
 	switch {
 	case up.Classification == config.ClassFree:

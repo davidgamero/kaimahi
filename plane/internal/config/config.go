@@ -172,6 +172,14 @@ type InboundHook struct {
 	// refused at the door when that budget is already exhausted, so the
 	// agent is not invoked only to be denied at the proxy.
 	BudgetCredential string `json:"budget_credential"`
+	// ToolCredential, when set, is the credential the triggered agent's
+	// TOOL calls carry (its governed MCP gateway credential) — usually a
+	// different one from BudgetCredential, which is what it spends
+	// MODEL tokens under. Identity on the call needs both: a run is
+	// opened per credential the agent authenticates with, or half the
+	// turn would reach the audit trail unattributed. Empty means the
+	// agent calls no tools.
+	ToolCredential string `json:"tool_credential,omitempty"`
 	// MaxBodyBytes bounds the event payload (default 64 KiB).
 	MaxBodyBytes int64 `json:"max_body_bytes,omitempty"`
 	// RatePerMinute/Burst size the per-hook token bucket (defaults 60/10).
@@ -309,6 +317,9 @@ func Parse(raw []byte) (Config, error) {
 	for name, h := range c.InboundHooks {
 		if !dnsLabel.MatchString(name) {
 			return Config{}, fmt.Errorf("config: inbound hook %q: name must be a lowercase DNS label", name)
+		}
+		if h.ToolCredential != "" && !dnsLabel.MatchString(h.ToolCredential) {
+			return Config{}, fmt.Errorf("config: inbound hook %q: tool_credential must be a lowercase DNS label", name)
 		}
 		if !dnsLabel.MatchString(h.Credential) || !dnsLabel.MatchString(h.BudgetCredential) {
 			return Config{}, fmt.Errorf("config: inbound hook %q: credential and budget_credential must be lowercase DNS labels", name)

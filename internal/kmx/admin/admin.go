@@ -296,6 +296,18 @@ func decode(body []byte) (map[string]any, error) {
 // A missing or empty token is an error rather than an empty Secret: the
 // token is shown exactly once, so an empty one written now is a credential
 // that can never be used and never be recovered.
+// ExpiresFrom reads the deadline the plane stamped on a freshly issued
+// credential. Empty when the reply carries none — an older plane, and
+// not a reason to fail an issue that otherwise succeeded.
+func ExpiresFrom(body []byte) string {
+	doc, err := decode(body)
+	if err != nil {
+		return ""
+	}
+	expires, _ := doc["expires_at"].(string)
+	return expires
+}
+
 func TokenFrom(body []byte) (string, error) {
 	doc, err := decode(body)
 	if err != nil {

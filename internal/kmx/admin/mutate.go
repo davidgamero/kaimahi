@@ -146,6 +146,32 @@ func (c *Client) SetToolAllowlist(credential string, tools []string) error {
 	return c.expect(http.MethodPut, "/admin/tool-allowlist", body, http.StatusNoContent, "tool-allow")
 }
 
+// RenewCredential extends a credential's deadline and returns the new
+// one. No token is minted, sent or read: renewal moves a date, which is
+// the only reason a CLI that accepts no credential material can offer it
+// at all (D27).
+func (c *Client) RenewCredential(credential string, ttlSeconds *int64) (string, error) {
+	if err := ValidCredentialName(credential); err != nil {
+		return "", err
+	}
+	body := map[string]any{}
+	if ttlSeconds != nil {
+		body["ttl_seconds"] = *ttlSeconds
+	}
+	status, out, err := c.Do(http.MethodPost, "/admin/credentials/"+credential+"/renew", body)
+	if err != nil {
+		return "", err
+	}
+	if status != http.StatusOK {
+		return "", fmt.Errorf("credential renew failed (HTTP %d): %s", status, strings.TrimSpace(string(out)))
+	}
+	doc, err := decode(out)
+	if err != nil {
+		return "", err
+	}
+	return str(doc["expires_at"]), nil
+}
+
 // Approve mints the bounded grant a pending request asked for.
 //
 // The at-least-one-bound rule is checked HERE as well as by the plane, and

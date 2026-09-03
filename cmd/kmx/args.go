@@ -172,6 +172,29 @@ func parseApprove(args []string) (id string, ttl, uses, amount *int64, err error
 	return ids[0], ttl, uses, amount, nil
 }
 
+// parseRenew reads `kmx credential renew <name> [--ttl 720h]`. An absent
+// --ttl takes the plane's default lifetime; there is no way to ask for
+// "never", because a credential with no expiry is the legacy class and
+// that class only shrinks.
+func parseRenew(args []string) (name string, ttl *int64, err error) {
+	fs := newFlagSet("credential renew")
+	ttlFlag := fs.String("ttl", "-", "new lifetime from now, e.g. 90s, 5m, 2h, 30d")
+	rest, err := parseInterspersed(fs, args)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(rest) != 1 {
+		return "", nil, errors.New("usage: kmx credential renew <name> [--ttl 720h]")
+	}
+	if err := admin.ValidCredentialName(rest[0]); err != nil {
+		return "", nil, err
+	}
+	if ttl, err = admin.ParseTTL(*ttlFlag); err != nil {
+		return "", nil, err
+	}
+	return rest[0], ttl, nil
+}
+
 // parseRequest reads
 // `kmx request <tool|budget|inbound> <subject> [--credential <name>] [--args <json>]`.
 //

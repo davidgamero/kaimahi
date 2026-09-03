@@ -47,7 +47,7 @@ func fresh(t *testing.T, s *store.Store, prefix string) string {
 	t.Helper()
 	name := fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
 	h := sha256.Sum256([]byte(name))
-	require.NoError(t, s.CreateCredential(context.Background(), name, h[:]))
+	require.NoError(t, s.CreateCredential(context.Background(), name, h[:], time.Now().Add(time.Hour)))
 	return name
 }
 
@@ -292,7 +292,7 @@ func TestConcurrentInboundEventsReplayAndGrantAreExact(t *testing.T) {
 	// name: the replay index is per (hook, delivery), so a persistent
 	// test database must not remember an earlier run's admission.
 	errs := race(10, func(int) error {
-		_, _, err := s.AdmitInboundEvent(ctx, "demo", name, name+"-d1", "kagent/hello")
+		_, _, err := s.AdmitInboundEvent(ctx, "demo", name, name+"-d1", "kagent/hello", store.ActedForNone)
 		return err
 	})
 	var admitted, replays int
@@ -311,7 +311,7 @@ func TestConcurrentInboundEventsReplayAndGrantAreExact(t *testing.T) {
 
 	// Distinct deliveries against the one remaining use: exactly one more.
 	errs = race(10, func(i int) error {
-		_, _, err := s.AdmitInboundEvent(ctx, "demo", name, fmt.Sprintf("%s-d%d", name, 100+i), "kagent/hello")
+		_, _, err := s.AdmitInboundEvent(ctx, "demo", name, fmt.Sprintf("%s-d%d", name, 100+i), "kagent/hello", store.ActedForNone)
 		return err
 	})
 	admitted = 0

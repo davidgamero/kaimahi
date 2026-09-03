@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -50,6 +51,8 @@ func NewAdminMux(d Deps, adminTokenFile string) *http.ServeMux {
 		}
 	}
 	mux.HandleFunc("POST /admin/credentials", auth(h.createCredential))
+	mux.HandleFunc("GET /admin/credentials", auth(h.listCredentials))
+	mux.HandleFunc("POST /admin/credentials/{name}/renew", auth(h.renewCredential))
 	mux.HandleFunc("PUT /admin/budgets", auth(h.setBudget))
 	mux.HandleFunc("GET /admin/ledger", auth(h.ledger))
 	mux.HandleFunc("PUT /admin/tool-allowlist", auth(h.setToolAllowlist))
@@ -70,18 +73,135 @@ func NewAdminMux(d Deps, adminTokenFile string) *http.ServeMux {
 
 var credentialName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
+const (
+	// defaultCredentialTTL is what a credential gets when the caller
+	// names no lifetime. There is deliberately no way to ask for
+	// "never": NULL expiry is the LEGACY class migration 00010 closed,
+	// and reopening it from the admin surface would make the class grow
+	// again.
+	defaultCredentialTTL = 30 * 24 * time.Hour
+	// minCredentialTTL keeps a typo (ttl_seconds: 1) from minting a
+	// credential that is dead before its Secret is mounted;
+	// maxCredentialTTL keeps "expiring" from meaning "in a decade".
+	minCredentialTTL = time.Minute
+	maxCredentialTTL = 365 * 24 * time.Hour
+)
+
+// credentialTTL reads an optional ttl_seconds. Absent (nil) takes the
+// default; anything outside the bounds is a 400, never a silent clamp.
+func credentialTTL(ttlSeconds *int64) (time.Duration, bool) {
+	if ttlSeconds == nil {
+		return defaultCredentialTTL, true
+	}
+	d := time.Duration(*ttlSeconds) * time.Second
+	if d < minCredentialTTL || d > maxCredentialTTL {
+		return 0, false
+	}
+	return d, true
+}
+
+const ttlRefusal = "ttl_seconds must be between 60 and 31536000 (a credential with no expiry cannot be issued)"
+
+// credentialView is what an operator reads about a credential: name,
+// caps, and the deadline — never the token, and never its hash.
+type credentialView struct {
+	// "credential", not "name": every other admin view keys the
+	// credential that way, and the CLI tables read one shape.
+	Name      string     `json:"credential"`
+	CapCents  *int64     `json:"cap_cents,omitempty"`
+	CapTokens *int64     `json:"cap_tokens,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Expired and ExpiringSoon are computed here so every reader — the
+	// CLI table, a script, a human with curl — agrees on what the
+	// deadline MEANS without re-implementing the comparison.
+	Expired      bool      `json:"expired"`
+	ExpiringSoon bool      `json:"expiring_soon"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// listCredentials is the view an operator reads to see an expiry
+// coming. A credential that expires silently at 3am is an outage nobody
+// diagnosed; this is where it is visible a week earlier.
+func (h *handler) listCredentials(w http.ResponseWriter, r *http.Request) {
+	creds, err := h.d.Store.ListCredentials(r.Context())
+	if err != nil {
+		slog.Error("admin: list credentials", "err", err)
+		http.Error(w, "store error", http.StatusInternalServerError)
+		return
+	}
+	now := time.Now()
+	out := []credentialView{}
+	for _, c := range creds {
+		out = append(out, credentialView{
+			Name: c.Name, CapCents: c.CapCents, CapTokens: c.CapTokens,
+			ExpiresAt: c.ExpiresAt, Expired: c.Expired(now),
+			ExpiringSoon: c.ExpiringSoon(now, store.ExpiryWarning),
+			CreatedAt:    c.CreatedAt,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"credentials": out})
+}
+
+// renewCredential extends the deadline on an existing credential
+// WITHOUT touching its token: no material is minted, nothing has to
+// travel, and no Secret has to be rewritten (D27 custody). Rotating the
+// material is still issuing a fresh credential and re-pointing the
+// Secret at it.
+func (h *handler) renewCredential(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !credentialName.MatchString(name) {
+		http.Error(w, "credential must be a lowercase DNS label", http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		TTLSeconds *int64 `json:"ttl_seconds"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil && err != io.EOF {
+		http.Error(w, "body must be {\"ttl_seconds\": n} or empty", http.StatusBadRequest)
+		return
+	}
+	ttl, ok := credentialTTL(req.TTLSeconds)
+	if !ok {
+		http.Error(w, ttlRefusal, http.StatusBadRequest)
+		return
+	}
+	expires := time.Now().Add(ttl).UTC()
+	if err := h.d.Store.RenewCredential(r.Context(), name, expires); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "no such credential", http.StatusNotFound)
+			return
+		}
+		slog.Error("admin: renew credential", "name", name, "err", err)
+		http.Error(w, "store error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"name": name, "expires_at": expires.Format(time.RFC3339)})
+}
+
 // createCredential mints a governed opaque token server-side and returns
 // it exactly once; only its sha256 is stored. The caller pipes the token
 // straight into the agent-side K8s Secret.
 func (h *handler) createCredential(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
+		// Optional: absent takes the default lifetime. There is no way
+		// to ask for a credential that never expires.
+		TTLSeconds *int64 `json:"ttl_seconds"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil ||
 		!credentialName.MatchString(req.Name) {
-		http.Error(w, "body must be {\"name\": \"<lowercase-dns-label>\"}", http.StatusBadRequest)
+		http.Error(w, "body must be {\"name\": \"<lowercase-dns-label>\", \"ttl_seconds\": n}", http.StatusBadRequest)
 		return
 	}
+	ttl, ok := credentialTTL(req.TTLSeconds)
+	if !ok {
+		http.Error(w, ttlRefusal, http.StatusBadRequest)
+		return
+	}
+	expires := time.Now().Add(ttl).UTC()
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		http.Error(w, "entropy unavailable", http.StatusInternalServerError)
@@ -89,7 +209,7 @@ func (h *handler) createCredential(w http.ResponseWriter, r *http.Request) {
 	}
 	token := "kmh_" + hex.EncodeToString(buf)
 	hash := sha256.Sum256([]byte(token))
-	if err := h.d.Store.CreateCredential(r.Context(), req.Name, hash[:]); err != nil {
+	if err := h.d.Store.CreateCredential(r.Context(), req.Name, hash[:], expires); err != nil {
 		if errors.Is(err, store.ErrExists) {
 			http.Error(w, "credential name already exists", http.StatusConflict)
 			return
@@ -100,7 +220,8 @@ func (h *handler) createCredential(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(map[string]string{"name": req.Name, "token": token})
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"name": req.Name, "token": token, "expires_at": expires.Format(time.RFC3339)})
 }
 
 func (h *handler) setBudget(w http.ResponseWriter, r *http.Request) {

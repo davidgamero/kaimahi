@@ -37,6 +37,19 @@ type fakeStore struct {
 	// grantDigest, when set, is the call the fake's grants are welded to;
 	// empty stands for a legacy verb-level grant.
 	grantDigest string
+	// Identity on the call: what ActorFor answers, and whether it fails.
+	actor    store.Attribution
+	actorErr error
+}
+
+func (f *fakeStore) ActorFor(context.Context, string) (store.Attribution, error) {
+	if f.actorErr != nil {
+		return store.Lost, f.actorErr
+	}
+	if f.actor.ActedFor == "" {
+		return store.Unattributed, nil
+	}
+	return f.actor, nil
 }
 
 func (f *fakeStore) CredentialByTokenHash(_ context.Context, hash []byte) (store.Credential, error) {

@@ -53,3 +53,30 @@ func (s *Store) LiveGrantCounts(ctx context.Context) (map[string]int64, error) {
 	}
 	return out, rows.Err()
 }
+
+// CredentialDeadlines reports how long each governed credential has
+// left. A legacy credential (no expiry) is counted as such rather than
+// given an invented deadline — an operator must be able to see the
+// no-expiry class shrink, not have it hidden behind a large number.
+func (s *Store) CredentialDeadlines(ctx context.Context, now time.Time) ([]metrics.CredentialDeadline, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT name, expires_at FROM credential ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []metrics.CredentialDeadline
+	for rows.Next() {
+		var name string
+		var expires *time.Time
+		if err := rows.Scan(&name, &expires); err != nil {
+			return nil, err
+		}
+		d := metrics.CredentialDeadline{Credential: name, Legacy: expires == nil}
+		if expires != nil {
+			d.Seconds = expires.Sub(now).Seconds()
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}

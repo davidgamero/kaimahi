@@ -26,6 +26,7 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/admin"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/app"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/planebuild"
@@ -46,7 +47,10 @@ COMMANDS
                                is always raw
   plane                        deploy the governance plane (proxy + ledger)
   govern [<credential>]        issue the credential and put an agent behind the plane
+                               (--ttl sets its lifetime; the plane defaults one)
   use <preset>                 switch an agent onto a preset from k8s/models/
+  credentials                  the governed credentials and when each expires
+  credential renew <name>      extend a credential's expiry (--ttl); no token moves
   ledger [<credential>]        the spend ledger and month-to-date totals
   grants [<credential>]        grants, with liveness
   audit tool|approval [<cred>] the enforcement points' audit trails
@@ -183,8 +187,12 @@ func run(argv []string) error {
 		fs.StringVar(&opt.Preset, "preset", opt.Preset, "the governed ModelConfig to switch it to")
 		fs.StringVar(&opt.Secret, "secret", opt.Secret, "agent-side Secret the issued token is stored in")
 		fs.StringVar(&opt.SecretNamespace, "secret-namespace", opt.SecretNamespace, "namespace for that Secret")
+		ttlFlag := fs.String("ttl", "-", "the issued credential's lifetime, e.g. 30d (default: the plane's)")
 		names, err := parseInterspersed(fs, args)
 		if err != nil {
+			return err
+		}
+		if opt.TTLSeconds, err = admin.ParseTTL(*ttlFlag); err != nil {
 			return err
 		}
 		credential := a.Cfg.Credential
@@ -196,6 +204,26 @@ func run(argv []string) error {
 			return errors.New("usage: kmx govern <credential> [flags]")
 		}
 		return a.Govern(credential, opt)
+
+	case "credentials":
+		if len(args) != 0 {
+			return errors.New("usage: kmx credentials")
+		}
+		return a.Credentials()
+
+	case "credential":
+		// One verb only, and deliberately not "issue": minting a
+		// credential is `kmx govern`, which pipes the token straight into
+		// the Secret. Renewal moves a deadline and no material, which is
+		// why it can be its own command at all (D27).
+		if len(args) == 0 || args[0] != "renew" {
+			return errors.New("usage: kmx credential renew <name> [--ttl 720h]")
+		}
+		name, ttl, err := parseRenew(args[1:])
+		if err != nil {
+			return err
+		}
+		return a.RenewCredential(name, ttl)
 
 	case "ledger":
 		credential, err := optionalCredential("ledger", args, a.Cfg.Credential)

@@ -193,6 +193,7 @@ AP_HUMAN       ?= 0
 .PHONY: up cluster ollama model kagent agent tools-agent chat down status guard \
 	model-secret copilot-secret use use-ollama \
 	plane plane-image plane-secrets govern budget ledger plane-copilot-secret \
+	credentials credential-renew \
 	govern-tools ungovern-tools tool-allow tool-allowlist tool-audit \
 	approvals approve deny request grants approval-audit \
 	slack-secret slack-mcp govern-slack slack-allow slack-audit \
@@ -821,6 +822,34 @@ else
 budget: guard
 	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh budget $(CRED) \
 		"$(if $(CAP_CENTS),$(CAP_CENTS),-)" "$(if $(CAP_TOKENS),$(CAP_TOKENS),-)"
+endif
+
+## credentials: list the governed credentials and when each one expires.
+## The state column is what an operator scans: EXPIRED, EXPIRING (inside
+## the week's warning window), ok, or "no expiry" — the legacy class,
+## issued before credentials expired, still valid, and only ever
+## shrinking. Reads only; unguarded like `ledger`.
+ifeq ($(TARGET),kind)
+credentials: $(KMX)
+	@$(KMX_ENV) $(KMX) credentials
+else
+credentials:
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh credentials
+endif
+
+## credential-renew: extend a credential's expiry, e.g.
+##   make credential-renew NAME=hello-world TTL=720h
+## No token moves — renewal changes a date, so no Secret has to be
+## rewritten and nothing has to travel. Rotating the MATERIAL is still
+## `make govern` against a fresh name.
+ifeq ($(TARGET),kind)
+credential-renew: $(KMX)
+	@test -n "$(NAME)" || { echo 'credential-renew: NAME=<credential> is required' >&2; exit 1; }
+	@$(KMX_ENV) $(KMX) credential renew $(NAME) --ttl "$(if $(TTL),$(TTL),-)"
+else
+credential-renew: guard
+	@test -n "$(NAME)" || { echo 'credential-renew: NAME=<credential> is required' >&2; exit 1; }
+	@KUBECTL="$(KUBECTL)" bash scripts/plane-admin.sh renew $(NAME) "$(if $(TTL),$(TTL),-)"
 endif
 
 ## ledger: show the spend ledger (newest first) + month-to-date totals

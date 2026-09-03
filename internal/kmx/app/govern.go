@@ -20,6 +20,10 @@ type GovernOptions struct {
 	Secret string
 	// SecretNamespace is where that Secret lives.
 	SecretNamespace string
+	// TTLSeconds, when set, is the issued credential's lifetime. Nil
+	// takes the plane's default; there is no way to ask for "never",
+	// because a credential with no expiry is the closed legacy class.
+	TTLSeconds *int64
 	// Command names the command an operator would re-run with a different
 	// --secret, so the refusal below names `kmx govern` or
 	// `kmx tools govern` — whichever they actually typed.
@@ -118,7 +122,11 @@ func (a *App) issueCredential(client *admin.Client, credential string, opt Gover
 		return a.wrongCredentialError(bound, credential, opt)
 	}
 
-	status, body, err := client.Do(http.MethodPost, "/admin/credentials", map[string]string{"name": credential})
+	issue := map[string]any{"name": credential}
+	if opt.TTLSeconds != nil {
+		issue["ttl_seconds"] = *opt.TTLSeconds
+	}
+	status, body, err := client.Do(http.MethodPost, "/admin/credentials", issue)
 	if err != nil {
 		return err
 	}
@@ -154,6 +162,12 @@ func (a *App) issueCredential(client *admin.Client, credential string, opt Gover
 	}
 	a.notef("Governed credential %q issued; Secret %s/%s created.", credential, opt.SecretNamespace, opt.Secret)
 	a.notef("The plane stores only its hash — the real upstream keys stay with the proxy.")
+	if expires := admin.ExpiresFrom(body); expires != "" {
+		// Said at issue time, not only when it bites: an operator who
+		// never learns the deadline discovers it as an outage.
+		a.notef("It expires %s — `kmx credentials` shows every deadline, `kmx credential renew %s` extends this one.",
+			expires, credential)
+	}
 	return nil
 }
 

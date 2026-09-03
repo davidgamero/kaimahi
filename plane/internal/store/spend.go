@@ -44,8 +44,8 @@ type Admission struct {
 func lockCredential(ctx context.Context, tx pgx.Tx, name string) (Credential, error) {
 	var c Credential
 	err := tx.QueryRow(ctx,
-		`SELECT name, cap_cents, cap_tokens FROM credential WHERE name = $1 FOR NO KEY UPDATE`,
-		name).Scan(&c.Name, &c.CapCents, &c.CapTokens)
+		`SELECT name, cap_cents, cap_tokens, expires_at, created_at FROM credential WHERE name = $1 FOR NO KEY UPDATE`,
+		name).Scan(&c.Name, &c.CapCents, &c.CapTokens, &c.ExpiresAt, &c.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Credential{}, ErrNotFound
 	}

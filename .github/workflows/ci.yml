@@ -1281,6 +1281,67 @@ jobs:
           m = re.search(r"month to date: (\d+) cents, (\d+) tokens", open("ledger.out").read())
           sys.exit(0 if m and int(m.group(2)) > 0 else 1)
           EOF
+      - name: "Identity on the call: an operator-driven turn has no person behind it, and says so"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          make ledger | tee ledger-actor.out
+          # 'none' is a COMPLETE answer: nothing triggered this through
+          # the plane's inbound door, so there is no person to name.
+          grep -E 'hello-world +ollama +qwen2\.5:3b +[0-9]+ +[0-9]+ +0 +free +200 +none' ledger-actor.out
+          # ...and it is a different word from 'unknown', which would mean
+          # the attribution was LOST. Neither that nor 'legacy' (a row
+          # written before attribution existed) can occur on a cluster
+          # this migration created, so either is a defect.
+          if grep -qE ' (unknown|legacy) *$' ledger-actor.out; then
+            echo 'a ledger row lost its attribution' >&2; exit 1
+          fi
+      - name: "Credentials expire: the deadline is visible, the refusal names the fix, and renewal restores it"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          # The credential has carried a deadline since `make govern`
+          # issued it, and the view an operator watches shows it.
+          make credentials | tee credentials.out
+          grep -E 'hello-world +.* ok ' credentials.out
+          # Advance the CLOCK, not the policy: the admin surface refuses
+          # to mint a credential that is already dead (60s minimum), so
+          # the row's deadline is moved into the past directly. Every
+          # line after this one is the product's own refusal path.
+          kubectl --context kind-kaimahi-p1 -n kaimahi exec deploy/kaimahi-postgres -- \
+            psql -U kaimahi -d kaimahi -q -c \
+            "UPDATE credential SET expires_at = now() - interval '1 hour' WHERE name = 'hello-world'"
+          make credentials | tee credentials-expired.out
+          grep -E 'hello-world +.* EXPIRED ' credentials-expired.out
+          make chat > expired-chat.out 2>&1 || true
+          cat expired-chat.out
+          # The refusal names the fault, the time, and the fix. A
+          # credential that expires silently at 3am is an outage nobody
+          # diagnosed; this is what stops that.
+          grep -q 'expired credential' expired-chat.out
+          grep -q 'make credential-renew NAME=hello-world' expired-chat.out
+          if grep -q '"state":"completed"' expired-chat.out; then
+            echo 'chat completed on an expired credential' >&2; exit 1
+          fi
+          # Audited like every other refusal, and still attributed.
+          make ledger | tee ledger-expired.out
+          grep -E 'hello-world +ollama .*denied +403 +none' ledger-expired.out
+          # A credential with no expiry at all is the LEGACY class and
+          # still authenticates: expiring a running estate at migration
+          # time would be an outage, not a control.
+          kubectl --context kind-kaimahi-p1 -n kaimahi exec deploy/kaimahi-postgres -- \
+            psql -U kaimahi -d kaimahi -q -c \
+            "UPDATE credential SET expires_at = NULL WHERE name = 'hello-world'"
+          make credentials | tee credentials-legacy.out
+          grep -E 'hello-world +.* no expiry ' credentials-legacy.out
+          make chat | tee legacy-chat.out
+          python3 scripts/verify-chat.py legacy-chat.out
+          # And the fix the refusal named actually fixes it: renewal moves
+          # the deadline without minting anything, so the Secret the agent
+          # mounts is untouched and the same token keeps working.
+          make credential-renew NAME=hello-world TTL=2h
+          make credentials | tee credentials-renewed.out
+          grep -E 'hello-world +.* (ok|EXPIRING) ' credentials-renewed.out
+          make chat | tee renewed-chat.out
+          python3 scripts/verify-chat.py renewed-chat.out
       - name: Budget exhaustion fails closed
         if: steps.changes.outputs.docs_only != 'true'
         run: |
@@ -1342,7 +1403,7 @@ jobs:
           python3 - <<'EOF'
           import json
           hooks = json.load(open("upstreams-inbound.json"))["inbound_hooks"]
-          assert set(hooks) == {"demo", "demo-bearer", "slack-events"}, sorted(hooks)
+          assert set(hooks) == {"demo", "demo-bearer", "slack-events", "slack-tools"}, sorted(hooks)
           for name, h in hooks.items():
               # Every hook triggers an in-cluster kagent agent under a
               # governed credential; signed hooks name a plane-side FILE.
@@ -1358,6 +1419,12 @@ jobs:
                   # P8b: who may approve from Slack is a plane-side FILE too —
                   # the table names it and carries no user id.
                   assert h["slack_approvers_file"].startswith("/etc/kaimahi/slack/"), (name, h)
+              # tool_credential, where a hook's agent calls tools, names
+              # the OTHER credential the agent authenticates with — the
+              # plane opens a run per credential so both trails can name
+              # the person. A name, never a value, like everything here.
+              if "tool_credential" in h:
+                  assert h["tool_credential"] in ("hello-slack", "hello-tools"), (name, h)
               assert not any(k in h for k in ("secret", "signing_secret", "token", "api_key", "approvers", "users")), (name, h)
           print("inbound hooks:", {k: (v["auth"], v["agent"]) for k, v in hooks.items()})
           # P8b: the notifier posts THROUGH the gateway's committed slack
@@ -1993,6 +2060,68 @@ jobs:
           case "$ports" in
             *9091*) echo 'admin port exposed by a Service' >&2; exit 1 ;;
           esac
+      - name: "Identity on the call: a Slack mention triggers a run, and the person reaches BOTH the ledger and the tool audit"
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          # The widest attribution gap was here: a webhook or a mention
+          # means a PERSON triggered an unattended agent, and until now
+          # nothing downstream recorded who. The hook aims at the tools
+          # agent because that agent authenticates with TWO credentials —
+          # it spends model tokens under hello-world and calls tools under
+          # hello-tools — which is the case a single run per turn would
+          # have got half right.
+          make inbound-secret HOOK=slack-tools GENERATE=1
+          # Its model spend has to be governed for the ledger half to
+          # exist at all; `make govern-tools` repoints the TOOLS wiring,
+          # not the model.
+          KIND_CLUSTER=kaimahi-p1 bin/kmx use governed-ollama --agent hello-tools
+          # A new key in an already-mounted Secret takes kubelet up to a
+          # minute to project (P5b delta), and the plane fails a hook
+          # CLOSED (503) while its signing secret is unreadable — which
+          # is the right behaviour and the reason to wait for it here,
+          # exactly as the P8b setup above does.
+          for _ in $(seq 1 60); do
+            EXPECT=403 HOOK=slack-tools bash scripts/slack-mention-probe.sh U0CIPERSON \
+              'List the configmaps in the default namespace.' >/dev/null 2>&1 && break
+            sleep 3
+          done
+          # Triggering an agent from outside is approvable (P7b): the
+          # first mention is refused and files a request.
+          EXPECT=403 HOOK=slack-tools bash scripts/slack-mention-probe.sh U0CIPERSON \
+            'List the configmaps in the default namespace.'
+          make approvals | tee approvals-slack-tools.out
+          id=$(awk '$3=="inbound-slack" && $4=="inbound" && $5=="slack-tools" {print $1}' approvals-slack-tools.out)
+          test -n "$id"
+          make approve ID="$id" USES=1 TTL=15m
+          # Now the same person's mention runs the agent.
+          EXPECT=202 HOOK=slack-tools bash scripts/slack-mention-probe.sh U0CIPERSON \
+            'List the configmaps in the default namespace.' | tee mention-admitted.out
+          ev=$(sed -n 's/.*(event \(Ev[0-9A-F]*\)).*/\1/p' mention-admitted.out)
+          test -n "$ev"
+          for _ in $(seq 1 60); do
+            make inbound-audit HOOK=slack-tools > inbound-slack-tools.out 2>/dev/null
+            grep -qE "slack-tools +inbound-slack +$ev +(completed|failed) " inbound-slack-tools.out && break
+            sleep 5
+          done
+          cat inbound-slack-tools.out
+          # The trail names the person the signature vouched for — P8b's
+          # vocabulary for an approver, reused for a requester.
+          grep -E "slack-tools +inbound-slack +$ev +completed .*slack:U0CIPERSON *$" inbound-slack-tools.out
+          # The SPEND names them, under the agent's budget credential...
+          make ledger | tee ledger-slack-tools.out
+          grep -E 'hello-world +ollama .*slack:U0CIPERSON *$' ledger-slack-tools.out
+          # ...and so does the TOOL call, under a DIFFERENT credential.
+          # The tool and the decision are deliberately not pinned: the
+          # claim under test is the attribution, not which tool a model
+          # chose.
+          make tool-audit CRED_TOOLS=hello-tools | tee tool-audit-slack-tools.out
+          grep -E 'hello-tools +kagent-tools +tools/call .*slack:U0CIPERSON *$' tool-audit-slack-tools.out
+          # The run is CLOSED when the turn ends: a call after it reads
+          # 'none' again, not the person who has gone home.
+          bash scripts/tool-call-probe.sh k8s_get_resources '{"resource_type": "ConfigMap", "namespace": "default"}'
+          make tool-audit CRED_TOOLS=hello-tools | tee tool-audit-after-run.out
+          head -2 tool-audit-after-run.out
+          test "$(sed -n '2p' tool-audit-after-run.out | grep -c 'none *$')" = 1
       # P9, keyless: run it for real. Every step below drives the plane's
       # two replicas directly (a port-forward per POD, so both are in
       # every race by construction) rather than through kagent, whose

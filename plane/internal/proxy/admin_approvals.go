@@ -214,10 +214,25 @@ func (h *handler) listGrants(w http.ResponseWriter, r *http.Request) {
 	type row struct {
 		store.Grant
 		Live bool `json:"live"`
+		// CredentialExpiresAt: a grant that outlives the credential it
+		// was given on is a promise the plane cannot keep, so an
+		// operator reads the two deadlines side by side. Absent for a
+		// legacy credential, which has none.
+		CredentialExpiresAt *time.Time `json:"credential_expires_at,omitempty"`
+	}
+	// One read of the credential table serves every row; grant lists are
+	// demo-scale, and this keeps the store's Grants query untouched.
+	deadlines := map[string]*time.Time{}
+	if creds, cerr := h.d.Store.ListCredentials(r.Context()); cerr != nil {
+		slog.Error("admin: credential deadlines for grants", "err", cerr)
+	} else {
+		for _, c := range creds {
+			deadlines[c.Name] = c.ExpiresAt
+		}
 	}
 	out := make([]row, 0, len(grants))
 	for i, g := range grants {
-		out = append(out, row{Grant: g, Live: live[i]})
+		out = append(out, row{Grant: g, Live: live[i], CredentialExpiresAt: deadlines[g.CredentialName]})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"grants": out})

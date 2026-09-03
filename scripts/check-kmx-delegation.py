@@ -72,6 +72,11 @@ OWNED = {
     "backup": "kmx backup",
     "restore": "kmx restore",
     "plane-metrics": "kmx metrics",
+    # Credentials that expire: the view an operator watches, and the one
+    # verb that moves a deadline. Renewal mints nothing, which is the only
+    # reason a CLI that accepts no credential material can own it (D27).
+    "credentials": "kmx credentials",
+    "credential-renew": "kmx credential renew",
 }
 
 # Targets whose recipe passes an operator-settable argument (a credential, an
@@ -89,6 +94,8 @@ CARRIES_ARGUMENTS = {
     # POD= names one replica; without it the recipe expands to a bare
     # `kmx metrics`, which the exact-match arm below still pins.
     "plane-metrics",
+    # NAME= and TTL= are empty in the dry run; the prefix covers the rest.
+    "credential-renew",
 }
 
 # A line that reaches the cluster itself. Anchored to a command position —

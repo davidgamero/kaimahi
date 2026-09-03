@@ -151,6 +151,8 @@ make plane-metrics POD=<name>   # a specific replica
 | `kaimahi_decisions_total` | `seam` (proxy, gateway, inbound), `decision` (allowed, granted, denied), `reason` | every governance decision, by why |
 | `kaimahi_ledger_month_cents`, `kaimahi_ledger_month_tokens` | `credential` | month-to-date ledger per credential **name**, read from Postgres at scrape time |
 | `kaimahi_live_grants` | `kind` (tool, budget, inbound) | grants live right now |
+| `kaimahi_credential_expires_in_seconds` | `credential` | seconds until a credential stops authenticating, negative once it already has — how an expiry is seen coming rather than diagnosed at 3am ([identity.md](identity.md)) |
+| `kaimahi_credentials_without_expiry` | — | credentials issued before expiry existed, which therefore never expire. A closed class: this gauge can only fall |
 | `kaimahi_open_reservations` | — | calls admitted under a cap whose ledger row has not landed yet, across all replicas |
 | `kaimahi_upstream_latency_seconds` | `seam`, `upstream` | histogram of time spent at the upstream |
 | `kaimahi_queue_depth`, `kaimahi_queue_capacity` | `queue` (inbound_jobs, notifier) | the per-replica queues |

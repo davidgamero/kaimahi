@@ -59,7 +59,11 @@ type Store interface {
 	CredentialByTokenHash(ctx context.Context, tokenHash []byte) (store.Credential, error)
 	CredentialByName(ctx context.Context, name string) (store.Credential, error)
 	RecordInboundAudit(ctx context.Context, e store.InboundAuditEntry) error
-	AdmitInboundEvent(ctx context.Context, hook, credential, delivery, agent string) (eventID, grantID string, err error)
+	AdmitInboundEvent(ctx context.Context, hook, credential, delivery, agent, actedFor string) (eventID, grantID string, err error)
+	// Identity on the call: the run the plane opens around an agent turn
+	// so the ledger and the tool audit can name who it acted for.
+	OpenRun(ctx context.Context, credential, actedFor, source, delivery, eventID string, ttl time.Duration) (string, error)
+	CloseRun(ctx context.Context, id string) error
 	FileApprovalRequest(ctx context.Context, f store.Filing) (filed bool, err error)
 	// P8b: approval commands from Slack decide requests here, with the
 	// approver's identity.
@@ -121,6 +125,11 @@ type job struct {
 	h        config.InboundHook
 	delivery string
 	text     string
+	// actedFor is the person the source named and the plane verified
+	// ('slack:<user id>'), or 'none' where the source names nobody. It
+	// becomes the agent run's identity, and through the run reaches the
+	// ledger and the tool audit.
+	actedFor string
 }
 
 type Bridge struct {
@@ -220,6 +229,14 @@ func (b *Bridge) Run(ctx context.Context) {
 // reports whether it was written. A denial stands either way; an
 // acknowledgement (challenge, ignored) is withheld when its row is not.
 func (b *Bridge) audit(ctx context.Context, e store.InboundAuditEntry) bool {
+	// Every inbound row leaves through here, so this is where the
+	// identity is stamped. Before authentication the context carries
+	// none and the row says 'unknown' — the plane genuinely cannot say
+	// who an unverified blob was for, and saying 'none' there would be
+	// a claim it has not earned.
+	if e.ActedFor == "" {
+		e.ActedFor = store.AttributionFrom(ctx).ActedFor
+	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if err := b.d.Store.RecordInboundAudit(ctx, e); err != nil {
@@ -263,6 +280,8 @@ func reasonFor(status int, msg string) metrics.Reason {
 		return metrics.ReasonAdmission
 	case strings.HasPrefix(msg, "credential store unavailable"):
 		return metrics.ReasonCredentialStore
+	case strings.HasPrefix(msg, store.ExpiredPrefix), strings.HasPrefix(msg, "target "+store.ExpiredPrefix):
+		return metrics.ReasonCredentialExpired
 	case strings.HasPrefix(msg, "hook "):
 		return metrics.ReasonHookConfig
 	case strings.HasPrefix(msg, "unauthorized"), strings.HasPrefix(msg, "credential is not bound"),
@@ -361,6 +380,13 @@ func (b *Bridge) receive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Identity on the call, resolved at the one door where a PERSON is
+	// visible: a Slack app_mention names the user who typed it, and the
+	// signature the plane just verified is what vouches for that claim.
+	// Everything downstream — audit rows, the agent run, and through
+	// the run the ledger and the tool audit — reads it from here.
+	r = r.WithContext(store.WithAttribution(r.Context(), store.Attribution{ActedFor: actorOf(h, ev)}))
+
 	if ev.challenge != "" {
 		// Slack's URL verification: echo, audit, trigger nothing. An
 		// acknowledgement the trail cannot record is not given (503,
@@ -437,6 +463,13 @@ func (b *Bridge) receive(w http.ResponseWriter, r *http.Request) {
 		b.deny(w, r, name, h, delivery, http.StatusServiceUnavailable, "credential store unavailable")
 		return
 	}
+	// A target agent whose credential has expired cannot spend, so the
+	// event is refused at the door rather than admitted, queued and
+	// failed at the proxy with a grant use already burned.
+	if target.Expired(b.d.Now()) {
+		b.deny(w, r, name, h, delivery, http.StatusForbidden, "target "+store.ExpiredMessage(target))
+		return
+	}
 	if err := b.d.Meter.Preview(r.Context(), target); err != nil {
 		// A cap denial keeps the meter's 429; anything else (metering
 		// unavailable) is the plane degraded, which on an ingress is a
@@ -476,7 +509,8 @@ func (b *Bridge) receive(w http.ResponseWriter, r *http.Request) {
 	// burned, replay slot taken) that this side treats as a failure and
 	// never queues.
 	admitCtx, cancelAdmit := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	eventID, grantID, err := b.d.Store.AdmitInboundEvent(admitCtx, name, cred.Name, delivery, agentRef(h))
+	actedFor := store.AttributionFrom(r.Context()).ActedFor
+	eventID, grantID, err := b.d.Store.AdmitInboundEvent(admitCtx, name, cred.Name, delivery, agentRef(h), actedFor)
 	cancelAdmit()
 	switch {
 	case errors.Is(err, store.ErrReplay):
@@ -501,7 +535,7 @@ func (b *Bridge) receive(w http.ResponseWriter, r *http.Request) {
 	metrics.Decide(metrics.SeamInbound, metrics.Granted, metrics.ReasonGrant)
 	// The slot is held; the queue has at least that much room by
 	// construction, so this send cannot block.
-	b.jobs <- job{eventID: eventID, hook: name, h: h, delivery: delivery, text: ev.text}
+	b.jobs <- job{eventID: eventID, hook: name, h: h, delivery: delivery, text: ev.text, actedFor: actedFor}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]string{
@@ -538,6 +572,10 @@ func (b *Bridge) authenticate(w http.ResponseWriter, r *http.Request, name strin
 		}
 		if cred.Name != h.Credential {
 			b.deny(w, r, name, h, "", http.StatusForbidden, "credential is not bound to this hook")
+			return store.Credential{}, "", event{}, false
+		}
+		if cred.Expired(now) {
+			b.deny(w, r, name, h, "", http.StatusForbidden, store.ExpiredMessage(cred))
 			return store.Credential{}, "", event{}, false
 		}
 		delivery := r.Header.Get(HeaderDelivery)
@@ -608,6 +646,10 @@ func (b *Bridge) authenticate(w http.ResponseWriter, r *http.Request, name strin
 			b.deny(w, r, name, h, delivery, http.StatusServiceUnavailable, "credential store unavailable")
 			return store.Credential{}, "", event{}, false
 		}
+		if cred.Expired(now) {
+			b.deny(w, r, name, h, delivery, http.StatusForbidden, store.ExpiredMessage(cred))
+			return store.Credential{}, "", event{}, false
+		}
 		return cred, delivery, ev, true
 	}
 	// config.Parse admits only the modes above.
@@ -635,9 +677,51 @@ func (b *Bridge) fileRequest(ctx context.Context, credential, kind, subject, det
 func (b *Bridge) process(j job) {
 	ctx, cancel := context.WithTimeout(context.Background(), b.d.InvokeTimeout)
 	defer cancel()
-	out := b.invoke(ctx, j)
+	ctx = store.WithAttribution(ctx, store.Attribution{ActedFor: j.actedFor})
 	e := store.InboundAuditEntry{Hook: j.hook, CredentialName: j.h.Credential, DeliveryID: j.delivery,
-		Status: out.status, Agent: agentRef(j.h), InputTokens: out.inTokens, OutputTokens: out.outTokens}
+		Agent: agentRef(j.h), ActedFor: j.actedFor}
+
+	// Open the run BEFORE the agent turn and close it after: the window
+	// between is the only thing that lets the ledger and the tool audit
+	// name who a governed call was made for, because the agent pod
+	// authenticates with its credential and nothing else. It runs
+	// against the agent's BUDGET credential — the identity that spends,
+	// not the hook's.
+	//
+	// The run expires a minute past the invoke timeout, so a replica
+	// that dies mid-turn cannot leave an open run poisoning every later
+	// call for that credential (P9's reservation discipline).
+	// One run per credential the agent authenticates with: it spends
+	// MODEL tokens under its budget credential and makes TOOL calls
+	// under its gateway credential, and a run opened on only one of
+	// them would leave half the turn in the audit trail unattributed.
+	runIDs, err := b.openRuns(ctx, j)
+	if err != nil {
+		// Fail closed: an event whose spend the plane could not
+		// attribute is not honoured, the same rule as an event it
+		// cannot record. The grant use is already burned, and the trail
+		// says so.
+		slog.Error("inbound: opening the agent run failed; the event is not invoked",
+			"hook", j.hook, "event", j.eventID, "err", err)
+		e.Decision, e.Status, e.Detail = "failed", 0, "attribution unavailable: the agent run could not be opened"
+		b.audit(ctx, e)
+		return
+	}
+	defer func() {
+		cctx, ccancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer ccancel()
+		for _, id := range runIDs {
+			if err := b.d.Store.CloseRun(cctx, id); err != nil {
+				// The run expires on its own; say so rather than leaving
+				// an operator to wonder why later calls read 'unknown'.
+				slog.Error("inbound: closing the agent run failed; it will expire on its own",
+					"hook", j.hook, "run", id, "err", err)
+			}
+		}
+	}()
+
+	out := b.invoke(ctx, j)
+	e.Status, e.InputTokens, e.OutputTokens = out.status, out.inTokens, out.outTokens
 	if out.err != nil {
 		e.Decision, e.Detail = "failed", out.err.Error()
 		slog.Error("inbound: invocation failed", "hook", j.hook, "event", j.eventID, "err", out.err)
@@ -645,6 +729,34 @@ func (b *Bridge) process(j job) {
 		e.Decision, e.Detail = "completed", "task "+out.taskID
 	}
 	b.audit(ctx, e)
+}
+
+// openRuns opens one run per DISTINCT credential the triggered agent
+// authenticates with. All or nothing: a partially attributed turn would
+// put a person's name on the model calls and 'none' on the tool calls,
+// which reads as "nobody did that part" — the exact false claim this
+// lane exists to remove. Any failure closes what was opened and the
+// event is not invoked.
+func (b *Bridge) openRuns(ctx context.Context, j job) ([]string, error) {
+	wanted := []string{j.h.BudgetCredential}
+	if j.h.ToolCredential != "" && j.h.ToolCredential != j.h.BudgetCredential {
+		wanted = append(wanted, j.h.ToolCredential)
+	}
+	var ids []string
+	for _, credential := range wanted {
+		id, err := b.d.Store.OpenRun(ctx, credential, j.actedFor,
+			"inbound:"+j.hook, j.delivery, j.eventID, b.d.InvokeTimeout+time.Minute)
+		if err != nil {
+			cctx, ccancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			for _, open := range ids {
+				_ = b.d.Store.CloseRun(cctx, open)
+			}
+			ccancel()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 type outcome struct {

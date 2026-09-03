@@ -21,6 +21,11 @@ runtime; the gateway relays the protocol and enforces.
 > connections. Cluster-level NetworkPolicy is not built as of this doc;
 > a parallel lane is building it.
 
+> The tool audit's last column is `acted for`: who the call was made
+> for, where the plane can substantiate it ([identity.md](identity.md)).
+> The gateway also refuses an expired credential, audited like every
+> other refusal.
+
 ## Architecture
 
 ```text

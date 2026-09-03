@@ -29,7 +29,12 @@ type Store interface {
 	// RecordLedger appends the row and consumes the call's reservation
 	// (P9; empty when the call held nothing).
 	RecordLedger(ctx context.Context, e store.LedgerEntry, reservationID string) error
-	CreateCredential(ctx context.Context, name string, tokenHash []byte) error
+	CreateCredential(ctx context.Context, name string, tokenHash []byte, expiresAt time.Time) error
+	// Credential expiry (admin surface): renew extends the deadline on
+	// the same token; the list is what an operator reads to see one
+	// coming.
+	RenewCredential(ctx context.Context, name string, expiresAt time.Time) error
+	ListCredentials(ctx context.Context) ([]store.Credential, error)
 	SetBudget(ctx context.Context, name string, capCents, capTokens *int64) error
 	Ledger(ctx context.Context, credentialName string, limit int) ([]store.LedgerEntry, error)
 	MonthUsage(ctx context.Context, credentialName string, monthStart time.Time) (cents, tokens int64, err error)
@@ -49,6 +54,9 @@ type Store interface {
 	// P7b inbound: the audit trail read (admin); the bridge's own data
 	// path uses the narrower inbound.Store.
 	InboundAudit(ctx context.Context, hook string, limit int) ([]store.InboundAuditEntry, error)
+	// Identity on the call: who the run this call falls inside is being
+	// made for. Resolution only — never enforcement.
+	ActorFor(ctx context.Context, credential string) (store.Attribution, error)
 }
 
 // Meter admits or denies a request under the credential's budget caps,

@@ -101,8 +101,10 @@ swap plus a credential the agent cannot read past.
 | `kmx plane` | build the proxy image, bootstrap the plane's secrets, deploy the plane, wait for it to serve |
 | `kmx plane --step <step>` | one step only: `image`, `secrets`, `deploy` |
 | `kmx plane --source <path>` | build the plane from a checkout instead of fetching it (`-` forces the fetch) |
-| `kmx govern [<credential>]` | issue the governed credential (default `$CRED`), apply the governed presets, switch the agent onto one |
-| `kmx ledger [<credential>]` | the spend ledger, newest first, plus month-to-date totals |
+| `kmx govern [<credential>]` | issue the governed credential (default `$CRED`), apply the governed presets, switch the agent onto one. `--ttl` sets the credential's lifetime; the plane defaults one, and there is no way to ask for "never" |
+| `kmx credentials` | the governed credentials and when each one expires, soonest first, with the state an operator scans: `EXPIRED`, `EXPIRING`, `ok`, or `no expiry` (the legacy class) ([identity.md](identity.md)) |
+| `kmx credential renew <name> [--ttl 720h]` | extend a credential's deadline. It moves a **date**, not material: the token does not change, so no Secret is rewritten and no credential bytes travel — which is the only reason a CLI that accepts no credential material (D27) can own this verb. Rotating the token is still `kmx govern` |
+| `kmx ledger [<credential>]` | the spend ledger, newest first, plus month-to-date totals. The last column is `acted for`: who the call was made for |
 | `kmx grants [<credential>]` | grants, with liveness — an expired grant is not a grant |
 | `kmx audit tool\|approval [<cred>]` | the enforcement points' audit trails |
 | `kmx use <preset>` | switch an agent onto a preset from `k8s/models/` (`--agent`, default `hello-world`); waits until exactly one pod is on the new template |

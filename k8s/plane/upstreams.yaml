@@ -126,6 +126,22 @@
 # governed-copilot preset all mount kaimahi-governed-token, issued to
 # credential "hello-world" by `make govern`.
 #
+# slack-tools is the same shape aimed at the TOOLS agent, and it is what
+# makes the identity claim provable end to end without a key: a mention
+# from a person triggers hello-tools, whose model spend lands in the
+# ledger under "hello-world" and whose tool calls land in the tool audit
+# under "hello-tools" — two credentials, one person, both trails naming
+# them. Inert until someone creates its signing secret AND approves an
+# inbound grant for it, like every other hook here.
+#
+# tool_credential is the OTHER credential the same agent authenticates
+# with — its MCP gateway one (`make govern-slack` issues "hello-slack").
+# Identity on the call needs both: the plane opens one run per
+# credential around an agent turn, and a run opened on only the budget
+# credential would put the person's name on the model calls and leave
+# every tool call in the audit trail saying nobody was there. Omit it
+# for a hook whose agent calls no tools.
+#
 # approval_notifier (P8b) is how a human learns a request is waiting:
 # the plane posts into the pinned channel THROUGH its own gateway
 # (tool_upstream slack, the posting tool), under its OWN credential —
@@ -216,7 +232,19 @@ data:
           "slack_approvers_file": "/etc/kaimahi/slack/approvers",
           "agent_namespace": "kagent",
           "agent": "hello-slack",
-          "budget_credential": "hello-world"
+          "budget_credential": "hello-world",
+          "tool_credential": "hello-slack"
+        },
+        "slack-tools": {
+          "credential": "inbound-slack",
+          "auth": "slack",
+          "signing_secret_file": "/etc/kaimahi/inbound/slack-tools",
+          "slack_channels_file": "/etc/kaimahi/slack/channel",
+          "slack_approvers_file": "/etc/kaimahi/slack/approvers",
+          "agent_namespace": "kagent",
+          "agent": "hello-tools",
+          "budget_credential": "hello-world",
+          "tool_credential": "hello-tools"
         }
       },
       "approval_notifier": {

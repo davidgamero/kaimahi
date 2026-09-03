@@ -190,13 +190,14 @@ Postgres, migrated from `plane/internal/db/migrations/`:
 
 | Table | Holds |
 |---|---|
-| `credential` | issued tokens (hashed), their budgets |
+| `credential` | issued tokens (hashed), their budgets, and their **expiry** — NULL is the closed legacy class ([identity.md](identity.md)) |
 | `ledger_entry` | one row per billed model call — tokens, cents, status |
 | `spend_reservation` | calls admitted under a cap whose ledger row has not landed yet — the hold that makes budgets exact under concurrency; the ledger write deletes it |
 | `tool_allowlist` | which tools a credential may call |
 | `tool_audit` | every tool call, allowed **and denied** |
 | `approval_request`, `permit_grant`, `approval_audit` | the deny → approve → bounded grant cycle |
 | `inbound_audit` | append-only, and doubles as the webhook replay guard |
+| `agent_run` | one agent turn the plane triggered and held open — the window that lets `ledger_entry.acted_for` and `tool_audit.acted_for` name WHO a call was made for ([identity.md](identity.md)) |
 
 ### What is configuration, not code
 

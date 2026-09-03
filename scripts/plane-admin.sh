@@ -25,6 +25,14 @@
 #                                          the identity, never a bearer;
 #                                          SECRET_NAMESPACE overrides the
 #                                          kagent default)
+#                                          (an optional third argument, or
+#                                          TTL=, sets the credential's
+#                                          lifetime — the plane defaults one;
+#                                          there is no "never")
+#   plane-admin.sh credentials             list credentials and when each expires
+#   plane-admin.sh renew <name> [ttl]      extend a credential's expiry; the
+#                                          token does not move, so no Secret
+#                                          has to be rewritten
 #   plane-admin.sh budget <name> <cents|-> <tokens|->   set caps (- = none)
 #   plane-admin.sh ledger [name]           show ledger (+ month totals)
 #   plane-admin.sh tool-allow <name> <tool,tool|->      replace tool allowlist
@@ -114,6 +122,26 @@ check_cap() {
     (*[!0-9]*|'') echo "invalid cap '$1' (want a non-negative integer or -)" >&2; exit 2 ;;
   esac
 }
+# ttl_seconds parses a duration the way `approve` always has (90, 90s,
+# 5m, 2h, 1d) and leaves the answer in $secs. Factored out because a
+# credential's lifetime and a grant's are typed the same way, and two
+# copies of a parser are two parsers to disagree.
+ttl_seconds() {
+  case "$1" in
+    (*[!0-9smhd]*|'') echo "invalid TTL '$1' (want e.g. 90, 90s, 5m, 2h, 1d)" >&2; exit 2 ;;
+  esac
+  local n unit
+  n="${1%[smhd]}"; unit="${1#"$n"}"
+  case "$n" in
+    (*[!0-9]*|'') echo "invalid TTL '$1' (want e.g. 90, 90s, 5m, 2h, 1d)" >&2; exit 2 ;;
+  esac
+  case "$unit" in
+    (s|'') secs=$n ;;
+    (m) secs=$((n * 60)) ;;
+    (h) secs=$((n * 3600)) ;;
+    (d) secs=$((n * 86400)) ;;
+  esac
+}
 check_uuid() {
   if ! [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
     echo "invalid request id '$1' (want a UUID from 'make approvals')" >&2
@@ -124,9 +152,15 @@ check_uuid() {
 cmd="${1:-}"
 case "$cmd" in
   issue)
-    name="${2:?usage: plane-admin.sh issue <name>}"
+    name="${2:?usage: plane-admin.sh issue <name> [ttl]}"
     check_name "$name"
-    printf '{"name": "%s"}\n' "$name" > "$workdir/req"
+    ttl="${3:-${TTL:--}}"
+    if [ "$ttl" = - ]; then
+      printf '{"name": "%s"}\n' "$name" > "$workdir/req"
+    else
+      ttl_seconds "$ttl"
+      printf '{"name": "%s", "ttl_seconds": %s}\n' "$name" "$secs" > "$workdir/req"
+    fi
     admin_curl POST /admin/credentials "$workdir/req"
     if [ "$status" = 409 ] && [ "$GOVERNED_SECRET" = - ]; then
       echo "Credential '$name' already issued; keeping it (no token is stored for it)." >&2
@@ -169,6 +203,56 @@ case "$cmd" in
       "kaimahi.dev/credential=$name" >/dev/null
     echo "Governed credential '$name' issued; Secret $SECRET_NAMESPACE/$GOVERNED_SECRET created." >&2
     echo "The plane stores only its hash — the real upstream keys stay with the proxy." >&2
+    expires=$(json_get "$workdir/resp" expires_at || true)
+    # Said at issue time, not only when it bites: an operator who never
+    # learns the deadline meets it as an outage.
+    [ -z "$expires" ] || echo "It expires $expires — 'make credentials' shows every deadline, 'make credential-renew NAME=$name' extends this one." >&2
+    ;;
+  renew)
+    name="${2:?usage: plane-admin.sh renew <name> [ttl]}"
+    check_name "$name"
+    ttl="${3:-${TTL:--}}"
+    if [ "$ttl" = - ]; then
+      printf '{}\n' > "$workdir/req"
+    else
+      ttl_seconds "$ttl"
+      printf '{"ttl_seconds": %s}\n' "$secs" > "$workdir/req"
+    fi
+    admin_curl POST "/admin/credentials/$name/renew" "$workdir/req"
+    [ "$status" = 200 ] || { echo "renew failed (HTTP $status):" >&2; cat "$workdir/resp" >&2; exit 1; }
+    # No token is minted, sent or read here: renewal moves a date, which
+    # is why it needs no custody handling at all.
+    echo "Credential '$name' now expires $(json_get "$workdir/resp" expires_at)." >&2
+    ;;
+  credentials)
+    admin_curl GET /admin/credentials
+    [ "$status" = 200 ] || { echo "credentials read failed (HTTP $status):" >&2; cat "$workdir/resp" >&2; exit 1; }
+    python3 - "$workdir/resp" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+rows = d.get("credentials") or []
+if not rows:
+    print("no credentials")
+fmt = "%-16s %-10s %-12s %-22s %-9s %s"
+if rows:
+    print(fmt % ("credential", "cap cents", "cap tokens", "expires (UTC)", "state", "created (UTC)"))
+for c in rows:
+    # "no expiry" is the LEGACY class: issued before credentials expired,
+    # still valid, and a class that can only shrink. Never a blank, which
+    # would read as a bug.
+    if c.get("expires_at") is None:
+        state = "no expiry"
+    elif c.get("expired"):
+        state = "EXPIRED"
+    elif c.get("expiring_soon"):
+        state = "EXPIRING"
+    else:
+        state = "ok"
+    print(fmt % (c["credential"],
+                 c["cap_cents"] if c.get("cap_cents") is not None else "-",
+                 c["cap_tokens"] if c.get("cap_tokens") is not None else "-",
+                 (c.get("expires_at") or "-")[:19], state, c["created_at"][:19]))
+EOF
     ;;
   budget)
     name="${2:?usage: plane-admin.sh budget <name> <cents|-> <tokens|->}"
@@ -193,11 +277,17 @@ case "$cmd" in
 import json, sys
 d = json.load(open(sys.argv[1]))
 rows = d.get("entries") or []
-fmt = "%-19s %-12s %-9s %-16s %6s %6s %6s %-8s %s"
-print(fmt % ("created (UTC)", "credential", "upstream", "model", "in", "out", "cents", "source", "status"))
+# The trailing column is "acted for": WHO the call was made for. Last on
+# purpose — every existing grep and doc example anchors on the columns
+# before it. 'none' means there is no person, 'unknown' means the plane
+# cannot say, 'legacy' means the row predates attribution: three
+# different answers that stay different.
+fmt = "%-19s %-12s %-9s %-16s %6s %6s %6s %-8s %-6s %s"
+print(fmt % ("created (UTC)", "credential", "upstream", "model", "in", "out", "cents", "source", "status", "acted for"))
 for e in rows:
     print(fmt % (e["created_at"][:19], e["credential"], e["upstream"], e["model"][:16],
-                 e["input_tokens"], e["output_tokens"], e["cost_cents"], e["cost_source"], e["status"]))
+                 e["input_tokens"], e["output_tokens"], e["cost_cents"], e["cost_source"], e["status"],
+                 e.get("acted_for") or "unknown"))
 if "month_cents" in d:
     print(f'-- month to date: {d["month_cents"]} cents, {d["month_tokens"]} tokens')
 EOF
@@ -240,8 +330,8 @@ print(f'"'"'{d["credential"]}: {", ".join(d["tools"]) or "(empty — nothing cal
 import json, sys
 d = json.load(open(sys.argv[1]))
 rows = d.get("entries") or []
-fmt = "%-19s %-12s %-12s %-12s %-24s %-8s %6s %-44s %s"
-print(fmt % ("created (UTC)", "credential", "upstream", "method", "tool", "decision", "status", "detail", "call"))
+fmt = "%-19s %-12s %-12s %-12s %-24s %-8s %6s %-44s %-44s %s"
+print(fmt % ("created (UTC)", "credential", "upstream", "method", "tool", "decision", "status", "detail", "call", "acted for"))
 for e in rows:
     # arg_digest identifies the call; arg_summary says what it was. Both
     # are on the denial and on the admitted call, so an approved call and
@@ -251,7 +341,8 @@ for e in rows:
         call = (call + " ") if call else ""
         call += "[" + e["arg_digest"][:12] + "]"
     print(fmt % (e["created_at"][:19], e["credential"], e["upstream"], e["method"],
-                 e["tool"], e["decision"], e["status"], e["detail"], call or "-"))
+                 e["tool"], e["decision"], e["status"], e["detail"], call or "-",
+                 e.get("acted_for") or "unknown"))
 EOF
     ;;
   approvals)
@@ -279,19 +370,7 @@ EOF
     check_uuid "$id"
     body='{'
     if [ "$ttl" != - ]; then
-      case "$ttl" in
-        (*[!0-9smhd]*|'') echo "invalid TTL '$ttl' (want e.g. 90, 90s, 5m, 2h, 1d)" >&2; exit 2 ;;
-      esac
-      n="${ttl%[smhd]}"; unit="${ttl#"$n"}"
-      case "$n" in
-        (*[!0-9]*|'') echo "invalid TTL '$ttl' (want e.g. 90, 90s, 5m, 2h, 1d)" >&2; exit 2 ;;
-      esac
-      case "$unit" in
-        (s|'') secs=$n ;;
-        (m) secs=$((n * 60)) ;;
-        (h) secs=$((n * 3600)) ;;
-        (d) secs=$((n * 86400)) ;;
-      esac
+      ttl_seconds "$ttl"
       body="$body\"ttl_seconds\": $secs, "
     fi
     if [ "$uses" != - ]; then
@@ -365,9 +444,12 @@ d = json.load(open(sys.argv[1]))
 rows = d.get("grants") or []
 if not rows:
     print("no grants")
-fmt = "%-36s %-12s %-8s %-18s %-6s %-22s %-9s %-8s %-19s %-18s %s"
+# The last column is the CREDENTIAL's deadline, not the grant's: a grant
+# that outlives the credential it was given on is a promise the plane
+# cannot keep, so the two are read side by side.
+fmt = "%-36s %-12s %-8s %-18s %-6s %-22s %-9s %-8s %-19s %-18s %-20s %s"
 if rows:
-    print(fmt % ("id", "credential", "kind", "subject", "live", "expires (UTC)", "uses", "amount", "created (UTC)", "decided by", "binds"))
+    print(fmt % ("id", "credential", "kind", "subject", "live", "expires (UTC)", "uses", "amount", "created (UTC)", "decided by", "binds", "cred expires (UTC)"))
 for g in rows:
     uses = str(g["uses"]) + ("/" + str(g["max_uses"]) if g.get("max_uses") is not None else "")
     # A tool grant admits ONE call (P12): "binds" is that call's digest.
@@ -383,7 +465,8 @@ for g in rows:
                  "yes" if g["live"] else "no",
                  (g.get("expires_at") or "-")[:19], uses,
                  g.get("amount") if g.get("amount") is not None else "-",
-                 g["created_at"][:19], g.get("decided_by") or "-", binds))
+                 g["created_at"][:19], g.get("decided_by") or "-", binds,
+                 (g.get("credential_expires_at") or "-")[:19]))
 EOF
     ;;
   approval-audit)
@@ -411,15 +494,16 @@ EOF
 import json, sys
 d = json.load(open(sys.argv[1]))
 rows = d.get("entries") or []
-fmt = "%-19s %-12s %-14s %-20s %-9s %6s %6s %6s %s"
-print(fmt % ("created (UTC)", "hook", "credential", "delivery", "decision", "status", "in", "out", "detail"))
+fmt = "%-19s %-12s %-14s %-20s %-9s %6s %6s %6s %-40s %s"
+print(fmt % ("created (UTC)", "hook", "credential", "delivery", "decision", "status", "in", "out", "detail", "acted for"))
 for e in rows:
     print(fmt % (e["created_at"][:19], e["hook"], e["credential"], e["delivery_id"][:20],
-                 e["decision"], e["status"], e["input_tokens"], e["output_tokens"], e["detail"]))
+                 e["decision"], e["status"], e["input_tokens"], e["output_tokens"], e["detail"],
+                 e.get("acted_for") or "unknown"))
 EOF
     ;;
   *)
-    echo "usage: plane-admin.sh issue|budget|ledger|tool-allow|tool-allowlist|tool-audit|approvals|approve|deny|request|grants|approval-audit|inbound-audit ..." >&2
+    echo "usage: plane-admin.sh issue|renew|credentials|budget|ledger|tool-allow|tool-allowlist|tool-audit|approvals|approve|deny|request|grants|approval-audit|inbound-audit ..." >&2
     exit 2
     ;;
 esac

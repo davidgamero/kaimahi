@@ -12,6 +12,11 @@ Assumes: a cluster from [getting-started.md](getting-started.md). The
 plane you deploy here is also what [tool-governance.md](tool-governance.md),
 [approvals.md](approvals.md) and [slack.md](slack.md) build on.
 
+> **Every credential the plane issues now expires**, and every ledger
+> row names who the call was made for. Both are
+> [identity.md](identity.md); the ledger's last column and
+> `make credentials` are where you see them.
+
 > **This governs LLM traffic only, and only through `governed-*`
 > presets.** Tool calls are governed separately
 > ([tool-governance.md](tool-governance.md)), approvals separately

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,8 @@ import (
 // fakeStore implements proxy.Store in memory.
 type fakeStore struct {
 	creds      map[string]store.Credential // key: hex-free string(token hash)
+	actor      store.Attribution
+	actorErr   error
 	ledger     []store.LedgerEntry
 	lookupErr  error
 	ledgerErr  error
@@ -141,6 +144,36 @@ func (f *fakeStore) addToken(token string, c store.Credential) {
 	f.creds[string(h[:])] = c
 }
 
+func (f *fakeStore) ActorFor(context.Context, string) (store.Attribution, error) {
+	if f.actorErr != nil {
+		return store.Lost, f.actorErr
+	}
+	if f.actor.ActedFor == "" {
+		return store.Unattributed, nil
+	}
+	return f.actor, nil
+}
+
+func (f *fakeStore) RenewCredential(_ context.Context, name string, expiresAt time.Time) error {
+	for k, c := range f.creds {
+		if c.Name == name {
+			c.ExpiresAt = &expiresAt
+			f.creds[k] = c
+			return nil
+		}
+	}
+	return store.ErrNotFound
+}
+
+func (f *fakeStore) ListCredentials(context.Context) ([]store.Credential, error) {
+	var out []store.Credential
+	for _, c := range f.creds {
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
 func (f *fakeStore) CredentialByTokenHash(_ context.Context, hash []byte) (store.Credential, error) {
 	if f.lookupErr != nil {
 		return store.Credential{}, f.lookupErr
@@ -164,13 +197,13 @@ func (f *fakeStore) RecordLedger(_ context.Context, e store.LedgerEntry, reserva
 	return nil
 }
 
-func (f *fakeStore) CreateCredential(_ context.Context, name string, hash []byte) error {
+func (f *fakeStore) CreateCredential(_ context.Context, name string, hash []byte, expiresAt time.Time) error {
 	for _, c := range f.creds {
 		if c.Name == name {
 			return store.ErrExists
 		}
 	}
-	f.creds[string(hash)] = store.Credential{Name: name}
+	f.creds[string(hash)] = store.Credential{Name: name, ExpiresAt: &expiresAt}
 	return nil
 }
 

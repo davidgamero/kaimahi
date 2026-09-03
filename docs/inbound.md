@@ -13,6 +13,12 @@ hook, bounded, before any event on it runs; the agent it triggers has to
 have budget left; every decision is audited; and an event the plane
 cannot record is not honoured.
 
+> This is the door where a **person** is visible: a Slack mention names
+> the user who typed it, and the signature the bridge verified is what
+> makes that name worth recording. The plane opens a run around the
+> agent turn so the ledger and the tool audit can name them too —
+> [identity.md](identity.md).
+
 ## What runs where
 
 The bridge is a fourth listener in the `kaimahi-proxy` process, port

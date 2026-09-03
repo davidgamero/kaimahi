@@ -15,11 +15,16 @@ import (
 // and one reading it from `make` must see the same table.
 
 const (
-	ledgerFmt   = "%-19s %-12s %-9s %-16s %6s %6s %6s %-8s %s\n"
-	grantsFmt   = "%-36s %-12s %-8s %-18s %-6s %-22s %-9s %-8s %-19s %-18s %s\n"
-	toolFmt     = "%-19s %-12s %-12s %-12s %-24s %-8s %6s %-44s %s\n"
-	approvalFmt = "%-19s %-12s %-8s %-18s %-10s %-18s %-40s %s\n"
-	pendingFmt  = "%-36s %-19s %-12s %-8s %-18s %-34s %s\n"
+	// The trailing column on the two enforcement trails is "acted for":
+	// who the call was made for. It is LAST on purpose — every existing
+	// CI grep and doc example anchors on the columns before it, and a
+	// widened column mid-table is a broken pipeline.
+	ledgerFmt      = "%-19s %-12s %-9s %-16s %6s %6s %6s %-8s %-6s %s\n"
+	grantsFmt      = "%-36s %-12s %-8s %-18s %-6s %-22s %-9s %-8s %-19s %-18s %-20s %s\n"
+	toolFmt        = "%-19s %-12s %-12s %-12s %-24s %-8s %6s %-44s %-44s %s\n"
+	credentialsFmt = "%-16s %-10s %-12s %-22s %-9s %s\n"
+	approvalFmt    = "%-19s %-12s %-8s %-18s %-10s %-18s %-40s %s\n"
+	pendingFmt     = "%-36s %-19s %-12s %-8s %-18s %-34s %s\n"
 )
 
 // Ledger prints the spend ledger, newest first, plus month-to-date totals.
@@ -29,13 +34,13 @@ func (c *Client) Ledger(out io.Writer, credential string) error {
 		return err
 	}
 	fmt.Fprintf(out, ledgerFmt, "created (UTC)", "credential", "upstream", "model",
-		"in", "out", "cents", "source", "status")
+		"in", "out", "cents", "source", "status", "acted for")
 	for _, row := range rows(doc, "entries") {
 		fmt.Fprintf(out, ledgerFmt,
 			trunc(str(row["created_at"]), 19), str(row["credential"]), str(row["upstream"]),
 			trunc(str(row["model"]), 16),
 			str(row["input_tokens"]), str(row["output_tokens"]), str(row["cost_cents"]),
-			str(row["cost_source"]), str(row["status"]))
+			str(row["cost_source"]), str(row["status"]), actedFor(row))
 	}
 	if _, ok := doc["month_cents"]; ok {
 		fmt.Fprintf(out, "-- month to date: %s cents, %s tokens\n",
@@ -56,7 +61,7 @@ func (c *Client) Grants(out io.Writer, credential string) error {
 		return nil
 	}
 	fmt.Fprintf(out, grantsFmt, "id", "credential", "kind", "subject", "live",
-		"expires (UTC)", "uses", "amount", "created (UTC)", "decided by", "binds")
+		"expires (UTC)", "uses", "amount", "created (UTC)", "decided by", "binds", "cred expires (UTC)")
 	for _, g := range list {
 		uses := str(g["uses"])
 		if max, ok := g["max_uses"]; ok && max != nil {
@@ -69,7 +74,11 @@ func (c *Client) Grants(out io.Writer, credential string) error {
 			// it: an expiry is printed to the second, and the extra width
 			// is the gap before the next column.
 			trunc(dash(g["expires_at"]), 19), uses, dash(g["amount"]),
-			trunc(str(g["created_at"]), 19), dash(g["decided_by"]), binds(g))
+			trunc(str(g["created_at"]), 19), dash(g["decided_by"]), binds(g),
+			// A grant that outlives the credential it was given on is a
+			// promise the plane cannot keep, so the two deadlines are
+			// read side by side.
+			trunc(dash(g["credential_expires_at"]), 19))
 	}
 	return nil
 }
@@ -136,12 +145,12 @@ func (c *Client) ToolAudit(out io.Writer, credential string) error {
 		return err
 	}
 	fmt.Fprintf(out, toolFmt, "created (UTC)", "credential", "upstream", "method",
-		"tool", "decision", "status", "detail", "call")
+		"tool", "decision", "status", "detail", "call", "acted for")
 	for _, e := range rows(doc, "entries") {
 		fmt.Fprintf(out, toolFmt,
 			trunc(str(e["created_at"]), 19), str(e["credential"]), str(e["upstream"]),
 			str(e["method"]), str(e["tool"]), str(e["decision"]), str(e["status"]), str(e["detail"]),
-			call(e))
+			call(e), actedFor(e))
 	}
 	return nil
 }
@@ -161,6 +170,57 @@ func (c *Client) ApprovalAudit(out io.Writer, credential string) error {
 			dash(e["arg_summary"]))
 	}
 	return nil
+}
+
+// Credentials lists the governed credentials and, first of all, when
+// each one dies. A credential that expires silently at 3am is an outage
+// nobody diagnosed; this is the view where an operator sees it a week
+// out, and the reason the table is sorted soonest-first.
+func (c *Client) Credentials(out io.Writer) error {
+	doc, err := c.Get("credentials", "/admin/credentials")
+	if err != nil {
+		return err
+	}
+	list := rows(doc, "credentials")
+	if len(list) == 0 {
+		fmt.Fprintln(out, "no credentials")
+		return nil
+	}
+	fmt.Fprintf(out, credentialsFmt, "credential", "cap cents", "cap tokens",
+		"expires (UTC)", "state", "created (UTC)")
+	for _, c := range list {
+		fmt.Fprintf(out, credentialsFmt,
+			str(c["credential"]), dash(c["cap_cents"]), dash(c["cap_tokens"]),
+			trunc(dash(c["expires_at"]), 19), expiryState(c),
+			trunc(str(c["created_at"]), 19))
+	}
+	return nil
+}
+
+// expiryState is the word an operator scans the column for. "no expiry"
+// is the legacy class: issued before credentials expired, still valid,
+// and a class that can only shrink — never a blank that reads as a bug.
+func expiryState(c map[string]any) string {
+	switch {
+	case c["expires_at"] == nil:
+		return "no expiry"
+	case yesno(c["expired"]) == "yes":
+		return "EXPIRED"
+	case yesno(c["expiring_soon"]) == "yes":
+		return "EXPIRING"
+	}
+	return "ok"
+}
+
+// actedFor renders who a call was made for. The three words that are not
+// a person are different answers and stay different: 'none' (there is no
+// person), 'unknown' (the plane cannot say) and 'legacy' (the row
+// predates attribution).
+func actedFor(e map[string]any) string {
+	if v := str(e["acted_for"]); v != "" {
+		return v
+	}
+	return "unknown"
 }
 
 // binds says what a tool grant admits (P12): one CALL, named by the

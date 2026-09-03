@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -266,4 +267,69 @@ func TestInboundAuditReadAndInboundRequestKind(t *testing.T) {
 	require.Equal(t, 201, w.Code, w.Body.String())
 	w = adminDo(mux, "POST", "/admin/requests", tok, `{"credential": "inbound-demo", "kind": "inbound", "subject": "Not a hook"}`)
 	require.Equal(t, 400, w.Code)
+}
+
+// Issuing, renewing and listing the deadline: the operator surface for
+// credentials that expire. The token is minted once and never shown
+// again; only names, caps and deadlines are readable afterwards.
+func TestIssuedCredentialsCarryADeadlineAndCanBeRenewed(t *testing.T) {
+	f := newFakeStore()
+	mux, tok := adminMux(t, f)
+
+	// No ttl named: the default applies. There is no way to ask for a
+	// credential that never expires — that class is closed.
+	w := adminDo(mux, "POST", "/admin/credentials", tok, `{"name": "hello-world"}`)
+	require.Equal(t, 201, w.Code)
+	var issued struct {
+		Name      string `json:"name"`
+		Token     string `json:"token"`
+		ExpiresAt string `json:"expires_at"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &issued))
+	require.NotEmpty(t, issued.ExpiresAt, "an issued credential says when it dies")
+	first, err := time.Parse(time.RFC3339, issued.ExpiresAt)
+	require.NoError(t, err)
+	require.WithinDuration(t, time.Now().Add(30*24*time.Hour), first, time.Minute)
+
+	// A typo cannot mint something dead on arrival, or alive for a decade.
+	require.Equal(t, 400, adminDo(mux, "POST", "/admin/credentials", tok, `{"name": "b", "ttl_seconds": 1}`).Code)
+	require.Equal(t, 400, adminDo(mux, "POST", "/admin/credentials", tok, `{"name": "b", "ttl_seconds": 99999999}`).Code)
+	require.Equal(t, 400, adminDo(mux, "POST", "/admin/credentials", tok, `{"name": "b", "ttl_seconds": 0}`).Code)
+
+	// The list is what an operator reads to see an expiry coming.
+	w = adminDo(mux, "GET", "/admin/credentials", tok, "")
+	require.Equal(t, 200, w.Code)
+	require.NotContains(t, w.Body.String(), issued.Token, "the token is shown exactly once, at issue")
+	var listed struct {
+		Credentials []struct {
+			Name         string     `json:"credential"`
+			ExpiresAt    *time.Time `json:"expires_at"`
+			Expired      bool
+			ExpiringSoon bool `json:"expiring_soon"`
+		}
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &listed))
+	require.Len(t, listed.Credentials, 1)
+	require.Equal(t, "hello-world", listed.Credentials[0].Name)
+	require.False(t, listed.Credentials[0].Expired)
+	require.False(t, listed.Credentials[0].ExpiringSoon)
+
+	// Renewing moves the deadline without minting anything: no material
+	// travels, so no Secret has to be rewritten.
+	w = adminDo(mux, "POST", "/admin/credentials/hello-world/renew", tok, `{"ttl_seconds": 3600}`)
+	require.Equal(t, 200, w.Code)
+	require.NotContains(t, w.Body.String(), "kmh_")
+	var renewed struct {
+		Name      string `json:"name"`
+		ExpiresAt string `json:"expires_at"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &renewed))
+	again, err := time.Parse(time.RFC3339, renewed.ExpiresAt)
+	require.NoError(t, err)
+	require.WithinDuration(t, time.Now().Add(time.Hour), again, time.Minute)
+
+	require.Equal(t, 404, adminDo(mux, "POST", "/admin/credentials/nope/renew", tok, `{"ttl_seconds": 3600}`).Code)
+	require.Equal(t, 400, adminDo(mux, "POST", "/admin/credentials/hello-world/renew", tok, `{"ttl_seconds": 5}`).Code)
+	require.Equal(t, 401, adminDo(mux, "POST", "/admin/credentials/hello-world/renew", "", `{}`).Code)
+	require.Equal(t, 401, adminDo(mux, "GET", "/admin/credentials", "", "").Code)
 }

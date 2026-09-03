@@ -19,6 +19,9 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/kaimahi-agents/kaimahi/plane/internal/config"
+	"github.com/kaimahi-agents/kaimahi/plane/internal/store"
 )
 
 const (
@@ -282,4 +285,23 @@ func slackTask(text string, m slackMention) string {
 		strconv.Quote(text) + "\n\nAnswer it in one short paragraph, then post that answer to Slack by calling " +
 		"conversations_add_message with channel_id " + strconv.Quote(m.channel) +
 		", thread_ts " + strconv.Quote(m.threadTS) + ", and your answer as the payload."
+}
+
+// actorOf names the PERSON an authenticated event was sent by, in P8b's
+// vocabulary (migration 00006's `decided_by`: free text prefixed by the
+// path that vouched for it) — reused rather than reinvented, so an
+// approver and a requester are named the same way.
+//
+// A Slack app_mention names the user who typed it, and the signature
+// the bridge just verified is what vouches for that claim. Every other
+// hook shape — a bearer webhook, a Kaimahi-signed webhook — names a
+// sender the plane authenticated but no HUMAN, so it is 'none': a
+// complete answer, not a gap. The user id and nothing else is taken; a
+// name, an email or a profile would be PII this plane has no reason to
+// hold and every backup would carry.
+func actorOf(h config.InboundHook, ev event) string {
+	if h.Auth == config.AuthSlack && ev.slack.user != "" {
+		return "slack:" + ev.slack.user
+	}
+	return store.ActedForNone
 }

@@ -71,6 +71,9 @@ type Store interface {
 	// P12: a grant admits one CALL — the digest of its canonical policy
 	// fields must match — and a filed request carries that call.
 	ConsumeToolGrant(ctx context.Context, credential, tool, argDigest string) (grantID string, ok bool, err error)
+	// Identity on the call: who the run this tool call falls inside is
+	// being made for. Resolution only — never enforcement.
+	ActorFor(ctx context.Context, credential string) (store.Attribution, error)
 	LiveToolGrantSubjects(ctx context.Context, credential string) ([]string, error)
 	FileApprovalRequest(ctx context.Context, f store.Filing) (filed bool, err error)
 }
@@ -142,6 +145,11 @@ func NewMux(d Deps) *http.ServeMux {
 // audit appends one tool-audit row on a cancel-free context: a client
 // disconnect must not drop the record of a decision already made.
 func (h *handler) audit(r *http.Request, e store.ToolAuditEntry) {
+	// Every tool-audit row leaves through here, so this is where the
+	// identity the call was made for is stamped — there is no path that
+	// can forget to.
+	att := store.AttributionFrom(r.Context())
+	e.ActedFor, e.RunID = att.ActedFor, att.RunID
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 	defer cancel()
 	if err := h.d.Store.RecordToolAudit(ctx, e); err != nil {
@@ -177,6 +185,8 @@ func reasonFor(status int, msg string) metrics.Reason {
 		return metrics.ReasonConstraint
 	case strings.HasPrefix(msg, "method not relayed"):
 		return metrics.ReasonMethod
+	case strings.HasPrefix(msg, store.ExpiredPrefix):
+		return metrics.ReasonCredentialExpired
 	case status == http.StatusUnauthorized:
 		return metrics.ReasonUnauthorized
 	}
@@ -240,7 +250,11 @@ func writeRPC(w http.ResponseWriter, msg any) {
 // headersFrom sends the Secret value verbatim). Same contract as P4a:
 // unknown token 401, store failure 503, neither audited (no credential
 // to attribute).
-func (h *handler) authenticate(w http.ResponseWriter, r *http.Request) (store.Credential, bool) {
+// It also returns the request to use from here on: the identity the
+// credential is acting for is resolved once, at the door, and carried
+// on its context so every audit row this request writes is stamped
+// with it.
+func (h *handler) authenticate(w http.ResponseWriter, r *http.Request) (store.Credential, *http.Request, bool) {
 	token := r.Header.Get("Authorization")
 	if after, ok := strings.CutPrefix(token, "Bearer "); ok {
 		token = after
@@ -248,26 +262,43 @@ func (h *handler) authenticate(w http.ResponseWriter, r *http.Request) (store.Cr
 	if token == "" {
 		metrics.Decide(metrics.SeamGateway, metrics.Denied, metrics.ReasonUnauthorized)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return store.Credential{}, false
+		return store.Credential{}, r, false
 	}
 	hash := sha256.Sum256([]byte(token))
 	cred, err := h.d.Store.CredentialByTokenHash(r.Context(), hash[:])
 	if errors.Is(err, store.ErrNotFound) {
 		metrics.Decide(metrics.SeamGateway, metrics.Denied, metrics.ReasonUnauthorized)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return store.Credential{}, false
+		return store.Credential{}, r, false
 	}
 	if err != nil {
 		slog.Error("gateway: credential lookup failed", "err", err)
 		metrics.Decide(metrics.SeamGateway, metrics.Denied, metrics.ReasonCredentialStore)
 		http.Error(w, "credential store unavailable", http.StatusServiceUnavailable)
-		return store.Credential{}, false
+		return store.Credential{}, r, false
 	}
-	return cred, true
+	att, aerr := h.d.Store.ActorFor(r.Context(), cred.Name)
+	if aerr != nil {
+		// A lost attribution is recorded as lost and changes nothing
+		// else: attribution describes a call, it does not authorise one.
+		slog.Error("gateway: attribution read failed; the call is recorded as unknown",
+			"credential", cred.Name, "err", aerr)
+	}
+	r = r.WithContext(store.WithAttribution(r.Context(), att))
+
+	// Credentials expire. Refused here rather than filtered out of the
+	// lookup, so the row and the message name the real problem — and
+	// audited, because unlike an unknown token there IS a credential to
+	// attribute the refusal to.
+	if cred.Expired(time.Now()) {
+		h.httpDeny(w, r, cred, r.PathValue("name"), "", "", http.StatusForbidden, store.ExpiredMessage(cred))
+		return store.Credential{}, r, false
+	}
+	return cred, r, true
 }
 
 func (h *handler) relay(w http.ResponseWriter, r *http.Request) {
-	cred, ok := h.authenticate(w, r)
+	cred, r, ok := h.authenticate(w, r)
 	if !ok {
 		return
 	}
@@ -717,7 +748,7 @@ func (h *handler) forwardProjected(w http.ResponseWriter, r *http.Request, cred 
 // sessions are cleaned up. Not a tool action: authenticated and confined
 // to the upstream table, but not audited.
 func (h *handler) terminate(w http.ResponseWriter, r *http.Request) {
-	cred, ok := h.authenticate(w, r)
+	cred, r, ok := h.authenticate(w, r)
 	if !ok {
 		return
 	}

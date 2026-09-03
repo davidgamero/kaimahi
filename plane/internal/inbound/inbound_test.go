@@ -48,6 +48,10 @@ type fakeStore struct {
 	requests   []*store.ApprovalRequest
 	decideErr  error
 	grantsMade []store.Grant
+	// Identity on the call: the runs the bridge opened and closed.
+	runs       []store.Run
+	closedRuns []string
+	openRunErr error
 }
 
 func newFakeStore() *fakeStore {
@@ -104,7 +108,24 @@ func (f *fakeStore) RecordInboundAudit(_ context.Context, e store.InboundAuditEn
 	return nil
 }
 
-func (f *fakeStore) AdmitInboundEvent(_ context.Context, hook, credential, delivery, agent string) (string, string, error) {
+func (f *fakeStore) OpenRun(_ context.Context, credential, actedFor, source, delivery, eventID string, _ time.Duration) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.openRunErr != nil {
+		return "", f.openRunErr
+	}
+	f.runs = append(f.runs, store.Run{CredentialName: credential, ActedFor: actedFor, Source: source, DeliveryID: delivery})
+	return "run-" + delivery, nil
+}
+
+func (f *fakeStore) CloseRun(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closedRuns = append(f.closedRuns, id)
+	return nil
+}
+
+func (f *fakeStore) AdmitInboundEvent(_ context.Context, hook, credential, delivery, agent, actedFor string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.admitCall++
@@ -121,7 +142,7 @@ func (f *fakeStore) AdmitInboundEvent(_ context.Context, hook, credential, deliv
 	f.admitted[hook+"/"+delivery] = true
 	id := "evt-" + strconv.Itoa(f.admitCall)
 	f.audits = append(f.audits, store.InboundAuditEntry{ID: id, Hook: hook, CredentialName: credential,
-		DeliveryID: delivery, Decision: "admitted", Status: 202, Agent: agent})
+		DeliveryID: delivery, Decision: "admitted", Status: 202, Agent: agent, ActedFor: actedFor})
 	return id, "grant-1", nil
 }
 

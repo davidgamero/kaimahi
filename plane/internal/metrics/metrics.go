@@ -81,8 +81,12 @@ const (
 	ReasonNotApprover Reason = "not_approver"
 	ReasonIgnored     Reason = "ignored"
 	ReasonChallenge   Reason = "challenge"
-	ReasonCommand     Reason = "command"
-	ReasonOther       Reason = "other"
+	// ReasonCredentialExpired: the credential authenticated, but its
+	// time was up. A refusal about a REAL credential, so it is audited
+	// and counted separately from an unknown token.
+	ReasonCredentialExpired Reason = "credential_expired"
+	ReasonCommand           Reason = "command"
+	ReasonOther             Reason = "other"
 )
 
 // Queue names a bounded per-replica queue.
@@ -105,7 +109,7 @@ var Vocabulary = map[string][]string{
 		string(ReasonUpstreamError), string(ReasonUpstreamUnreachable), string(ReasonEgressRefused), string(ReasonMethod), string(ReasonGrantCheck), string(ReasonConstraint),
 		string(ReasonRateLimit), string(ReasonTooLarge), string(ReasonReplay), string(ReasonQueueFull),
 		string(ReasonHookConfig), string(ReasonAdmission), string(ReasonNotApprover), string(ReasonIgnored),
-		string(ReasonChallenge), string(ReasonCommand), string(ReasonOther)},
+		string(ReasonChallenge), string(ReasonCommand), string(ReasonCredentialExpired), string(ReasonOther)},
 	"kind":  {"tool", "budget", "inbound"},
 	"queue": {string(QueueInbound), string(QueueNotifier)},
 }
@@ -317,12 +321,25 @@ type LedgerTotal struct {
 	Cents, Tokens int64
 }
 
+// CredentialDeadline is one credential's time bound: seconds until it
+// stops authenticating, negative once it already has. Legacy is true for
+// a credential issued before expiry existed (no deadline at all) — it is
+// counted, never given a fake number.
+type CredentialDeadline struct {
+	Credential string
+	Seconds    float64
+	Legacy     bool
+}
+
 // Source is what the scrape-time collector reads from the store (the
 // replica-independent truths: they live in Postgres, not in a process).
 type Source interface {
 	LedgerMonthTotals(ctx context.Context, monthStart time.Time) ([]LedgerTotal, error)
 	LiveGrantCounts(ctx context.Context) (map[string]int64, error)
 	OpenReservations(ctx context.Context, credential string) (int64, error)
+	// CredentialDeadlines is how an operator sees an expiry COMING
+	// rather than discovering it at 3am.
+	CredentialDeadlines(ctx context.Context, now time.Time) ([]CredentialDeadline, error)
 }
 
 // storeCollector reads the store at scrape time, bounded. When the read
@@ -335,6 +352,8 @@ type storeCollector struct {
 	tokens     *prometheus.Desc
 	grants     *prometheus.Desc
 	holds      *prometheus.Desc
+	expiry     *prometheus.Desc
+	legacy     *prometheus.Desc
 	up         *prometheus.Desc
 }
 
@@ -350,6 +369,10 @@ func RegisterStore(src Source, monthStart func() time.Time) {
 			"Time-boxed grants currently live (not expired, not exhausted), by kind.", []string{"kind"}, nil),
 		holds: prometheus.NewDesc("kaimahi_open_reservations",
 			"Admitted calls whose ledger row has not landed yet (spend holds), across all replicas.", nil, nil),
+		expiry: prometheus.NewDesc("kaimahi_credential_expires_in_seconds",
+			"Seconds until a governed credential stops authenticating, per credential name; negative once it already has. Absent for a credential with no expiry (see kaimahi_credentials_without_expiry).", []string{"credential"}, nil),
+		legacy: prometheus.NewDesc("kaimahi_credentials_without_expiry",
+			"Governed credentials issued before expiry existed, which therefore never expire. A closed class: it can only shrink.", nil, nil),
 		up: prometheus.NewDesc("kaimahi_store_up",
 			"1 when the store answered this scrape's reads; 0 when the store-derived series are absent because it did not.", nil, nil),
 	})
@@ -360,6 +383,8 @@ func (c *storeCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.tokens
 	ch <- c.grants
 	ch <- c.holds
+	ch <- c.expiry
+	ch <- c.legacy
 	ch <- c.up
 }
 
@@ -373,7 +398,21 @@ func (c *storeCollector) Collect(ch chan<- prometheus.Metric) {
 		if err == nil {
 			var open int64
 			open, err = c.src.OpenReservations(ctx, "")
+			var deadlines []CredentialDeadline
 			if err == nil {
+				deadlines, err = c.src.CredentialDeadlines(ctx, time.Now())
+			}
+			if err == nil {
+				var legacy float64
+				for _, d := range deadlines {
+					if d.Legacy {
+						legacy++
+						continue
+					}
+					ch <- prometheus.MustNewConstMetric(c.expiry, prometheus.GaugeValue, d.Seconds,
+						shaped(credentialShape, d.Credential))
+				}
+				ch <- prometheus.MustNewConstMetric(c.legacy, prometheus.GaugeValue, legacy)
 				for _, t := range totals {
 					name := shaped(credentialShape, t.Credential)
 					ch <- prometheus.MustNewConstMetric(c.cents, prometheus.GaugeValue, float64(t.Cents), name)
