@@ -109,6 +109,10 @@ runbook, that is a bug in the restructure, not a decision. File it.
 - [development.md](development.md): for engineers changing the code — the
   mental model, the build, how the plane is put together, the invariants,
   and the traps.
+- [entry-point-principles.md](entry-point-principles.md): why the
+  developer entry point exists, what it must never become, and what is
+  deliberately not built yet. The reasoning behind D27/D28, as distinct
+  from the decisions themselves.
 - [COORDINATION.md](COORDINATION.md): the coordination board, decisions,
   and delta sheets. Owned by the coordinator session.
 - [CLI-PROPOSAL.md](CLI-PROPOSAL.md): the `kaimahi agent create`
