@@ -354,7 +354,7 @@ func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, sessi
 	}
 	view := &streamView{agent: agent, toolCalls: map[string]string{}, messageText: map[string]string{}, toolMode: toolMode}
 	done := make(chan struct{})
-	spinner := isTerminal(a.Err)
+	spinner := isInteractiveTerminal(a.Err)
 	if spinner {
 		go func() {
 			frames := []string{"|", "/", "-", "\\"}
@@ -407,7 +407,7 @@ func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, sessi
 	return view, nil
 }
 
-func isTerminal(writer io.Writer) bool {
+func isInteractiveTerminal(writer io.Writer) bool {
 	file, ok := writer.(*os.File)
 	if !ok {
 		return false
@@ -652,7 +652,7 @@ func (a *App) waitExistingTask(ctx context.Context, base string, view *streamVie
 	return fmt.Errorf("task %s remained working for 5m", view.taskID)
 }
 
-type a2aTask struct {
+type interactiveTask struct {
 	ID        string `json:"id"`
 	ContextID string `json:"contextId"`
 	Status    struct {
@@ -664,7 +664,7 @@ type a2aTask struct {
 	} `json:"artifacts"`
 }
 
-func getTask(ctx context.Context, base, agent, id string) (*a2aTask, error) {
+func getTask(ctx context.Context, base, agent, id string) (*interactiveTask, error) {
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": "kmx", "method": "tasks/get", "params": map[string]string{"id": id}})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/a2a/kagent/"+url.PathEscape(agent)+"/", bytes.NewReader(body))
 	if err != nil {
@@ -681,8 +681,8 @@ func getTask(ctx context.Context, base, agent, id string) (*a2aTask, error) {
 		return nil, fmt.Errorf("tasks/get answered HTTP %d", resp.StatusCode)
 	}
 	var envelope struct {
-		Result a2aTask        `json:"result"`
-		Error  map[string]any `json:"error"`
+		Result interactiveTask `json:"result"`
+		Error  map[string]any  `json:"error"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxControllerResponse)).Decode(&envelope); err != nil {
 		return nil, err
