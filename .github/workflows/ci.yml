@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The clone-free job below runs on main ONLY, because its premise is a
+  # published revision. That made it the one job nobody could reproduce
+  # before merging — it failed on four consecutive merges before anyone
+  # looked. On demand it runs from any branch, so a fix can be proven
+  # before it lands rather than after.
+  workflow_dispatch:
 
 # Least privilege for every job: checkout needs repository read, nothing
 # needs more.
@@ -2788,7 +2794,7 @@ jobs:
           print("every e2e shard succeeded")
           EOF
   kmx-clone-free:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
@@ -2948,6 +2954,16 @@ jobs:
           # not be diagnosed from the log at all.
           kubectl --context kind-kmx-clone-free -n kaimahi port-forward --address 127.0.0.1 \
             "pod/$pod" 19092:9092 >port-forward.log 2>&1 &
+          pf=$!
+          # The forward must not outlive this step. A background process is
+          # NOT reaped when a step ends, so this kubectl went on holding
+          # 127.0.0.1:19092 for the rest of the job — and `kmx metrics`, three
+          # steps later, forwards that same port. From #81 (which added the
+          # metrics step) every non-docs push to main failed here with
+          # "bind: address already in use", visible to nobody: this job runs
+          # on main only, and that step sent kmx's stderr to a file it never
+          # printed. Both of those are fixed too; this line is the bug.
+          trap 'kill "$pf" 2>/dev/null || true' EXIT
           ready=
           for _ in $(seq 1 150); do
             # /livez, not /readyz: readiness needs Postgres, and reading
@@ -3100,7 +3116,19 @@ jobs:
         run: |
           # stdout is the exposition and only the exposition: the replica's
           # name goes to stderr, so a pipeline sees metrics.
+          #
+          # stderr is redirected to a FILE, which means a failure here used to
+          # leave nothing in the log but "exit code 1" — in a job that runs on
+          # main only, so nobody could reproduce it either. Print it.
+          set +e
           kmx metrics 2>metrics.err | tee metrics.out
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "kmx metrics exited $rc. Its stderr:" >&2
+            cat metrics.err >&2
+            exit "$rc"
+          fi
           grep -q '^# TYPE kaimahi_decisions_total counter' metrics.out
           grep -q '^kaimahi_build_info' metrics.out
           grep -q '^# replica: ' metrics.err
