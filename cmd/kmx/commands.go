@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -70,9 +69,7 @@ func newCredentialsCommand(state *commandState) *cobra.Command {
 }
 
 func newCredentialCommand(state *commandState) *cobra.Command {
-	group := &cobra.Command{Use: "credential", Short: "Manage credential lifecycle", RunE: func(cmd *cobra.Command, args []string) error {
-		return errors.New("usage: kmx credential renew <name> [--ttl 720h]")
-	}}
+	group := &cobra.Command{Use: "credential", Short: "Manage credential lifecycle", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() }}
 	var ttl string
 	renew := &cobra.Command{Use: "renew <name>", Short: "Extend credential expiry", Args: usageArgs(1, 1, "kmx credential renew <name> [--ttl 720h]")}
 	renew.Flags().StringVar(&ttl, "ttl", "-", "new lifetime from now")

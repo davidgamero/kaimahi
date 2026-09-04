@@ -1,25 +1,13 @@
 package main
 
 import (
-	"errors"
-
 	"github.com/spf13/cobra"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/app"
 )
 
 func newAgentCommand(state *commandState) *cobra.Command {
-	group := &cobra.Command{Use: "agent", Short: "Create, inspect, edit, and chat with agents"}
-	group.RunE = func(cmd *cobra.Command, args []string) error {
-		if len(args) == 0 {
-			return errors.New("usage: kmx agent list | kmx agent create [<name>] | kmx agent edit <name> | kmx agent chat <name> [message]")
-		}
-		a, err := state.application()
-		if err != nil {
-			return err
-		}
-		return app.RefuseUnknownAgentVerb(args[0], a.Cfg.KubeContext)
-	}
+	group := &cobra.Command{Use: "agent", Short: "Create, inspect, edit, and chat with agents", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() }}
 	group.AddCommand(newAgentListCommand(state), newAgentCreateCommand(state), newAgentEditCommand(state), newAgentChatCommand(state))
 	return group
 }

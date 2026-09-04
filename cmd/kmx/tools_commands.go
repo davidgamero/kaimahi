@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -11,12 +10,7 @@ import (
 )
 
 func newToolsCommand(state *commandState) *cobra.Command {
-	group := &cobra.Command{Use: "tools", Short: "Manage governed MCP tool access", RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) > 0 {
-			return fmt.Errorf("kmx tools: unknown verb %q. usage: kmx tools add <name>|govern|allow <tools>|allowlist [<credential>]|ungovern", args[0])
-		}
-		return errors.New("usage: kmx tools add <name>|govern|allow <tools>|allowlist [<credential>]|ungovern")
-	}}
+	group := &cobra.Command{Use: "tools", Short: "Manage governed MCP tool access", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() }}
 	group.AddCommand(newToolsAddCommand(state), newToolsGovernCommand(state), newToolsUngovernCommand(state), newToolsAllowCommand(state), newToolsAllowlistCommand(state))
 	return group
 }

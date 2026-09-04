@@ -36,19 +36,23 @@ func TestHelpVersionCompletionDoNotLoadConfig(t *testing.T) {
 	}
 }
 
-func TestBareAgentUsageDoesNotLoadConfig(t *testing.T) {
-	var out, errOut bytes.Buffer
-	deps, loads := testDependencies(&out, &errOut)
-	deps.loadConfig = func(string) (*config.Config, error) {
-		*loads++
-		return nil, errors.New("bad config")
-	}
-	err := execute([]string{"agent"}, deps)
-	if err == nil || !strings.Contains(err.Error(), "usage: kmx agent") {
-		t.Fatalf("bare agent error=%v", err)
-	}
-	if *loads != 0 {
-		t.Fatalf("bare agent loaded config %d times", *loads)
+func TestBareGroupsShowCobraHelpWithoutLoadingConfig(t *testing.T) {
+	for _, group := range []string{"agent", "tools", "credential"} {
+		var out, errOut bytes.Buffer
+		deps, loads := testDependencies(&out, &errOut)
+		deps.loadConfig = func(string) (*config.Config, error) {
+			*loads++
+			return nil, errors.New("bad config")
+		}
+		if err := execute([]string{group}, deps); err != nil {
+			t.Fatalf("%s: %v", group, err)
+		}
+		if *loads != 0 {
+			t.Fatalf("%s loaded config %d times", group, *loads)
+		}
+		if !strings.Contains(out.String(), "Available Commands:") || !strings.Contains(out.String(), "Usage:") {
+			t.Fatalf("%s did not show Cobra help:\n%s", group, out.String())
+		}
 	}
 }
 
@@ -144,18 +148,8 @@ func TestConfigLoadFailureIsReturnedOnce(t *testing.T) {
 	}
 }
 
-func TestGroupedCommandsRequireKnownVerb(t *testing.T) {
-	for _, args := range [][]string{{"credential"}, {"credential", "frob"}, {"tools", "frob"}} {
-		var out, errOut bytes.Buffer
-		deps, _ := testDependencies(&out, &errOut)
-		if err := execute(args, deps); err == nil {
-			t.Fatalf("%v unexpectedly succeeded", args)
-		}
-	}
-}
-
-func TestHelpDoesNotMaskUnknownCommands(t *testing.T) {
-	for _, args := range [][]string{{"frob", "--help"}, {"tools", "frob", "--help"}, {"credential", "frob", "--help"}} {
+func TestGroupedCommandsRejectUnknownVerb(t *testing.T) {
+	for _, args := range [][]string{{"credential", "frob"}, {"tools", "frob"}, {"agent", "frob"}} {
 		var out, errOut bytes.Buffer
 		deps, _ := testDependencies(&out, &errOut)
 		if err := execute(args, deps); err == nil {

@@ -33,8 +33,9 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 - Subcommand `--help` now succeeds and prints command-specific help instead of
   the former inconsistent `flag.FlagSet` error path. Unknown and extra
-  arguments are rejected consistently rather than being ignored by a few
-  commands.
+  arguments use Cobra’s standard errors rather than being ignored by a few
+  commands. Bare command groups such as `kmx agent` now print their hierarchical
+  help and exit successfully instead of returning a one-line legacy usage error.
 
 ## v0.1.0 — 2026-09-03
 

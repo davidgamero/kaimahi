@@ -62,68 +62,18 @@ func execute(argv []string, deps dependencies) error {
 	}
 	state := &commandState{deps: deps, contextFlag: contextFlag}
 	root := newRootCommand(state)
-	if err := rejectUnknownHelpPath(root, argv); err != nil {
-		return err
-	}
 	root.SetArgs(argv)
-	err = root.Execute()
-	if err != nil && len(argv) > 0 && strings.HasPrefix(err.Error(), "unknown command ") && !strings.Contains(err.Error(), " for \"kmx ") {
-		return fmt.Errorf("kmx: unknown command %q. Run `kmx help`.", argv[0])
-	}
-	return err
-}
-
-func rejectUnknownHelpPath(root *cobra.Command, argv []string) error {
-	help := false
-	var words []string
-	for _, arg := range argv {
-		if arg == "-h" || arg == "--help" {
-			help = true
-			continue
-		}
-		if strings.HasPrefix(arg, "-") {
-			continue
-		}
-		words = append(words, arg)
-	}
-	if !help || len(words) == 0 || words[0] == "help" || words[0] == "__complete" || words[0] == "__completeNoDesc" {
-		return nil
-	}
-	command := root
-	for _, word := range words {
-		found := false
-		for _, child := range command.Commands() {
-			if child.Name() == word {
-				command, found = child, true
-				break
-			}
-		}
-		if !found {
-			if command == root {
-				return fmt.Errorf("kmx: unknown command %q. Run `kmx help`.", word)
-			}
-			if command.HasSubCommands() {
-				return fmt.Errorf("unknown command %q for %q", word, command.CommandPath())
-			}
-			return nil
-		}
-	}
-	return nil
+	return root.Execute()
 }
 
 func newRootCommand(state *commandState) *cobra.Command {
 	root := &cobra.Command{
-		Use:                "kmx",
-		Short:              "Create and run governed agents on Kubernetes",
-		SilenceErrors:      true,
-		SilenceUsage:       true,
-		DisableSuggestions: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return cmd.Help()
-			}
-			return fmt.Errorf("kmx: unknown command %q. Run `kmx help`.", args[0])
-		},
+		Use:           "kmx",
+		Short:         "Create and run governed agents on Kubernetes",
+		Args:          cobra.NoArgs,
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE:          func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
 	root.SetOut(state.deps.stdout)
 	root.SetErr(state.deps.stderr)
