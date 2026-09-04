@@ -36,6 +36,22 @@ func TestHelpVersionCompletionDoNotLoadConfig(t *testing.T) {
 	}
 }
 
+func TestBareAgentUsageDoesNotLoadConfig(t *testing.T) {
+	var out, errOut bytes.Buffer
+	deps, loads := testDependencies(&out, &errOut)
+	deps.loadConfig = func(string) (*config.Config, error) {
+		*loads++
+		return nil, errors.New("bad config")
+	}
+	err := execute([]string{"agent"}, deps)
+	if err == nil || !strings.Contains(err.Error(), "usage: kmx agent") {
+		t.Fatalf("bare agent error=%v", err)
+	}
+	if *loads != 0 {
+		t.Fatalf("bare agent loaded config %d times", *loads)
+	}
+}
+
 func TestCobraCommandTreeContainsEveryPublicCommand(t *testing.T) {
 	root := newRootCommand(&commandState{deps: productionDependencies()})
 	paths := [][]string{

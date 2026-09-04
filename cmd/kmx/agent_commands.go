@@ -10,12 +10,16 @@ import (
 
 func newAgentCommand(state *commandState) *cobra.Command {
 	group := &cobra.Command{Use: "agent", Short: "Create, inspect, edit, and chat with agents"}
-	group.RunE = appRun(state, func(a *app.App) error {
-		if len(group.Flags().Args()) > 0 {
-			return app.RefuseUnknownAgentVerb(group.Flags().Arg(0), a.Cfg.KubeContext)
+	group.RunE = func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return errors.New("usage: kmx agent list | kmx agent create [<name>] | kmx agent edit <name> | kmx agent chat <name> [message]")
 		}
-		return errors.New("usage: kmx agent list | kmx agent create [<name>] | kmx agent edit <name> | kmx agent chat <name> [message]")
-	})
+		a, err := state.application()
+		if err != nil {
+			return err
+		}
+		return app.RefuseUnknownAgentVerb(args[0], a.Cfg.KubeContext)
+	}
 	group.AddCommand(newAgentListCommand(state), newAgentCreateCommand(state), newAgentEditCommand(state), newAgentChatCommand(state))
 	return group
 }

@@ -52,6 +52,9 @@ func newGovernCommand(state *commandState) *cobra.Command {
 	cmd.Flags().StringVar(&opt.Secret, "secret", config.GovernedSecret, "agent-side Secret")
 	cmd.Flags().StringVar(&opt.SecretNamespace, "secret-namespace", config.DefaultNamespace, "Secret namespace")
 	cmd.Flags().StringVar(&ttl, "ttl", "-", "credential lifetime, e.g. 30d (default: plane policy)")
+	_ = cmd.RegisterFlagCompletionFunc("agent", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return completeLiveAgents(cmd, nil, toComplete)
+	})
 	cmd.RunE = appRun(state, func(a *app.App) error {
 		var err error
 		if opt.TTLSeconds, err = admin.ParseTTL(ttl); err != nil {
@@ -101,7 +104,12 @@ func newGrantsCommand(state *commandState) *cobra.Command {
 
 func newAuditCommand(state *commandState) *cobra.Command {
 	cmd := &cobra.Command{Use: "audit <tool|approval> [credential]", Short: "Show enforcement audit trails", Args: usageArgs(1, 2, "kmx audit tool|approval [<credential>]")}
-	cmd.ValidArgs = []string{"tool", "approval"}
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return filterCompletions([]string{"tool", "approval"}, toComplete), cobra.ShellCompDirectiveNoFileComp
+		}
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 	cmd.RunE = appRun(state, func(a *app.App) error {
 		return a.Audit(cmd.Flags().Arg(0), parseOptionalCredential(cmd.Flags().Args()[1:], ""))
 	})

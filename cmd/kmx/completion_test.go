@@ -60,5 +60,29 @@ func TestContextFlagCompletionAcceptsIncompleteValues(t *testing.T) {
 		if strings.Contains(errOut.String(), "needs a context name") {
 			t.Fatalf("completion ran operational context validation: %s", errOut.String())
 		}
+		if !strings.Contains(out.String(), ":4") {
+			t.Fatalf("context completion did not disable file completion:\n%s", out.String())
+		}
+	}
+}
+
+func TestAuditCompletionIsPositionAware(t *testing.T) {
+	for _, tc := range []struct {
+		args      []string
+		want      string
+		forbidden string
+	}{
+		{[]string{"__complete", "audit", ""}, "tool", ""},
+		{[]string{"__complete", "audit", "tool", ""}, ":4", "approval"},
+	} {
+		var out, errOut bytes.Buffer
+		deps := productionDependencies()
+		deps.stdout, deps.stderr = &out, &errOut
+		if err := execute(tc.args, deps); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), tc.want) || tc.forbidden != "" && strings.Contains(out.String(), tc.forbidden) {
+			t.Fatalf("%v completion:\n%s", tc.args, out.String())
+		}
 	}
 }
