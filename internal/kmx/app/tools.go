@@ -87,6 +87,9 @@ func presetNames() []string {
 	return names
 }
 
+// PresetNames returns the embedded model preset names for CLI completion.
+func PresetNames() []string { return presetNames() }
+
 // ToolsOptions are the knobs `kmx tools govern` and `kmx tools ungovern`
 // share, defaulted to what `make govern-tools` uses.
 type ToolsOptions struct {

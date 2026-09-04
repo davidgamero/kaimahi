@@ -1,0 +1,209 @@
+package main
+
+import (
+	"errors"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/admin"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/app"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
+)
+
+func newCtxCommand(state *commandState) *cobra.Command {
+	cmd := &cobra.Command{Use: "ctx [context]", Short: "Show or select the Kubernetes context", Args: usageArgs(0, 1, "kmx ctx [<context>]")}
+	cmd.RunE = appRun(state, func(a *app.App) error {
+		value := ""
+		if len(cmd.Flags().Args()) == 1 {
+			value = cmd.Flags().Arg(0)
+		}
+		return a.Ctx(value)
+	})
+	cmd.ValidArgsFunction = completeContexts
+	return cmd
+}
+
+func newUpCommand(state *commandState) *cobra.Command {
+	var step string
+	cmd := &cobra.Command{Use: "up", Short: "Bring up the local runtime", Args: cobra.NoArgs}
+	cmd.Flags().StringVar(&step, "step", "", "run one step only: "+strings.Join(app.UpSteps, ", "))
+	_ = cmd.RegisterFlagCompletionFunc("step", staticCompletion(app.UpSteps))
+	cmd.RunE = appRun(state, func(a *app.App) error { return a.Up(step) })
+	return cmd
+}
+
+func newPlaneCommand(state *commandState) *cobra.Command {
+	var opt app.PlaneOptions
+	cmd := &cobra.Command{Use: "plane", Short: "Deploy the Kaimahi governance plane", Args: cobra.NoArgs}
+	cmd.Flags().StringVar(&opt.Step, "step", "", "run one step only: "+strings.Join(app.PlaneSteps, ", "))
+	cmd.Flags().StringVar(&opt.Source, "source", "", "build from this checkout ('-' forces module fetch)")
+	_ = cmd.RegisterFlagCompletionFunc("step", staticCompletion(app.PlaneSteps))
+	cmd.RunE = appRun(state, func(a *app.App) error { return a.Plane(opt) })
+	return cmd
+}
+
+func newGovernCommand(state *commandState) *cobra.Command {
+	var opt app.GovernOptions
+	var ttl string
+	cmd := &cobra.Command{Use: "govern [credential]", Short: "Issue a credential and govern an agent", Args: usageArgs(0, 1, "kmx govern [<credential>] [flags]")}
+	cmd.Flags().StringVar(&opt.Agent, "agent", config.DefaultAgent, "agent to put behind the plane")
+	cmd.Flags().StringVar(&opt.Preset, "preset", config.GovernedModelConfig, "governed ModelConfig")
+	cmd.Flags().StringVar(&opt.Secret, "secret", config.GovernedSecret, "agent-side Secret")
+	cmd.Flags().StringVar(&opt.SecretNamespace, "secret-namespace", config.DefaultNamespace, "Secret namespace")
+	cmd.Flags().StringVar(&ttl, "ttl", "-", "credential lifetime, e.g. 30d (default: plane policy)")
+	cmd.RunE = appRun(state, func(a *app.App) error {
+		var err error
+		if opt.TTLSeconds, err = admin.ParseTTL(ttl); err != nil {
+			return err
+		}
+		return a.Govern(parseOptionalCredential(cmd.Flags().Args(), a.Cfg.Credential), opt)
+	})
+	return cmd
+}
+
+func newCredentialsCommand(state *commandState) *cobra.Command {
+	return &cobra.Command{Use: "credentials", Short: "List governed credentials and expiry", Args: cobra.NoArgs, RunE: appRun(state, func(a *app.App) error { return a.Credentials() })}
+}
+
+func newCredentialCommand(state *commandState) *cobra.Command {
+	group := &cobra.Command{Use: "credential", Short: "Manage credential lifecycle", RunE: func(cmd *cobra.Command, args []string) error {
+		return errors.New("usage: kmx credential renew <name> [--ttl 720h]")
+	}}
+	var ttl string
+	renew := &cobra.Command{Use: "renew <name>", Short: "Extend credential expiry", Args: usageArgs(1, 1, "kmx credential renew <name> [--ttl 720h]")}
+	renew.Flags().StringVar(&ttl, "ttl", "-", "new lifetime from now")
+	renew.RunE = appRun(state, func(a *app.App) error {
+		if err := admin.ValidCredentialName(renew.Flags().Arg(0)); err != nil {
+			return err
+		}
+		parsed, err := admin.ParseTTL(ttl)
+		if err != nil {
+			return err
+		}
+		return a.RenewCredential(renew.Flags().Arg(0), parsed)
+	})
+	group.AddCommand(renew)
+	return group
+}
+
+func newLedgerCommand(state *commandState) *cobra.Command {
+	cmd := &cobra.Command{Use: "ledger [credential]", Short: "Show spend ledger", Args: usageArgs(0, 1, "kmx ledger [<credential>]")}
+	cmd.RunE = appRun(state, func(a *app.App) error { return a.Ledger(parseOptionalCredential(cmd.Flags().Args(), a.Cfg.Credential)) })
+	return cmd
+}
+
+func newGrantsCommand(state *commandState) *cobra.Command {
+	cmd := &cobra.Command{Use: "grants [credential]", Short: "List grants and liveness", Args: usageArgs(0, 1, "kmx grants [<credential>]")}
+	cmd.RunE = appRun(state, func(a *app.App) error { return a.Grants(parseOptionalCredential(cmd.Flags().Args(), "")) })
+	return cmd
+}
+
+func newAuditCommand(state *commandState) *cobra.Command {
+	cmd := &cobra.Command{Use: "audit <tool|approval> [credential]", Short: "Show enforcement audit trails", Args: usageArgs(1, 2, "kmx audit tool|approval [<credential>]")}
+	cmd.ValidArgs = []string{"tool", "approval"}
+	cmd.RunE = appRun(state, func(a *app.App) error {
+		return a.Audit(cmd.Flags().Arg(0), parseOptionalCredential(cmd.Flags().Args()[1:], ""))
+	})
+	return cmd
+}
+
+func newUseCommand(state *commandState) *cobra.Command {
+	var agent string
+	cmd := &cobra.Command{Use: "use <preset>", Short: "Switch an agent to an embedded model preset", Args: usageArgs(1, 1, "kmx use <preset> [--agent <name>]")}
+	cmd.Flags().StringVar(&agent, "agent", config.DefaultAgent, "agent to switch")
+	cmd.RunE = appRun(state, func(a *app.App) error { return a.Use(cmd.Flags().Arg(0), app.UseOptions{Agent: agent}) })
+	cmd.ValidArgsFunction = completePresets
+	return cmd
+}
+
+func newBudgetCommand(state *commandState) *cobra.Command {
+	var cents, tokens string
+	cmd := &cobra.Command{Use: "budget [credential]", Short: "Replace monthly budget caps", Args: usageArgs(0, 1, "kmx budget [<credential>] [--cents n|-] [--tokens n|-]")}
+	cmd.Flags().StringVar(&cents, "cents", "-", "monthly cap in cents ('-' for none)")
+	cmd.Flags().StringVar(&tokens, "tokens", "-", "monthly cap in tokens ('-' for none)")
+	cmd.RunE = appRun(state, func(a *app.App) error {
+		c, t, err := parseBudgetValues(cents, tokens)
+		if err != nil {
+			return err
+		}
+		return a.Budget(parseOptionalCredential(cmd.Flags().Args(), a.Cfg.Credential), c, t)
+	})
+	return cmd
+}
+
+func newApprovalsCommand(state *commandState) *cobra.Command {
+	return &cobra.Command{Use: "approvals", Short: "List pending approval requests", Args: cobra.NoArgs, RunE: appRun(state, func(a *app.App) error { return a.Approvals() })}
+}
+
+func newApproveCommand(state *commandState) *cobra.Command {
+	var ttl, uses, amount string
+	cmd := &cobra.Command{Use: "approve <id>", Short: "Approve a request with bounded authority", Args: usageArgs(1, 1, "kmx approve <id> [--ttl 10m] [--uses 1] [--amount n]")}
+	cmd.Flags().StringVar(&ttl, "ttl", "-", "expiry")
+	cmd.Flags().StringVar(&uses, "uses", "-", "maximum uses")
+	cmd.Flags().StringVar(&amount, "amount", "-", "tokens or cents")
+	cmd.RunE = appRun(state, func(a *app.App) error {
+		t, u, m, err := parseApprovalValues(ttl, uses, amount)
+		if err != nil {
+			return err
+		}
+		return a.Approve(cmd.Flags().Arg(0), t, u, m)
+	})
+	return cmd
+}
+
+func newDenyCommand(state *commandState) *cobra.Command {
+	cmd := &cobra.Command{Use: "deny <id>", Short: "Deny a pending request", Args: usageArgs(1, 1, "kmx deny <id>")}
+	cmd.RunE = appRun(state, func(a *app.App) error { return a.Deny(cmd.Flags().Arg(0)) })
+	return cmd
+}
+
+func newRequestCommand(state *commandState) *cobra.Command {
+	var credential, argsJSON string
+	cmd := &cobra.Command{Use: "request <tool|budget|inbound> <subject>", Short: "File an approval request", Args: usageArgs(2, 2, "kmx request <tool|budget|inbound> <subject> [--credential <name>] [--args <json>]")}
+	cmd.Flags().StringVar(&credential, "credential", "", "credential the request is filed against")
+	cmd.Flags().StringVar(&argsJSON, "args", "", "tool call arguments as one JSON object")
+	cmd.RunE = appRun(state, func(a *app.App) error {
+		kind := cmd.Flags().Arg(0)
+		name := requestCredential(credential, kind, a.Cfg.Credential, a.Cfg.ToolsCredential)
+		parsed, err := parseJSONArgs(argsJSON)
+		if err != nil {
+			return err
+		}
+		return a.Request(name, kind, cmd.Flags().Arg(1), parsed)
+	})
+	return cmd
+}
+
+func newBackupCommand(state *commandState) *cobra.Command {
+	cmd := &cobra.Command{Use: "backup [file]", Short: "Back up the governance database", Args: usageArgs(0, 1, "kmx backup [<file>]")}
+	cmd.RunE = appRun(state, func(a *app.App) error { return a.Backup(parseOptionalCredential(cmd.Flags().Args(), "")) })
+	return cmd
+}
+
+func newRestoreCommand(state *commandState) *cobra.Command {
+	cmd := &cobra.Command{Use: "restore <file>", Short: "Replace the governance database from a backup", Args: usageArgs(1, 1, "kmx restore <file>")}
+	cmd.RunE = appRun(state, func(a *app.App) error { return a.Restore(cmd.Flags().Arg(0)) })
+	return cmd
+}
+
+func newMetricsCommand(state *commandState) *cobra.Command {
+	var pod string
+	cmd := &cobra.Command{Use: "metrics", Short: "Print one proxy replica's Prometheus metrics", Args: cobra.NoArgs}
+	cmd.Flags().StringVar(&pod, "pod", "", "proxy replica (default first Ready)")
+	cmd.RunE = appRun(state, func(a *app.App) error { return a.Metrics(pod) })
+	return cmd
+}
+
+func newStatusCommand(state *commandState) *cobra.Command {
+	var output string
+	cmd := &cobra.Command{Use: "status", Short: "Show grouped runtime health", Args: cobra.NoArgs}
+	cmd.Flags().StringVarP(&output, "output", "o", "table", "output: table|json|yaml")
+	_ = cmd.RegisterFlagCompletionFunc("output", staticCompletion([]string{"table", "json", "yaml"}))
+	cmd.RunE = appRun(state, func(a *app.App) error { return a.StatusWithOptions(app.StatusOptions{Output: output}) })
+	return cmd
+}
+
+func newDownCommand(state *commandState) *cobra.Command {
+	return &cobra.Command{Use: "down", Short: "Delete the local kind cluster", Args: cobra.NoArgs, RunE: appRun(state, func(a *app.App) error { return a.Down() })}
+}

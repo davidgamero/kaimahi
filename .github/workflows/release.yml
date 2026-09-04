@@ -114,9 +114,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          # The root module has no dependencies and therefore no go.sum;
-          # without this the action warns about a cache it cannot key.
-          cache: false
+          cache: true
 
       # Notes come from CHANGELOG.md and the extraction fails when the
       # section is missing, so a version cannot be published undocumented.

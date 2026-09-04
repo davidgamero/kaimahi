@@ -156,6 +156,8 @@ Completion queries are read-only and side-effect-free: they never run guards,
 downloads, port-forwards, or mutations. Static command/flag completion works
 offline. Kube-context and agent-name completion use bounded read-only `kubectl`
 queries and quietly fall back when kubectl or the selected cluster is unavailable.
+Commands, nested help pages, flag definitions, and generated shell completion
+come from the same Cobra command tree, so those surfaces cannot drift apart.
 This is shell completion for `kmx ...`. Interactive chat also provides local,
 network-free slash-command IntelliSense on capable terminals: typing `/` shows
 the available commands, each additional character narrows the list through a
