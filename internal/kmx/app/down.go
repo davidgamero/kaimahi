@@ -9,6 +9,9 @@ import "fmt"
 // KIND_CLUSTER=other kmx down` would show a banner naming one cluster and
 // destroy another. Refuse when the thing confirmed is not the thing deleted.
 func (a *App) Down() error {
+	if err := a.preflight(depKind, depKubectl, a.engineDependency()); err != nil {
+		return err
+	}
 	want := "kind-" + a.Cfg.KindCluster
 	if a.Cfg.KubeContext != want {
 		return fmt.Errorf("refusing: the guard would check context %s, but this would\n"+

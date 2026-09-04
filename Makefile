@@ -16,11 +16,10 @@
 # cluster. Fail closed — no confirmation, no action.
 TARGET         ?= kind
 
-# `up` is the default goal, as it has always been. Stated explicitly
-# because it is no longer the first rule in the file: make takes the first
-# non-dot target, which is now `guard`, so a bare `make` would otherwise
-# print a banner and exit 0 — a no-op that looks like a successful run.
-.DEFAULT_GOAL := up
+# A bare `make` is build-only. Provisioning a cluster is consequential and
+# stays behind the explicit `make up`; the default builds kmx and prints where
+# it was written.
+.DEFAULT_GOAL := build
 
 # Container engine for the kind path. Explicit rather than auto-detected:
 # which engine built an image is exactly the kind of thing that should be
@@ -49,7 +48,28 @@ KAGENT_VERSION ?= 0.9.12
 MODEL          ?= qwen2.5:3b
 AGENT          ?= hello-world
 TASK           ?= Hello! Who are you and where are you running?
+ifneq ($(filter environment environment override,$(origin AGENT)),)
+override AGENT := hello-world
+endif
+ifneq ($(filter environment environment override,$(origin TASK)),)
+override TASK := Hello! Who are you and where are you running?
+endif
 KAGENT         ?= bin/kagent
+STATUS_OUTPUT  ?= table
+export KMX_STATUS_OUTPUT := $(STATUS_OUTPUT)
+SESSION        ?=
+export KMX_CHAT_SESSION := $(SESSION)
+export KMX_CHAT_AGENT := $(AGENT)
+export KMX_CHAT_TASK := $(TASK)
+export KMX_KIND_CLUSTER := $(KIND_CLUSTER)
+export KMX_CONTAINER_ENGINE := $(CONTAINER_ENGINE)
+export KMX_KAGENT_VERSION := $(KAGENT_VERSION)
+export KMX_MODEL := $(MODEL)
+export KMX_KAGENT := $(KAGENT)
+export KMX_CONFIRM := $(KAIMAHI_CONFIRM)
+KMX_CHAT_ARGS = $(strip $(if $(filter 1,$(INTERACTIVE)),--interactive) \
+	$(if $(SESSION),--session "$$KMX_CHAT_SESSION") "$$KMX_CHAT_AGENT" \
+	$(if $(filter 1,$(INTERACTIVE)),$(if $(filter command line,$(origin TASK)),"$$KMX_CHAT_TASK"),"$$KMX_CHAT_TASK"))
 
 # ---- kmx (P11, D27) -------------------------------------------------------
 # The developer journey — cluster, model, kagent, the agents, a conversation,
@@ -72,12 +92,14 @@ KMX_ASSETS   := k8s/ollama.yaml k8s/kagent-values.yaml k8s/hello-world.yaml k8s/
 # kmx reads the Makefile's own variable names, so delegation passes them
 # through rather than translating. KAIMAHI_CONFIRM rides along so a
 # confirmation given to make is not asked for again by kmx.
-KMX_ENV       = KIND_CLUSTER='$(KIND_CLUSTER)' KUBE_CTX='$(KUBE_CTX)' \
-		CONTAINER_ENGINE='$(CONTAINER_ENGINE)' KAGENT_VERSION='$(KAGENT_VERSION)' \
-		MODEL='$(MODEL)' CHAT_PORT='$(CHAT_PORT)' KAGENT='$(KAGENT)' \
-		ADMIN_PORT='$(ADMIN_PORT)' OPS_PORT='$(OPS_PORT)' \
-		CRED='$(CRED)' CRED_TOOLS='$(CRED_TOOLS)' \
-		KAIMAHI_CONFIRM='$(KAIMAHI_CONFIRM)'
+KMX_ENV       = KIND_CLUSTER="$$KMX_KIND_CLUSTER" KUBE_CTX="$$KMX_KUBE_CTX" \
+		CONTAINER_ENGINE="$$KMX_CONTAINER_ENGINE" KAGENT_VERSION="$$KMX_KAGENT_VERSION" \
+		MODEL="$$KMX_MODEL" $(if $(filter command line,$(origin CHAT_PORT)),CHAT_PORT="$$KMX_CHAT_PORT",) \
+		$(if $(filter command line environment override,$(origin KAGENT)),KAGENT="$$KMX_KAGENT",) \
+		ADMIN_PORT="$$KMX_ADMIN_PORT" OPS_PORT="$$KMX_OPS_PORT" \
+		CRED="$$KMX_CRED" CRED_TOOLS="$$KMX_CRED_TOOLS" \
+		KAIMAHI_CONFIRM="$$KMX_CONFIRM"
+export KMX_CHAT_PORT := $(CHAT_PORT)
 
 OS   := $(shell uname -s | tr A-Z a-z)
 ARCH := $(shell uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/)
@@ -134,11 +156,17 @@ else
 $(error unknown TARGET '$(TARGET)' — expected 'kind' or 'aks')
 endif
 
+export KMX_KUBE_CTX := $(KUBE_CTX)
+
 PLANE_PULL_POLICY ?= IfNotPresent
 ERP_PULL_POLICY   ?= IfNotPresent
 KUBECTL        := kubectl --context $(KUBE_CTX)
 CRED           ?= hello-world
 CRED_TOOLS     ?= hello-tools
+export KMX_ADMIN_PORT := $(ADMIN_PORT)
+export KMX_OPS_PORT := $(OPS_PORT)
+export KMX_CRED := $(CRED)
+export KMX_CRED_TOOLS := $(CRED_TOOLS)
 TOOLS          ?= k8s_get_resources
 # P5a: the Slack seam has its own credential, agent and allowlist. The
 # read-only tool is allowlisted from the start; POSTING is not — it is
@@ -190,7 +218,7 @@ AP_INVOICE     ?= INV-88134
 # default keeps kind and CI exactly as they were.
 AP_HUMAN       ?= 0
 
-.PHONY: up cluster ollama model kagent agent tools-agent chat down status guard \
+.PHONY: build up cluster ollama model kagent agent tools-agent chat down status guard \
 	model-secret copilot-secret use use-ollama \
 	plane plane-image plane-secrets govern budget ledger plane-copilot-secret \
 	credentials credential-renew \
@@ -206,6 +234,10 @@ AP_HUMAN       ?= 0
 	github-secret github-revoke egress-hosted egress-hosted-off \
 	govern-github github-allow github-audit github-ask github-down \
 	erp erp-image erp-fixtures govern-ap ap-allow ap-audit ap-ask ap-demo ap-injection ap-down
+
+## build: build kmx from this checkout and print the resulting path
+build: $(KMX)
+	@echo "kmx ready: $(abspath $(KMX))"
 
 # guard: the context-safety net every MUTATING target depends on. Prints
 # the target context/namespaces; demands explicit confirmation for
@@ -552,16 +584,16 @@ tools-agent: guard
 		agent/hello-tools --timeout=300s
 endif
 
-## chat: one question to an agent via the kagent CLI (override with TASK=...,
-## AGENT=hello-tools for the P3 tools agent)
+## chat: one question by default; INTERACTIVE=1 keeps a session open.
+## Override AGENT=hello-tools for the P3 tools agent; SESSION=<id> resumes.
 #
 # Delegated on every TARGET: kmx's `agent chat` is this recipe's
 # `kagent_forward` — the servable-through-the-Service check, the waited-for
 # port-forward on an explicit port, and the same two retry classes. The
 # define itself stays because `slack-post` and `github-ask` still use it,
 # with the narrower refused-only class a non-idempotent action needs.
-chat: $(KMX) $(KAGENT)
-	@$(KMX_ENV) $(KMX) agent chat $(AGENT) "$(TASK)"
+chat: $(KMX)
+	@$(KMX_ENV) $(KMX) agent chat $(KMX_CHAT_ARGS)
 
 ## model-secret: store an API key as a K8s Secret, stdin-only (paste, Enter, Ctrl-D).
 # The key never touches argv, env listings, YAML, or logs; tr strips the
@@ -1060,7 +1092,7 @@ plane-copilot-secret: guard
 	$(KUBECTL) apply -f k8s/egress-copilot.yaml
 
 status: $(KMX)
-	@$(KMX_ENV) $(KMX) status
+	@$(KMX_ENV) $(KMX) status $(if $(filter table,$(STATUS_OUTPUT)),,-o "$$KMX_STATUS_OUTPUT")
 
 ifeq ($(TARGET),kind)
 ## down: delete the local kind cluster
@@ -1126,6 +1158,7 @@ $(KMX): $(KMX_SOURCES) $(KMX_ASSETS)
 		echo 'kmx needs a Go toolchain to build from a checkout (https://go.dev/dl/).' >&2; \
 		echo 'Without a clone: go install github.com/kaimahi-agents/kaimahi/cmd/kmx@<sha>' >&2; \
 		exit 1; }
+	@mkdir -p $(dir $@)
 	go build -o $(KMX) ./cmd/kmx
 
 # Pinned kagent CLI, checksum-verified. The release .sha256 files embed a

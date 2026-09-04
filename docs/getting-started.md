@@ -79,7 +79,7 @@ also carries checksum-verified binaries — see [releases.md](releases.md).
 ```bash
 kmx up      # kind cluster + Ollama + model pull + kagent + two agents (first run ~5-10 min)
 kmx agent chat hello-world "Who are you and where are you running?"
-kmx status  # agents, modelconfigs, pods
+kmx status  # grouped agents, models, runtime health, next actions
 kmx down    # delete the kind cluster (and everything in it, ledger included)
 ```
 
@@ -114,6 +114,7 @@ same `kmx` binary — the Makefile builds it from the checkout. Use whichever
 you prefer; they run the same code.
 
 ```bash
+make        # build bin/kmx and print its path; no cluster changes
 make up     # kind cluster + Ollama + model pull + kagent + two agents (first run ~5-10 min)
 make chat   # ask the default question
 ```
@@ -136,6 +137,20 @@ make chat TASK="What are you defined in?"
 make chat AGENT=hello-tools TASK="What pods are running in the ollama namespace?"
 ```
 
+Keep a back-and-forth session with streamed replies and visible tool activity:
+
+```bash
+INTERACTIVE=1 make chat AGENT=hello-tools
+# or directly: kmx agent chat --interactive hello-tools
+```
+
+The header names the active agent, model/tool governance posture, and effective
+selected tools. Messages are labelled `You` and replies with the active agent;
+tool calls and completion state appear inline. Use `/tools verbose` for full
+tool results, `/sessions`, `/history`, and `/resume <id>` for prior
+conversations, `/new` for a fresh session, and `/exit` to leave. See
+[kmx.md](kmx.md#interactive-chat).
+
 The tools agent is covered in [tools.md](tools.md), including why its
 prose summary is less reliable than the tool call underneath it.
 
@@ -157,9 +172,15 @@ in any form, and refuses to write a manifest with anything key-shaped in it.
 why.
 
 ```bash
-make status   # agents, modelconfigs, pods
+make status   # grouped agents, models, runtime health, next actions
 make down     # delete the kind cluster (and everything in it, ledger included)
 ```
+
+`make status` groups the selected context, agent-to-model/tool wiring, runtime
+health across kagent/Ollama/the optional plane, pod restarts, and next actions.
+For kubectl-native machine-readable Agents, ModelConfigs, and kagent-namespace
+Pods, use `kmx status -o json`, `kmx status -o yaml`, or from Make:
+`make status STATUS_OUTPUT=yaml`.
 
 On the clone path the governed half is `make plane` and `make govern`, which
 are the same kmx commands with the checkout passed as the plane's source —
@@ -248,19 +269,18 @@ and `TARGET` (`kind` by default, or `aks`).
 
 ## Talking to the agent
 
-`make chat` downloads the pinned kagent CLI to `bin/kagent`
-(checksum-verified against the release's `.sha256` file), checks that the
-agent answers through its Service, port-forwards the kagent controller to
-`localhost:8083` (`CHAT_PORT`), and runs:
+`make chat` lets kmx fetch/cache the pinned kagent CLI (checksum-verified),
+checks that the agent answers through its Service, asks kubectl for a free
+loopback port, and port-forwards the kagent controller there. Set `CHAT_PORT`
+only when a fixed port is required.
 
 ```bash
-bin/kagent invoke --agent hello-world --task "Hello! Who are you and where are you running?"
+kmx agent chat hello-world "Hello! Who are you and where are you running?"
 ```
 
-If the port-forward does not come up on the port it asked for, `make chat`
-refuses rather than invoking, because another cluster's forward on that
-port would happily answer with a plausible reply from the wrong cluster.
-Use `CHAT_PORT=<free port> make chat` when two clusters are up at once.
+An explicit occupied `CHAT_PORT` still fails rather than falling back: an
+explicit value is a deterministic contract. With the default automatic port,
+stale forwards and concurrent chats do not collide.
 
 Other ways in, all shipped by kagent:
 

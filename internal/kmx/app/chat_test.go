@@ -57,3 +57,19 @@ func TestARealFailureIsFoundInAMultiLineCapture(t *testing.T) {
 		t.Error("the error line must be found anywhere in the captured output")
 	}
 }
+
+func TestForwardedPort(t *testing.T) {
+	for _, tc := range []struct {
+		output, want string
+		ok           bool
+	}{
+		{"Forwarding from 127.0.0.1:41783 -> 8083\n", "41783", true},
+		{"Forwarding from [::1]:41783 -> 8083\n", "", false},
+		{"Unable to listen on port 8083", "", false},
+	} {
+		got, err := forwardedPort(tc.output)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("forwardedPort(%q)=(%q,%v), want (%q,ok=%v)", tc.output, got, err, tc.want, tc.ok)
+		}
+	}
+}

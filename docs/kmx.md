@@ -45,6 +45,14 @@ the upgrade path — including what happens when a migration fails — are in
 From a clone, `make bin/kmx` builds the same binary and every `make` target
 below uses it.
 
+Plain `make` is build-only and prints the resulting binary path. It never
+creates or changes a cluster; provisioning requires the explicit command:
+
+```bash
+make       # build bin/kmx
+make up    # build if stale, then create/update the local runtime
+```
+
 | Prerequisite | Why |
 |---|---|
 | Go 1.26+ | to install or build kmx — and to build the plane, which kmx fetches at its own revision |
@@ -54,8 +62,9 @@ below uses it.
 | Helm | installs kagent |
 
 kmx fetches the pinned kagent CLI itself, checksum-verified, the first time
-you chat. In a clone it is handed the checkout's `bin/kagent` instead, so
-there is one binary on disk.
+you chat. A clone uses the same verified kmx cache unless `KAGENT=<path>` is
+explicitly supplied; the Makefile's `bin/kagent` remains for legacy
+action-oriented helpers such as `slack-post`.
 
 ## The journey
 
@@ -93,11 +102,14 @@ swap plus a credential the agent cannot read past.
 |---|---|
 | `kmx ctx` | print the context kmx will act on, where that came from, and its posture |
 | `kmx ctx <context>` | select that context for later commands (recorded in kmx's config directory — `~/.config/kmx/context` on Linux; set `KMX_HOME` to put it elsewhere) |
-| `kmx up` | create the kind cluster, deploy Ollama, pull the pinned model, install kagent by helm, apply both agents, wait for each to be Ready, print status |
+| `kmx up` | check all host dependencies in one pass before the guard or first use, create the kind cluster, deploy Ollama, pull the pinned model, install kagent by helm, apply both agents, wait for each to be Ready, print status |
 | `kmx up --step <step>` | one step only: `cluster`, `ollama`, `model`, `kagent`, `agent`, `tools-agent` |
-| `kmx agent create <name>` | scaffold `agents/<name>.yaml` and apply it |
+| `kmx agent list [-o table\|json\|yaml]` | list agents with readiness, acceptance, active ModelConfig, and tool-server wiring |
+| `kmx agent create [<name>]` | scaffold an Agent manifest; without a name, run the guided wizard beginning `Describe this agent:` |
+| `kmx agent edit <name> [--file <path>]` | edit and validate owned local Agent source; never edits the live resource implicitly |
 | `kmx agent chat <name> [message]` | ask an agent one question, through `kagent invoke` |
 | `kmx agent chat <name> --json` | the raw A2A task instead of the readable view (piped output is always raw) |
+| `kmx agent chat --interactive <name>` | live streamed chat in one session; shows active tools, tool calls/results, and supports session history/resume |
 | `kmx plane` | build the proxy image, bootstrap the plane's secrets, deploy the plane, wait for it to serve |
 | `kmx plane --step <step>` | one step only: `image`, `secrets`, `deploy` |
 | `kmx plane --source <path>` | build the plane from a checkout instead of fetching it (`-` forces the fetch) |
@@ -121,9 +133,34 @@ swap plus a credential the agent cannot read past.
 | `kmx backup [<file>]` | `pg_dump` the plane's database to a local file (default `backups/kaimahi-<UTC>.sql`, mode 0600) |
 | `kmx restore <file>` | **replace** the plane's database from a backup — every table dropped and recreated |
 | `kmx metrics [--pod <name>]` | one proxy replica's Prometheus exposition; the replica's name goes to stderr so stdout stays machine-readable |
-| `kmx status` | agents, modelconfigs and pods |
+| `kmx status` | grouped context, agent/model wiring, runtime health, restarts, and next actions |
+| `kmx status -o json\|yaml` | kubectl-native combined Agents, ModelConfigs, and kagent-namespace Pods for automation |
 | `kmx down` | delete the kind cluster kmx created |
+| `kmx completion bash\|zsh\|fish` | print shell completion for commands, flags, fixed values, kube contexts, and live agent names |
 | `kmx version` | the pinned kagent and model versions, the plane's image tag, and the revision `kmx plane` would fetch it at |
+
+Enable completion for the current shell:
+
+```bash
+# Bash
+source <(kmx completion bash)
+
+# Zsh
+source <(kmx completion zsh)
+
+# Fish
+kmx completion fish | source
+```
+
+Completion queries are read-only and side-effect-free: they never run guards,
+downloads, port-forwards, or mutations. Static command/flag completion works
+offline. Kube-context and agent-name completion use bounded read-only `kubectl`
+queries and quietly fall back when kubectl or the selected cluster is unavailable.
+This is shell completion for `kmx ...`. Interactive chat also provides local,
+network-free slash-command IntelliSense on capable terminals: typing `/` shows
+the available commands, each additional character narrows the list through a
+prefix trie, and Tab completes a unique or common prefix. `NO_COLOR`,
+`TERM=dumb`, redirected input, and pipes retain the ordinary line-input path.
 
 `kmx agent chat` prints two different shapes on purpose. A terminal gets the
 reply, any tools the agent called, and the token cost. A pipe gets the raw
@@ -152,7 +189,7 @@ kmx reads the names this repository already uses — the Makefile's, and
 | `CONTAINER_ENGINE` | `docker` | `docker` or `podman` (sets `KIND_EXPERIMENTAL_PROVIDER`) |
 | `KAGENT_VERSION` | `0.9.12` | pinned kagent chart **and** CLI |
 | `MODEL` | `qwen2.5:3b` | model pulled into Ollama |
-| `CHAT_PORT` | `8083` | local port for the controller forward |
+| `CHAT_PORT` | automatic | local port for the controller forward; set a number for deterministic automation |
 | `ADMIN_PORT` | `19091` | local port for the plane's admin forward |
 | `OPS_PORT` | `19092` | local port for a replica's metrics forward |
 | `CRED` | `hello-world` | the credential `govern` issues, and the one `ledger` and `budget` read/write by default (`grants` and `audit` default to **all** credentials) |
@@ -186,6 +223,14 @@ confirmation, and a non-interactive shell with neither refuses rather than
 guessing. An absent `kind-*` context is admitted as "about to be created" —
 that is `kmx up` on an empty machine; an absent context by any other name is
 a typo, and typos are what this exists to catch.
+
+Long `kmx up` and `kmx plane` runs delimit each logical phase with its position,
+outcome, and elapsed time. Native Docker, Helm, kind, kubectl, and Ollama output
+continues to stream between those boundaries, so progress remains visible and
+failures retain their original diagnostics. Concurrent agent output remains
+tagged by lane and is summarized as one parallel phase. Phase markers are
+written to stderr and do not add content to stdout; native tools retain their
+existing stdout and stderr behavior.
 
 This is [`scripts/kube-guard.sh`](../scripts/kube-guard.sh) ported to Go,
 case for case; the script stays for the scripts that still use it, and both
@@ -226,11 +271,132 @@ the guard and waits for Ready.
 | **Won't overwrite** | The manifest is written with an exclusive create, so a file you have edited is never clobbered. There is no `--force`. |
 | **Blast radius is the guard** | Applying goes through the same context guard as every other mutation. |
 | **Preflight on the ModelConfig** | A missing ModelConfig is admitted by the API server and then fails to reconcile in silence — the Agent exists, never goes Ready, and nothing says why. kmx checks first and prints the fix. |
+| **Preflight on tools** | Before apply/dry-run, the referenced RemoteMCPServer must exist, be Accepted, and currently discover every allowlisted tool. A typo cannot become an Agent that silently never reaches Ready. |
 | **Governed by default where a plane exists** | If the plane's governed preset is on the cluster, the new agent is metered, budgeted and ledgered from its first call. On a fresh `kmx up` cluster there is no plane, so the keyless preset is used and the ungoverned warning is printed. |
 
 The reserved names `hello-world` and `hello-tools` are refused: they are
 `kmx up`'s own agents, and scaffolding over one would replace a committed
 artifact that the next `kmx up` would replace right back.
+
+Running `kmx agent create` without a name on a terminal starts a local wizard.
+It asks `Describe this agent:`, proposes a Kubernetes-safe name, and asks once
+before creating and applying it. Enter accepts the default and applies, matching
+named `agent create`; answering no cancels without writing. `--no-apply` remains
+the explicit artifact-only path. The
+description seeds both metadata and the agent's instructions. Namespace, model,
+tools, instructions file, and output customization remain available through the
+existing flags rather than turning the common path into a questionnaire. The
+ordinary create guard, preflights, apply, and Ready wait run unchanged.
+Non-interactive use still requires a name.
+
+`kmx agent edit <name>` treats `agents/<name>.yaml` as the source of truth and
+opens a secure temporary copy with `$VISUAL` or `$EDITOR`. It refuses symlinks
+and concurrent source changes, rejects key-shaped content, validates the Agent
+identity and explicit tool allowlists, and checks referenced ModelConfigs and
+RemoteMCPServers before atomically replacing the source. It does not apply the
+edit automatically; review the diff and run the printed `kubectl apply` command.
+Invalid non-secret candidates are retained at the reported temporary path so
+editor work is not lost. For a direct live-resource edit, use `kubectl edit`.
+
+## Interactive chat
+
+```bash
+kmx agent chat --interactive hello-tools
+# from make: INTERACTIVE=1 make chat AGENT=hello-tools
+```
+
+The uncolored `CHAT STATUS` header names the active agent and shows its effective
+selected/discovered tools, descriptions, and whether each model/tool seam is
+direct or Kaimahi-governed. A horizontal rule ends the header before the first
+message, so startup posture cannot be mistaken for chat. A governed label
+requires current MCP discovery plus ready plane replicas and Service endpoints;
+unknown posture refuses rather than claiming governance. Every user message is
+labelled `You`; each reply carries the active agent name. Text and correlated
+tool call/completion events render as kagent streams them. The returned context
+ID is reused for each turn.
+
+Commands: `/session`, `/sessions`, `/history`, `/resume <id>`, `/new`, `/retry`,
+`/tools off|summary|verbose`, `/govern`, `/ungovern`, `/exit`.
+`/govern` gives the active agent a dedicated `kmx-model-<agent>` plane
+credential plus an agent-specific Secret and governed Ollama ModelConfig, then
+puts only its **model seam** behind the kind plane. This avoids combining model
+spend with another agent or with the separate tool-governance credential.
+`/ungovern` switches that model seam to an agent-specific direct Ollama
+ModelConfig while preserving the active model name. Neither command changes
+tool routing, deletes credentials, or erases ledger/grant/audit history.
+Both wait for the serving pod switch, print a fresh status header, and clear
+`/retry` history so an old message is not silently replayed across a trust
+boundary. On a non-kind context, set `KAIMAHI_CONFIRM=<context>` before starting
+chat; the slash command will not start a second input reader for confirmation.
+They currently support Ollama and an existing Kaimahi Ollama route; other model
+providers are refused rather than silently redirected to a different model.
+Credential issuance has the same custody boundary as `kmx govern`: the token is
+shown only once by the plane and immediately written to its Secret. If that
+Secret write fails, the credential can require operator recovery because the
+plane currently exposes no token rotation or deletion API.
+`--session <id>` resumes a known session and displays its history. If a stream
+closes while a task is still working, kmx polls that exact task ID; it never
+resends the tool call. A Kaimahi governance denial still requires a separate
+operator approval, followed by explicit `/retry`.
+
+Capable terminals color conversational and operational labels without relying
+on color alone: `YOU` is cyan, `AGENT (<name>)` is green, tool activity is magenta,
+and approval/governance activity is yellow. The status header is never colored.
+Messages use actor labels; non-message interactions use trusted bracketed labels
+such as `[TOOL CALL]`, `[TOOL RESULT]`, `[NATIVE APPROVAL]`, and
+`[KAIMAHI ROUTE]`. Dynamic tool names appear only in their indented fields.
+Every payload line is indented, with arguments and
+results nested one level further, so model/tool text cannot impersonate a
+trusted label. Set `NO_COLOR=1` or use `TERM=dumb` for plain output.
+
+Route checks, tool calls, tool results, and possible governance-denial signals
+are actions taken while producing the current assistant turn, so they render as
+children of one assistant heading rather than as peer messages:
+
+```text
+AGENT (hello-tools)
+    [KAIMAHI ROUTE]
+      Seam: model proxy
+      Configuration: verified through ready plane at chat start
+
+    [TOOL CALL]
+      Tool: k8s_get_resources
+      Status: running
+
+    [TOOL RESULT]
+      Tool: k8s_get_resources
+      Status: completed
+
+  | pod-a
+  | pod-b
+```
+
+Native approval/questions and local `[CHAT]` controls remain top-level because
+they interrupt the agent turn and require user or client action.
+Trusted child action labels use four spaces and their fields use six. Agent
+response text uses the shallower `  | ` rail, preserving authored whitespace
+while preventing model text quoting `[TOOL RESULT]` from impersonating a real
+tool record in plain output.
+
+Native kagent `requireApproval` pauses keep their answer prompt inside a
+`[NATIVE APPROVAL]` interaction and resume with a structured approve/reject
+response. `[NATIVE QUESTION]` similarly groups choices and the answer prompt.
+Kaimahi route information uses a separate `[KAIMAHI ROUTE]` interaction and
+names the affected tool in an indented field when its server route is
+unambiguous. Possible denial signals use `[POSSIBLE KAIMAHI DENIAL]`. They
+remain a separate security boundary: chat cannot approve its own Kaimahi
+request.
+
+When the live serving configuration proves that a model or unambiguous tool
+route uses a ready Kaimahi plane, interactive chat emits `[KAIMAHI ROUTE]`
+records. These remain visible with `/tools off`. They describe verified startup
+configuration, not proof that a particular request reached an enforcement
+point. Current kagent streams do not propagate positive decision, grant,
+ledger, or audit receipts, so the UI says that explicitly rather than inventing
+an `allowed` or `ledgered` result. Failed agent/model responses or correlated
+unambiguous tool responses matching the plane's denial vocabulary are marked
+`[POSSIBLE KAIMAHI DENIAL]` with unverified provenance; reported approval
+filing must still be verified through `kmx approvals`.
 
 ## How the plane gets there without a clone
 

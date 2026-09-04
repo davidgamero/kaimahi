@@ -41,10 +41,12 @@ USAGE
 COMMANDS
   ctx [<context>]              show, or select, the kube context kmx acts on
   up                           kind cluster + Ollama + the model + kagent + the agents
-  agent create <name>          scaffold agents/<name>.yaml and apply it
+  agent list                   list agents and their active model/tool wiring
+  agent create [<name>]        scaffold an agent; no name starts the guided wizard
+  agent edit <name>            edit and validate local agents/<name>.yaml
   agent chat <name> [message]  ask an agent one question (via ` + "`kagent invoke`" + `)
                                add --json for the raw A2A task; piped output
-                               is always raw
+                               is always raw; --interactive keeps a session open
   plane                        deploy the governance plane (proxy + ledger)
   govern [<credential>]        issue the credential and put an agent behind the plane
                                (--ttl sets its lifetime; the plane defaults one)
@@ -69,8 +71,9 @@ COMMANDS
   backup [<file>]              pg_dump the plane's database to a local file
   restore <file>               REPLACE the plane's database from a backup
   metrics                      one proxy replica's Prometheus exposition
-  status                       agents, modelconfigs and pods
+  status                       grouped agent/model wiring and runtime health
   down                         delete the kind cluster kmx created
+  completion bash|zsh|fish     print a shell completion script
   version                      this build's version, and the versions it installs
 
 GLOBAL FLAGS
@@ -82,7 +85,7 @@ ENVIRONMENT (the names the Makefile and the scripts already use)
   CONTAINER_ENGINE  docker | podman                     (docker)
   KAGENT_VERSION    pinned kagent chart and CLI         (0.9.12)
   MODEL             model pulled into Ollama            (qwen2.5:3b)
-  CHAT_PORT         local port for the controller       (8083)
+  CHAT_PORT         local controller port; unset = free port automatically
   ADMIN_PORT        local port for the plane's admin    (19091)
   OPS_PORT          local port for a replica's metrics   (19092)
   CRED              credential govern issues, ledger reads  (hello-world)
@@ -104,6 +107,13 @@ func main() {
 }
 
 func run(argv []string) error {
+	// Completion sees deliberately incomplete command lines. It must bypass
+	// normal flag validation and configuration loading, both for correctness
+	// and so pressing Tab can never trigger command behavior.
+	if len(argv) > 0 && argv[0] == "__complete" {
+		printCandidates(argv[1:])
+		return nil
+	}
 	// A global --context may appear before or after the command, so it is
 	// pulled out of the argument list rather than parsed by a FlagSet that
 	// would have to be threaded through every subcommand.
@@ -139,6 +149,11 @@ func run(argv []string) error {
 			"  kagent   %s\n  model    %s\n  plane    %s, built from %s\n",
 			build, config.DefaultKagentVersion, config.DefaultModel, app.PlaneImage, revision)
 		return nil
+	case "completion":
+		if len(args) != 1 {
+			return errors.New("usage: kmx completion bash|zsh|fish")
+		}
+		return printCompletionScript(args[0])
 	}
 
 	cfg, err := config.Load(contextFlag)
@@ -341,7 +356,16 @@ func run(argv []string) error {
 		return a.Metrics(pod)
 
 	case "status":
-		return a.Status()
+		fs := newFlagSet("status")
+		output := fs.String("o", "table", "output: table|json|yaml")
+		fs.StringVar(output, "output", "table", "output: table|json|yaml")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return errors.New("usage: kmx status [-o table|json|yaml]")
+		}
+		return a.StatusWithOptions(app.StatusOptions{Output: *output})
 
 	case "down":
 		return a.Down()
@@ -368,14 +392,38 @@ func optionalCredential(command string, args []string, fallback string) (string,
 
 func agentCommand(a *app.App, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: kmx agent create <name> | kmx agent chat <name> [message]")
+		return errors.New("usage: kmx agent list | kmx agent create [<name>] | kmx agent edit <name> | kmx agent chat <name> [message]")
 	}
 	switch args[0] {
+	case "list":
+		fs := newFlagSet("agent list")
+		output := fs.String("o", "table", "output: table|json|yaml")
+		fs.StringVar(output, "output", "table", "output: table|json|yaml")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return errors.New("usage: kmx agent list [-o table|json|yaml]")
+		}
+		return a.ListAgents(*output)
 	case "create":
 		return agentCreate(a, args[1:])
+	case "edit":
+		fs := newFlagSet("agent edit")
+		path := fs.String("file", "", "local Agent manifest to edit (default agents/<name>.yaml)")
+		names, err := parseInterspersed(fs, args[1:])
+		if err != nil {
+			return err
+		}
+		if len(names) != 1 {
+			return errors.New("usage: kmx agent edit <name> [--file <path>]")
+		}
+		return a.EditAgent(names[0], *path)
 	case "chat":
 		fs := newFlagSet("agent chat")
 		asJSON := fs.Bool("json", false, "print the raw A2A task instead of the readable view")
+		interactive := fs.Bool("interactive", false, "keep one session open for back-and-forth chat")
+		session := fs.String("session", "", "resume this kagent session")
 		// parseInterspersed, not fs.Parse: flag stops at the first
 		// non-flag argument, so `agent chat a "hi" --json` would silently
 		// append "--json" to the QUESTION and print the readable view
@@ -385,7 +433,7 @@ func agentCommand(a *app.App, args []string) error {
 			return err
 		}
 		if len(rest) == 0 {
-			return errors.New("usage: kmx agent chat <name> [message] [--json]")
+			return errors.New("usage: kmx agent chat [--json] [--interactive] [--session <id>] <name> [message]")
 		}
 		name := rest[0]
 		message := ""
@@ -393,7 +441,7 @@ func agentCommand(a *app.App, args []string) error {
 			message = joinArgs(rest[1:])
 		}
 		a.ChatJSON(*asJSON)
-		return a.Chat(name, message)
+		return a.ChatWithOptions(app.ChatOptions{Agent: name, Task: message, Interactive: *interactive, Session: *session})
 	default:
 		return app.RefuseUnknownAgentVerb(args[0], a.Cfg.KubeContext)
 	}
@@ -414,8 +462,11 @@ func agentCreate(a *app.App, args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(names) != 1 {
-		return errors.New("usage: kmx agent create <name> [flags]")
+	if len(names) > 1 {
+		return errors.New("usage: kmx agent create [<name>] [flags]")
+	}
+	if len(names) == 0 {
+		return a.CreateAgentInteractive(opt)
 	}
 	opt.Name = names[0]
 	return a.CreateAgent(opt)

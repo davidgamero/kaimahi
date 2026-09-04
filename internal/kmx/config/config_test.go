@@ -20,7 +20,6 @@ func TestDefaultsMatchTheMakefile(t *testing.T) {
 		{"KIND_CLUSTER", DefaultKindCluster},
 		{"KAGENT_VERSION", DefaultKagentVersion},
 		{"MODEL", DefaultModel},
-		{"CHAT_PORT", DefaultChatPort},
 		{"AGENT", DefaultAgent},
 		{"TASK", DefaultTask},
 		{"CONTAINER_ENGINE", DefaultContainerEngine},
@@ -34,6 +33,12 @@ func TestDefaultsMatchTheMakefile(t *testing.T) {
 		if got := string(m[1]); got != tc.want {
 			t.Errorf("%s: Makefile says %q, kmx says %q — one of them moved", tc.variable, got, tc.want)
 		}
+	}
+	// Make keeps 8083 for legacy action-oriented helpers; it deliberately
+	// omits that implicit default when delegating chat so kmx can allocate a
+	// free port. An explicit CHAT_PORT still rides through.
+	if !regexp.MustCompile(`(?m)^CHAT_PORT\s*\?=\s*8083\s*$`).Match(makefile) {
+		t.Error("Makefile's legacy CHAT_PORT default moved")
 	}
 }
 

@@ -141,12 +141,21 @@ func (a *App) runLanes(lanes []lane) error {
 		b.guarded = true
 
 		wg.Add(1)
-		go func(i int, l lane, b App) {
+		go func(i int, l lane, b App, w *prefixWriter) {
 			defer wg.Done()
-			if err := l.fn(&b); err != nil {
-				errs[i] = fmt.Errorf("%s: %w", l.name, err)
+			started := b.timeNow()
+			fmt.Fprintln(b.Err, "START")
+			err := l.fn(&b)
+			if flushErr := w.flush(); flushErr != nil {
+				err = errors.Join(err, fmt.Errorf("output could not be written: %w", flushErr))
 			}
-		}(i, l, b)
+			if err != nil {
+				fmt.Fprintf(b.Err, "FAILED (%s)\n", formatElapsed(b.timeNow().Sub(started)))
+				errs[i] = fmt.Errorf("%s: %w", l.name, err)
+			} else {
+				fmt.Fprintf(b.Err, "DONE (%s)\n", formatElapsed(b.timeNow().Sub(started)))
+			}
+		}(i, l, b, w)
 	}
 	wg.Wait()
 	for i, w := range writers {

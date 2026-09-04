@@ -94,9 +94,11 @@ verified download, the version scheme and the upgrade path are in
 Continue with the [getting-started guide](docs/getting-started.md), or choose
 a capability from the [documentation index](docs/README.md).
 
-From a clone, `make` runs the same binary:
+From a clone, `make` builds the same binary without touching a cluster;
+provisioning stays explicit:
 
 ```bash
+make        # build bin/kmx and print its path
 make up     # kind cluster + local model + kagent + agents (~5–10 minutes)
 make chat   # talk to the default agent
 ```
@@ -114,12 +116,12 @@ make chat   # talk to the default agent
 make chat TASK="What are you defined in?"
 make chat AGENT=hello-tools TASK="What pods are running in the ollama namespace?"
 make govern                              # route the agent's model calls through the governed proxy
-make status                              # agents, modelconfigs, pods
+make status                              # grouped agents, models, runtime health, next actions
 make down                                # delete the cluster
 ```
 
-`make chat` fetches the pinned kagent CLI to `bin/kagent` (checksum-verified),
-port-forwards the controller, and invokes the agent.
+`make chat` delegates to kmx, which acquires the pinned kagent CLI in its
+cache (checksum-verified), port-forwards the controller, and invokes the agent.
 
 | Consume it as | How |
 |---|---|
@@ -217,7 +219,7 @@ this table — it was prototyped and shelved, not built.
 |---|---|
 | `make up` | cluster → Ollama → model pull → kagent → agents → status |
 | `make chat [AGENT=… TASK=…]` | one question to an agent via the kagent CLI |
-| `make status` | `get agents,modelconfigs` + pods |
+| `make status` | grouped context, agent/model wiring, runtime health, restarts, and next actions |
 | `make down` | delete the kind cluster |
 | `make use PRESET=<name>` | point the agent at a model preset from `k8s/models/` |
 | `make use-ollama` | back to the keyless in-cluster model |

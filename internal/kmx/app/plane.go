@@ -16,7 +16,6 @@ import (
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/admin"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/planebuild"
-	"github.com/kaimahi-agents/kaimahi/internal/kmx/run"
 )
 
 // PlaneImage is the tag the plane's image is built and side-loaded under.
@@ -77,6 +76,7 @@ type PlaneOptions struct {
 // scripts/plane-deploy.sh), with one difference that is the point of the
 // milestone: the image does not need a clone. See planebuild.
 func (a *App) Plane(opt PlaneOptions) error {
+	started := a.timeNow()
 	steps := PlaneSteps
 	if opt.Step != "" {
 		found := false
@@ -90,6 +90,28 @@ func (a *App) Plane(opt PlaneOptions) error {
 			return fmt.Errorf("unknown step %q — one of: %s", opt.Step, strings.Join(PlaneSteps, ", "))
 		}
 	}
+	dependencies := []dependency{depKubectl}
+	for _, step := range steps {
+		if step != "image" {
+			continue
+		}
+		dependencies = append(dependencies, depKind, a.engineDependency())
+		needsGo := strings.TrimSpace(opt.Source) == "-"
+		if strings.TrimSpace(opt.Source) == "" {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			_, local := planebuild.DetectSourceFS(cwd)
+			needsGo = !local
+		}
+		if needsGo {
+			dependencies = append(dependencies, depGo)
+		}
+	}
+	if err := a.preflight(dependencies...); err != nil {
+		return err
+	}
 
 	action, command := "deploy the Kaimahi governance plane (proxy + Postgres ledger)", "kmx plane"
 	if opt.Step != "" {
@@ -100,23 +122,28 @@ func (a *App) Plane(opt PlaneOptions) error {
 		return err
 	}
 
-	for _, s := range steps {
+	for i, s := range steps {
 		var err error
-		switch s {
-		case "image":
-			err = a.planeImage(opt)
-		case "secrets":
-			err = a.planeSecrets()
-		case "deploy":
-			err = a.planeDeploy()
-		}
+		name := map[string]string{"image": "Build and load proxy image", "secrets": "Reconcile plane secrets", "deploy": "Deploy and verify plane"}[s]
+		err = a.runPhase(phase{current: i + 1, total: len(steps), name: name}, func() error {
+			switch s {
+			case "image":
+				return a.planeImage(opt)
+			case "secrets":
+				return a.planeSecrets()
+			case "deploy":
+				return a.planeDeploy()
+			}
+			return nil
+		})
 		if err != nil {
 			return err
 		}
 	}
 
 	if opt.Step == "" {
-		a.notef("\nThe plane is up. Nothing is governed by it yet:\n"+
+		a.complete("Governance plane ready", started)
+		a.notef("\nNEXT  Nothing is governed by the plane yet:\n"+
 			"  kmx govern %s      # issue the credential and put the agent behind the plane\n"+
 			"  kmx ledger            # what it has spent", a.Cfg.Credential)
 	}
@@ -127,14 +154,6 @@ func (a *App) Plane(opt PlaneOptions) error {
 
 // planeImage builds the proxy image and side-loads it into the kind cluster.
 func (a *App) planeImage(opt PlaneOptions) error {
-	if err := run.MustExist(a.Cfg.ContainerEngine, "to build the plane's image",
-		"https://docs.docker.com/get-docker/"); err != nil {
-		return err
-	}
-	if err := run.MustExist("kind", "to load the image into the local cluster",
-		"https://kind.sigs.k8s.io/docs/user/quick-start/#installation"); err != nil {
-		return err
-	}
 	if err := a.refuseForeignImageTag(); err != nil {
 		return err
 	}
@@ -235,10 +254,6 @@ func (a *App) buildFromSource(root string) error {
 // kmx's own revision, then package the binary onto the same runtime base
 // plane/Dockerfile uses.
 func (a *App) buildFromModuleProxy() error {
-	if err := run.MustExist("go", "to fetch and build the plane at kmx's own revision",
-		"https://go.dev/dl/"); err != nil {
-		return err
-	}
 	rev, err := planebuild.Revision(debug.ReadBuildInfo())
 	if err != nil {
 		return err

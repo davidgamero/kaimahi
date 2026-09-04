@@ -130,6 +130,83 @@ func governOptions() GovernOptions {
 	}
 }
 
+func TestInteractiveGovernanceResourcesAreAgentSpecific(t *testing.T) {
+	secret := governedResourceName("kmx-token", "hello-tools")
+	preset := governedResourceName("kmx-governed-ollama", "hello-tools")
+	credential := governedResourceName("kmx-model", "hello-tools")
+	if secret != "kmx-token-hello-tools" || preset != "kmx-governed-ollama-hello-tools" {
+		t.Fatalf("unexpected resource names: secret=%q preset=%q", secret, preset)
+	}
+	if credential != "kmx-model-hello-tools" {
+		t.Fatalf("unexpected credential name: %q", credential)
+	}
+	raw, err := interactiveModelManifest(preset, secret, "qwen2.5:3b", true, "hello-tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := string(raw)
+	for _, want := range []string{`"name":"` + preset + `"`, `"apiKeySecret":"` + secret + `"`, `"model":"qwen2.5:3b"`, "kaimahi-proxy.kaimahi.svc.cluster.local", `"kaimahi.dev/chat-agent":"hello-tools"`} {
+		if !strings.Contains(manifest, want) {
+			t.Errorf("agent-specific ModelConfig lacks %q:\n%s", want, manifest)
+		}
+	}
+	if strings.Contains(manifest, config.GovernedSecret) {
+		t.Fatalf("agent-specific ModelConfig reused singleton Secret:\n%s", manifest)
+	}
+}
+
+func TestInteractiveModelManifestCannotBeInjectedByModelName(t *testing.T) {
+	raw, err := interactiveModelManifest("preset", "secret", "qwen\n---\nkind: Secret", true, "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resource map[string]any
+	if err := json.Unmarshal(raw, &resource); err != nil {
+		t.Fatalf("generated manifest is not one JSON document: %v\n%s", err, raw)
+	}
+	if strings.Contains(string(raw), "\n---\n") {
+		t.Fatalf("model name escaped into a YAML document boundary:\n%s", raw)
+	}
+}
+
+func TestInteractiveDirectModelManifestPreservesModelWithoutASecret(t *testing.T) {
+	raw, err := interactiveModelManifest("kmx-direct-ollama-agent", "", "custom:latest", false, "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resource struct {
+		Spec map[string]any `json:"spec"`
+	}
+	if err := json.Unmarshal(raw, &resource); err != nil {
+		t.Fatal(err)
+	}
+	if resource.Spec["model"] != "custom:latest" || resource.Spec["provider"] != "Ollama" {
+		t.Fatalf("direct manifest changed model/provider: %s", raw)
+	}
+	if _, exists := resource.Spec["apiKeySecret"]; exists {
+		t.Fatalf("direct manifest retained governed Secret: %s", raw)
+	}
+}
+
+func TestGovernedResourceNamesRemainValidKubernetesNames(t *testing.T) {
+	name := governedResourceName("kmx-governed-ollama", strings.Repeat("a", 63))
+	if len(name) > 63 || !agentNameRE.MatchString(name) {
+		t.Fatalf("invalid generated resource name %q", name)
+	}
+}
+
+func TestInteractiveCredentialReplacesOnlyPrevalidatedOwnedSecret(t *testing.T) {
+	if got := credentialSecretVerb(true, false); got != "create" {
+		t.Fatalf("absent interactive Secret uses %q", got)
+	}
+	if got := credentialSecretVerb(true, true); got != "apply" {
+		t.Fatalf("existing owned interactive Secret uses %q", got)
+	}
+	if got := credentialSecretVerb(false, false); got != "apply" {
+		t.Fatalf("ordinary govern behavior changed to %q", got)
+	}
+}
+
 // The rule `make govern` states in a comment and enforces with a grep, here
 // enforced by construction: ONLY a genuine NotFound may skip the switch.
 // Every other failure — an unreachable API server, an expired credential, an
