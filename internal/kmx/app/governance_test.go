@@ -106,7 +106,7 @@ func TestModelSeamsRefuseToCallADanglingReferenceDirect(t *testing.T) {
 	}
 }
 
-// No agents at all is a known nothing — W30's `none` — and not a zero
+// No agents at all is a known nothing — `none` — and not a zero
 // pretending to be a count.
 func TestEmptyPopulationsAreNoneNotZeroGoverned(t *testing.T) {
 	if got := modelSeams(nil, nil); got.State != stateNone {
@@ -120,7 +120,7 @@ func TestEmptyPopulationsAreNoneNotZeroGoverned(t *testing.T) {
 	}
 }
 
-// The branch this lane exists for: a read that failed says so. "0 governed"
+// The branch that matters most: a read that failed says so. "0 governed"
 // would be a claim about a population nobody managed to look at.
 func TestUnreadablePopulationIsUnknownNotZero(t *testing.T) {
 	got := toolSeams(nil, `the server doesn't have a resource type "remotemcpservers"`)

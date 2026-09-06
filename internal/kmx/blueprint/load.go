@@ -1,12 +1,12 @@
 package blueprint
 
-// Where a blueprint lives, which is a design decision this lane owns.
+// Where a blueprint lives, and why that is a decision rather than a default.
 //
 // Three candidates were on the table, and they have different failure
 // modes:
 //
 //  1. CARRIED BY THE BINARY, by name — `kmx workflow govern release`.
-//     Chosen as the default. After W31 the front door is `curl | sh` then
+//     Chosen as the default. The front door is `curl | sh` then
 //     `kmx quickstart`, with no Go and no checkout; a blueprint that
 //     could only be read out of a git clone would make `git clone` a
 //     prerequisite again, for the one feature whose whole point is that
