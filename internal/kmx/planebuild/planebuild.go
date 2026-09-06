@@ -51,6 +51,17 @@ const Binary = "kaimahi-proxy"
 // ModulePath is the package `go install` is asked for.
 const ModulePath = "github.com/kaimahi-agents/kaimahi/plane/cmd/" + Binary
 
+// NestedModule is the module that actually provides ModulePath.
+//
+// plane/ carries its own go.mod, so it is a module nested inside the repo's
+// root module. `go install pkg@version` discovers which module provides a
+// package by asking the proxy for each path prefix, longest first — and if
+// the proxy has not cached this one yet it answers 404, Go falls back to the
+// ROOT module, and the failure reads "module …/kaimahi found, but does not
+// contain package …/plane/cmd/kaimahi-proxy". Naming the module explicitly
+// makes the proxy fetch it, after which the install resolves.
+const NestedModule = "github.com/kaimahi-agents/kaimahi/plane"
+
 // Dockerfile is the image recipe for the FETCHED path: the already-built
 // static binary copied onto the same runtime base plane/Dockerfile uses.
 //

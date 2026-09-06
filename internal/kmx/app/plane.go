@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"slices"
@@ -289,10 +290,8 @@ func (a *App) buildFromModuleProxy() error {
 		}
 	}
 	started := time.Now().Add(-time.Second)
-	if err := installer.Run("go", plan.Args...); err != nil {
-		return fmt.Errorf("cannot build the plane at revision %s: %w\n"+
-			"  If this revision is not yet on the public Go proxy (a commit that has not merged),\n"+
-			"  build from a checkout instead: kmx plane --source <path to the repo>", rev, err)
+	if err := a.goInstallPlane(&installer, plan, rev); err != nil {
+		return err
 	}
 	// Where the binary landed is a decision, not a search: an older binary
 	// left in the same place by an earlier run must not be packaged as if
@@ -463,4 +462,57 @@ func (a *App) planeDeploy() error {
 	}
 	return a.kubectlRun("-n", admin.Namespace, "rollout", "status",
 		"deploy/kaimahi-proxy", "--timeout=300s")
+}
+
+// planeNotOnProxyYet matches the failure that means "the proxy has not been
+// asked for the nested module yet", not "this build is broken".
+//
+// Anchored on both halves — the fallback phrase and the plane's own package
+// path — so a genuine missing package elsewhere cannot be mistaken for it.
+var planeNotOnProxyYet = regexp.MustCompile(
+	`module .* found, but does not contain package .*/plane/cmd/kaimahi-proxy`)
+
+// goInstallPlane installs the plane, resolving the nested module first.
+//
+// plane/ has its own go.mod. `go install pkg@version` finds the providing
+// module by asking the proxy for each path prefix, longest first; when the
+// proxy has not cached …/plane it answers 404, Go falls back to the ROOT
+// module, and the error reads as a broken layout when nothing is broken.
+//
+// Naming the module outright is what makes the proxy fetch it. Established
+// by experiment on the revision that reddened main, with a COLD module
+// cache each time — the distinction matters, because a warm cache hides it:
+//
+//	go install …/plane/cmd/kaimahi-proxy@<rev>   -> fails
+//	go list -m …/plane@<rev>                     -> resolves
+//	go install …/plane/cmd/kaimahi-proxy@<rev>   -> succeeds
+//
+// So this is a priming step, not a retry: the first command is the one that
+// makes the second possible, and repeating the install alone would have
+// waited out a clock that was never going to help.
+func (a *App) goInstallPlane(installer *run.Runner, plan planebuild.Install, rev string) error {
+	out, _, err := installer.CaptureCombined("go", plan.Args...)
+	if err == nil {
+		return nil
+	}
+	if !planeNotOnProxyYet.MatchString(out) {
+		return planeInstallErr(rev, err, out)
+	}
+
+	a.notef("the Go proxy has not served the nested plane module at %s yet; resolving it explicitly", rev)
+	resolver := *installer
+	if _, rerr := resolver.Capture("go", "list", "-m", planebuild.NestedModule+"@"+rev); rerr != nil {
+		return planeInstallErr(rev, err, out)
+	}
+	if out, _, err = installer.CaptureCombined("go", plan.Args...); err != nil {
+		return planeInstallErr(rev, err, out)
+	}
+	return nil
+}
+
+func planeInstallErr(rev string, err error, out string) error {
+	return fmt.Errorf("cannot build the plane at revision %s: %w\n%s\n"+
+		"  If this revision is not yet on the public Go proxy (a commit that has not merged),\n"+
+		"  build from a checkout instead: kmx plane --source <path to the repo>",
+		rev, err, strings.TrimSpace(out))
 }
