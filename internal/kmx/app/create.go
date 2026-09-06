@@ -30,6 +30,12 @@ type CreateOptions struct {
 	Out             string // empty: agents/<name>.yaml
 	NoApply         bool
 	DryRun          bool
+	Image           string // non-empty: a BYO agent serving A2A on :8080
+	Isolation       string // placement profile, or "none"
+	// RunAsUser is the numeric UID a bring-your-own image runs as, or the
+	// literal "root" to say so on purpose. It is asked for rather than
+	// guessed: see scaffold.ParseRunAsUser.
+	RunAsUser string
 }
 
 type serverCondition struct {
@@ -51,6 +57,18 @@ func (a *App) CreateAgent(opt CreateOptions) error {
 	}
 	if opt.NoApply && opt.DryRun {
 		return fmt.Errorf("--no-apply and --dry-run cannot be used together")
+	}
+	if err := refuseFlagsBYODrops(opt); err != nil {
+		return err
+	}
+	if opt.Isolation != "" && opt.Image == "" {
+		// The generator makes this check too, but it can only see the
+		// RESOLVED placement — and "none" resolves to no placement at all,
+		// so it arrived there indistinguishable from a flag nobody passed.
+		// `--isolation none` was therefore the one spelling that slipped
+		// through the rule the other spellings are refused by. Checked here,
+		// where the flag as typed is still visible.
+		return fmt.Errorf("--isolation needs --image: placement applies to a BYO agent's pod")
 	}
 	namespace := opt.Namespace
 	if namespace == "" {
@@ -95,9 +113,25 @@ func (a *App) CreateAgent(opt CreateOptions) error {
 		if err != nil {
 			return err
 		}
+		placement, err := scaffold.ParsePlacement(opt.Isolation)
+		if err != nil {
+			return err
+		}
+		identity, err := scaffold.ParseRunAsUser(opt.RunAsUser, opt.Image)
+		if err != nil {
+			return err
+		}
+		// A bring-your-own image has no modelConfig and no tools to point
+		// at, so the seams a declarative agent gets by reference are
+		// carried across as environment instead.
+		var governance []scaffold.EnvVar
+		if opt.Image != "" {
+			governance = scaffold.GovernanceEnv(governed)
+		}
 		document, err := scaffold.Generate(scaffold.Spec{
 			Name: opt.Name, Namespace: namespace, Description: opt.Description,
 			ModelConfig: modelConfig, Instructions: instructions, Tools: tools, Governed: governed,
+			Image: opt.Image, Placement: placement, Governance: governance, Identity: identity,
 		})
 		if err != nil {
 			return err
@@ -110,11 +144,22 @@ func (a *App) CreateAgent(opt CreateOptions) error {
 			}
 			fmt.Fprintf(a.Out, "wrote %s\n", path)
 		}
+		if opt.Image != "" {
+			a.noteBYO(opt.Image, governance, placement, identity)
+		}
 		if !governed {
 			a.notef("WARNING: %q is ungoverned — no budget, no ledger, no audit in front of it.\n"+
 				"         `make plane` then `make govern` puts the plane in front of an agent.", modelConfig)
 		}
-		if tools == nil {
+		if opt.Image != "" {
+			// NOT the declarative report. A BYO manifest carries no
+			// toolNames, so "agent allowlist only" would name an allowlist
+			// that is not in the document — a governance claim about a
+			// control that does not exist.
+			a.notef("CAPABILITIES\n  Tools: whatever the image reaches for; kmx cannot enumerate them.\n" +
+				"  Governance: the gateway is the only control, and only for calls the\n" +
+				"  image actually sends through KAIMAHI_MCP_URL. `kmx audit tool` is the evidence.")
+		} else if tools == nil {
 			a.notef("CAPABILITIES\n  Tools: none\n  Add later: kmx agent create <name> --tools <server>:<tool>[,<tool>...]")
 		} else {
 			a.notef("CAPABILITIES\n  Tools: %s via %s\n  Governance: agent allowlist only; no gateway audit until `kmx tools govern`", strings.Join(tools.Tools, ", "), tools.Server)
@@ -337,4 +382,73 @@ func RefuseUnknownAgentVerb(verb, kubeContext string) error {
 		"  kubectl%s -n kagent delete agent <name>\n"+
 		"  kubectl%s apply -f agents/<name>.yaml",
 		verb, ctx, ctx, ctx)
+}
+
+// noteBYO says what a bring-your-own agent got and — the part that matters —
+// what kmx could not check.
+//
+// Every line here exists because the image is opaque. A declarative agent's
+// governance is a reference the controller resolves and the manifest shows;
+// a BYO agent's is an environment variable that only the image can honour,
+// and kmx has no way to look inside and see whether it does. The same is
+// true of its user and its filesystem. So each of those is stated, not
+// implied by silence.
+func (a *App) noteBYO(image string, governance []scaffold.EnvVar, placement *scaffold.Placement, identity scaffold.Identity) {
+	a.notef("BYO agent: kagent will deploy %s and expect A2A on :8080.\n"+
+		"         It has no modelConfig and no tools field — those exist only on\n"+
+		"         declarative agents — so the governed seams travel as env instead.", image)
+	if len(governance) > 0 {
+		a.notef("Injected the governed seams into the pod's env:")
+		for _, e := range governance {
+			if e.SecretRef != "" {
+				a.notef("           %s <- secret %s/%s", e.Name, e.SecretRef, e.Value)
+				continue
+			}
+			a.notef("           %s = %s", e.Name, e.Value)
+		}
+		a.notef("CONFIGURED, NOT PROVEN: kmx cannot verify the image honours these.\n" +
+			"         `kmx ledger` is the evidence — a row there means it did.")
+	}
+	a.notef("%s", identity.Note)
+	if placement != nil {
+		a.notef("%s", placement.Note)
+	} else {
+		a.notef("No placement profile: this pod schedules like any other. `--isolation\n" +
+			"         virtual-node` puts it on an ACI virtual node instead.")
+	}
+}
+
+// refuseFlagsBYODrops rejects the flags a BYO manifest would silently discard.
+//
+// `spec.byo` has one property, `deployment`. There is no `systemMessage` and
+// no `tools`, so `--instructions` and `--tools` do not reach the document at
+// all — and `--tools` was worse than inert: the capabilities report printed
+// the allowlist back, so kmx claimed a control that was not in the manifest
+// it had just written. The same rule the isolation flags follow: a flag that
+// quietly does nothing is worse than no flag.
+//
+// `--model` is NOT refused. It does not reach a BYO document either — the
+// image chooses its own model — but it still decides whether the governed
+// seams are injected as env, which is a real effect on a real artifact.
+func refuseFlagsBYODrops(opt CreateOptions) error {
+	if opt.Image == "" {
+		return nil
+	}
+	var dropped []string
+	if opt.Tools != "" {
+		dropped = append(dropped, "--tools")
+	}
+	if opt.Instructions != "" || opt.InstructionText != "" {
+		dropped = append(dropped, "--instructions")
+	}
+	if len(dropped) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s cannot be combined with --image: kagent's Agent CRD puts\n"+
+		"systemMessage and tools under `declarative`, and a BYO agent has neither —\n"+
+		"the image supplies its own prompt and reaches its own tools. Refusing rather\n"+
+		"than dropping them, because a scaffolder that accepted --tools here would\n"+
+		"report an allowlist that is not in the manifest it wrote.\n"+
+		"  Allowlist a BYO agent's tool calls at the gateway instead: `kmx tools govern`",
+		strings.Join(dropped, " and "))
 }

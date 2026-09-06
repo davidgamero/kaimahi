@@ -28,7 +28,9 @@ package scaffold
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -47,6 +49,34 @@ type Spec struct {
 	// Governed records whether ModelConfig is one the plane fronts. It only
 	// affects the provenance comment and the warnings the caller prints.
 	Governed bool
+
+	// Image, when set, makes this a BYO agent: kagent deploys the image and
+	// expects it to serve A2A on :8080.
+	//
+	// BYO is a different artifact, not a variation on the declarative one.
+	// spec.byo has exactly ONE property, deployment — no modelConfig, no
+	// tools. So the governance that a declarative agent gets by REFERENCE
+	// has to be carried across as environment, and it stops being visible
+	// in the Agent YAML. That is the trade, and Governance below is what
+	// makes it explicit rather than implied.
+	Image string
+	// Placement is the resolved --isolation profile, or nil.
+	Placement *Placement
+	// Governance is the seam configuration injected into a BYO image's env:
+	// the proxy base URL, the gateway endpoint, and the credential Secret.
+	// Empty for a declarative agent, which needs none of it.
+	Governance []EnvVar
+	// Identity is the image-dependent half of a BYO agent's security
+	// context: the UID it runs as, when the operator stated one.
+	Identity Identity
+}
+
+// EnvVar is a container environment variable, either literal or from a
+// Secret key.
+type EnvVar struct {
+	Name      string
+	Value     string
+	SecretRef string // Secret name; when set, Value is the key
 }
 
 // ToolWiring is one MCP server and the tools the agent may call on it.
@@ -186,7 +216,10 @@ func Generate(spec Spec) (string, error) {
 	}
 	// Every operator-supplied value, as typed — before any escaping can move
 	// it out from under a key shape.
-	inputs := []string{spec.Name, spec.Namespace, spec.Description, spec.ModelConfig, spec.Instructions}
+	inputs := []string{spec.Name, spec.Namespace, spec.Description, spec.ModelConfig, spec.Instructions, spec.Image}
+	for _, e := range spec.Governance {
+		inputs = append(inputs, e.Name, e.Value, e.SecretRef)
+	}
 	if spec.Tools != nil {
 		inputs = append(inputs, spec.Tools.Server)
 		inputs = append(inputs, spec.Tools.Tools...)
@@ -202,11 +235,21 @@ func Generate(spec Spec) (string, error) {
 	if !nameRE.MatchString(spec.Namespace) {
 		return "", fmt.Errorf("namespace %q is not a valid Kubernetes name", spec.Namespace)
 	}
-	if spec.ModelConfig == "" {
-		return "", fmt.Errorf("an agent needs a modelConfig")
+	if spec.Image == "" {
+		// Declarative agents think through a ModelConfig by reference. BYO
+		// agents have nowhere to put one — see Spec.Image.
+		if spec.ModelConfig == "" {
+			return "", fmt.Errorf("an agent needs a modelConfig")
+		}
+		if !nameRE.MatchString(spec.ModelConfig) {
+			return "", fmt.Errorf("modelConfig %q is not a valid Kubernetes name", spec.ModelConfig)
+		}
 	}
-	if !nameRE.MatchString(spec.ModelConfig) {
-		return "", fmt.Errorf("modelConfig %q is not a valid Kubernetes name", spec.ModelConfig)
+	if spec.Placement != nil && spec.Image == "" {
+		// Placement only reaches a workload we are deploying deliberately.
+		// Silently emitting nodeSelector on a declarative agent would look
+		// like isolation and buy none.
+		return "", fmt.Errorf("--isolation needs --image: placement applies to a BYO agent's pod")
 	}
 	if spec.Description == "" {
 		spec.Description = fmt.Sprintf("Agent %s, scaffolded by kmx.", spec.Name)
@@ -255,6 +298,25 @@ func Generate(spec Spec) (string, error) {
 	b.WriteString("  namespace: " + namespace + "\n")
 	b.WriteString("spec:\n")
 	b.WriteString("  description: " + description + "\n")
+
+	if spec.Image != "" {
+		byo, err := renderBYO(spec)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(byo)
+		// The same final scan the declarative path ends with, and for the
+		// same reason: the individual inputs were checked above, but the
+		// guarantee this makes is about the DOCUMENT. A BYO manifest is the
+		// one that carries an env block, so it is the last one that should
+		// be allowed to skip the check on its way out.
+		document := b.String()
+		if err := RefuseKeyShapes(document); err != nil {
+			return "", err
+		}
+		return document, nil
+	}
+
 	b.WriteString("  type: Declarative\n")
 	b.WriteString("  declarative:\n")
 	b.WriteString("    modelConfig: " + modelConfig + "\n")
@@ -329,4 +391,148 @@ func Generate(spec Spec) (string, error) {
 		return "", err
 	}
 	return document, nil
+}
+
+// renderBYO writes the `type: BYO` half of the document.
+//
+// Kept separate from the declarative path rather than threaded through it
+// with conditionals: they are different artifacts that happen to share a
+// kind, and the reader of either should not have to skip the other.
+func renderBYO(spec Spec) (string, error) {
+	image, err := quote(spec.Image)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	b.WriteString("  type: BYO\n")
+	b.WriteString("  byo:\n")
+	b.WriteString("    deployment:\n")
+	b.WriteString("      image: " + image + "\n")
+	b.WriteString(renderBYOSecurity(spec.Identity))
+
+	if len(spec.Governance) > 0 {
+		// The seams a declarative agent gets by reference, carried across as
+		// environment. kmx cannot verify the image reads them — the ledger
+		// is what proves governance, not the presence of these variables.
+		b.WriteString("      env:\n")
+		for _, e := range spec.Governance {
+			name, err := quote(e.Name)
+			if err != nil {
+				return "", err
+			}
+			b.WriteString("        - name: " + name + "\n")
+			value, err := quote(e.Value)
+			if err != nil {
+				return "", err
+			}
+			if e.SecretRef == "" {
+				b.WriteString("          value: " + value + "\n")
+				continue
+			}
+			ref, err := quote(e.SecretRef)
+			if err != nil {
+				return "", err
+			}
+			b.WriteString("          valueFrom:\n" +
+				"            secretKeyRef:\n" +
+				"              name: " + ref + "\n" +
+				"              key: " + value + "\n")
+		}
+	}
+
+	if p := spec.Placement; p != nil {
+		if len(p.NodeSelector) > 0 {
+			b.WriteString("      nodeSelector:\n")
+			for _, k := range slices.Sorted(maps.Keys(p.NodeSelector)) {
+				key, err := quote(k)
+				if err != nil {
+					return "", err
+				}
+				val, err := quote(p.NodeSelector[k])
+				if err != nil {
+					return "", err
+				}
+				b.WriteString("        " + key + ": " + val + "\n")
+			}
+		}
+		if len(p.Tolerations) > 0 {
+			b.WriteString("      tolerations:\n")
+			for _, t := range p.Tolerations {
+				key, err := quote(t.Key)
+				if err != nil {
+					return "", err
+				}
+				b.WriteString("        - key: " + key + "\n")
+				if t.Operator != "" {
+					b.WriteString("          operator: " + t.Operator + "\n")
+				}
+				if t.Effect != "" {
+					b.WriteString("          effect: " + t.Effect + "\n")
+				}
+			}
+		}
+	}
+	return b.String(), nil
+}
+
+// renderBYOSecurity writes the security context of a bring-your-own agent.
+//
+// It is split in two on one line: what holds whatever is inside the image,
+// and what does not. The first half is unconditional. Dropping every
+// capability, refusing privilege escalation and applying the default seccomp
+// profile cannot be made wrong by an image's contents — an agent that needs
+// any of them is running model output with more authority than the plane it
+// is governed by, and no --image should buy that.
+//
+// The second half — the user and a read-only root filesystem — is a claim
+// ABOUT the image, and kmx has none. It is written when the operator stated
+// one and replaced by a comment when they did not, so the gap is visible in
+// the artifact and not only in the terminal that scrolled past. The manifest
+// is the product here; a reviewer reading the committed file must be able to
+// see what was left off.
+func renderBYOSecurity(id Identity) string {
+	var b strings.Builder
+	b.WriteString("      # Holds whatever the image contains: no capabilities, no way to\n" +
+		"      # gain privileges, the default seccomp filter.\n" +
+		"      securityContext:\n" +
+		"        allowPrivilegeEscalation: false\n" +
+		"        capabilities:\n" +
+		"          drop: [ALL]\n")
+	switch {
+	case id.UID > 0:
+		b.WriteString("        readOnlyRootFilesystem: true\n")
+	case id.Root:
+		b.WriteString("        # Root, on purpose (--run-as-user root). The root filesystem stays\n" +
+			"        # writable because an image that needs root usually needs to write.\n")
+	default:
+		b.WriteString("        # readOnlyRootFilesystem is NOT set: kmx cannot tell whether this\n" +
+			"        # image writes outside /tmp. Add it once you know, together with a\n" +
+			"        # tmp emptyDir if it needs one.\n")
+	}
+	b.WriteString("      podSecurityContext:\n" +
+		"        seccompProfile:\n" +
+		"          type: RuntimeDefault\n")
+	switch {
+	case id.UID > 0:
+		// Both, not just runAsNonRoot: the kubelet cannot prove a named
+		// user is non-root, so runAsNonRoot alone fails at CreateContainer
+		// for every image that spells its USER as a name.
+		b.WriteString(fmt.Sprintf("        runAsNonRoot: true\n        runAsUser: %d\n", id.UID))
+	case id.Root:
+		b.WriteString("        # runAsNonRoot is deliberately NOT set: --run-as-user root.\n")
+	default:
+		b.WriteString("        # runAsNonRoot is NOT set, so this pod may run as root. kmx will not\n" +
+			"        # guess the image's UID: a wrong one fails the pod at CreateContainer\n" +
+			"        # with a message that never names the image. Pass --run-as-user <uid>\n" +
+			"        # (`docker image inspect --format '{{.Config.User}}' <image>`).\n")
+	}
+	if id.UID > 0 {
+		b.WriteString("      volumes:\n" +
+			"        - name: tmp\n" +
+			"          emptyDir: {}\n" +
+			"      volumeMounts:\n" +
+			"        - name: tmp\n" +
+			"          mountPath: /tmp\n")
+	}
+	return b.String()
 }
