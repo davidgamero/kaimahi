@@ -172,7 +172,7 @@ make chat   # talk to the default agent
 |---|---|---|
 | Docker **or** Podman | everything: kind runs Kubernetes in containers | <https://docs.docker.com/get-docker/> · <https://podman.io/docs/installation> |
 | kind, kubectl, Helm | fetched and checksum-verified by `kmx` when absent — yours are used if you have them | — |
-| Go 1.26+ | only `kmx plane` (it builds the plane's image locally) and `go install` | <https://go.dev/dl/> |
+| Go 1.26+ | only the two commands that build the plane's image — `kmx plane` (and then only outside a checkout) and `kmx lift` — plus `go install` | <https://go.dev/dl/> |
 | make, git | only the clone path below | your package manager |
 
 ```bash
@@ -189,7 +189,7 @@ cache (checksum-verified), port-forwards the controller, and invokes the agent.
 | Consume it as | How |
 |---|---|
 | **Local dev** | `make up` on kind; keyless, free, offline-capable model |
-| **Any conformant cluster** | the manifests are plain CRDs; **AKS** is the named managed target, and the governance plane has been [run there once](docs/aks.md) |
+| **Any conformant cluster** | the manifests are plain CRDs; **AKS** is the named managed target, and the governance plane has been [run there six times, on six clusters, each deleted the same day](docs/aks.md) |
 | **CI / automation** | the same targets run headless — this repo's [CI](.github/workflows/ci.yml) boots a cluster and asserts a real reply, and a real tool call, on every PR |
 | **Your own repo** | copy `k8s/` + the make targets; each agent is one YAML file |
 | **Existing kagent install** | `kubectl apply -f k8s/hello-world.yaml` — no kaimahi runtime required |
@@ -205,14 +205,14 @@ cache (checksum-verified), port-forwards the controller, and invokes the agent.
 | 4b | Governed tool calls (MCP gateway, allowlists, audit) | **runs** — `make govern-tools`, denial + audit asserted in CI |
 | 4c | Approvals / time-boxed permits (deny-and-pend, bounded grants) | **runs** — `make approvals`, both cycles asserted in CI |
 | 5a | Governed Slack outbound — posting is an approved action | **runs** — `make govern-slack`; the deny → approve → post → burn cycle asserted keyless in CI ([docs/slack.md](docs/slack.md)) |
-| 5b | Cluster portability + a real managed-cluster run | **demonstrated once** — the plane, a governed Copilot chat, a ledger row, a budget denial and a governed tool call, all on a real AKS cluster, which was then deleted ([docs/aks.md](docs/aks.md)) |
+| 5b | Cluster portability + a real managed-cluster run | **demonstrated once** (the status vocabulary's term for "not continuously tested", not a run count) — this phase was proven by the first of the six AKS runs: the plane, a governed Copilot chat, a ledger row, a budget denial and a governed tool call, all on a real AKS cluster, which was then deleted ([docs/aks.md](docs/aks.md)) |
 | 7a | Network policy around the plane | **runs** — default-deny NetworkPolicy in both directions, proven by a probe on every PR ([docs/egress.md](docs/egress.md)) |
 | 7b | Inbound hooks (webhooks → agent), governed | **runs** — auth before any work, budget checked at the door, a bounded grant consumed per event, probed keyless in CI; the pre-auth rate limiter and the queue are per replica by design ([docs/inbound.md](docs/inbound.md)) |
 | 8 | Approvals routed to Slack, with the approver's identity | **runs** — a filed request is announced in the channel through the plane's own governed post; `@kaimahi approve <id>` from a listed approver mints the grant in their name, asserted keyless in CI with signed synthetic mentions; live verification on AKS pending ([docs/approvals.md](docs/approvals.md#deciding-from-slack)) |
 | 9 | Run it for real: two stateless replicas, exact budgets, metrics | **runs** — two replicas behind every seam, every budget and grant decision serialized per credential in Postgres (N concurrent calls against a cap with room for one admit exactly one, asserted across both replicas in CI), a replica killed mid-cycle and Postgres restarted without a proxy restart, migrations under a lock, Prometheus on its own port, `make backup` / `make restore` ([docs/operations.md](docs/operations.md)) |
 | 10 | Hosted tool upstreams — the gateway reaches GitHub's MCP server on the internet through one hardened dialer | **runs** — `make github-secret` → `make govern-github`; the dialer's refusals, a synthetic public upstream, the opt-in allowance and the fail-closed negative asserted keyless in CI; GitHub itself verified once on kind ([docs/hosted-upstreams.md](docs/hosted-upstreams.md)) |
 | 12 | Argument-level policy — an approval binds the CALL, and standing constraints let routine calls through | **runs** — a tool declares which argument fields are policy-relevant; a credential may carry declarative bounds on them (a call inside proceeds with no human, one outside is denied and files a request); the request, the grant and the audit carry the call's digest and a readable summary, so an approval for one transaction cannot be spent on another. Asserted keyless in CI ([docs/approvals.md](docs/approvals.md#the-approval-binds-the-call)) |
-| 11 | `kmx` — the developer journey as one command | **runs** — `go install …/cmd/kmx@latest`, then `kmx up`, `kmx agent create`, `kmx agent chat`, `kmx plane`, `kmx govern`, `kmx ledger`, `kmx status`, `kmx down`; the Makefile's kind path delegates to it, so CI proves it on every PR, and a post-merge job drives the whole journey from an installed binary with no checkout ([docs/kmx.md](docs/kmx.md)). Milestone 3: the runtime, the plane, **and** the operator verbs — `use`, `budget`, `approvals`/`approve`/`deny`/`request`, `tools`, `backup`/`restore`, `metrics` — on kind |
+| 11 | `kmx` — the developer journey as one command | **runs** — `go install …/cmd/kmx@latest`, then `kmx up`, `kmx agent create`, `kmx agent chat`, `kmx plane`, `kmx govern`, `kmx ledger`, `kmx status`, `kmx down`; the Makefile's kind path delegates to it, so CI proves it on every PR, and a post-merge job drives the whole journey from an installed binary with no checkout ([docs/kmx.md](docs/kmx.md)). It now carries the runtime, the plane, the operator verbs (`use`, `budget`, `approvals`/`approve`/`deny`/`request`, `tools`, `backup`/`restore`, `metrics`), a governed workflow (`workflow`), the one credential path (`credential capture`) and the managed-cluster path (`lift`) |
 
 | 32 | **Used for real**: an agent helps cut releases of a real project | **runs** — one command drafts the notes from what merged since the last release and proposes the branch and the builds; cutting the branch and publishing are denied, filed naming the version and the repository, approved by a human, and admitted under a grant welded to that call, while build dispatch runs under a standing constraint bounded to named pipelines. The driver does the waiting. Asserted keyless in CI against the synthetic hosted upstream, including that a consolidated dispatcher is governed by its action rather than its name ([docs/release-agent.md](docs/release-agent.md)) |
 | 13 | Tagged releases, a verified download, and a proven upgrade | **runs** — CI builds four platforms from the tag with `checksums.txt`, refuses a tag whose version has no changelog section or whose binary does not report its own tag, and upgrades a two-migration-old plane with live data in it on every PR; the failure case (a migration that cannot apply) is documented and asserted ([docs/releases.md](docs/releases.md)) |
@@ -222,9 +222,13 @@ approved, and it governs tool INPUTS only — nothing filters or redacts a
 tool's results. Governance is opt-in per agent: an
 *ungoverned* preset still bills with no ledger, and an ungoverned tools wiring
 still acts with no audit. The plane's namespace is default-deny in both
-directions and the Slack pod is the one thing allowed out, on 443 only; the
-`kagent` and `ollama` namespaces are not policed. Internet-facing tool
-upstreams remain unbuilt; Slack is the only chat route for approvals (the
+directions; the Slack pod is the one thing allowed out to the internet by
+default, on 443 only, and the proxy gains the same 443 allowance the moment
+a hosted upstream or Copilot is opted in. Both of those pods also get DNS
+on 53; Postgres and the fixture ERP get no egress at all
+([docs/egress.md](docs/egress.md) has the whole table). The
+`kagent` and `ollama` namespaces are not policed. Slack is the only chat
+route for approvals (the
 `make approve` path remains, recording `admin`). The plane runs as two
 stateless replicas that agree on every decision in Postgres; Postgres
 itself is one replica with `make backup` / `make restore`, not a highly
@@ -233,8 +237,8 @@ available database ([docs/operations.md](docs/operations.md)).
 Cloud-agnostic — it runs on any conformant Kubernetes — with first-class
 attention to the Azure path: **AKS** as the managed target, **Azure AI
 Foundry** among the model endpoints. On AKS, be precise about what that means.
-It has been **demonstrated, not maintained**: one verified run on 2026-09-01,
-then torn down. There is no standing cluster and no Azure credential in CI —
+It has been **demonstrated, not maintained**: six verified runs across
+2026-09-01, 09-02, 09-03 and 09-06, each cluster torn down the same day. There is no standing cluster and no Azure credential in CI —
 the repo is public and fork-exposed, so CI stays on kind and keyless,
 re-proving the portability *logic* (the context guard's decisions, the
 registry render) on every PR rather than the cloud itself.
@@ -255,7 +259,16 @@ to do, and holds the one table of what is governed today and what is not:
 
 ## Governance in practice
 
-Every control is one make target, and each is asserted in CI.
+Every control below is one make target. CI asserts the decision each one
+makes, on every pull request — but not always by running that target. CI is
+keyless and holds no Slack, GitHub, Azure or Copilot token, so the keyed
+families are proven a step to the side: the Slack manifests are validated
+against the live CRDs by a server-side dry run — no Slack agent or MCP
+server pod is created, and neither is needed — while the deny → approve →
+post → burn cycle is driven against the plane itself; the hosted-upstream
+path runs against a synthetic public server; and the release agent is
+never run at all, its governance asserted against that same stand-in
+([k8s/release-agent.yaml](k8s/release-agent.yaml) says so in the file).
 
 | Command | Does | Docs |
 |---|---|---|

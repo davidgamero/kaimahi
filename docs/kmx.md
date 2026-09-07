@@ -16,10 +16,16 @@ runtime (`up`, `cluster`, `ollama`, `model`, `kagent`, `agent`,
 `tool-allow`, `restore`, `credentials`, `credential-renew`) and the
 credential capture (`github-secret`,
 `release-secret`, `ado-secret`) — so CI proves the code you actually run.
-What is left in the Makefile is the Slack and inbound connector families,
-the model-key capture, AKS and the probes.
+What is left in the Makefile is the Slack and inbound connector families;
+the agents this repository wires from committed manifests — the release
+agent, the accounts-payable demo and the hosted-GitHub agent, whose
+`Agent` and `RemoteMCPServer` documents `kmx` does not carry
+([workflows.md](workflows.md) has the checkout table); the model-key
+capture; and the network probes. The managed-cluster path is `kmx lift`;
+the Makefile's `TARGET=aks` targets still exist and do the same work step
+by step.
 
-**Status: milestone 3.** v0.1.0 is released ([releases.md](releases.md)); no
+**Status.** v0.1.0 is released ([releases.md](releases.md)); no
 package-manager namespace is claimed. `kmx` is a provisional name,
 like `kaimahi` itself, and is not claimed anywhere
 ([NAMING.md](NAMING.md)).
@@ -85,7 +91,7 @@ make up    # build if stale, then create/update the local runtime
 |---|---|
 | Docker **or** Podman | kind runs Kubernetes in containers. **The only thing you must install.** |
 | kind, kubectl, Helm | kmx downloads them if the machine has none, pinned and checksum-verified; a copy already on PATH is preferred and never shadowed |
-| Go 1.26+ | only for `kmx plane` (it builds the plane's image locally) and for `go install` |
+| Go 1.26+ | only for the two commands that build the plane's image — `kmx plane` (and then only outside a checkout, where it fetches the source from the Go module proxy) and `kmx lift` (whenever its plane phase runs) — and for `go install` |
 
 kmx has always fetched the pinned kagent CLI itself, checksum-verified, the
 first time you chat. The cluster tools now work the same way: pinned
@@ -210,15 +216,26 @@ prefix trie, and Tab completes a unique or common prefix. `NO_COLOR`,
 `kmx agent chat` prints two different shapes on purpose. A terminal gets the
 reply, any tools the agent called, and the token cost. A pipe gets the raw
 A2A task, byte for byte — because things parse it: CI captures this output
-in eight places and `scripts/verify-chat.py` asserts on `status.state`, the
+and `scripts/verify-chat.py` asserts on `status.state`, the
 `function_call` and the `function_response` payload. `--json` forces the raw
 form when a terminal wants it. If the output is not a task kmx recognises —
 a transport error, a usage message — it prints what `kagent` printed rather
 than guessing at a shape that is not there.
 
 Reading, updating and deleting agents are not kmx's job — kubectl and the
-kagent CLI already do them, and `kmx agent list` says so and prints the
-commands. Scaffolding is the only letter of CRUD with a real gap
+kagent CLI already do them. `kmx agent list` is the one read kmx does
+carry, because it joins readiness, acceptance, the active ModelConfig and
+the tool wiring into one table; it prints that table and nothing else, so
+the kubectl commands for update and delete are here rather than in its
+output:
+
+```bash
+kubectl -n kagent get agent <name> -o yaml     # read
+kubectl -n kagent edit agent <name>            # update
+kubectl -n kagent delete agent <name>          # delete
+```
+
+Scaffolding is the only letter of CRUD with a real gap
 ([CLI-PROPOSAL.md](CLI-PROPOSAL.md) is the survey that established that).
 
 ## Settings
@@ -583,7 +600,7 @@ and why, is [govern-your-agent.md](govern-your-agent.md).
 | **Validated by the plane, not by a copy of it** | The candidate table goes to `POST /admin/config/validate`, which merges it over the committed one and calls the same `config.Parse` the proxy booted with. Nothing is written or applied until it says yes, and its refusal is the plane's own message. |
 | **What that validation does and does not cover** | It is the TABLE: the URL shape, the `policy_fields` declarations, the constraint rules, the custody exclusions. The `NetworkPolicy` and `RemoteMCPServer` documents are checked only by the Kubernetes API at apply (`--dry-run` does that early). Their content is derived from the live Service, so the thing to read before applying is the pod selector — kmx prints the pods it will govern, and a shared selector governs all of them. |
 | **`--out -` mutates nothing** | Generate-don't-mutate, as `agent create` has it. Validation still runs: it is a read. |
-| **An overlay may not carry custody** | `credential_file`, `credential_header`, `internet` and `ca_file` are refused in an overlay fragment, by the plane, not just by kmx. Together they name any path the proxy can read and any host it may be sent to — a ConfigMap that could set them would hand the plane's admin token to an attacker on the first relayed call. Keyed and hosted upstreams stay in the committed table. |
+| **An overlay may not carry custody** | `credential_file`, `credential_header`, `internet`, `ca_file` and `extra_headers` — five fields — are refused in an overlay fragment, by the plane, not just by kmx. The first four name any path the proxy can read and any host it may be sent to: a ConfigMap that could set them would hand the plane's admin token to an attacker on the first relayed call. `extra_headers` decides what the proxy SENDS under a credential it holds, which on a keyless in-cluster server would let an overlay forge whatever header that server trusts. Keyed and hosted upstreams stay in the committed table. |
 | **The apply is conditional** | The emitted ConfigMap carries the `resourceVersion` it was read at, so a manifest applied later (`--no-apply` invites exactly that) fails with a `Conflict` rather than pruning a fragment somebody added in the meantime — which would leave the upstream that fragment constrained running unbounded. |
 | **A shared Service selector is named, not hidden** | The ingress policy governs every pod the selector matches. kmx lists them, and says plainly when there is more than one. |
 | **Won't overwrite the manifest** | Exclusive create, no `--force`. This is about the FILE: `kubectl apply` will happily update a same-named `NetworkPolicy` or `RemoteMCPServer` in the cluster. That can happen without anyone doing anything odd — `kubectl apply -f` applies each document independently and does not roll back, so an apply that failed on the ConfigMap leaves the other three behind, and the upstream is then absent from the overlay while its objects exist. The apply output names everything it changed; read it. |

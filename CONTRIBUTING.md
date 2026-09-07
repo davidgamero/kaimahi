@@ -18,7 +18,9 @@ architecture, the build, and the mistakes that are easy to make here.
 Run the checks relevant to your change:
 
 ```bash
-python3 scripts/check-doc-links.py
+python3 scripts/check-doc-links.py --selftest && python3 scripts/check-doc-links.py
+python3 scripts/check-secret-shapes.py --selftest && python3 scripts/check-secret-shapes.py
+python3 scripts/check-mutations.py
 python3 scripts/check-readme-front-door.py
 python3 scripts/check-readme-front-door-test.py
 python3 scripts/check-brand-assets.py
@@ -28,6 +30,17 @@ python3 scripts/check-kmx-delegation.py --selftest && python3 scripts/check-kmx-
 test -z "$(gofmt -l cmd internal embed.go)" && go vet ./... && go test ./...
 (cd plane && test -z "$(gofmt -l .)" && go vet ./... && go test ./...)
 ```
+
+Without a database that last line still runs `gofmt`, `go vet` and every
+non-Postgres package for real — but it covers the store not at all: every
+`plane/internal/store` test skips unless `KAIMAHI_TEST_PG_DSN` points at a
+Postgres. Stand a throwaway one up and set it if your change touches the
+store — CI's `go-plane` job uses a service container and always runs them.
+
+The checkers above are the ones you can usefully run by hand. CI's hygiene
+job runs each checker, each checker's self-test, and a set of inline
+meta-checks over CI's own guards; it is the authority on what gates a
+merge, not this list.
 
 Two Go modules: the root one is `kmx` (`cmd/kmx`, `internal/kmx`), and
 `plane/` is the governance plane's. The kind path of the Makefile delegates
