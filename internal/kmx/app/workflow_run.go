@@ -964,12 +964,18 @@ func (r *workflowRun) refreshSeam(name string) error {
 	if err != nil {
 		return err
 	}
+	// Taken BEFORE the write, because its whole job is to be the thing the
+	// verdict afterwards has to have moved past (seamverdict.go).
+	var baseline seamBaseline
+	if ref.Seam != "" {
+		baseline = r.app.seamVerdictBaseline("kagent", ref.Seam, r.app.timeNow())
+	}
 	if err := r.app.Run.RunStdin([]byte(manifest), "kubectl", r.app.kubectl("apply", "-f", "-")...); err != nil {
 		return err
 	}
-	r.refreshed[name] = time.Now()
+	r.refreshed[name] = r.app.timeNow()
 	r.app.notef("Refreshed the %s credential in plane custody: %s", name, ref.Why)
-	return r.reconnectSeam(ref)
+	return r.reconnectSeam(ref, baseline)
 }
 
 // reconnectSeam makes kagent look again.
@@ -978,12 +984,21 @@ func (r *workflowRun) refreshSeam(name string) error {
 // tried and does not retry, so after a refresh it still reads Unauthorized
 // from minutes ago. The release workflow's first health check reported a
 // healthy credential as broken for exactly this reason.
-func (r *workflowRun) reconnectSeam(ref *blueprint.Refresh) error {
+func (r *workflowRun) reconnectSeam(ref *blueprint.Refresh, baseline seamBaseline) error {
 	if ref.Seam == "" {
 		return nil
 	}
-	status, err := r.app.kubectlCapture("-n", "kagent", "get", "remotemcpserver", ref.Seam,
-		"-o", `jsonpath={range .status.conditions[?(@.type=="Accepted")]}{.status}|{.message}{end}`)
+	// The verdict has to be about the credential just written. A cached
+	// `True` from before the refresh is not a pass — it is the answer to a
+	// question about a credential that no longer exists, and treating it as
+	// one is how a rotated seam reported healthy while it was not.
+	//
+	// This asks kagent to look and then WAITS for what it decides, through
+	// the one implementation every other caller uses (seamverdict.go). What
+	// stood here before nudged the seam, slept, and returned without reading
+	// again — so it never learned anything, and a credential kagent went on
+	// to refuse was refreshed and then not mentioned.
+	verdict, err := r.app.waitForSeamVerdict("kagent", ref.Seam, baseline)
 	if err != nil {
 		// Not fatal — but not silence either. An RBAC denial or a typo in
 		// `seam:` reads exactly like a healthy seam if the error is
@@ -992,22 +1007,16 @@ func (r *workflowRun) reconnectSeam(ref *blueprint.Refresh) error {
 		r.app.notef("could not read the %s seam's Accepted condition (%v); not reconnecting it", ref.Seam, err)
 		return nil
 	}
-	if strings.HasPrefix(status, "True") {
+	if verdict.State == verdictAccepted {
 		return nil
 	}
-	r.app.notef("The %s seam last failed to connect (%s); re-checking it against the credential that exists now.",
-		ref.Seam, status)
-	// A mounted Secret is not updated the instant it is written, so the
-	// re-check waits for the projection before deciding.
-	time.Sleep(secretProjectionWait)
-	_ = r.app.kubectlRun("-n", "kagent", "annotate", "remotemcpserver", ref.Seam,
-		"kaimahi.dev/refreshed-at="+time.Now().UTC().Format(time.RFC3339), "--overwrite")
+	// A workflow run is not the place to fail on this: the credential was
+	// refreshed because a step needs it, and a rejection here is worth saying
+	// loudly rather than turning into a stop. The step that uses the seam
+	// will fail on its own terms if the credential really is bad.
+	r.app.notef("The %s seam's status is %s", ref.Seam, verdict.Line(r.app.timeNow()))
 	return nil
 }
-
-// secretProjectionWait is the kubelet's Secret refresh lag. A projected
-// Secret is not updated the instant it is written.
-var secretProjectionWait = 45 * time.Second
 
 // --- small helpers ----------------------------------------------------
 

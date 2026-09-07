@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/admin"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -65,13 +66,7 @@ func newGovernFixture(t *testing.T, agentErr string, issue http.HandlerFunc) *go
 		t.Fatal(err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		issue(w, r)
-	}))
+	srv := httptest.NewServer(planePreamble(admin.Speaks, issue))
 	t.Cleanup(srv.Close)
 	u, err := url.Parse(srv.URL)
 	if err != nil {
@@ -94,9 +89,9 @@ func newGovernFixture(t *testing.T, agentErr string, issue http.HandlerFunc) *go
 
 	cfg := &config.Config{
 		KindCluster: "kaimahi-p1",
-		KubeContext: "kind-kaimahi-p1",
-		AdminPort:   u.Port(),
-		Credential:  "hello-world",
+		KubeContext: "kind-kaimahi-p1", ContextSource: config.SourceKubeCtx,
+		AdminPort:  u.Port(),
+		Credential: "hello-world",
 	}
 	r := run.Default()
 	r.Stdout, r.Stderr = f.out, f.errOut
