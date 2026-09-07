@@ -21,10 +21,17 @@ secret capture, AKS and the probes.
 like `kaimahi` itself, and is not claimed anywhere
 ([NAMING.md](NAMING.md)).
 
-**kind only.** Everything below assumes a local kind cluster. A managed
-cluster is the Makefile's path — `TARGET=aks make plane`, `TARGET=aks make
-govern` — because it needs a registry, a rendered manifest and a captured
-key, none of which kmx does (see [aks.md](aks.md)).
+**Local unless you say otherwise.** Everything below assumes a local kind
+cluster, except `kmx lift`, which puts the same agent on AKS: it builds the
+image in a private registry, renders the manifest for it, and wires
+Azure-managed monitoring ([aks.md](aks.md)). The Makefile's `TARGET=aks`
+path still exists and does the same work step by step.
+
+The one thing on that path kmx does **not** do is capture the model
+credential — a managed cluster runs a hosted model, and kmx accepts
+credential material on no path. `kmx lift` checks for the Secret, stops if it
+is missing, and names `make plane-copilot-secret`, which needs a checkout.
+That is the only step that still does.
 
 ## Install
 
@@ -128,6 +135,11 @@ swap plus a credential the agent cannot read past.
 | `kmx quickstart` | the shortest honest path to a working agent: equip the machine, create the cluster, deploy Ollama and pull the model, install kagent **without the components a first question cannot reach**, deploy one agent, ask it a question and print the answer. `--output json` for a machine, `--agent`/`--task` to change what is asked. Safe to run twice. Deploys no plane, and says so |
 | `kmx up` | check all host dependencies in one pass before the guard or first use, create the kind cluster, deploy Ollama, pull the pinned model, install kagent by helm, apply both agents, wait for each to be Ready, print status |
 | `kmx up --step <step>` | one step only: `cluster`, `ollama`, `model`, `kagent`, `agent`, `tools-agent` |
+| `kmx lift` | the same agent, on AKS: create the resource group, a private registry and a cluster with a policy engine, **prove the boundary is enforced before putting anything behind it**, install the runtime, the plane and the agents, wire Azure-managed monitoring, then check the agent answers and that its metrics and logs actually arrived. Names what it will do and where, and refuses without confirmation naming the cluster. Bills money until `kmx lift down` ([aks.md](aks.md)) |
+| `kmx lift --byo` | the same, onto a cluster you already have. **Your cluster and resource group are never created, deleted or adopted**; it refuses to install if the cluster has no NetworkPolicy engine, refuses to overwrite an existing scrape configuration, and refuses to grant itself `AcrPull` |
+| `kmx lift --plan` | print what would be created, where, and stop |
+| `kmx lift --step <step>` | one phase only — every phase is re-runnable, so a failure is resumed rather than unpicked: `cluster`, `boundary`, `kagent`, `credential`, `plane`, `agents`, `observability`, `verify` |
+| `kmx lift down` | remove what the lift created. On a cluster it created, the whole resource group, proven gone. On yours, only the resources it recorded the id of, deleted by that id and never by name — anything it cannot prove is its own is left alone and named |
 | `kmx agent list [-o table\|json\|yaml]` | list agents with readiness, acceptance, active ModelConfig, and tool-server wiring |
 | `kmx agent create [<name>]` | scaffold an Agent manifest; without a name, run the guided wizard beginning `Describe this agent:` |
 | `kmx agent edit <name> [--file <path>]` | edit and validate owned local Agent source; never edits the live resource implicitly |
@@ -585,7 +597,7 @@ entangled with capturing a credential, which kmx accepts in no form at all:
 |---|---|
 | The Slack, GitHub and inbound connector families | [slack.md](slack.md), [hosted-upstreams.md](hosted-upstreams.md), [inbound.md](inbound.md) |
 | Capturing a secret of any kind | `make model-secret`, `make copilot-secret`, `make slack-secret` — key-bearing steps stay in standalone scripts |
-| A managed cluster (AKS) | `TARGET=aks make …` ([aks.md](aks.md)) |
+| The **model credential** a managed cluster needs | `make plane-copilot-secret`. This is the one hand-off in `kmx lift`, and the one step on that path that still needs a checkout: the lift checks whether the Secret is there and stops if it is not, rather than pretending it can mint one |
 | The network and tool probes | `scripts/*-probe.sh` |
 | Publishing — a tap, a package manager namespace | nowhere. Settling the name lifted the freeze on publishing, and the first tagged release shipped checksummed binaries; `install.sh` and `go install` are the two install paths, and no npm/crates/PyPI/Homebrew namespace is claimed ([NAMING.md](NAMING.md)) |
 
