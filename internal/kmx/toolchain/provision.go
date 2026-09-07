@@ -18,7 +18,13 @@ const (
 	// expects `kmx` to use, and quietly shadowing it with a pinned build
 	// would be a surprise nobody asked for.
 	FromPath Source = "PATH"
-	// FromCache is a previously fetched copy, re-verified on this run.
+	// FromCache is a previously fetched copy that was re-verified against
+	// its recorded digest and kept. It is reported by the fetch itself, so
+	// it means the run really did use those bytes — an entry that existed
+	// but failed re-verification is deleted and re-fetched, and reports
+	// FromDownload. That distinction is the point: the tampered case is
+	// the one an operator most needs named, and deciding the label from a
+	// Stat beforehand is what used to hide it.
 	FromCache Source = "cache"
 	// FromDownload is a copy fetched during this run.
 	FromDownload Source = "downloaded"
@@ -57,11 +63,10 @@ func Provision(names []string, linkDir string, opt Options) ([]Tool, error) {
 		if !ok {
 			return nil, fmt.Errorf("kmx has no pinned download for %q — install it and put it on PATH", name)
 		}
-		source := FromDownload
-		if _, err := os.Stat(spec.CachePath(opt.CacheDir)); err == nil {
-			source = FromCache
-		}
-		path, err := Ensure(spec, opt)
+		// The source comes back FROM the fetch, not from a Stat before it:
+		// an entry that exists may still be re-fetched, because one whose
+		// recorded digest no longer matches is deleted rather than run.
+		path, source, err := EnsureReporting(spec, opt)
 		if err != nil {
 			return nil, err
 		}

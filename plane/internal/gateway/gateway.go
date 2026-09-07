@@ -3,9 +3,10 @@
 // streamable-HTTP protocol (kagent still runs the tools — no MCP runtime
 // here) and enforces, all fail-closed:
 //
-//   - upstream tool servers come only from the committed, operator-owned
-//     tool_upstreams table — the gateway forwards nowhere else, which IS
-//     the egress rule at this layer;
+//   - upstream tool servers come only from the operator-owned upstream
+//     table the proxy parsed at boot — the committed base plus any
+//     operator overlay merged over it — and the gateway forwards
+//     nowhere else, which IS the egress rule at this layer;
 //   - protocol scope is tools only: initialize, notifications/initialized,
 //     tools/list, tools/call (ping is answered locally, touching no
 //     upstream); every other method is denied, not relayed;
@@ -69,7 +70,11 @@ type Store interface {
 	// allowlist (consuming a use, liveness evaluated in SQL at call
 	// time), and a denial files a pending approval request.
 	// A grant admits one CALL — the digest of its canonical policy
-	// fields must match — and a filed request carries that call.
+	// fields must match — and a filed request carries that call. The one
+	// exception is the closed legacy class: a grant recorded before
+	// argument binding existed carries a NULL digest, is honoured for any
+	// call on that tool, and is consumed only after an exact match. No
+	// new one can be minted (store/approvals.go).
 	ConsumeToolGrant(ctx context.Context, credential, tool, argDigest string) (grantID string, ok bool, err error)
 	// Identity on the call: who the run this tool call falls inside is
 	// being made for. Resolution only — never enforcement.
@@ -395,7 +400,9 @@ func (h *handler) relay(w http.ResponseWriter, r *http.Request) {
 		//      for this credential and tool, because a constraint is a
 		//      BOUND ("may call payment_schedule when amount_cents <=
 		//      1000000, and never otherwise"), not merely another way in;
-		//   3. a live grant welded to THIS call's digest.
+		//   3. a live grant welded to THIS call's digest — or, from the
+		//      closed legacy class, one recorded before argument binding
+		//      existed, which carries no digest and is tried last.
 		// Anything else is denied and files a request carrying the call.
 		detail, outside := "", ""
 		admitted := false
@@ -603,7 +610,7 @@ func (h *handler) forward(w http.ResponseWriter, r *http.Request, name string,
 	defer func() { _ = resp.Body.Close() }()
 	// A redirect is refused, not relayed: the client never followed it
 	// (see Deps.clientFor), and a Location header must not leak an escape
-	// hatch from the committed upstream table.
+	// hatch from the upstream table the proxy booted with.
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		slog.Error("gateway: tool upstream answered a redirect; refusing", "upstream", name, "status", resp.StatusCode)
 		http.Error(w, MsgUpstreamRedirected, http.StatusBadGateway)

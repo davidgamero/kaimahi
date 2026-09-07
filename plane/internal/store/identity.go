@@ -41,9 +41,12 @@ const (
 )
 
 // Attribution is what a seam stamps on the rows it writes. RunID is
-// provenance (the run this call fell inside) and is empty whenever
-// ActedFor is not a person's id — acted_for is always the answer on its
-// own, so nothing has to read an absent id to learn who acted.
+// provenance: the run this call fell inside, carried whenever ONE run
+// resolved — including a run that names nobody, because a run with no
+// person is still a run. It is empty when no run resolved at all: no run
+// was open ('none'), or attribution was lost ('unknown'). ActedFor is
+// always the answer on its own, so nothing has to read an absent id to
+// learn who acted.
 type Attribution struct {
 	ActedFor string
 	RunID    string
@@ -169,9 +172,9 @@ func nullableUUID(id string) *string {
 }
 
 // Attribution travels on the request context at seams whose audit rows
-// are written from many places (the MCP gateway has five). Stamping in
-// the one write point beats threading a parameter through five deny
-// helpers, and it makes it impossible for an audit row to escape
+// are written from many places (the MCP gateway has four). Stamping in
+// the one write point beats threading a parameter through the three
+// deny helpers, and it makes it impossible for an audit row to escape
 // unstamped.
 type attributionKey struct{}
 
