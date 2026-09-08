@@ -385,6 +385,27 @@ type kagentReleaseValues struct {
 	} `json:"ui"`
 }
 
+type helmClient struct {
+	run         *run.Runner
+	kubeContext string
+	namespace   string
+}
+
+func (h helmClient) listReleases(name string) (string, error) {
+	// Helm 3's --all was removed in Helm 4, whose default became all statuses.
+	// Name every status explicitly so both versions include in-flight and failed
+	// releases rather than letting quickstart mistake one for absence.
+	args := []string{"list", "--deployed", "--failed", "--pending", "--uninstalled",
+		"--superseded", "--uninstalling", "--namespace", h.namespace,
+		"--kube-context", h.kubeContext, "--filter", "^" + name + "$", "--output", "json"}
+	return h.run.Capture("helm", args...)
+}
+
+func (h helmClient) releaseValues(name string) (string, error) {
+	return h.run.Capture("helm", "get", "values", name, "--namespace", h.namespace,
+		"--kube-context", h.kubeContext, "--output", "json")
+}
+
 func isFirstAnswerProfile(raw string) (bool, error) {
 	var values kagentReleaseValues
 	if err := json.Unmarshal([]byte(raw), &values); err != nil {
@@ -400,8 +421,8 @@ func isFirstAnswerProfile(raw string) (bool, error) {
 // a successful, empty Helm list means absent; every read or decode failure is
 // returned so quickstart cannot overwrite state it failed to understand.
 func (a *App) inspectKagentRelease() (bool, bool, string, error) {
-	out, err := a.Run.Capture("helm", "list", "--all", "--namespace", "kagent",
-		"--kube-context", a.Cfg.KubeContext, "--filter", "^kagent$", "--output", "json")
+	helm := helmClient{run: a.Run, kubeContext: a.Cfg.KubeContext, namespace: "kagent"}
+	out, err := helm.listReleases("kagent")
 	if err != nil {
 		return false, false, "", fmt.Errorf("cannot determine whether Helm release kagent is installed; refusing to apply the quickstart profile: %w", err)
 	}
@@ -421,8 +442,7 @@ func (a *App) inspectKagentRelease() (bool, bool, string, error) {
 	if found == nil {
 		return false, false, "", nil
 	}
-	valuesJSON, err := a.Run.Capture("helm", "get", "values", "kagent", "--namespace", "kagent",
-		"--kube-context", a.Cfg.KubeContext, "--output", "json")
+	valuesJSON, err := helm.releaseValues("kagent")
 	if err != nil {
 		return false, false, "", fmt.Errorf("cannot read Helm release kagent values; refusing to change its profile: %w", err)
 	}

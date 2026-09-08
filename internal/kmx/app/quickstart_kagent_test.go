@@ -38,6 +38,56 @@ func TestFirstAnswerProfileRequiresEveryExplicitDisable(t *testing.T) {
 	}
 }
 
+func TestHelmReleaseListArgumentsAreCompatibleWithHelm3And4(t *testing.T) {
+	for _, version := range []string{"3", "4"} {
+		t.Run("helm "+version, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("HELM_MAJOR", version)
+			fakeTool(t, dir, "helm", `
+case " $* " in *" --all "*) echo "unknown flag: --all" >&2; exit 2;; esac
+for flag in --deployed --failed --pending --uninstalled --superseded --uninstalling; do
+  case " $* " in *" $flag "*) :;; *) echo "missing status $flag" >&2; exit 3;; esac
+done
+[ "$1" = list ] || { echo "not list" >&2; exit 4; }
+printf '%s\n' '[]'`)
+			client := helmClient{run: &run.Runner{}, kubeContext: "kind-test", namespace: "kagent"}
+			out, err := client.listReleases("kagent")
+			if err != nil {
+				t.Fatalf("Helm %s rejected the common interface: %v", version, err)
+			}
+			if out != "[]" {
+				t.Fatalf("unexpected output: %q", out)
+			}
+		})
+	}
+}
+
+func TestHelmReleaseListUsesOnlyCommonStatusFlags(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "args")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("COMMAND_LOG", log)
+	fakeTool(t, dir, "helm", `printf '%s\n' "$*" > "$COMMAND_LOG"; printf '%s\n' '[]'`)
+	client := helmClient{run: &run.Runner{}, kubeContext: "kind-test", namespace: "kagent"}
+	if _, err := client.listReleases("kagent"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := " " + string(raw) + " "
+	if strings.Contains(args, " --all ") {
+		t.Fatalf("Helm 3-only --all leaked into the common interface: %s", args)
+	}
+	for _, flag := range []string{"--deployed", "--failed", "--pending", "--uninstalled", "--superseded", "--uninstalling"} {
+		if !strings.Contains(args, " "+flag+" ") {
+			t.Errorf("common interface lacks %s: %s", flag, args)
+		}
+	}
+}
+
 func TestQuickstartPreservesAnExistingFullKagentRelease(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "commands")
@@ -46,7 +96,7 @@ func TestQuickstartPreservesAnExistingFullKagentRelease(t *testing.T) {
 	fakeTool(t, dir, "helm", `
 printf 'helm %s\n' "$*" >> "$COMMAND_LOG"
 case "$1 $2" in
-  "list --all") printf '%s\n' '[{"name":"kagent","status":"deployed"}]' ;;
+  "list --deployed") printf '%s\n' '[{"name":"kagent","status":"deployed"}]' ;;
   "get values") printf '%s\n' '{"kagent-tools":{"enabled":true},"kmcp":{"enabled":true},"ui":{"replicas":1}}' ;;
   *) echo "unexpected helm mutation" >&2; exit 9 ;;
 esac`)
@@ -132,7 +182,7 @@ func TestQuickstartRefusesUnhealthyCustomRelease(t *testing.T) {
 	fakeTool(t, dir, "helm", `
 printf 'helm %s\n' "$*" >> "$COMMAND_LOG"
 case "$1 $2" in
-  "list --all") printf '%s\n' '[{"name":"kagent","status":"failed"}]' ;;
+  "list --deployed") printf '%s\n' '[{"name":"kagent","status":"failed"}]' ;;
   "get values") printf '%s\n' '{"custom":true}' ;;
 esac`)
 	a := &App{
@@ -160,7 +210,7 @@ func TestQuickstartInstallDelegatesReadinessToHelm(t *testing.T) {
 	t.Setenv("COMMAND_LOG", log)
 	fakeTool(t, dir, "helm", `
 printf 'helm %s\n' "$*" >> "$COMMAND_LOG"
-if [ "$1 $2" = "list --all" ]; then printf '%s\n' '[]'; fi`)
+if [ "$1" = "list" ]; then printf '%s\n' '[]'; fi`)
 	fakeTool(t, dir, "kubectl", `printf 'kubectl %s\n' "$*" >> "$COMMAND_LOG"`)
 	var errOut bytes.Buffer
 	a := &App{
