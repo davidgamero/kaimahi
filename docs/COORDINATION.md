@@ -465,6 +465,106 @@ before it is written down anywhere public.
 
 ## Under consideration (not GO — do not build yet)
 
+- **D47 (OPEN — needs a ruling): the audit trail says "there is no
+  person" in a case where it cannot know.** Found by the foreign-runtime
+  lane and confirmed independently by the coordinator against
+  `plane/internal/store/identity.go` and migration `00009`.
+
+  **The vocabulary is explicit, and that is what makes this a defect
+  rather than a wording preference.** `none` is documented as "the plane
+  CAN say there is no person… a complete answer, not a gap". `unknown` is
+  "the plane CANNOT say… never a claim that nobody was there". The
+  distinction was drawn deliberately and it is one of the better things
+  in this codebase.
+
+  **The bug is in how `none` is reached.** `identity.go` maps *no open
+  run* directly to `none`. That is sound while the only doors are kagent
+  and the inbound bridge, because then "no run" really does mean an
+  operator-driven turn. A foreign runtime — triggered by its own human,
+  through a door the plane never saw — breaks the assumption: a person
+  may well have been involved, and the plane has no way to know. It
+  records "there is no person" anyway.
+
+  **It is already happening.** `scripts/tool-call-probe.sh` is a
+  non-kagent client and CI runs it thirteen times per build, so rows
+  attributing curl's calls to nobody are being written today. Harmless in
+  a throwaway cluster; the same code path serves a real one.
+
+  **Why it matters out of proportion to its blast radius.** Nothing in
+  production reaches it — kagent and the inbound bridge are the only
+  doors. But this is an OVERCLAIM IN THE AUDIT TRAIL, which is the
+  artifact the whole product is an argument for. We tell every lane that
+  a provable control beats an asserted one; a trail that asserts more
+  than it knows is the same failure wearing our own clothes.
+
+  **`unknown` is not obviously the answer**, and the lane was right to
+  say so. `unknown` means attribution was LOST — more than one run open,
+  or a failed read. Here the plane never had a basis at all. That is a
+  third state, and the `agent_run` CHECK constraint admits only `none` or
+  `slack:<id>`, so it has nowhere to live today.
+
+  **The value set today, stated exactly, because "a fourth value" was
+  ambiguous.** Three constants exist — `none`, `unknown`, `legacy` — plus
+  the `slack:<id>` pattern. **`legacy` is closed and nothing writes it**:
+  it exists only to describe rows written before attribution did. So
+  there are **two live non-person values**, and a new one would be the
+  third live constant rather than a fourth of anything.
+
+  **Option A — add a third live value.** Candidate name
+  `unattributable`, meaning *the plane has no basis to say* — distinct
+  from `unknown`, which means *the plane had a basis and lost it* (two
+  runs open, or a failed read). The lane may find a better word; what it
+  may not do is reuse `unknown`, because that would merge two states the
+  vocabulary deliberately separates. Cost: a migration, a widened CHECK
+  on all three tables carrying `acted_for` (`ledger_entry`,
+  `inbound_audit`, `agent_run`), and a new word for every reader —
+  `kmx status`, `kmx flow`, the ledger and audit views.
+
+  **Option B — narrow `none` so absence-of-run stops producing it**, and
+  only a run that genuinely names nobody does. **Worked through, this
+  collapses into A or into dishonesty, and that is the useful finding
+  here.** If absence-of-run no longer yields `none`, a foreign-runtime
+  call with no open run must map to *something*, and there are only two
+  candidates: `unknown`, which is documented as attribution LOST and
+  would be a second overclaim rather than a fix; or a new value, which is
+  Option A wearing a different label. B is therefore not a cheaper
+  alternative — it is A plus a redefinition of rows already written, and
+  redefining written rows is the thing the closed `legacy` class exists
+  to avoid repeating. **Recorded so nobody re-proposes it as the small
+  option.**
+
+  **Option C — leave it and document the limit**, on the grounds that no
+  supported configuration reaches it. Cheapest, and it leaves a known
+  false statement in the audit trail with a comment beside it. Records
+  the position honestly but sits badly with everything else this project
+  claims.
+
+  **A naming problem to fix under any option**: the Go variable is
+  `var Unattributed = Attribution{ActedFor: ActedForNone}`. "Unattributed"
+  reads as *nobody attributed this* — the very sense that belongs to the
+  missing state — while the value it holds asserts *there is no person*.
+  The name works against the distinction the constants' own comments
+  draw, and it is part of why this was easy to miss.
+
+  **Two questions any of them has to answer:**
+  - **Should the gateway record anything about the caller?** Today
+    nothing in a tool-audit row distinguishes a kagent agent from a curl
+    — not the client name in `initialize` (relayed without being read),
+    not the user agent, not the source address. The distinction is
+    invisible, which is why this went unnoticed. Making it visible is a
+    separate decision from fixing the word.
+  - **What happens to rows already written?** Backfilling them would be
+    inventing history. Leaving them means one word has two meanings
+    depending on when the row was written — exactly what `legacy` was
+    introduced to prevent, and a reason to prefer a new value over a
+    redefinition.
+
+  **Not a coordinator PR whichever way it goes**: audit-relevant,
+  cross-cutting, and it changes a shipped default. It gets a lane, shaped
+  after the ruling.
+
+
+
 - **D46 (OPEN — needs a ruling, and the teammate in the room): where the
   line sits between Kaimahi and AgentWeaver.** Raised 2026-09-08 by the
   user, who pointed at a teammate's project. Read from its published
