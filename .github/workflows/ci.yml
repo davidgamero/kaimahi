@@ -87,6 +87,29 @@ jobs:
         run: python3 scripts/check-repository-map.py --selftest
       - name: The repository map still describes this tree
         run: python3 scripts/check-repository-map.py
+      # The two data seams carry content that is recorded nowhere: the model
+      # seam carries the full text of what an agent was asked and answered,
+      # and the tool seam carries the body a tool returned. Both are served
+      # over TLS under the plane's own authority, and a manifest that points
+      # at one has to say so in BOTH places — an https URL and a spec.tls
+      # naming the authority.
+      #
+      # kagent refuses neither half of that on a ModelConfig. A TLS block
+      # beside an http:// baseUrl is admitted and inert: nothing fails, the
+      # seam is plaintext, and the manifest reads as configured. That silent
+      # downgrade is the one this checks for, and it proves it can still
+      # catch each mistake before its verdict on the tree is trusted.
+      #
+      # Scope is the COMMITTED manifests. The two generated ones — the
+      # interactive ModelConfig `kmx govern` applies and the RemoteMCPServer
+      # `kmx tools add` writes — are outside a tree scan by construction and
+      # are held to the same rule by tests in their own packages.
+      #
+      # Keyless: the committed manifests and nothing else.
+      - name: Seam-TLS checker still catches every downgrade
+        run: python3 scripts/check-seam-tls.py --selftest
+      - name: Every committed seam-facing manifest verifies the seam it points at
+        run: python3 scripts/check-seam-tls.py
       # docs/COORDINATION.md is the board every worker session is handed,
       # and its lane table said a lane was unassigned when it had already
       # shipped five times in six days. That is not a discipline problem:
@@ -2921,7 +2944,11 @@ jobs:
             --url http://acme-warehouse.acme:8090/mcp \
             --tool stock_get:sku --tool stock_adjust:sku,delta --out - | tee scaffold.out
           # The seam points at the GATEWAY, never at the server.
-          grep -qF 'url: "http://kaimahi-mcp-gateway.kaimahi:8081/upstream/warehouse/mcp"' scaffold.out
+          grep -qF 'url: "https://kaimahi-mcp-gateway.kaimahi:8081/upstream/warehouse/mcp"' scaffold.out
+          # The https above is only half of it: a TLS block beside it is what
+          # makes the scheme mean anything, and a scaffolded seam without one
+          # is admitted by kagent and fails every call.
+          grep -qF 'caCertSecretRef: kaimahi-plane-ca' scaffold.out
           # The policy carries the CONTAINER port, not the Service's.
           grep -q 'port: 9090' scaffold.out
           if grep -qE '^ +port: 8090' scaffold.out; then

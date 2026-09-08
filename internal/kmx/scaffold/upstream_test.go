@@ -32,13 +32,43 @@ func warehouse() UpstreamSpec {
 
 func TestTheGatewayURLIsDerivedFromTheUpstreamName(t *testing.T) {
 	for name, want := range map[string]string{
-		"warehouse":    "http://kaimahi-mcp-gateway.kaimahi:8081/upstream/warehouse/mcp",
-		"kagent-tools": "http://kaimahi-mcp-gateway.kaimahi:8081/upstream/kagent-tools/mcp",
-		"erp":          "http://kaimahi-mcp-gateway.kaimahi:8081/upstream/erp/mcp",
+		"warehouse":    "https://kaimahi-mcp-gateway.kaimahi:8081/upstream/warehouse/mcp",
+		"kagent-tools": "https://kaimahi-mcp-gateway.kaimahi:8081/upstream/kagent-tools/mcp",
+		"erp":          "https://kaimahi-mcp-gateway.kaimahi:8081/upstream/erp/mcp",
 	} {
 		if got := GatewayURL(name); got != want {
 			t.Fatalf("GatewayURL(%q) = %q, want %q", name, got, want)
 		}
+	}
+}
+
+// The scaffolded seam is GENERATED, so scripts/check-seam-tls.py cannot see
+// it — that checker reads the tree. This is the rule held over it instead,
+// and it is both halves: kagent admits an https URL with no authority (every
+// call then fails against a trust store that has never heard of the plane)
+// and a tls block beside an http URL (nothing fails, the block is inert, and
+// the manifest reads as configured).
+func TestTheScaffoldedSeamIsHttpsAndNamesTheAuthorityToVerifyIt(t *testing.T) {
+	doc, err := GenerateUpstream(warehouse())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seam := doc[strings.Index(doc, "kind: RemoteMCPServer"):]
+	if !strings.Contains(seam, `url: "https://`) {
+		t.Errorf("the scaffolded seam is not https:\n%s", seam)
+	}
+	for _, want := range []string{
+		"caCertSecretRef: " + PlaneCASecret,
+		"caCertSecretKey: " + PlaneCAKey,
+	} {
+		if !strings.Contains(seam, want) {
+			t.Errorf("the scaffolded seam does not name the authority (%q missing):\n%s", want, seam)
+		}
+	}
+	// A seam nobody verifies costs the same certificate machinery and buys
+	// nothing, while looking like it bought something.
+	if strings.Contains(seam, "disableVerify") {
+		t.Errorf("the scaffolded seam disables verification:\n%s", seam)
 	}
 }
 
@@ -47,7 +77,7 @@ func TestTheScaffoldedSeamPointsAtTheGatewayAndNeverAtTheServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(doc, `url: "http://kaimahi-mcp-gateway.kaimahi:8081/upstream/warehouse/mcp"`) {
+	if !strings.Contains(doc, `url: "https://kaimahi-mcp-gateway.kaimahi:8081/upstream/warehouse/mcp"`) {
 		t.Fatalf("the RemoteMCPServer does not point at the gateway:\n%s", doc)
 	}
 	// The server's own URL belongs in the overlay fragment, where the
