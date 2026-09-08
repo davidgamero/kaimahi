@@ -65,7 +65,7 @@ func (s *Store) RecordInboundAudit(ctx context.Context, e InboundAuditEntry) err
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO inbound_audit (hook, credential_name, delivery_id, decision, status, detail, agent, input_tokens, output_tokens, acted_for)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		e.Hook, e.CredentialName, e.DeliveryID, e.Decision, e.Status, e.Detail, e.Agent, e.InputTokens, e.OutputTokens,
+		e.Hook, e.CredentialName, e.DeliveryID, e.Decision, e.Status, auditText(e.Detail), e.Agent, e.InputTokens, e.OutputTokens,
 		actedFor(e.ActedFor))
 	return err
 }

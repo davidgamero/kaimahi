@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/url"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -199,8 +200,8 @@ func flowEventFrom(r map[string]any, kind string) flowEvent {
 		e.what = trunc(str(r["model"]), 28)
 		e.outcome = str(r["status"])
 		e.cents = str(r["cost_cents"])
-		e.detail = fmt.Sprintf("%s in / %s out via %s",
-			str(r["input_tokens"]), str(r["output_tokens"]), str(r["upstream"]))
+		e.detail = joinDetail(fmt.Sprintf("%s in / %s out via %s",
+			str(r["input_tokens"]), str(r["output_tokens"]), str(r["upstream"])), calledBy(r))
 		// 'denied' in the ledger means the call was never forwarded.
 		e.denied = str(r["status"]) == "denied"
 
@@ -215,6 +216,7 @@ func flowEventFrom(r map[string]any, kind string) flowEvent {
 		if str(r["status"]) == "" || str(r["status"]) == "0" {
 			e.detail = call(r)
 		}
+		e.detail = joinDetail(e.detail, calledBy(r))
 		e.denied = str(r["decision"]) == "denied"
 
 	case "approval":
@@ -311,6 +313,51 @@ func joinDetail(parts ...string) string {
 		out += p
 	}
 	return out
+}
+
+// calledBy says who made the call, in the flow view's one free-form
+// column: the caller's own word for itself and the address the plane
+// observed. `kmx flow` is where a reader asks "what happened here", so it
+// is where the difference between an agent the plane deployed and a
+// script holding its token has to be visible.
+//
+// "claimed" is in the text, every time. This is the caller's word, and a
+// governance view that renders an unverified name the same way it renders
+// a fact is the failure this exists to remove.
+//
+// A row the plane never recorded a caller for — one written before the
+// columns existed, or read from a plane too old to serve them — adds
+// nothing to the line rather than saying "unrecorded" on every one of a
+// screenful of old rows.
+func calledBy(r map[string]any) string {
+	claim, addr := str(r["caller_claim"]), str(r["caller_addr"])
+	unrecorded := func(v string) bool {
+		return v == "" || v == "legacy" || v == "unrecorded"
+	}
+	if unrecorded(claim) && unrecorded(addr) {
+		return ""
+	}
+	parts := "called by "
+	switch {
+	case unrecorded(claim):
+		parts += "an unrecorded client"
+	case claim == "none":
+		// 'none' is the plane's word, not the caller's: the caller sent no
+		// name. Rendering it as `claimed none` would read as a caller that
+		// claimed to be called "none" — the opposite of what it means.
+		parts += "a client that gave no name"
+	default:
+		// QUOTED, because the claim is the caller's own text and this view
+		// puts it in the same sentence as the observed address. A caller
+		// sending `evil from 10.0.0.1` would otherwise produce
+		// "called by claimed ua:evil from 10.0.0.1 from 10.244.1.7", where
+		// a reader — or a grep — can match an address the caller chose.
+		parts += "claimed " + strconv.Quote(clipCell(claim, 40))
+	}
+	if !unrecorded(addr) && addr != "unknown" {
+		parts += " from " + clipCell(addr, 45)
+	}
+	return parts
 }
 
 // oldestRow finds how far back a raw page of audit rows reaches, before any

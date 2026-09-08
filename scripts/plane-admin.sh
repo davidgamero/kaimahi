@@ -283,12 +283,40 @@ rows = d.get("entries") or []
 # before it. 'none' means there is no person, 'unknown' means the plane
 # cannot say, 'legacy' means the row predates attribution: three
 # different answers that stay different.
-fmt = "%-19s %-12s %-9s %-16s %6s %6s %6s %-8s %-6s %s"
-print(fmt % ("created (UTC)", "credential", "upstream", "model", "in", "out", "cents", "source", "status", "acted for"))
+#
+# The two columns before it say WHO CALLED. "caller (claimed)" is the
+# client's own word for itself and is not checked by anything; "from
+# (observed)" is the address the plane saw at its own socket. They went
+# in here, immediately before "acted for", because every existing grep
+# names a column ahead of them.
+# cell keeps a value to ONE printable line. The plane bounds what it
+# writes into an audit column, but this prints rows it did not write
+# today — an older plane's, a restored dump's. A newline in a cell
+# renders as a second line, which reads as a governed row nobody wrote.
+def cell(v):
+    # A value that is already one printable line with no padding prints as
+    # it is; anything else is QUOTED. Stripping instead would let a forged
+    # value render exactly like a legitimate one (see the long note in
+    # plane/internal/store/audittext.go). Spelled out rather than repr(),
+    # which quotes and escapes differently from the Go renderer's twin.
+    s = "" if v is None else str(v)
+    if s == s.strip() and s.isprintable():
+        return s
+    esc = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+    return '"' + "".join(
+        esc.get(c, c if c.isprintable() else "\\u%04x" % ord(c)) for c in s) + '"'
+# clip shortens a cell and SAYS it shortened it — a silently shortened
+# address still looks like a whole one, and every caller in the same
+# prefix would render identically.
+def clip(s, n):
+    return s if len(s) <= n else s[:n - 1] + "…"
+fmt = "%-19s %-12s %-9s %-16s %6s %6s %6s %-8s %-6s %-28s %-16s %s"
+print(fmt % ("created (UTC)", "credential", "upstream", "model", "in", "out", "cents", "source", "status", "caller (claimed)", "from (observed)", "acted for"))
 for e in rows:
-    print(fmt % (e["created_at"][:19], e["credential"], e["upstream"], e["model"][:16],
-                 e["input_tokens"], e["output_tokens"], e["cost_cents"], e["cost_source"], e["status"],
-                 e.get("acted_for") or "unknown"))
+    print(fmt % (cell(e["created_at"])[:19], cell(e["credential"]), cell(e["upstream"]), cell(e["model"])[:16],
+                 e["input_tokens"], e["output_tokens"], e["cost_cents"], cell(e["cost_source"]), e["status"],
+                 clip(cell(e.get("caller_claim") or "unrecorded"), 28), clip(cell(e.get("caller_addr") or "unrecorded"), 16),
+                 cell(e.get("acted_for") or "unknown")))
 if "month_cents" in d:
     print(f'-- month to date: {d["month_cents"]} cents, {d["month_tokens"]} tokens')
 EOF
@@ -331,19 +359,43 @@ print(f'"'"'{d["credential"]}: {", ".join(d["tools"]) or "(empty — nothing cal
 import json, sys
 d = json.load(open(sys.argv[1]))
 rows = d.get("entries") or []
-fmt = "%-19s %-12s %-12s %-12s %-24s %-8s %6s %-44s %-44s %s"
-print(fmt % ("created (UTC)", "credential", "upstream", "method", "tool", "decision", "status", "detail", "call", "acted for"))
+# cell keeps a value to ONE printable line — see the note on the ledger
+# view above; the same rule, for the same reason.
+def cell(v):
+    # A value that is already one printable line with no padding prints as
+    # it is; anything else is QUOTED. Stripping instead would let a forged
+    # value render exactly like a legitimate one (see the long note in
+    # plane/internal/store/audittext.go). Spelled out rather than repr(),
+    # which quotes and escapes differently from the Go renderer's twin.
+    s = "" if v is None else str(v)
+    if s == s.strip() and s.isprintable():
+        return s
+    esc = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+    return '"' + "".join(
+        esc.get(c, c if c.isprintable() else "\\u%04x" % ord(c)) for c in s) + '"'
+# clip shortens a cell and SAYS it shortened it — a silently shortened
+# address still looks like a whole one, and every caller in the same
+# prefix would render identically.
+def clip(s, n):
+    return s if len(s) <= n else s[:n - 1] + "…"
+fmt = "%-19s %-12s %-12s %-12s %-24s %-8s %6s %-44s %-44s %-28s %-16s %s"
+print(fmt % ("created (UTC)", "credential", "upstream", "method", "tool", "decision", "status", "detail", "call", "caller (claimed)", "from (observed)", "acted for"))
 for e in rows:
     # arg_digest identifies the call; arg_summary says what it was. Both
     # are on the denial and on the admitted call, so an approved call and
     # the call that ran are provably the same one.
-    call = e.get("arg_summary") or ""
+    call = cell(e.get("arg_summary") or "")
     if e.get("arg_digest"):
         call = (call + " ") if call else ""
-        call += "[" + e["arg_digest"][:12] + "]"
-    print(fmt % (e["created_at"][:19], e["credential"], e["upstream"], e["method"],
-                 e["tool"], e["decision"], e["status"], e["detail"], call or "-",
-                 e.get("acted_for") or "unknown"))
+        call += "[" + cell(e["arg_digest"])[:12] + "]"
+    # "caller (claimed)" is the client's own word for itself — self-reported,
+    # unverified, and bounded by the plane at the write. "from (observed)" is
+    # the peer address the plane saw. A row from before these were recorded
+    # has neither, and says so rather than reading as an empty answer.
+    print(fmt % (cell(e["created_at"])[:19], cell(e["credential"]), cell(e["upstream"]), cell(e["method"]),
+                 cell(e["tool"]), cell(e["decision"]), e["status"], cell(e["detail"]), call or "-",
+                 clip(cell(e.get("caller_claim") or "unrecorded"), 28), clip(cell(e.get("caller_addr") or "unrecorded"), 16),
+                 cell(e.get("acted_for") or "unknown")))
 EOF
     ;;
   approvals)
@@ -355,14 +407,30 @@ d = json.load(open(sys.argv[1]))
 rows = d.get("pending") or []
 if not rows:
     print("no pending approval requests")
+# cell keeps a value to ONE printable line. Repeated per block because
+# each of these renderings is a self-contained python3 invocation; the
+# rule is the same one the ledger and tool-audit views apply, and the
+# subject here is a caller-supplied tool name.
+def cell(v):
+    # A value that is already one printable line with no padding prints as
+    # it is; anything else is QUOTED. Stripping instead would let a forged
+    # value render exactly like a legitimate one (see the long note in
+    # plane/internal/store/audittext.go). Spelled out rather than repr(),
+    # which quotes and escapes differently from the Go renderer's twin.
+    s = "" if v is None else str(v)
+    if s == s.strip() and s.isprintable():
+        return s
+    esc = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+    return '"' + "".join(
+        esc.get(c, c if c.isprintable() else "\\u%04x" % ord(c)) for c in s) + '"'
 fmt = "%-36s %-19s %-12s %-8s %-18s %-34s %s"
 if rows:
     print(fmt % ("id", "created (UTC)", "credential", "kind", "subject", "detail", "call"))
 for r in rows:
     # The call is what a human is actually approving: an approver
     # who cannot see the transaction is the whole problem restated.
-    print(fmt % (r["id"], r["created_at"][:19], r["credential"], r["kind"], r["subject"],
-                 r["detail"], r.get("arg_summary") or "-"))
+    print(fmt % (cell(r["id"]), cell(r["created_at"])[:19], cell(r["credential"]), cell(r["kind"]),
+                 cell(r["subject"]), cell(r["detail"]), cell(r.get("arg_summary") or "-")))
 EOF
     ;;
   approve)
@@ -479,11 +547,26 @@ EOF
 import json, sys
 d = json.load(open(sys.argv[1]))
 rows = d.get("entries") or []
+# cell keeps a value to ONE printable line — see the note on the
+# approvals view; the subject here is a caller-supplied tool name too.
+def cell(v):
+    # A value that is already one printable line with no padding prints as
+    # it is; anything else is QUOTED. Stripping instead would let a forged
+    # value render exactly like a legitimate one (see the long note in
+    # plane/internal/store/audittext.go). Spelled out rather than repr(),
+    # which quotes and escapes differently from the Go renderer's twin.
+    s = "" if v is None else str(v)
+    if s == s.strip() and s.isprintable():
+        return s
+    esc = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+    return '"' + "".join(
+        esc.get(c, c if c.isprintable() else "\\u%04x" % ord(c)) for c in s) + '"'
 fmt = "%-19s %-12s %-8s %-18s %-10s %-18s %-40s %s"
 print(fmt % ("created (UTC)", "credential", "kind", "subject", "action", "decided by", "bounds", "call"))
 for e in rows:
-    print(fmt % (e["created_at"][:19], e["credential"], e["kind"], e["subject"], e["action"],
-                 e.get("decided_by") or "-", e["bounds"], e.get("arg_summary") or "-"))
+    print(fmt % (cell(e["created_at"])[:19], cell(e["credential"]), cell(e["kind"]), cell(e["subject"]),
+                 cell(e["action"]), cell(e.get("decided_by") or "-"), cell(e["bounds"]),
+                 cell(e.get("arg_summary") or "-")))
 EOF
     ;;
   inbound-audit)
@@ -495,12 +578,26 @@ EOF
 import json, sys
 d = json.load(open(sys.argv[1]))
 rows = d.get("entries") or []
+# cell keeps a value to ONE printable line — see the note on the
+# approvals view. The delivery id and the detail come off a webhook.
+def cell(v):
+    # A value that is already one printable line with no padding prints as
+    # it is; anything else is QUOTED. Stripping instead would let a forged
+    # value render exactly like a legitimate one (see the long note in
+    # plane/internal/store/audittext.go). Spelled out rather than repr(),
+    # which quotes and escapes differently from the Go renderer's twin.
+    s = "" if v is None else str(v)
+    if s == s.strip() and s.isprintable():
+        return s
+    esc = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+    return '"' + "".join(
+        esc.get(c, c if c.isprintable() else "\\u%04x" % ord(c)) for c in s) + '"'
 fmt = "%-19s %-12s %-14s %-20s %-9s %6s %6s %6s %-40s %s"
 print(fmt % ("created (UTC)", "hook", "credential", "delivery", "decision", "status", "in", "out", "detail", "acted for"))
 for e in rows:
-    print(fmt % (e["created_at"][:19], e["hook"], e["credential"], e["delivery_id"][:20],
-                 e["decision"], e["status"], e["input_tokens"], e["output_tokens"], e["detail"],
-                 e.get("acted_for") or "unknown"))
+    print(fmt % (cell(e["created_at"])[:19], cell(e["hook"]), cell(e["credential"]), cell(e["delivery_id"])[:20],
+                 cell(e["decision"]), e["status"], e["input_tokens"], e["output_tokens"], cell(e["detail"]),
+                 cell(e.get("acted_for") or "unknown")))
 EOF
     ;;
   *)

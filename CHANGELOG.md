@@ -24,6 +24,60 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 ### Added
 
+- **The audit row says who called.** Nothing in a governed row
+  distinguished an agent the plane deployed from a shell script holding
+  the same token — not the client name in the MCP handshake, which the
+  gateway relays without reading, not the user agent, not the source
+  address. That invisibility is why an overclaim in the attribution
+  column went unnoticed for months. The spend ledger and the tool audit
+  now carry two columns, kept apart because they are worth different
+  amounts: `caller (claimed)`, the client's own `User-Agent` recorded as
+  `ua:<name>` — self-reported, unverified, and named so it can never be
+  misread as something the plane checked — and `from (observed)`, the
+  peer address the plane saw at its own socket. Both appear in
+  `make ledger`, `make tool-audit`, `kmx ledger`, `kmx audit tool` and
+  `kmx flow`. **This decides nothing**: no call is admitted, refused,
+  attributed or priced differently because of it. `acted_for` and its
+  vocabulary are unchanged. Migration `00011`; rows written before it
+  say `legacy`, which means *no record of who called* and is a different
+  word from `none`, *the caller offered no name*
+  ([docs/identity.md](docs/identity.md#who-called)).
+
+- **The known imprecision in `acted for` is now written down where a
+  reader of the trail meets it.** For a client the plane did not deploy,
+  `none` — "there is no person" — claims more than the plane can know,
+  because absence-of-run is read as an operator-driven turn. That is
+  accepted rather than fixed, on the grounds that no supported
+  configuration reaches it: kagent and the inbound bridge are the only
+  doors. It is bounded and reversible, and
+  [docs/identity.md](docs/identity.md#where-none-is-stretched-and-why-that-is-accepted)
+  says plainly that if a foreign runtime becomes supported the position
+  is void.
+
+### Fixed
+
+- **A tool name could forge a line in the audit table.** `tool_audit`'s
+  `tool` and `method` come out of caller-controlled JSON and were
+  recorded verbatim, and every renderer prints them unescaped into a
+  fixed-width table. A client holding a governed credential could put a
+  newline in a `tools/call` name and produce what read as a separate
+  audit row. **The upstream name is the same hole and looks safer than it
+  is**: it is a URL path segment, Go's mux unescapes path values, and the
+  unknown-upstream refusal is audited before any table lookup — so
+  `/upstream/x%0A…/mcp` reached a row without naming a real upstream.
+  The same held for the approvals trail, where a denied call files a
+  request carrying the tool's name.
+  Every free-text audit column on all four trails — spend, tool,
+  approvals, inbound — is now bounded at the write, and a value that is
+  not already one clean printable line is stored in Go quoted form.
+  **Quoted rather than stripped**, because stripping creates a collision
+  that is worse than the mess it tidies: mapping `openai\t` to a space
+  and padding it into a fixed-width column renders exactly like the real
+  `openai`, so the trail would show what reads as a denial against an
+  upstream nobody asked for. Both audit renderers apply a one-line rule
+  again on the way out, for rows they did not write today. Real tool and
+  upstream names are untouched — no quoting, no escaping, no change.
+
 - **`scripts/check-board.py`** — the coordination board's lane table said a
   lane was unassigned when it had already shipped five times in six days, and
   twice carried two rows for one lane that contradicted each other. Each time

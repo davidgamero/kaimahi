@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // The read views. Every format string, column width, header and empty-case
@@ -19,10 +20,13 @@ const (
 	// The trailing column on the two enforcement trails is "acted for":
 	// who the call was made for. It is LAST on purpose — every existing
 	// CI grep and doc example anchors on the columns before it, and a
-	// widened column mid-table is a broken pipeline.
-	ledgerFmt      = "%-19s %-12s %-9s %-16s %6s %6s %6s %-8s %-6s %s\n"
+	// widened column mid-table is a broken pipeline. The two caller
+	// columns went in immediately BEFORE it for the same reason: they
+	// sit after every column an existing grep names, and "acted for"
+	// stays where the end-anchored ones ('none *$') expect it.
+	ledgerFmt      = "%-19s %-12s %-9s %-16s %6s %6s %6s %-8s %-6s %-28s %-16s %s\n"
 	grantsFmt      = "%-36s %-12s %-8s %-18s %-6s %-22s %-9s %-8s %-19s %-18s %-20s %s\n"
-	toolFmt        = "%-19s %-12s %-12s %-12s %-24s %-8s %6s %-44s %-44s %s\n"
+	toolFmt        = "%-19s %-12s %-12s %-12s %-24s %-8s %6s %-44s %-44s %-28s %-16s %s\n"
 	credentialsFmt = "%-16s %-10s %-12s %-22s %-9s %s\n"
 	approvalFmt    = "%-19s %-12s %-8s %-18s %-10s %-18s %-40s %s\n"
 	pendingFmt     = "%-36s %-19s %-12s %-8s %-18s %-34s %s\n"
@@ -35,13 +39,14 @@ func (c *Client) Ledger(out io.Writer, credential string) error {
 		return err
 	}
 	fmt.Fprintf(out, ledgerFmt, "created (UTC)", "credential", "upstream", "model",
-		"in", "out", "cents", "source", "status", "acted for")
+		"in", "out", "cents", "source", "status", "caller (claimed)", "from (observed)", "acted for")
 	for _, row := range rows(doc, "entries") {
 		fmt.Fprintf(out, ledgerFmt,
 			trunc(str(row["created_at"]), 19), str(row["credential"]), str(row["upstream"]),
 			trunc(str(row["model"]), 16),
 			str(row["input_tokens"]), str(row["output_tokens"]), str(row["cost_cents"]),
-			str(row["cost_source"]), str(row["status"]), actedFor(row))
+			str(row["cost_source"]), str(row["status"]),
+			callerClaim(row), callerAddr(row), actedFor(row))
 	}
 	if _, ok := doc["month_cents"]; ok {
 		fmt.Fprintf(out, "-- month to date: %s cents, %s tokens\n",
@@ -146,12 +151,13 @@ func (c *Client) ToolAudit(out io.Writer, credential string) error {
 		return err
 	}
 	fmt.Fprintf(out, toolFmt, "created (UTC)", "credential", "upstream", "method",
-		"tool", "decision", "status", "detail", "call", "acted for")
+		"tool", "decision", "status", "detail", "call",
+		"caller (claimed)", "from (observed)", "acted for")
 	for _, e := range rows(doc, "entries") {
 		fmt.Fprintf(out, toolFmt,
 			trunc(str(e["created_at"]), 19), str(e["credential"]), str(e["upstream"]),
 			str(e["method"]), str(e["tool"]), str(e["decision"]), str(e["status"]), str(e["detail"]),
-			call(e), actedFor(e))
+			call(e), callerClaim(e), callerAddr(e), actedFor(e))
 	}
 	return nil
 }
@@ -245,6 +251,46 @@ func actedFor(e map[string]any) string {
 	return "unknown"
 }
 
+// callerClaim renders what the caller said it was. The value carries its
+// own 'ua:' prefix from the plane, which is the point: this column is the
+// caller's word for itself and must never read as something the plane
+// checked. A row from a plane too old to serve the field renders
+// "unrecorded"; a row from this plane that predates the column renders
+// its own word, "legacy". Two different histories, neither collapsed
+// into the other, and both meaning no record of who called.
+func callerClaim(e map[string]any) string {
+	return clipCell(orUnrecorded(str(e["caller_claim"])), 28)
+}
+
+// callerAddr renders the peer address the plane observed. Not a claim by
+// the thing being governed — but still only an address: in a cluster it
+// names a pod, and pod addresses are reused.
+func callerAddr(e map[string]any) string {
+	return clipCell(orUnrecorded(str(e["caller_addr"])), 16)
+}
+
+// clipCell shortens a cell and SAYS it shortened it. The plain trunc is
+// right for a timestamp, where everyone knows the seconds were cut; it is
+// wrong for these two, where a silently shortened value still looks like
+// a whole one. An IPv6 address cut to sixteen characters is a different,
+// perfectly plausible address, and every caller in the same prefix
+// renders identically — which would quietly destroy the one half of the
+// pair the caller cannot choose. The script's `clip()` is this function.
+func clipCell(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
+}
+
+func orUnrecorded(v string) string {
+	if v == "" {
+		return "unrecorded"
+	}
+	return v
+}
+
 // binds says what a tool grant admits: one CALL, named by the
 // digest of its policy-relevant arguments. A tool grant with no digest is
 // the closed legacy class — minted before argument binding, so it admits
@@ -289,12 +335,18 @@ func rows(doc map[string]any, key string) []map[string]any {
 // str renders a JSON value for a table cell. Numbers keep the digits the
 // plane sent (the decoder is in UseNumber mode), and a null prints empty —
 // the shell's behaviour, since these tables are read by eye and by grep.
+// It also keeps a cell to ONE LINE. The plane bounds what it writes into
+// an audit column, but this renderer prints rows it did not write today:
+// an older plane's, a restored dump's, a fixture's. A newline in a cell
+// renders as a second line, which reads as a governed row nobody wrote —
+// so the defence is at the write AND here, and neither is trusted to be
+// the only one.
 func str(v any) string {
 	switch value := v.(type) {
 	case nil:
 		return ""
 	case string:
-		return value
+		return oneLine(value)
 	case json.Number:
 		return value.String()
 	case bool:
@@ -323,11 +375,78 @@ func yesno(v any) string {
 	return "no"
 }
 
+// oneLine is the script's `cell()`, and it is the read-side twin of the
+// store's audit-text rule: a value that is already one printable line
+// with no padding is printed exactly as it is; anything else is QUOTED.
+//
+// Quoted rather than stripped, for the reason the store gives at length
+// (plane/internal/store/audittext.go): stripping a control character to
+// a space and letting the column pad it makes a forged value render
+// exactly like a legitimate one, which is worse than the mess it tidies.
+// The store stops such a value being written today — this is for the
+// rows it did not write: an older plane's, a restored dump's.
+//
+// The escaping is spelled out here rather than taken from strconv,
+// because plane-admin.sh has to produce the same bytes from Python and
+// `strconv.Quote` and `repr()` do not agree (quote character, escape
+// forms). TestTheTwoRenderersAgreeByteForByte holds the pair to it.
+func oneLine(s string) string {
+	if isCleanCell(s) {
+		return s
+	}
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			if unicode.IsPrint(r) {
+				b.WriteRune(r)
+			} else {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// isCleanCell reports whether a cell can be printed unaltered: printable
+// throughout, and not padded at either end.
+func isCleanCell(s string) bool {
+	if s != strings.TrimSpace(s) {
+		return false
+	}
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			return false
+		}
+	}
+	return true
+}
+
 // trunc cuts a cell to n characters, as the script's `e["created_at"][:19]`
 // does — a timestamp is printed to the second, not to the microsecond.
+//
+// CHARACTERS, not bytes. Python's `[:n]` counts characters and Go's format
+// widths count runes, so a byte slice here would both cut a multibyte rune
+// in half — printing replacement junk into an audit table — and make the
+// two renderers disagree on exactly the values most worth reading
+// carefully, since a caller chooses its own name. Identical for the ASCII
+// this truncates most of the time.
 func trunc(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
+	r := []rune(s)
+	if len(r) > n {
+		return string(r[:n])
 	}
 	return s
 }
