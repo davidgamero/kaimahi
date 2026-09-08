@@ -365,6 +365,122 @@ func (a *App) stepModel() error {
 
 func (a *App) stepKagent() error { return a.installKagent() }
 
+type kagentRelease struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+type kagentReleaseValues struct {
+	Kaimahi struct {
+		Profile string `json:"profile"`
+	} `json:"kaimahi"`
+	KagentTools struct {
+		Enabled *bool `json:"enabled"`
+	} `json:"kagent-tools"`
+	KMCP struct {
+		Enabled *bool `json:"enabled"`
+	} `json:"kmcp"`
+	UI struct {
+		Replicas *int `json:"replicas"`
+	} `json:"ui"`
+}
+
+type helmClient struct {
+	run         *run.Runner
+	kubeContext string
+	namespace   string
+}
+
+func (h helmClient) listReleases(name string) (string, error) {
+	// Helm 3's --all was removed in Helm 4, whose default became all statuses.
+	// Name every status explicitly so both versions include in-flight and failed
+	// releases rather than letting quickstart mistake one for absence.
+	args := []string{"list", "--deployed", "--failed", "--pending", "--uninstalled",
+		"--superseded", "--uninstalling", "--namespace", h.namespace,
+		"--kube-context", h.kubeContext, "--filter", "^" + name + "$", "--output", "json"}
+	return h.run.Capture("helm", args...)
+}
+
+func (h helmClient) releaseValues(name string) (string, error) {
+	return h.run.Capture("helm", "get", "values", name, "--namespace", h.namespace,
+		"--kube-context", h.kubeContext, "--output", "json")
+}
+
+func isFirstAnswerProfile(raw string) (bool, error) {
+	var values kagentReleaseValues
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return false, err
+	}
+	return values.Kaimahi.Profile == "first-answer" &&
+		values.KagentTools.Enabled != nil && !*values.KagentTools.Enabled &&
+		values.KMCP.Enabled != nil && !*values.KMCP.Enabled &&
+		values.UI.Replicas != nil && *values.UI.Replicas == 0, nil
+}
+
+// inspectKagentRelease distinguishes absence from an unreadable release. Only
+// a successful, empty Helm list means absent; every read or decode failure is
+// returned so quickstart cannot overwrite state it failed to understand.
+func (a *App) inspectKagentRelease() (bool, bool, string, error) {
+	helm := helmClient{run: a.Run, kubeContext: a.Cfg.KubeContext, namespace: "kagent"}
+	out, err := helm.listReleases("kagent")
+	if err != nil {
+		return false, false, "", fmt.Errorf("cannot determine whether Helm release kagent is installed; refusing to apply the quickstart profile: %w", err)
+	}
+	var releases []kagentRelease
+	if err := json.Unmarshal([]byte(out), &releases); err != nil {
+		return false, false, "", fmt.Errorf("cannot decode Helm release state; refusing to apply the quickstart profile: %w", err)
+	}
+	var found *kagentRelease
+	for i := range releases {
+		if releases[i].Name == "kagent" {
+			if found != nil {
+				return false, false, "", fmt.Errorf("Helm returned release kagent more than once; refusing to choose one")
+			}
+			found = &releases[i]
+		}
+	}
+	if found == nil {
+		return false, false, "", nil
+	}
+	valuesJSON, err := helm.releaseValues("kagent")
+	if err != nil {
+		return false, false, "", fmt.Errorf("cannot read Helm release kagent values; refusing to change its profile: %w", err)
+	}
+	minimal, err := isFirstAnswerProfile(valuesJSON)
+	if err != nil {
+		return false, false, "", fmt.Errorf("cannot decode Helm release kagent values; refusing to change its profile: %w", err)
+	}
+	return true, minimal, found.Status, nil
+}
+
+// stepQuickstartKagent is monotonic: it may create or reconcile the known
+// first-answer profile, but never removes capabilities from a full or custom
+// installation.
+func (a *App) stepQuickstartKagent() error {
+	present, minimal, status, err := a.inspectKagentRelease()
+	if err != nil {
+		return err
+	}
+	if !present || minimal {
+		if present && status != "deployed" && status != "failed" {
+			return fmt.Errorf("Helm release kagent has status %q; refusing to change it while another operation may be in progress", status)
+		}
+		return a.installKagent(quickstartValues...)
+	}
+	if status != "deployed" {
+		return fmt.Errorf("Helm release kagent has status %q and a full or custom profile; refusing to change it — inspect it with `helm -n kagent status kagent`", status)
+	}
+	a.notef("kagent is already installed with a full or custom profile; preserving it")
+	return a.waitExistingKagent()
+}
+
+func (a *App) waitExistingKagent() error {
+	if err := a.kubectlRun("-n", "kagent", "rollout", "status", "deployment/kagent-controller", "--timeout=420s"); err != nil {
+		return fmt.Errorf("existing kagent release controller is not ready: %w", err)
+	}
+	return nil
+}
+
 // installKagent installs the chart, optionally with extra `--set` values.
 //
 // The extras exist for exactly one caller — `kmx quickstart`, which turns off
@@ -404,40 +520,13 @@ func (a *App) installKagent(extra ...string) error {
 	args := []string{"upgrade", "--install", "kagent",
 		"oci://ghcr.io/kagent-dev/kagent/helm/kagent",
 		"--version", version, "--namespace", "kagent",
-		"--kube-context", a.Cfg.KubeContext, "-f", tmp.Name()}
+		"--kube-context", a.Cfg.KubeContext, "-f", tmp.Name(),
+		"--wait", "--wait-for-jobs", "--timeout", "420s"}
 	args = append(args, extra...)
 	if err := a.Run.Run("helm", args...); err != nil {
 		return err
 	}
-	// `kubectl wait --all` fails outright with "no matching resources found"
-	// when the selector matches NOTHING, rather than waiting for something to
-	// appear. Helm returning means the objects are created, not that the
-	// controller has produced a pod for them yet — so on a cluster where
-	// scheduling takes a moment longer than a local one, the wait can lose
-	// that race and report a failure that says nothing about kagent.
-	//
-	// Observed on a managed cluster, where it happened every time; a local
-	// cluster wins the race and never showed it. So: wait for the first pod
-	// to EXIST, then wait for all of them to be Ready. The second wait is
-	// unchanged, and on a cluster that was already fast the first one returns
-	// immediately.
-	// The last kubectl error is kept rather than collapsed into "no pods".
-	// If the API server is unreachable or the credential has expired, every
-	// attempt fails for that reason, and reporting "the chart produced no
-	// pods" would send someone to look at kagent instead of at the thing
-	// that is actually broken.
-	var lastErr error
-	if !run.Poll(60, 2*time.Second, func() bool {
-		out, err := a.kubectlCapture("-n", "kagent", "get", "pods", "-o", "name")
-		lastErr = err
-		return err == nil && strings.TrimSpace(out) != ""
-	}) {
-		if lastErr != nil {
-			return fmt.Errorf("kagent's chart installed, but its pods could not be read: %w", lastErr)
-		}
-		return fmt.Errorf("kagent's chart installed but produced no pods within two minutes")
-	}
-	return a.kubectlRun("-n", "kagent", "wait", "--for=condition=Ready", "pods", "--all", "--timeout=420s")
+	return nil
 }
 
 // ---- the agents -----------------------------------------------------------

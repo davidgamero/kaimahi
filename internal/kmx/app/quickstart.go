@@ -3,10 +3,12 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/toolchain"
+	"golang.org/x/term"
 )
 
 // QuickstartOptions configure the shortest path to a first answer.
@@ -53,6 +55,7 @@ type QuickstartResult struct {
 // the chart has no `ui.enabled` at this version. That is a fact about kagent
 // 0.9.12, and if a later chart grows the switch this should use it.
 var quickstartValues = []string{
+	"--set-string", "kaimahi.profile=first-answer",
 	"--set", "kagent-tools.enabled=false",
 	"--set", "kmcp.enabled=false",
 	"--set", "ui.replicas=0",
@@ -98,6 +101,12 @@ func (a *App) Quickstart(opt QuickstartOptions) error {
 	if asJSON {
 		a.Run.Stdout = a.Err
 	}
+	if !asJSON {
+		if errFile, ok := a.Err.(*os.File); ok && term.IsTerminal(int(errFile.Fd())) && os.Getenv("TERM") != "dumb" {
+			a.enhancedProgress = true
+			a.progressColor = os.Getenv("NO_COLOR") == ""
+		}
+	}
 
 	// Equip the machine first. Everything after this point assumes kind,
 	// kubectl and Helm are runnable, and the whole point of the command is
@@ -121,10 +130,17 @@ func (a *App) Quickstart(opt QuickstartOptions) error {
 		{"Prepare kind cluster", a.stepCluster},
 		{"Deploy Ollama", a.stepOllama},
 		{"Pull model " + a.Cfg.Model, a.stepModel},
-		{"Install kagent (first-answer profile)", func() error { return a.installKagent(quickstartValues...) }},
+		{"Install or verify kagent", a.stepQuickstartKagent},
 		{"Deploy the " + agent + " agent", a.stepAgent},
 	}
 	total := len(steps) + 1
+	if a.enhancedProgress {
+		fmt.Fprintln(a.Err, "\nQUICKSTART PLAN")
+		for i, step := range steps {
+			fmt.Fprintf(a.Err, "  [ ] %d/%d %s\n", i+1, total, step.name)
+		}
+		fmt.Fprintf(a.Err, "  [ ] %d/%d Ask %s a question\n", total, total, agent)
+	}
 	for i, step := range steps {
 		if err := a.runPhase(phase{current: i + 1, total: total, name: step.name}, step.fn); err != nil {
 			return err

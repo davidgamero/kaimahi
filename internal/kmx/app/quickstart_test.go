@@ -115,7 +115,7 @@ func TestParseTaskFindsTheReplyAndRefusesRubbish(t *testing.T) {
 // the one thing the answer depends on.
 func TestTheFirstAnswerProfileOnlyDefersUnreachableComponents(t *testing.T) {
 	joined := strings.Join(quickstartValues, " ")
-	for _, off := range []string{"kagent-tools.enabled=false", "kmcp.enabled=false", "ui.replicas=0"} {
+	for _, off := range []string{"kaimahi.profile=first-answer", "kagent-tools.enabled=false", "kmcp.enabled=false", "ui.replicas=0"} {
 		if !strings.Contains(joined, off) {
 			t.Errorf("the first-answer profile does not defer %s: %s", off, joined)
 		}

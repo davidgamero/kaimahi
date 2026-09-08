@@ -202,6 +202,16 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 ### Fixed
 
+- **`kmx quickstart` is safe after `kmx up`, not only safe after itself.** It
+  now inspects the existing kagent Helm release before mutating it, marks and
+  reconciles only the reduced first-answer profile it owns, and preserves every
+  unmarked, full, or custom installation. A
+  failed or malformed Helm read is an error rather than permission to replace
+  unknown state. Helm now waits for the resources in its own release instead
+  of `kubectl wait pods --all` snapshotting unrelated or deliberately deleted
+  pods in the namespace. Interactive quickstart output also shows its six-step
+  plan and clearer phase boundaries; redirected and JSON output are unchanged.
+
 - **The board checker's self-test only worked while the board was broken.**
   Three of its cases needed a finding standing open in
   `scripts/board-open-drift.json`, so striking the last one off — the day its

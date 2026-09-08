@@ -55,6 +55,42 @@ func TestRunPhaseReportsFailureWithoutHidingTheError(t *testing.T) {
 	}
 }
 
+func TestEnhancedProgressKeepsNativeOutputVisible(t *testing.T) {
+	var out bytes.Buffer
+	times := []time.Time{time.Unix(0, 0), time.Unix(2, 0)}
+	a := &App{Err: &out, enhancedProgress: true, now: func() time.Time {
+		value := times[0]
+		times = times[1:]
+		return value
+	}}
+	if err := a.runPhase(phase{current: 4, total: 6, name: "Install or verify kagent"}, func() error {
+		out.WriteString("helm output\n")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := "\n==> QUICKSTART 4/6  Install or verify kagent\nhelm output\n[done 4/6]   Install or verify kagent (2s)\n"
+	if out.String() != want {
+		t.Fatalf("unexpected enhanced transcript:\n%q", out.String())
+	}
+}
+
+func TestEnhancedProgressUsesColorOnlyWhenEnabled(t *testing.T) {
+	var out bytes.Buffer
+	times := []time.Time{time.Unix(0, 0), time.Unix(0, 0)}
+	a := &App{Err: &out, enhancedProgress: true, progressColor: true, now: func() time.Time {
+		value := times[0]
+		times = times[1:]
+		return value
+	}}
+	if err := a.runPhase(phase{current: 1, total: 1, name: "Test"}, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "\033[1;36m") || !strings.Contains(out.String(), "\033[1;32m") {
+		t.Fatalf("colored progress lacks ANSI styling: %q", out.String())
+	}
+}
+
 func TestFormatElapsedUsesUsefulPrecision(t *testing.T) {
 	for _, tc := range []struct {
 		elapsed time.Duration
