@@ -161,7 +161,7 @@ the authority: a shard added there and nowhere else still gates merges.
 | `e2e-tools` | the tool gateway, tool approvals, the governed Slack path, approvals from Slack, the exact races and metrics |
 | `e2e-resilience` | a replica killed mid-cycle, a Postgres outage, both replicas restarted, backup and restore |
 | `e2e-ap` | the accounts-payable demo: the fixture ERP reaches nothing, a routine invoice pays itself, the exception needs a named human, and the injected call is denied and spends no approval |
-| `e2e-quickstart` | one command from a machine with only a container engine to an agent that answered, run against the release this branch would publish; safe to run twice, and the elapsed time is asserted not to have doubled |
+| `e2e-quickstart` | one command from a machine with only a container engine to an agent that answered, run against the release this branch would publish; safe to run twice, `kmx up` restores the full profile, a later quickstart preserves it, and the elapsed time is asserted not to have doubled |
 
 Other jobs run beside them:
 

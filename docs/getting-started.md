@@ -90,9 +90,13 @@ it against what the same journey cost before (246s).
 Drop `--quickstart` to install `kmx` and stop there. Set `KMX_VERSION=v0.1.0`
 to pin a version, or `KMX_BIN_DIR=/somewhere/else` to install elsewhere.
 
-`kmx quickstart` is safe to run again — the second run finds the cluster it
-made and asks another question — and `--output json` makes it drivable by
-something other than a person:
+`kmx quickstart` is safe to run again. It marks its own first-answer installation
+and reconciles that reduced profile; after `kmx up`, or against an unmarked custom kagent
+installation, it preserves the existing Helm release rather than turning the
+UI, tool server or MCP controller off. It reads that release state before any
+Helm mutation and refuses if it cannot establish what is installed. The second
+run finds the cluster and asks another question, and `--output json` makes it
+drivable by something other than a person:
 
 ```bash
 kmx quickstart --output json
@@ -127,9 +131,10 @@ have. Releases also carry checksum-verified binaries you can download by hand
 
 ### The whole runtime
 
-`kmx quickstart` deliberately deploys only what a first question touches. When
-you want the rest — kagent's console and bundled tool server, the second
-(tool-using) agent — that is `kmx up`, which reconciles the same cluster:
+`kmx quickstart` deliberately deploys only what a first question touches on a
+new installation. When you want the rest — kagent's console and bundled tool
+server, the second (tool-using) agent — that is `kmx up`, which reconciles the
+same cluster. A later quickstart does not reverse that reconciliation:
 
 ```bash
 kmx up      # kind cluster + Ollama + model pull + kagent + two agents (first run ~5-10 min)

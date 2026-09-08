@@ -138,6 +138,11 @@ if the machine does not have them, the way it already acquires the kagent CLI.
 Add `--output json` and it is drivable by an agent inside whatever harness you
 are already using.
 
+It is also monotonic: on a new installation quickstart omits components the
+first question cannot reach, but rerunning it after `kmx up` or against a
+custom kagent release preserves everything already enabled. If it cannot read
+the Helm release state, it refuses rather than guessing that nothing exists.
+
 That is a real agent conversation with **no API key**: the cluster runs an
 in-cluster Ollama model, and the governed half is keyless too. **Nothing on
 that path is governed** — the plane is the next command, not a gate you pass

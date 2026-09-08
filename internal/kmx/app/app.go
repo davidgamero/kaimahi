@@ -35,6 +35,10 @@ type App struct {
 	Stdin    *os.File
 	// now is injectable so progress timing can be tested without sleeping.
 	now func() time.Time
+	// enhancedProgress is enabled only by quickstart on an interactive stderr.
+	// Other commands and redirected output retain the durable plain transcript.
+	enhancedProgress bool
+	progressColor    bool
 
 	// provisioned records the cluster tools this run had to fetch, so a
 	// command that reports structured output can say what it put on the

@@ -3746,6 +3746,27 @@ jobs:
           "$k" --context kind-kmx-quickstart -n kagent get deploy kagent-tools >/dev/null
           "$k" --context kind-kmx-quickstart -n kagent get agent hello-tools >/dev/null
           echo "the console, the tool server and the second agent are back"
+      # Quickstart is allowed to install less on an empty cluster, but it must
+      # never TAKE AWAY a capability from a release that `kmx up` or an
+      # operator has already made full. This is the transition that exposed a
+      # pod-list race and, more importantly, the non-monotonic profile change.
+      - name: Quickstart preserves an existing full runtime
+        if: steps.changes.outputs.docs_only != 'true'
+        env:
+          KIND_CLUSTER: kmx-quickstart
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          kmx quickstart 2>&1 | tee quickstart-after-up.out
+          grep -q 'preserving it' quickstart-after-up.out
+          grep -q 'COMPLETE  An agent answered' quickstart-after-up.out
+          k="$HOME/.config/kmx/path/kubectl"
+          "$k" --context kind-kmx-quickstart -n kagent get deploy kagent-ui \
+            -o jsonpath='{.spec.replicas}' | grep -qx 1
+          "$k" --context kind-kmx-quickstart -n kagent get deploy kagent-tools >/dev/null
+          "$k" --context kind-kmx-quickstart -n kagent get deploy kagent-kmcp-controller-manager >/dev/null
+          "$k" --context kind-kmx-quickstart -n kagent get agent hello-tools >/dev/null
+          echo "quickstart answered without reducing the full runtime"
       - name: The time did not double
         if: steps.changes.outputs.docs_only != 'true'
         env:
