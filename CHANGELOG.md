@@ -24,6 +24,60 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 ### Added
 
+- **The audit row says who called.** Nothing in a governed row
+  distinguished an agent the plane deployed from a shell script holding
+  the same token — not the client name in the MCP handshake, which the
+  gateway relays without reading, not the user agent, not the source
+  address. That invisibility is why an overclaim in the attribution
+  column went unnoticed for months. The spend ledger and the tool audit
+  now carry two columns, kept apart because they are worth different
+  amounts: `caller (claimed)`, the client's own `User-Agent` recorded as
+  `ua:<name>` — self-reported, unverified, and named so it can never be
+  misread as something the plane checked — and `from (observed)`, the
+  peer address the plane saw at its own socket. Both appear in
+  `make ledger`, `make tool-audit`, `kmx ledger`, `kmx audit tool` and
+  `kmx flow`. **This decides nothing**: no call is admitted, refused,
+  attributed or priced differently because of it. `acted_for` and its
+  vocabulary are unchanged. Migration `00011`; rows written before it
+  say `legacy`, which means *no record of who called* and is a different
+  word from `none`, *the caller offered no name*
+  ([docs/identity.md](docs/identity.md#who-called)).
+
+- **The known imprecision in `acted for` is now written down where a
+  reader of the trail meets it.** For a client the plane did not deploy,
+  `none` — "there is no person" — claims more than the plane can know,
+  because absence-of-run is read as an operator-driven turn. That is
+  accepted rather than fixed, on the grounds that no supported
+  configuration reaches it: kagent and the inbound bridge are the only
+  doors. It is bounded and reversible, and
+  [docs/identity.md](docs/identity.md#where-none-is-stretched-and-why-that-is-accepted)
+  says plainly that if a foreign runtime becomes supported the position
+  is void.
+
+### Fixed
+
+- **A tool name could forge a line in the audit table.** `tool_audit`'s
+  `tool` and `method` come out of caller-controlled JSON and were
+  recorded verbatim, and every renderer prints them unescaped into a
+  fixed-width table. A client holding a governed credential could put a
+  newline in a `tools/call` name and produce what read as a separate
+  audit row. **The upstream name is the same hole and looks safer than it
+  is**: it is a URL path segment, Go's mux unescapes path values, and the
+  unknown-upstream refusal is audited before any table lookup — so
+  `/upstream/x%0A…/mcp` reached a row without naming a real upstream.
+  The same held for the approvals trail, where a denied call files a
+  request carrying the tool's name.
+  Every free-text audit column on all four trails — spend, tool,
+  approvals, inbound — is now bounded at the write, and a value that is
+  not already one clean printable line is stored in Go quoted form.
+  **Quoted rather than stripped**, because stripping creates a collision
+  that is worse than the mess it tidies: mapping `openai\t` to a space
+  and padding it into a fixed-width column renders exactly like the real
+  `openai`, so the trail would show what reads as a denial against an
+  upstream nobody asked for. Both audit renderers apply a one-line rule
+  again on the way out, for rows they did not write today. Real tool and
+  upstream names are untouched — no quoting, no escaping, no change.
+
 - **`scripts/check-board.py`** — the coordination board's lane table said a
   lane was unassigned when it had already shipped five times in six days, and
   twice carried two rows for one lane that contradicted each other. Each time
@@ -113,6 +167,52 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
   of `kubectl wait pods --all` snapshotting unrelated or deliberately deleted
   pods in the namespace. Interactive quickstart output also shows its six-step
   plan and clearer phase boundaries; redirected and JSON output are unchanged.
+
+- **The board checker's self-test only worked while the board was broken.**
+  Three of its cases needed a finding standing open in
+  `scripts/board-open-drift.json`, so striking the last one off — the day its
+  design succeeds — turned the self-test red with nothing wrong. Two of the
+  three failed loudly. The third, that a claim skipped for want of a merge
+  ledger does not strike its open findings off, passed on an empty ledger
+  having compared nothing, and one deliberate breakage went unnoticed behind
+  it. All three now build their own contradictory board. The ledger is
+  asserted in both directions by name — the finding it recorded is gone, and a
+  second one it did not record is still reported — because recording *some*
+  problem is not enough: an entry the board no longer earns is itself a
+  problem. A fourth case, added here, is the only shape that shows the ledger
+  reads the lane and not just the claim: two lanes failing one claim, with one
+  of them recorded.
+
+- **A worker prompt whose identifier was not a number was invisible to the
+  board checker**, and the one on this board invited a fresh session to rename
+  `tomte` to `kaimahi` in a repository renamed six weeks earlier. Both reasons
+  are closed for prompts: the identifier pattern used where a row or a heading
+  *opens* now admits a worded lane, and a heading that says it is a prompt
+  whose lane cannot be read stops the run rather than being filed under
+  nothing. A pasteable prompt with no row was also silently exempt from the
+  shipped-lane claim; `every_prompt_has_a_row` owns that case, and the claim
+  that declines to answer it now says so. On the *row* side the class stays
+  open by choice — seventeen of sixty-three rows name no lane the checker can
+  read, and reporting them would name seventeen rows the board is not wrong
+  about. `Row`'s docstring says so, and says why.
+
+- **A retired prompt now has to cite the pull request its own row cites.**
+  Retiring a prompt writes a merge number into its heading by hand, once per
+  lane, and sixteen of those numbers are older than the merge ledger's first —
+  so the ledger cannot check them, and the document checking itself is the
+  only thing that can.
+
+- **The board's whole open drift is closed.** Thirty-eight prompt headings
+  invited a paste into a fresh CLI session; thirty-six of them sat under rows
+  saying the lane had merged, and each of those now reads `(RUN — merged as
+  #N; kept as the record of what the lane was asked for)`, keeping the prompt
+  text — which is what makes a lane's delta sheet checkable — and dropping the
+  invitation together with the sequencing conditions written beside it in the
+  same parenthesis. The two left pasteable, W42 and W43, are for lanes whose
+  rows say unassigned and mean it. W41's row, which said `unassigned` for work
+  that merged as #139 the same day, says so.
+  `scripts/board-open-drift.json` carries no open findings and records how
+  each was closed.
 
 - **Eight claims in `docs/repository-map.md` were wrong on the day it merged**,
   found by writing the checker above. `scripts/` holds 67 tracked files and

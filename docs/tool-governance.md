@@ -23,6 +23,13 @@ runtime; the gateway relays the protocol and enforces.
 
 > The tool audit's last column is `acted for`: who the call was made
 > for, where the plane can substantiate it ([identity.md](identity.md)).
+> The two before it say **who called** — the client's own word for
+> itself, which the plane accepts without checking, and the peer address
+> the plane observed for itself. Neither is verified; the difference is
+> that only one of them is the caller's to choose.
+> They decide nothing; they are what lets a reader tell an
+> agent the plane deployed from a script holding its token, and read
+> `acted for` in that light.
 > The gateway also refuses an expired credential, audited like every
 > other refusal.
 
