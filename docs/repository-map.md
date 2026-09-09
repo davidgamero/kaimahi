@@ -308,6 +308,7 @@ margin the largest file in `docs/` — enough that any tool measuring
 "documentation" over this directory is mostly measuring it),
 `reviews/2026-09-07-drift-review.md`,
 `reviews/2026-09-08-foreign-app-sundae-funday.md`,
+`reviews/2026-09-09-kars-comparison.md`,
 `CLI-PROPOSAL.md` (self-labelled
 superseded), `SCENARIOS.md` (self-labelled a working concept),
 `entry-point-principles.md`, `cli-ux-plan.md`, `NAMING.md`.
