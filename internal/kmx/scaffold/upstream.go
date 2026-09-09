@@ -68,6 +68,11 @@ var (
 	// segment, a ConfigMap key, and part of three object names, so it is
 	// held to the strictest of those: an RFC 1123 label.
 	upstreamNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	// objectNameRE is an RFC 1123 SUBDOMAIN — a label, or several joined
+	// by dots. It is what a Secret, Deployment or ConfigMap name an
+	// operator merely REFERENCES may be, which is wider than what an
+	// upstream name may be, because those are not composed into anything.
+	objectNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 	// toolNameRE matches the gateway's own idea of a tool name.
 	toolNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 	// policyFieldRE is plane/internal/config/policy.go's `policyField`.
@@ -263,6 +268,23 @@ func (s UpstreamSpec) Fragment() (string, error) {
 func ValidateNamespace(ns string) error {
 	if !upstreamNameRE.MatchString(ns) || len(ns) > 63 {
 		return fmt.Errorf("%q is not a Kubernetes namespace name (RFC 1123 label)", ns)
+	}
+	return nil
+}
+
+// ValidateObjectName holds a Kubernetes object name an operator typed to
+// the RFC 1123 subdomain shape Secrets, Deployments and ConfigMaps take,
+// so a refusal names the flag rather than arriving from kubectl several
+// steps later.
+//
+// Dots are allowed because the API server allows them, and a validator
+// that refused `my.app` would be turning away a Deployment name that
+// works — the point here is to catch what kubectl would reject anyway,
+// not to impose a narrower rule of our own.
+func ValidateObjectName(name string) error {
+	if !objectNameRE.MatchString(name) || len(name) > 253 {
+		return fmt.Errorf("%q is not a Kubernetes object name (RFC 1123 subdomain: "+
+			"lowercase letters, digits, dashes and dots, starting and ending alphanumeric)", name)
 	}
 	return nil
 }
