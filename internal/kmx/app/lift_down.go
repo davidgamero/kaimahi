@@ -131,17 +131,30 @@ func (a *App) liftDownBringYourOwn(opt lift.Options, record *lift.Record) error 
 		return err
 	}
 
-	// The add-ons are turned off first. They hold references to the
-	// workspaces, and a workspace deleted while something still routes to it
-	// leaves the cluster reporting an error nobody asked for.
 	a.aimAtTheCluster(opt)
 
+	// The in-cluster objects go FIRST, before the add-ons that read them.
+	//
+	// Order matters here in a way it did not when the scrape job lived in a
+	// ConfigMap. The PodMonitor's KIND is defined by a custom resource
+	// definition the metrics add-on installs, and disabling the add-on can
+	// take that definition — and every object of that kind — with it. Removing
+	// ours afterwards would then be a delete against a kind the cluster no
+	// longer has: it would either fail, or succeed only because something else
+	// had already done the work. Neither is this command doing what it says.
+	// Removed first, the deletion is ours and is observable.
+	a.removeInClusterObservability(record)
+
+	// Then the add-ons. They hold references to the workspaces, and a
+	// workspace deleted while something still routes to it leaves the cluster
+	// reporting an error nobody asked for.
 	// Only add-ons THIS RUN enabled are turned off. An operator who already
 	// had Container Insights running would otherwise have it switched off by a
 	// teardown that was only ever meant to remove what the lift added — the
 	// same mistake as deleting their workspace, made quieter by the fact that
 	// nothing disappears, it just stops collecting.
 	if record.Before.WeEnabledMetrics() {
+		a.warnAboutScrapeJobsTheAddonOwns()
 		a.notef("turning off the Managed Prometheus this run enabled")
 		if err := a.Run.Run("az", "aks", "update", "--name", opt.Cluster, "--resource-group", opt.ResourceGroup,
 			"--disable-azure-monitor-metrics", "--output", "none"); err != nil {
@@ -160,11 +173,6 @@ func (a *App) liftDownBringYourOwn(opt lift.Options, record *lift.Record) error 
 		a.notef("Container Insights was already on before this run; leaving it on.")
 	}
 
-	// The in-cluster objects, removed on the same rule: only what this run
-	// created, decided by what it recorded at the time and never by what the
-	// object contains now.
-	a.removeInClusterObservability(record)
-
 	if err := a.removeRecorded(record.Created); err != nil {
 		return err
 	}
@@ -172,14 +180,85 @@ func (a *App) liftDownBringYourOwn(opt lift.Options, record *lift.Record) error 
 	return nil
 }
 
+// warnAboutScrapeJobsTheAddonOwns says the one thing an operator cannot find
+// out afterwards.
+//
+// The PodMonitor KIND belongs to the metrics add-on: it installs the custom
+// resource definition, and disabling it takes that definition away — which
+// takes every object of that kind on the cluster with it, whoever wrote them.
+// Measured on a live cluster, not inferred: after `az aks update
+// --disable-azure-monitor-metrics`, `kubectl get podmonitors…` answers "the
+// server doesn't have a resource type".
+//
+// This is not something this command can avoid. Turning off an add-on this run
+// turned on is exactly what teardown is for, and the collection is Kubernetes
+// doing what it does. What it can do is refuse to be quiet about it, because
+// the alternative is an operator whose own scrape jobs are gone with nothing
+// having said so. Their manifests still exist wherever they keep them; what is
+// lost is the objects, and re-applying them once the add-on is back is the fix.
+func (a *App) warnAboutScrapeJobsTheAddonOwns() {
+	out, err := a.kubectlCapture("get", scrapeMonitorResource, "--all-namespaces",
+		"-o", "jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name} {end}")
+	switch {
+	case err == nil:
+	case noSuchResourceType(err):
+		// The kind is not on this cluster, so no PodMonitor of anyone's can be
+		// here to lose. That is an answer, and the only one that justifies
+		// saying nothing.
+		return
+	default:
+		// Anything else — an unreachable API server, an RBAC denial — is not
+		// "there are none". Read that way it would produce silence at exactly
+		// the moment an operator most needs a sentence, and the add-on would
+		// go anyway.
+		//
+		// It warns and continues rather than refusing: this read is advisory,
+		// teardown is what the operator asked for, and stopping here would
+		// leave two workspaces billing because a WARNING could not be
+		// computed. What is at risk is recoverable — their manifests are
+		// untouched — and teardown is re-runnable. The rule this project
+		// applies elsewhere, that an unknown must not authorise a destructive
+		// act, governs deletions; it is not a reason to abandon a teardown.
+		a.notef(`could not read the PodMonitors on this cluster (%v), so this cannot say
+  whether turning Managed Prometheus off will take any of yours with it — it
+  removes the PodMonitor KIND, and Kubernetes collects every object of that
+  kind. Check by hand:
+
+    kubectl --context %s get %s --all-namespaces`,
+			err, a.Cfg.KubeContext, scrapeMonitorResource)
+		return
+	}
+	var theirs []string
+	for _, name := range strings.Fields(out) {
+		if name != "kaimahi/"+scrapeMonitor {
+			theirs = append(theirs, name)
+		}
+	}
+	if len(theirs) == 0 {
+		return
+	}
+	a.notef(`turning Managed Prometheus off removes the PodMonitor KIND itself, and with it
+  every PodMonitor on this cluster — including %s, which
+  this run did not create and would otherwise leave alone. The add-on owns
+  that custom resource definition; nothing here can disable one without the
+  other. Re-apply your own manifests when the add-on is back.`,
+		strings.Join(theirs, ", "))
+}
+
 // removeInClusterObservability takes back the two cluster-side objects — and
 // only the ones this run created.
 //
 // Ownership comes from what the run RECORDED before it applied anything, never
-// from what the object looks like now. A ConfigMap holding only our scrape job
-// may still have been created by the operator, and "it looks like ours" is not
-// "we made it"; the same goes for a NetworkPolicy of that name they had
+// from what the object looks like now. A PodMonitor holding only our scrape
+// job may still have been created by the operator, and "it looks like ours" is
+// not "we made it"; the same goes for a NetworkPolicy of that name they had
 // already written themselves.
+//
+// Both objects are in the kaimahi namespace, and neither is the cluster-wide
+// ama-metrics-prometheus-config ConfigMap. Teardown does not read that
+// ConfigMap, does not edit it and does not delete it, because the lift does not
+// write it — an adopter's other scrape jobs are not something this command
+// should ever have been in a position to remove.
 func (a *App) removeInClusterObservability(record *lift.Record) {
 	if record.Before.WeCreatedScraperPolicy() {
 		if !a.kubectlQuiet("-n", "kaimahi", "delete", "networkpolicy", scraperPolicy, "--ignore-not-found") {
@@ -190,38 +269,15 @@ func (a *App) removeInClusterObservability(record *lift.Record) {
 		a.notef("the NetworkPolicy %s was there before this run, or its origin was never established; leaving it.", scraperPolicy)
 	}
 
-	if !record.Before.WeCreatedScrapeConfig() {
-		a.notef("%s in %s was there before this run, or its origin was never established; leaving it.\n"+
-			"  If you merged this run's job into it, remove the kaimahi-plane job by hand.",
-			scrapeConfigMap, scrapeConfigNamespace)
+	if !record.MayRemoveScrapeMonitor() {
+		a.notef("the PodMonitor %s in kaimahi was there before this run, was never applied by it, "+
+			"or its origin was never established; leaving it.", scrapeMonitor)
 		return
 	}
-	// Created by this run, so ours to remove. The contents are still read —
-	// not to establish ownership, but because an operator may have added
-	// their own jobs to it since, and taking those with it would be the same
-	// destruction by a slower route.
-	body, err := a.kubectlCapture("-n", scrapeConfigNamespace, "get", "configmap", scrapeConfigMap,
-		"-o", "jsonpath={.data.prometheus-config}")
-	switch {
-	case err == nil:
-	case isNotFound(err):
-		return // genuinely not there; nothing to take back
-	default:
-		// An unreachable API server, a missing context or an RBAC denial is
-		// not "the ConfigMap is absent". Returning silently on those left the
-		// scrape job in place with nobody told, which on a cluster we do not
-		// own is a leftover the operator never hears about.
-		a.notef("could not read %s in %s (%v) — it may still carry this run's scrape job.\n"+
-			"  Check by hand: kubectl --context %s -n %s get configmap %s",
-			scrapeConfigMap, scrapeConfigNamespace, err, a.Cfg.KubeContext, scrapeConfigNamespace, scrapeConfigMap)
-		return
+	if !a.kubectlQuiet("-n", "kaimahi", "delete", scrapeMonitorResource, scrapeMonitor, "--ignore-not-found") {
+		a.notef("could not remove the scrape job — remove it by hand:\n"+
+			"    kubectl --context %s -n kaimahi delete %s %s", a.Cfg.KubeContext, scrapeMonitorResource, scrapeMonitor)
 	}
-	if strings.Contains(body, "job_name: kaimahi-plane") && strings.Count(body, "job_name:") == 1 {
-		_ = a.kubectlQuiet("-n", scrapeConfigNamespace, "delete", "configmap", scrapeConfigMap, "--ignore-not-found")
-		return
-	}
-	a.notef("%s in %s carries scrape jobs other than this one, so it is left alone.\n"+
-		"  Remove the kaimahi-plane job from it by hand if you no longer want it.", scrapeConfigMap, scrapeConfigNamespace)
 }
 
 // removeRecorded deletes recorded resources by their recorded id, confirming
