@@ -40,6 +40,11 @@ func (a *App) Up(step string) error {
 			return fmt.Errorf("unknown step %q — one of: %s", step, strings.Join(UpSteps, ", "))
 		}
 	}
+	if step == "" || step == "cluster" {
+		if err := a.validateKindTarget(); err != nil {
+			return err
+		}
+	}
 	if err := a.preflightUp(steps); err != nil {
 		return err
 	}
@@ -74,12 +79,12 @@ func (a *App) Up(step string) error {
 		// The credential is the RESOLVED one, not the default: with CRED set,
 		// a copied `kmx govern hello-world` would govern a different
 		// credential than the one `kmx govern` and `kmx ledger` then use.
-		a.notef("\nNEXT  Runtime only: the Kaimahi governance plane is NOT deployed yet.\n"+
-			"Nothing is metered, budgeted or ledgered until it is:\n"+
-			"  kmx plane       # the proxy and its ledger\n"+
-			"  kmx govern %s  # put %s behind it (docs/spend.md)",
-			a.Cfg.Credential, config.DefaultAgent)
-		a.notef("\nTRY   kmx agent chat %s \"%s\"", config.DefaultAgent, config.DefaultTask)
+		a.notef("\nNEXT  Runtime only: this command does not enable governance.\n"+
+			"Existing governance is not assessed by this setup. To configure it:\n"+
+			"  %s  # the proxy and its ledger\n"+
+			"  %s  # configure agent routing (docs/spend.md)",
+			a.operationCommand("plane"), a.operationCommand("govern", a.Cfg.Credential))
+		a.notef("\nTRY   %s", a.operationCommand("agent", "chat", config.DefaultAgent, config.DefaultTask))
 	}
 	return nil
 }
@@ -200,7 +205,7 @@ func (a *App) rememberInventedContext() {
 		// Not fatal: the cluster is up, and the cost of failing here is one
 		// `kmx ctx` the operator types themselves.
 		a.notef("could not record %q as the context kmx acts on (%v) — set it with: kmx ctx %s",
-			a.Cfg.KubeContext, err, a.Cfg.KubeContext)
+			a.Cfg.KubeContext, err, shellArg(a.Cfg.KubeContext))
 		return
 	}
 	a.Cfg.ContextSource = config.SourceSelected
@@ -220,6 +225,9 @@ func (a *App) rememberInventedContext() {
 // "running", and a cluster whose nodes were stopped has to be started rather
 // than re-created.
 func (a *App) stepCluster() (err error) {
+	if err := a.validateKindTarget(); err != nil {
+		return err
+	}
 	// Only on success: recording a context for a cluster that failed to come
 	// up would point every later command at something that is not there.
 	defer func() {
@@ -275,6 +283,18 @@ func (a *App) stepCluster() (err error) {
 	}
 
 	return a.waitClusterServing()
+}
+
+// kind acts on a container cluster name, while kubectl and the guard act on
+// a context. Check only kind-specific paths, not shared managed-cluster steps.
+func (a *App) validateKindTarget() error {
+	want := "kind-" + a.Cfg.KindCluster
+	if a.Cfg.KindCluster == "" || a.Cfg.KubeContext != want {
+		return fmt.Errorf("refusing: context %q does not identify kind cluster %q (expected context %q).\n"+
+			"Set KIND_CLUSTER and --context/KUBE_CTX consistently before creating a cluster or loading an image",
+			a.Cfg.KubeContext, a.Cfg.KindCluster, want)
+	}
+	return nil
 }
 
 // waitClusterServing refuses to leave the cluster step until the API server
@@ -366,8 +386,9 @@ func (a *App) stepModel() error {
 func (a *App) stepKagent() error { return a.installKagent() }
 
 type kagentRelease struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Status    string `json:"status"`
 }
 
 type kagentReleaseValues struct {
@@ -430,9 +451,12 @@ func (a *App) inspectKagentRelease() (bool, bool, string, error) {
 	if err := json.Unmarshal([]byte(out), &releases); err != nil {
 		return false, false, "", fmt.Errorf("cannot decode Helm release state; refusing to apply the quickstart profile: %w", err)
 	}
+	if releases == nil {
+		return false, false, "", fmt.Errorf("cannot decode Helm release state; expected a JSON array, refusing to apply the quickstart profile")
+	}
 	var found *kagentRelease
 	for i := range releases {
-		if releases[i].Name == "kagent" {
+		if releases[i].Name == "kagent" && releases[i].Namespace == "kagent" {
 			if found != nil {
 				return false, false, "", fmt.Errorf("Helm returned release kagent more than once; refusing to choose one")
 			}
@@ -440,7 +464,13 @@ func (a *App) inspectKagentRelease() (bool, bool, string, error) {
 		}
 	}
 	if found == nil {
+		if len(releases) != 0 {
+			return false, false, "", fmt.Errorf("Helm returned an unexpected release identity for kagent; refusing to change it")
+		}
 		return false, false, "", nil
+	}
+	if found.Status != "deployed" {
+		return true, false, found.Status, nil
 	}
 	valuesJSON, err := helm.releaseValues("kagent")
 	if err != nil {
@@ -468,7 +498,7 @@ func (a *App) stepQuickstartKagent() error {
 		return a.installKagent(quickstartValues...)
 	}
 	if status != "deployed" {
-		return fmt.Errorf("Helm release kagent has status %q and a full or custom profile; refusing to change it — inspect it with `helm -n kagent status kagent`", status)
+		return fmt.Errorf("Helm release kagent has status %q and a full or custom profile; refusing to change it — inspect it with `helm -n kagent status kagent`. Repair the release deliberately before rerunning quickstart", status)
 	}
 	a.notef("kagent is already installed with a full or custom profile; preserving it")
 	return a.waitExistingKagent()
@@ -489,7 +519,8 @@ func (a *App) waitExistingKagent() error {
 // more pods to become Ready before anyone sees an answer. They are `--set`
 // overlays on the SAME values file rather than a second one: two values files
 // would be two descriptions of one install, and the later `kmx up` restores
-// the full set simply by not passing them.
+// the full set simply by not passing them. Quickstart checks for absence first
+// and uses install, not upgrade, so a concurrently created release is preserved.
 func (a *App) installKagent(extra ...string) error {
 	version := a.Cfg.KagentVersion
 	if err := a.Run.Run("helm", "upgrade", "--install", "kagent-crds",
@@ -522,11 +553,11 @@ func (a *App) installKagent(extra ...string) error {
 		"--version", version, "--namespace", "kagent",
 		"--kube-context", a.Cfg.KubeContext, "-f", tmp.Name(),
 		"--wait", "--wait-for-jobs", "--timeout", "420s"}
-	args = append(args, extra...)
-	if err := a.Run.Run("helm", args...); err != nil {
-		return err
+	if len(extra) > 0 {
+		args = append([]string{"install"}, args[2:]...)
 	}
-	return nil
+	args = append(args, extra...)
+	return a.Run.Run("helm", args...)
 }
 
 // ---- the agents -----------------------------------------------------------

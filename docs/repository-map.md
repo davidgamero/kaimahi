@@ -86,11 +86,16 @@ still in the tree.
 
 | Path | Class | Evidence |
 |---|---|---|
-| `cmd/kmx` (15 files) | **Product** | The CLI. The documented front door is `install.sh`, piped from `curl` to `sh`; `go install .../cmd/kmx@latest` is the stated alternative. |
+| `cmd/kmx` (16 files) | **Product** | The CLI. The documented front door is `install.sh`, piped from `curl` to `sh`; `go install .../cmd/kmx@latest` is the stated alternative. |
 | `cmd/demo/kaimahi-erp` (2 files) | **Demonstration** | A fake accounts-payable ERP. Applied by `k8s/erp-mcp.yaml` via `scripts/erp-deploy.sh`; `docs/ap-demo.md` lists it under "Simulated" — "no vendor, no bank, no payment rail". |
 
 Until this change both sat directly under `cmd/`, as peers, and nothing
 distinguished them.
+
+The command count includes tests, including the new chat flag-refusal test in
+the current working tree. The tracked-tree checker sees new files only after
+they are staged; this count anticipates that inclusion without changing its
+tracked-only policy.
 
 ## `internal/` — the product's packages, and one fixture
 
@@ -126,6 +131,7 @@ a kubectl and the operator's terminal.
 | `kmx/planebuild` | 1 | Product | Builds the plane's image. |
 | `kmx/lift` | 2 | Product | The cloud-free half of the AKS lift. |
 | `kmx/config` | 1 | Product | Settings resolution. |
+| `kmx/cliui` | 2 | Product | Destination-aware rich fields, tables, actions and callouts; plain compatibility stays at callers. NO_COLOR retains rich layout without ANSI. |
 | `kmx/run` | 1 | Product | The shell-out layer. |
 | `kmx/secretshapes` | 2 | Product | The one list of credential shapes — `shapes.json` is the list, `shapes.go` reads it. The only package here whose non-test files are not all Go. |
 | `kmx/version` | 1 | Product | Version and upgrade answers. |
@@ -136,6 +142,14 @@ a kubectl and the operator's terminal.
 product package from the outside and contains no product code. That is
 deliberate and correct — a test needs a package to live in — but a
 reader counting packages will miscount without being told.
+
+The source counts above exclude every Go test file, including newly added audit,
+session/history, Linux PTY, and typed-binding tests in `app`, `admin`, and
+`blueprint`. Those tests do not increase `app`'s 38, `admin`'s 5, or `blueprint`'s
+5 non-test files; the command count remains 16 including its new test.
+Presentation and safety audit coverage is described
+in [cli-ux-plan.md](cli-ux-plan.md); these tests do not constitute live-cluster
+verification.
 
 ## `plane/` — all product
 
@@ -295,7 +309,7 @@ margin the largest file in `docs/` — enough that any tool measuring
 `reviews/2026-09-08-foreign-app-sundae-funday.md`,
 `CLI-PROPOSAL.md` (self-labelled
 superseded), `SCENARIOS.md` (self-labelled a working concept),
-`entry-point-principles.md`, `NAMING.md`.
+`entry-point-principles.md`, `cli-ux-plan.md`, `NAMING.md`.
 
 **Assets (2):** `docs/assets/architecture.mmd` (the Mermaid source) and
 `docs/assets/architecture.svg` (the rendered diagram the root README

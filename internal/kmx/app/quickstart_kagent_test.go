@@ -96,7 +96,7 @@ func TestQuickstartPreservesAnExistingFullKagentRelease(t *testing.T) {
 	fakeTool(t, dir, "helm", `
 printf 'helm %s\n' "$*" >> "$COMMAND_LOG"
 case "$1 $2" in
-  "list --deployed") printf '%s\n' '[{"name":"kagent","status":"deployed"}]' ;;
+  "list --deployed") printf '%s\n' '[{"name":"kagent","namespace":"kagent","status":"deployed"}]' ;;
   "get values") printf '%s\n' '{"kagent-tools":{"enabled":true},"kmcp":{"enabled":true},"ui":{"replicas":1}}' ;;
   *) echo "unexpected helm mutation" >&2; exit 9 ;;
 esac`)
@@ -182,7 +182,7 @@ func TestQuickstartRefusesUnhealthyCustomRelease(t *testing.T) {
 	fakeTool(t, dir, "helm", `
 printf 'helm %s\n' "$*" >> "$COMMAND_LOG"
 case "$1 $2" in
-  "list --deployed") printf '%s\n' '[{"name":"kagent","status":"failed"}]' ;;
+  "list --deployed") printf '%s\n' '[{"name":"kagent","namespace":"kagent","status":"failed"}]' ;;
   "get values") printf '%s\n' '{"custom":true}' ;;
 esac`)
 	a := &App{
@@ -226,7 +226,7 @@ if [ "$1" = "list" ]; then printf '%s\n' '[]'; fi`)
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, want := range []string{"upgrade --install kagent-crds", "upgrade --install kagent ", "--wait --wait-for-jobs --timeout 420s", "kaimahi.profile=first-answer", "kagent-tools.enabled=false", "kmcp.enabled=false", "ui.replicas=0"} {
+	for _, want := range []string{"upgrade --install kagent-crds", "install kagent ", "--wait --wait-for-jobs --timeout 420s", "kaimahi.profile=first-answer", "kagent-tools.enabled=false", "kmcp.enabled=false", "ui.replicas=0"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("install lacks %q:\n%s", want, text)
 		}
