@@ -94,7 +94,7 @@ func TestQuickstartPreservesAnExistingFullKagentRelease(t *testing.T) {
 	fakeTool(t, dir, "helm", `
 printf 'helm %s\n' "$*" >> "$COMMAND_LOG"
 case "$1 $2" in
-  "list --deployed") printf '%s\n' '[{"name":"kagent","namespace":"kagent","status":"deployed"}]' ;;
+	  "list --deployed") printf '%s\n' '[{"name":"kagent","namespace":"kagent","revision":"2","status":"deployed"}]' ;;
   "list --failed"|"list --pending"|"list --uninstalled"|"list --superseded"|"list --uninstalling") printf '%s\n' '[]' ;;
   "get values") printf '%s\n' '{"kagent-tools":{"enabled":true},"kmcp":{"enabled":true},"ui":{"replicas":1}}' ;;
   *) echo "unexpected helm mutation" >&2; exit 9 ;;
@@ -122,6 +122,35 @@ esac`)
 	}
 	if !strings.Contains(errOut.String(), "preserving it") {
 		t.Fatalf("preservation was not visible: %s", errOut.String())
+	}
+}
+
+func TestQuickstartSelectsCurrentHelmRevisionOverSupersededHistory(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "commands")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("COMMAND_LOG", log)
+	fakeTool(t, dir, "helm", `
+printf 'helm %s\n' "$*" >> "$COMMAND_LOG"
+case "$1 $2" in
+  "list --deployed") printf '%s\n' '[{"name":"kagent","namespace":"kagent","revision":"2","status":"deployed"}]' ;;
+  "list --superseded") printf '%s\n' '[{"name":"kagent","namespace":"kagent","revision":"1","status":"superseded"}]' ;;
+  "list --failed"|"list --pending"|"list --uninstalled"|"list --uninstalling") printf '%s\n' '[]' ;;
+  "get values") printf '%s\n' '{"kagent-tools":{"enabled":true},"kmcp":{"enabled":true},"ui":{"replicas":1}}' ;;
+  *) echo "unexpected helm mutation" >&2; exit 9 ;;
+esac`)
+	fakeTool(t, dir, "kubectl", `printf 'kubectl %s\n' "$*" >> "$COMMAND_LOG"`)
+	var errOut bytes.Buffer
+	a := &App{Cfg: &config.Config{KubeContext: "kind-test"}, Run: &run.Runner{Stdout: &errOut, Stderr: &errOut}, Err: &errOut}
+	if err := a.stepQuickstartKagent(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "upgrade") || !strings.Contains(errOut.String(), "preserving it") {
+		t.Fatalf("quickstart did not preserve the current deployed revision:\n%s\n%s", raw, errOut.String())
 	}
 }
 
@@ -182,7 +211,7 @@ func TestQuickstartRefusesUnhealthyCustomRelease(t *testing.T) {
 printf 'helm %s\n' "$*" >> "$COMMAND_LOG"
 case "$1 $2" in
   "list --deployed"|"list --pending"|"list --uninstalled"|"list --superseded"|"list --uninstalling") printf '%s\n' '[]' ;;
-  "list --failed") printf '%s\n' '[{"name":"kagent","namespace":"kagent","status":"failed"}]' ;;
+	  "list --failed") printf '%s\n' '[{"name":"kagent","namespace":"kagent","revision":"1","status":"failed"}]' ;;
   "get values") printf '%s\n' '{"custom":true}' ;;
 esac`)
 	a := &App{
@@ -244,7 +273,7 @@ func TestQuickstartReconcilesItsExistingMinimalRelease(t *testing.T) {
 	fakeTool(t, dir, "helm", `
 printf 'helm %s\n' "$*" >> "$COMMAND_LOG"
 case "$1" in
-  list) printf '%s\n' '[{"name":"kagent","namespace":"kagent","status":"deployed"}]' ;;
+  list) printf '%s\n' '[{"name":"kagent","namespace":"kagent","revision":"1","status":"deployed"}]' ;;
   get) printf '%s\n' '{"kaimahi":{"profile":"first-answer"},"kagent-tools":{"enabled":false},"kmcp":{"enabled":false},"ui":{"replicas":0}}' ;;
 esac`)
 	a := &App{Cfg: &config.Config{KubeContext: "kind-test", KagentVersion: "0.9.12"}, Run: &run.Runner{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, Err: &bytes.Buffer{}}

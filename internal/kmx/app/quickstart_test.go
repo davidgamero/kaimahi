@@ -174,7 +174,7 @@ func TestQuickstartValidatesBeforeCompletingQuestionPhase(t *testing.T) {
 			if tc.name == "existing full release" {
 				fakeTool(t, bin, "helm", `case "$1" in
 version) exit 0 ;;
-list) printf '[{"name":"kagent","namespace":"kagent","status":"deployed"}]\n' ;;
+list) printf '[{"name":"kagent","namespace":"kagent","revision":"1","status":"deployed"}]\n' ;;
 get) printf '{"kagent-tools":{"enabled":true},"kmcp":{"enabled":true},"ui":{"replicas":1}}\n' ;;
 *) exit 99 ;;
 esac`)
@@ -242,19 +242,19 @@ func TestQuickstartHelmReleaseStateAndVersionContract(t *testing.T) {
 			wantInstall, wantRollout, wantErr                 bool
 		}{
 			{"absent", `[]`, "0", "0", "0", true, false, false},
-			{"deployed", `[{"name":"kagent","namespace":"kagent","status":"deployed"}]`, "0", "0", "0", false, true, false},
-			{"controller unready", `[{"name":"kagent","namespace":"kagent","status":"deployed"}]`, "0", "1", "0", false, true, true},
-			{"failed", `[{"name":"kagent","namespace":"kagent","status":"failed"}]`, "0", "0", "0", false, false, true},
-			{"pending install", `[{"name":"kagent","namespace":"kagent","status":"pending-install"}]`, "0", "0", "0", false, false, true},
-			{"pending upgrade", `[{"name":"kagent","namespace":"kagent","status":"pending-upgrade"}]`, "0", "0", "0", false, false, true},
-			{"pending rollback", `[{"name":"kagent","namespace":"kagent","status":"pending-rollback"}]`, "0", "0", "0", false, false, true},
-			{"uninstalled", `[{"name":"kagent","namespace":"kagent","status":"uninstalled"}]`, "0", "0", "0", false, false, true},
-			{"uninstalling", `[{"name":"kagent","namespace":"kagent","status":"uninstalling"}]`, "0", "0", "0", false, false, true},
-			{"superseded", `[{"name":"kagent","namespace":"kagent","status":"superseded"}]`, "0", "0", "0", false, false, true},
-			{"unknown", `[{"name":"kagent","namespace":"kagent","status":"unknown"}]`, "0", "0", "0", false, false, true},
+			{"deployed", `[{"name":"kagent","namespace":"kagent","revision":"1","status":"deployed"}]`, "0", "0", "0", false, true, false},
+			{"controller unready", `[{"name":"kagent","namespace":"kagent","revision":"1","status":"deployed"}]`, "0", "1", "0", false, true, true},
+			{"failed", `[{"name":"kagent","namespace":"kagent","revision":"1","status":"failed"}]`, "0", "0", "0", false, false, true},
+			{"pending install", `[{"name":"kagent","namespace":"kagent","revision":"1","status":"pending-install"}]`, "0", "0", "0", false, false, true},
+			{"pending upgrade", `[{"name":"kagent","namespace":"kagent","revision":"1","status":"pending-upgrade"}]`, "0", "0", "0", false, false, true},
+			{"pending rollback", `[{"name":"kagent","namespace":"kagent","revision":"1","status":"pending-rollback"}]`, "0", "0", "0", false, false, true},
+			{"uninstalled", `[{"name":"kagent","namespace":"kagent","revision":"1","status":"uninstalled"}]`, "0", "0", "0", false, false, true},
+			{"uninstalling", `[{"name":"kagent","namespace":"kagent","revision":"1","status":"uninstalling"}]`, "0", "0", "0", false, false, true},
+			{"superseded", `[{"name":"kagent","namespace":"kagent","revision":"1","status":"superseded"}]`, "0", "0", "0", false, false, true},
+			{"unknown", `[{"name":"kagent","namespace":"kagent","revision":"1","status":"unknown"}]`, "0", "0", "0", false, false, true},
 			{"wrong name", `[{"name":"kagent-other","namespace":"kagent","status":"deployed"}]`, "0", "0", "0", false, false, true},
-			{"wrong namespace", `[{"name":"kagent","namespace":"other","status":"deployed"}]`, "0", "0", "0", false, false, true},
-			{"duplicate", `[{"name":"kagent","namespace":"kagent","status":"deployed"},{"name":"kagent","namespace":"kagent","status":"failed"}]`, "0", "0", "0", false, false, true},
+			{"wrong namespace", `[{"name":"kagent","namespace":"other","revision":"1","status":"deployed"}]`, "0", "0", "0", false, false, true},
+			{"duplicate", `[{"name":"kagent","namespace":"kagent","revision":"1","status":"deployed"},{"name":"kagent","namespace":"kagent","revision":"1","status":"failed"}]`, "0", "0", "0", false, false, true},
 			{"list error", `[]`, "1", "0", "0", false, false, true},
 			{"malformed", `{broken`, "0", "0", "0", false, false, true},
 			{"empty output", ``, "0", "0", "0", false, false, true},

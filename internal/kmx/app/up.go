@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -388,6 +389,7 @@ func (a *App) stepKagent() error { return a.installKagent() }
 type kagentRelease struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
+	Revision  string `json:"revision"`
 	Status    string `json:"status"`
 }
 
@@ -432,7 +434,7 @@ func (h helmClient) listReleases(name string) (string, error) {
 			return "", fmt.Errorf("cannot decode Helm release state: expected a JSON array")
 		}
 		for _, release := range found {
-			key := release.Name + "\x00" + release.Namespace + "\x00" + release.Status
+			key := release.Name + "\x00" + release.Namespace + "\x00" + release.Revision + "\x00" + release.Status
 			if !seen[key] {
 				releases = append(releases, release)
 				seen[key] = true
@@ -476,12 +478,20 @@ func (a *App) inspectKagentRelease() (bool, bool, string, error) {
 		return false, false, "", fmt.Errorf("cannot decode Helm release state; expected a JSON array, refusing to apply the quickstart profile")
 	}
 	var found *kagentRelease
+	foundRevision := 0
 	for i := range releases {
 		if releases[i].Name == "kagent" && releases[i].Namespace == "kagent" {
-			if found != nil {
-				return false, false, "", fmt.Errorf("Helm returned release kagent more than once; refusing to choose one")
+			revision, err := strconv.Atoi(releases[i].Revision)
+			if err != nil || revision < 1 {
+				return false, false, "", fmt.Errorf("Helm returned release kagent with invalid revision %q; refusing to choose one", releases[i].Revision)
 			}
-			found = &releases[i]
+			if revision == foundRevision && found != nil && releases[i].Status != found.Status {
+				return false, false, "", fmt.Errorf("Helm returned conflicting states for kagent revision %d; refusing to choose one", revision)
+			}
+			if revision > foundRevision {
+				foundRevision = revision
+				found = &releases[i]
+			}
 		}
 	}
 	if found == nil {
