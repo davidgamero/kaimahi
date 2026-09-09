@@ -6,9 +6,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/run"
@@ -123,6 +127,158 @@ func TestCreateWizardRepromptsInvalidConfirmation(t *testing.T) {
 func TestSlugAgentName(t *testing.T) {
 	if got := slugAgentName("  CrashLoop mechanic: prod!  "); got != "crashloop-mechanic-prod" {
 		t.Fatalf("slug=%q", got)
+	}
+	long := "Reports unhealthy workloads across every production namespace"
+	got := slugAgentName(long)
+	if len(got) > 32 || !regexp.MustCompile(`^reports-unhealthy-[a-f0-9]{6}$`).MatchString(got) {
+		t.Fatalf("long derived name is not compact and stable: %q", got)
+	}
+	if again := slugAgentName(long); again != got {
+		t.Fatalf("derived name changed between calls: %q != %q", got, again)
+	}
+	other := slugAgentName(long + " in Europe")
+	if other == got || !strings.HasPrefix(other, "reports-unhealthy-") {
+		t.Fatalf("same-prefix descriptions collided or lost readability: %q and %q", got, other)
+	}
+	if name := slugAgentName("Résumé incidents in production namespaces with detailed remediation"); strings.Contains(name, "é") || len(name) > 32 {
+		t.Fatalf("derived name is not DNS-safe: %q", name)
+	}
+}
+
+func wizardKey(code rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg(tea.Key{Code: code})
+}
+
+func updateCreateWizard(t *testing.T, m createWizardModel, msg tea.Msg) createWizardModel {
+	t.Helper()
+	updated, _ := m.Update(msg)
+	return updated.(createWizardModel)
+}
+
+func TestCreateWizardModelCollectsMissingFieldsAndAppliesByDefault(t *testing.T) {
+	m, err := newCreateWizardModel(CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
+	if m.step != createDescription || m.err == nil || !strings.Contains(m.View().Content, "description is required") {
+		t.Fatalf("empty description advanced: step=%d err=%v", m.step, m.err)
+	}
+	m.input.SetValue("Reports unhealthy workloads")
+	m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
+	if m.step != createName || m.input.Value() != "reports-unhealthy-workloads" {
+		t.Fatalf("description did not derive the name carefully: step=%d name=%q", m.step, m.input.Value())
+	}
+	m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
+	if m.step != createConfirm || m.selection != 0 {
+		t.Fatalf("wizard did not reach apply-default confirmation: step=%d selection=%d", m.step, m.selection)
+	}
+	m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
+	if m.cancelled || m.opt.NoApply || m.opt.Name != "reports-unhealthy-workloads" || m.opt.Namespace != config.DefaultNamespace {
+		t.Fatalf("unexpected completed options: %+v cancelled=%v", m.opt, m.cancelled)
+	}
+}
+
+func TestCreateWizardModelValidatesInlineAndPreservesFlags(t *testing.T) {
+	m, err := newCreateWizardModel(CreateOptions{
+		Description: "Supplied description", Namespace: "team", Out: "custom.yaml",
+		NoApply: true, Tools: "server:read", Instructions: "prompt.md",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.step != createName {
+		t.Fatalf("supplied description was prompted again: step=%d", m.step)
+	}
+	m.input.SetValue("Not Valid")
+	m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
+	if m.step != createName || m.err == nil || !strings.Contains(m.View().Content, m.err.Error()) {
+		t.Fatalf("invalid name was not retained inline: step=%d err=%v", m.step, m.err)
+	}
+	m.input.SetValue("valid-name")
+	m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
+	if m.step != createDone || m.opt.Description != "Supplied description" || m.opt.Namespace != "team" || m.opt.Out != "custom.yaml" || !m.opt.NoApply || m.opt.InstructionText != "" {
+		t.Fatalf("authoritative flags changed: %+v", m.opt)
+	}
+}
+
+func TestCreateWizardModelCancelKeysAndVisibleSelection(t *testing.T) {
+	for _, code := range []rune{tea.KeyEscape, 'c'} {
+		m, err := newCreateWizardModel(CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		msg := wizardKey(code)
+		if code == 'c' {
+			msg = tea.KeyPressMsg(tea.Key{Code: 'c', Mod: tea.ModCtrl})
+		}
+		m = updateCreateWizard(t, m, msg)
+		if !m.cancelled || m.step != createDone {
+			t.Fatalf("%s did not cancel", msg.String())
+		}
+	}
+
+	m, err := newCreateWizardModel(CreateOptions{Name: "demo", Description: "Demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "> Apply") || !strings.Contains(view, "  Cancel") {
+		t.Fatalf("confirmation is not an explicit visible selection:\n%s", view)
+	}
+	m = updateCreateWizard(t, m, wizardKey(tea.KeyRight))
+	m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
+	if !m.cancelled {
+		t.Fatal("explicit Cancel selection applied")
+	}
+}
+
+func TestCreateWizardModelRejectsInvalidToolsBeforeStarting(t *testing.T) {
+	if _, err := newCreateWizardModel(CreateOptions{Tools: "server:"}); err == nil {
+		t.Fatal("invalid --tools reached the wizard")
+	}
+}
+
+func TestCreateWizardModelRejectsInvalidSuppliedNameBeforeStarting(t *testing.T) {
+	if _, err := newCreateWizardModel(CreateOptions{Name: "Not Valid", Description: "Supplied"}); err == nil {
+		t.Fatal("invalid supplied --name reached the wizard")
+	}
+}
+
+func TestCreateWizardModelSupportsBYOAndLongDescriptions(t *testing.T) {
+	long := strings.Repeat("description ", 30)
+	m, err := newCreateWizardModel(CreateOptions{Image: "acme/agent:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.input.SetValue(long)
+	m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
+	if m.opt.Description != strings.TrimSpace(long) || m.input.Value() == "" {
+		t.Fatalf("long description was truncated: %d vs %d", len(m.opt.Description), len(strings.TrimSpace(long)))
+	}
+	m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
+	if m.opt.InstructionText != "" {
+		t.Fatalf("BYO wizard synthesized declarative instructions: %q", m.opt.InstructionText)
+	}
+}
+
+func TestCreateWizardConfirmationSanitizesFlagValues(t *testing.T) {
+	m, err := newCreateWizardModel(CreateOptions{Name: "demo", Description: "safe\x1b[2J\nforged", Namespace: "team\nother", Out: "file\x1b]52;c;secret\a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := m.View().Content
+	if strings.Contains(view, "\x1b[2J") || strings.Contains(view, "\x1b]52") || strings.Contains(view, "\nforged") || strings.Contains(view, "\nother") {
+		t.Fatalf("flag value escaped confirmation hierarchy: %q", view)
+	}
+	plain := ansi.Strip(view)
+	for _, want := range []string{"safe forged", "team other", "Output:      file"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("sanitized confirmation lacks %q: %q", want, plain)
+		}
+	}
+	if strings.Contains(plain, "secret") {
+		t.Fatalf("OSC clipboard payload survived confirmation: %q", plain)
 	}
 }
 

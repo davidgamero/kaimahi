@@ -112,14 +112,14 @@ parses and validates a governed workflow; `workflow_run.go` in `app`
 executes it. `scaffold` generates agent YAML; `guard` decides whether a
 context may be written to; `seam`, `secretshapes`, `toolchain` and
 `version` are each one decidable question; `seamcert` mints and reads
-the certificate the plane's data seams serve with. That is why `app` is 39
+the certificate the plane's data seams serve with. That is why `app` is 44
 files: it is not a grab bag, it is everything left after the decidable
 parts were taken out, and what remains all shares one receiver holding
 a kubectl and the operator's terminal.
 
 | Package | Non-test source files | Class | What it is |
 |---|---|---|---|
-| `kmx/app` | 43 | Product | Every kmx command. The shell-out orchestration layer. |
+| `kmx/app` | 44 | Product | Every kmx command. The shell-out orchestration layer. |
 | `kmx/admin` | 5 | Product | Talks to the plane's admin API. |
 | `kmx/blueprint` | 5 | Product | The declarative governed-workflow file. |
 | `kmx/scaffold` | 11 | Product | Generates the reviewable Agent YAML, and the onboarding artifacts: a tool upstream's four documents, a model upstream's three, and a migration's identity, seam allowance and workload patch. |
@@ -145,7 +145,7 @@ reader counting packages will miscount without being told.
 
 The source counts above exclude every Go test file, including newly added audit,
 session/history, Linux PTY, and typed-binding tests in `app`, `admin`, and
-`blueprint`. Those tests do not increase `app`'s 43, `admin`'s 5, or `blueprint`'s
+`blueprint`. Those tests do not increase `app`'s 44, `admin`'s 5, or `blueprint`'s
 5 non-test files; `cmd/kmx` is 19 files, tests included.
 Presentation and safety audit coverage is described
 in [cli-ux-plan.md](cli-ux-plan.md); these tests do not constitute live-cluster
@@ -282,7 +282,7 @@ mentions — the other five are comments, which is the trap),
 `scripts/release-run.sh`,
 and `docs/tools.md`, which gives it as a step a reader runs by hand.
 
-## `docs/` — 41 tracked files, two audiences and two assets
+## `docs/` — 42 tracked files, two audiences and two assets
 
 **Product documentation (24)** — a user or operator reads it: `README.md`
 (the index), `getting-started.md`, `kmx.md`, `aks.md`, `models.md`,
@@ -302,7 +302,7 @@ describe a scenario being run rather than a capability being configured.
 `ap-demo.md` says its ERP is simulated in its own second table row;
 `demo.md` is less explicit.
 
-**Maintainer and process (13):** `development.md`, `repository-map.md`
+**Maintainer and process (14):** `development.md`, `repository-map.md`
 (this file),
 `COORDINATION.md` (the coordination board, single-writer, and by a wide
 margin the largest file in `docs/` — enough that any tool measuring
@@ -314,7 +314,8 @@ margin the largest file in `docs/` — enough that any tool measuring
 `reviews/2026-09-09-orka-composition.md`,
 `CLI-PROPOSAL.md` (self-labelled
 superseded), `SCENARIOS.md` (self-labelled a working concept),
-`entry-point-principles.md`, `cli-ux-plan.md`, `NAMING.md`.
+`entry-point-principles.md`, `cli-ux-plan.md`, `charm-ux-followup-plan.md`,
+`NAMING.md`.
 
 **Assets (2):** `docs/assets/architecture.mmd` (the Mermaid source) and
 `docs/assets/architecture.svg` (the rendered diagram the root README

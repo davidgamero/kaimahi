@@ -123,6 +123,9 @@ runbook, that is a bug in the restructure, not a decision. File it.
 - [cli-ux-plan.md](cli-ux-plan.md): implemented terminal reports and chat
   presentation, redirected compatibility, intentional audit safety fixes, and
   the remaining presentation/structured-output gaps.
+- [charm-ux-followup-plan.md](charm-ux-followup-plan.md): the researched Charm
+  boundary, the Bubble Tea agent-create prototype, and the terminal surfaces
+  deliberately left on their existing implementations.
 - [entry-point-principles.md](entry-point-principles.md): why the
   developer entry point exists, what it must never become, and what is
   deliberately not built yet — the reasoning behind the entry point, as
