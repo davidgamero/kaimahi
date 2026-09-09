@@ -3848,7 +3848,7 @@ jobs:
         run: |
           make chat AGENT=ap-agent \
             TASK='Call invoice_get for invoice INV-88134 and report its total.' | tee ap-chat.out
-          python3 scripts/verify-chat.py ap-chat.out invoice_get 'Expedited handling'
+          python3 scripts/verify-chat.py --tool-path ap-chat.out invoice_get 'Expedited handling'
           make ap-audit | tee ap-audit-3.out
           grep -E 'ap-agent +erp +tools/call +invoice_get +allowed +200' ap-audit-3.out
       - name: Cluster state on failure
