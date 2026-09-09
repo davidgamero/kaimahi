@@ -1162,7 +1162,7 @@ MAP_EDITS = [
      "says two unresolved cases and lists three"),
     ("**`scripts/exposure-scan.sh`.** One caller", "**`scripts/gone.sh`.** One caller",
      "rests the first unclear case on a script that is not there"),
-    ("| `kmx/app` | 43 |", "| `kmx/app` | 42 |",
+    ("| `kmx/app` | 44 |", "| `kmx/app` | 43 |",
      "gets a package's source-file count wrong"),
     ("`kaimahi-tools.yaml`, `egress-hosted.yaml`", "`egress-hosted.yaml`",
      "drops a manifest from the embedded list that embed.go embeds"),

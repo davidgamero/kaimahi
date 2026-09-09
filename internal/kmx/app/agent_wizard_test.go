@@ -124,6 +124,17 @@ func TestCreateWizardRepromptsInvalidConfirmation(t *testing.T) {
 	}
 }
 
+func TestCreateWizardScannerDoesNotAddInstructionsToBYOAgent(t *testing.T) {
+	scanner := &sliceScanner{values: []string{"Existing agent", "existing-agent"}}
+	opt, err := collectCreateOptions(scanner, &bytes.Buffer{}, CreateOptions{Image: "acme/agent:1", NoApply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opt.InstructionText != "" {
+		t.Fatalf("BYO scanner fallback synthesized declarative instructions: %q", opt.InstructionText)
+	}
+}
+
 func TestSlugAgentName(t *testing.T) {
 	if got := slugAgentName("  CrashLoop mechanic: prod!  "); got != "crashloop-mechanic-prod" {
 		t.Fatalf("slug=%q", got)
@@ -230,6 +241,20 @@ func TestCreateWizardModelCancelKeysAndVisibleSelection(t *testing.T) {
 	m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
 	if !m.cancelled {
 		t.Fatal("explicit Cancel selection applied")
+	}
+}
+
+func TestCreateWizardFilterTreatsExternalQuitAsCancellation(t *testing.T) {
+	m, err := newCreateWizardModel(CreateOptions{Name: "demo", Description: "Demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cancelUnfinishedWizard(m, tea.QuitMsg{}).(tea.InterruptMsg); !ok {
+		t.Fatal("external quit at confirmation was allowed to apply")
+	}
+	m.step = createDone
+	if _, ok := cancelUnfinishedWizard(m, tea.QuitMsg{}).(tea.QuitMsg); !ok {
+		t.Fatal("intentional completion was converted to cancellation")
 	}
 }
 

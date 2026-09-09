@@ -776,15 +776,6 @@ jobs:
           # reason; say it explicitly here.
           set -o pipefail
           go test ./... 2>&1 | tee kmx-test.out
-      - name: agent-create wizard — terminal lifecycle
-        run: |
-          set -euo pipefail
-          # This is not another model-only assertion: it opens a real Linux
-          # PTY, lets Bubble Tea enter raw mode, sends Ctrl-C, and proves the
-          # terminal was restored without writing or applying an agent.
-          go test ./internal/kmx/app \
-            -run '^TestCreateWizardPTYCancellationRestoresTerminal$' \
-            -count=1 -v
           # `ok  <package>` is printed for a package whose every test
           # SKIPPED, so grepping for it proves the package compiled and
           # nothing more. These packages are the reason this job is
@@ -890,6 +881,15 @@ jobs:
           go test ./internal/kmx/app/ -v \
             -run TestPlaneImageMatchesTheCommittedManifest 2>&1 | tee planeimg.out
           grep -q -- '--- PASS: TestPlaneImageMatchesTheCommittedManifest' planeimg.out
+      - name: agent-create wizard — terminal lifecycle
+        run: |
+          set -euo pipefail
+          # This is not another model-only assertion: it opens a real Linux
+          # PTY, lets Bubble Tea enter raw mode, sends Ctrl-C, and proves the
+          # terminal was restored without writing or applying an agent.
+          go test ./internal/kmx/app \
+            -run '^TestCreateWizardPTYCancellationRestoresTerminal$' \
+            -count=1 -v
       - name: Makefile does not re-implement what kmx owns
         run: |
           python3 scripts/check-kmx-delegation.py --selftest

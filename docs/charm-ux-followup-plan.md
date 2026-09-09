@@ -74,6 +74,6 @@ The model tests send messages directly and cover default derivation, required
 description, inline name validation, authoritative supplied options, invalid
 tool syntax, explicit confirmation, Apply-by-default, and both cancellation
 keys. They also cover long descriptions, BYO agents, invalid supplied names,
-and hostile terminal sequences in flag values. A Linux PTY test runs the real program, sends Ctrl-C, verifies clean
-cancellation and exact terminal-mode restoration, and proves the wizard writes
-nothing to stdout.
+and hostile terminal sequences in flag values. A Linux PTY test runs the real
+program, sends Ctrl-C, verifies clean cancellation and exact terminal-mode
+restoration, and proves the wizard writes nothing to stdout.

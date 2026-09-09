@@ -74,7 +74,7 @@ func collectCreateOptions(scanner lineScanner, out io.Writer, opt CreateOptions)
 	if _, err := scaffold.ParseTools(opt.Tools); err != nil {
 		return opt, err
 	}
-	if opt.Instructions == "" {
+	if opt.Instructions == "" && opt.Image == "" {
 		opt.InstructionText = "You are " + opt.Name + ". Your purpose is: " + opt.Description + "\nAnswer briefly and say plainly when you do not know something."
 	}
 	if opt.Namespace == "" {

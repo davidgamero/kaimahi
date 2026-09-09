@@ -242,6 +242,16 @@ func (m createWizardModel) View() tea.View {
 	return tea.NewView(body.String())
 }
 
+func cancelUnfinishedWizard(model tea.Model, msg tea.Msg) tea.Msg {
+	if _, quitting := msg.(tea.QuitMsg); !quitting {
+		return msg
+	}
+	if m, ok := model.(createWizardModel); ok && m.step != createDone {
+		return tea.InterruptMsg{}
+	}
+	return msg
+}
+
 func runCreateWizard(in io.Reader, out io.Writer, opt CreateOptions) (CreateOptions, error) {
 	m, err := newCreateWizardModel(opt)
 	if err != nil {
@@ -250,7 +260,7 @@ func runCreateWizard(in io.Reader, out io.Writer, opt CreateOptions) (CreateOpti
 	if m.step == createDone {
 		return m.opt, nil
 	}
-	result, err := tea.NewProgram(m, tea.WithInput(in), tea.WithOutput(out)).Run()
+	result, err := tea.NewProgram(m, tea.WithInput(in), tea.WithOutput(out), tea.WithFilter(cancelUnfinishedWizard)).Run()
 	if err != nil {
 		if errors.Is(err, tea.ErrInterrupted) || errors.Is(err, tea.ErrProgramKilled) {
 			return opt, errCreateCancelled
