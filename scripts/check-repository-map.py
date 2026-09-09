@@ -1188,7 +1188,7 @@ MAP_EDITS = [
      "no longer makes the module-boundary claim"),
     ("| `cmd/kmx` (16 files)", "| `cmd/kmx` (15 files)",
      "gets a binary's file count wrong"),
-    ("`internal/kmx/` is sixteen packages", "`internal/kmx/` is fifteen packages",
+    ("`internal/kmx/` is seventeen packages", "`internal/kmx/` is sixteen packages",
      "miscounts the packages under internal/kmx"),
     ("the\nfive `lift*.go` files in `app`", "the\nsix `lift*.go` files in `app`",
      "miscounts the cloud-running half of the AKS lift"),

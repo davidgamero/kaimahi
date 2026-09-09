@@ -73,7 +73,7 @@ still in the tree.
 | Area | Product | Demonstration | Scaffolding |
 |---|---|---|---|
 | `cmd/` | `kmx` | `demo/kaimahi-erp` | — |
-| `internal/` | `kmx/` (16 packages) | `demo/erp` | `kmx/delegation` (tests only) |
+| `internal/` | `kmx/` (17 packages) | `demo/erp` | `kmx/delegation` (tests only) |
 | `plane/` | all of it | — | test fakes inside packages |
 | `k8s/` | the embedded set, the plane, the model presets, the release agent and its seams | the AP, Slack and GitHub scenarios | — |
 | `scripts/` | 22 (6 embedded in the binary, 16 operator) | 3 | 50 (checkers, probes, CI fixtures, mutation specs) |
@@ -99,7 +99,7 @@ tracked-only policy.
 
 ## `internal/` — the product's packages, and one fixture
 
-`internal/kmx/` is sixteen packages. All but one are product — the
+`internal/kmx/` is seventeen packages. All but one are product — the
 exception, `delegation`, is below — and the line between them is
 consistent enough to state as a rule: **anything that
 can be decided without reaching a cluster lives in its own package;
@@ -281,7 +281,7 @@ mentions — the other five are comments, which is the trap),
 `scripts/release-run.sh`,
 and `docs/tools.md`, which gives it as a step a reader runs by hand.
 
-## `docs/` — 35 tracked files, two audiences and two assets
+## `docs/` — 36 tracked files, two audiences and two assets
 
 **Product documentation (22)** — a user or operator reads it: `README.md`
 (the index), `getting-started.md`, `kmx.md`, `aks.md`, `models.md`,
@@ -300,7 +300,7 @@ describe a scenario being run rather than a capability being configured.
 `ap-demo.md` says its ERP is simulated in its own second table row;
 `demo.md` is less explicit.
 
-**Maintainer and process (9):** `development.md`, `repository-map.md`
+**Maintainer and process (10):** `development.md`, `repository-map.md`
 (this file),
 `COORDINATION.md` (the coordination board, single-writer, and by a wide
 margin the largest file in `docs/` — enough that any tool measuring
