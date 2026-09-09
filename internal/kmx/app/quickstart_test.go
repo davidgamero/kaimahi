@@ -275,8 +275,9 @@ printf 'helm %s\n' "$*" >> "$KMX_HELM_LOG"
 if [ "$1" = list ]; then
   # Helm 4 rejects --all; Helm 3 would hide pending states by default.
   case " $* " in *" --all "*) exit 90 ;; esac
-				expected='list --deployed --failed --pending --uninstalled --superseded --uninstalling --namespace kagent --kube-context kind-test --filter ^kagent$ --output json'
-  if [ "$*" != "$expected" ]; then printf 'Helm %s list contract mismatch\n' "$KMX_HELM_MAJOR" >&2; exit 91; fi
+	case "$2" in --deployed|--failed|--pending|--uninstalled|--superseded|--uninstalling) ;; *) exit 91 ;; esac
+	expected="list $2 --namespace kagent --kube-context kind-test --filter ^kagent$ --output json"
+	if [ "$*" != "$expected" ]; then printf 'Helm %s list contract mismatch\n' "$KMX_HELM_MAJOR" >&2; exit 91; fi
   printf '%s\n' "$KMX_HELM_LIST"
   exit "$KMX_HELM_LIST_EXIT"
 fi

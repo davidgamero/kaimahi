@@ -104,18 +104,18 @@ func TestOnlyWhatThisRunTurnedOnOrCreatedMayBeUndone(t *testing.T) {
 		if !p.WeEnabledMetrics() || !p.WeEnabledLogs() {
 			t.Fatal("a run that found both add-ons off should be allowed to turn them off again")
 		}
-		if !p.WeCreatedScraperPolicy() || !p.WeCreatedScrapeConfig() {
+		if !p.WeCreatedScraperPolicy() || !p.WeCreatedScrapeMonitor() {
 			t.Fatal("a run that found neither object should be allowed to remove the ones it made")
 		}
 	})
 
 	t.Run("it was already on, so it is not ours to turn off", func(t *testing.T) {
 		p := Pre{Recorded: true, MetricsAddonEnabled: true, LogsAddonEnabled: true,
-			ScraperPolicyExisted: true, ScrapeConfigExisted: true}
+			ScraperPolicyExisted: true, ScrapeMonitorExisted: true}
 		if p.WeEnabledMetrics() || p.WeEnabledLogs() {
 			t.Fatal("teardown would disable monitoring the operator already had")
 		}
-		if p.WeCreatedScraperPolicy() || p.WeCreatedScrapeConfig() {
+		if p.WeCreatedScraperPolicy() || p.WeCreatedScrapeMonitor() {
 			t.Fatal("teardown would delete a cluster object the operator already had")
 		}
 	})
@@ -126,10 +126,37 @@ func TestOnlyWhatThisRunTurnedOnOrCreatedMayBeUndone(t *testing.T) {
 		// that way is what would authorise disabling somebody's add-on.
 		var p Pre
 		if p.WeEnabledMetrics() || p.WeEnabledLogs() ||
-			p.WeCreatedScraperPolicy() || p.WeCreatedScrapeConfig() {
+			p.WeCreatedScraperPolicy() || p.WeCreatedScrapeMonitor() {
 			t.Fatal("unestablished prior state was read as 'we made it'")
 		}
 	})
+}
+
+// The gap that a prior-state read alone leaves open, and it is not
+// theoretical: the read runs before the metrics add-on is enabled, and the
+// add-on is what installs the PodMonitor CRD. On a cluster whose add-on has
+// none, the read answers "absent" — correctly, the kind does not exist — and
+// the phase then creates nothing. An operator who afterwards writes that
+// PodMonitor by hand, following this project's own documentation, must not
+// have it deleted by a teardown that never made it.
+func TestThePodMonitorIsDeletedOnlyIfThisRunActuallyAppliedIt(t *testing.T) {
+	applied := &Record{ScrapeMonitorApplied: true, Before: Pre{Recorded: true}}
+	if !applied.MayRemoveScrapeMonitor() {
+		t.Error("a run that applied the PodMonitor onto a cluster that had none may not remove it")
+	}
+	neverApplied := &Record{Before: Pre{Recorded: true}}
+	if neverApplied.MayRemoveScrapeMonitor() {
+		t.Error("a run that created no PodMonitor would delete one somebody else wrote")
+	}
+	wasAlreadyThere := &Record{ScrapeMonitorApplied: true,
+		Before: Pre{Recorded: true, ScrapeMonitorExisted: true}}
+	if wasAlreadyThere.MayRemoveScrapeMonitor() {
+		t.Error("a PodMonitor that was there before the run would be deleted by it")
+	}
+	var nothingEstablished Record
+	if nothingEstablished.MayRemoveScrapeMonitor() {
+		t.Error("unestablished prior state was read as 'we made it'")
+	}
 }
 
 // A resource-group deletion accounts for what was INSIDE it. The monitoring

@@ -45,14 +45,8 @@ esac`,
 case "$*" in
   'version --client'|'config '*) exit 0 ;;
   *'delete networkpolicy'*) [ "$LIFT_FAIL" != policy ] ;;
-  *'get configmap'*)
-    case "$LIFT_FAIL" in
-      read) printf 'Forbidden\n' >&2; exit 1 ;;
-      absent) printf 'NotFound\n' >&2; exit 1 ;;
-      mixed) printf 'job_name: kaimahi-plane\njob_name: operator\n' ;;
-      *) printf 'job_name: kaimahi-plane\n' ;;
-    esac ;;
-  *'delete configmap'*) [ "$LIFT_FAIL" != config ] ;;
+  *'delete podmonitors.azmonitoring.coreos.com'*) [ "$LIFT_FAIL" != monitor ] && [ "$LIFT_FAIL" != mixed ] ;;
+  *'get podmonitors.azmonitoring.coreos.com'*) exit 0 ;;
   *'get secret'*)
     if [ "$LIFT_FAIL" = credential ]; then printf 'NotFound\n' >&2; exit 1; fi ;;
   *) printf 'unexpected kubectl call\n' >&2; exit 99 ;;
@@ -87,6 +81,7 @@ func liftAuditRecord(t *testing.T, a *App, opt lift.Options, before lift.Pre, ou
 		t.Fatal(err)
 	}
 	record.Before = before
+	record.ScrapeMonitorApplied = before.Recorded
 	if outside {
 		record.Created = []lift.Resource{{Kind: "workspace", Name: "outside", ID: "/resourceGroups/other/providers/test/outside"}}
 	}
@@ -170,7 +165,7 @@ func TestLiftDownScriptStillRequiresOwnershipTag(t *testing.T) {
 }
 
 func TestLiftDownRetainsRecordForInClusterCleanupFailure(t *testing.T) {
-	for _, failure := range []string{"policy", "read", "config", "mixed", "absent"} {
+	for _, failure := range []string{"policy", "monitor", "mixed", "absent"} {
 		t.Run(failure, func(t *testing.T) {
 			a, out, dir := liftAuditApp(t)
 			t.Setenv("LIFT_FAIL", failure)

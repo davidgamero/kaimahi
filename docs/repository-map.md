@@ -76,7 +76,7 @@ still in the tree.
 | `internal/` | `kmx/` (17 packages) | `demo/erp` | `kmx/delegation` (tests only) |
 | `plane/` | all of it | — | test fakes inside packages |
 | `k8s/` | the embedded set, the plane, the model presets, the release agent and its seams | the AP, Slack and GitHub scenarios | — |
-| `scripts/` | 22 (6 embedded in the binary, 16 operator) | 3 | 50 (checkers, probes, CI fixtures, mutation specs) |
+| `scripts/` | 22 (6 embedded in the binary, 16 operator) | 3 | 53 (checkers, probes, CI fixtures, mutation specs) |
 | `docs/` | 22 capability docs, incl. `release-agent.md` | `ap-demo.md`, `demo.md` | `COORDINATION.md`, `reviews/`, `development.md`, this file |
 | `brand/` | 6 assets used by the README and the org profile | — | its own checker |
 
@@ -86,7 +86,7 @@ still in the tree.
 
 | Path | Class | Evidence |
 |---|---|---|
-| `cmd/kmx` (16 files) | **Product** | The CLI. The documented front door is `install.sh`, piped from `curl` to `sh`; `go install .../cmd/kmx@latest` is the stated alternative. |
+| `cmd/kmx` (17 files) | **Product** | The CLI. The documented front door is `install.sh`, piped from `curl` to `sh`; `go install .../cmd/kmx@latest` is the stated alternative. |
 | `cmd/demo/kaimahi-erp` (2 files) | **Demonstration** | A fake accounts-payable ERP. Applied by `k8s/erp-mcp.yaml` via `scripts/erp-deploy.sh`; `docs/ap-demo.md` lists it under "Simulated" — "no vendor, no bank, no payment rail". |
 
 Until this change both sat directly under `cmd/`, as peers, and nothing
@@ -119,10 +119,10 @@ a kubectl and the operator's terminal.
 
 | Package | Non-test source files | Class | What it is |
 |---|---|---|---|
-| `kmx/app` | 39 | Product | Every kmx command. The shell-out orchestration layer. |
+| `kmx/app` | 40 | Product | Every kmx command. The shell-out orchestration layer. |
 | `kmx/admin` | 5 | Product | Talks to the plane's admin API. |
 | `kmx/blueprint` | 5 | Product | The declarative governed-workflow file. |
-| `kmx/scaffold` | 7 | Product | Generates the reviewable Agent YAML. |
+| `kmx/scaffold` | 9 | Product | Generates the reviewable Agent YAML, and the two onboarding artifacts: a tool upstream's four documents and a model upstream's three. |
 | `kmx/guard` | 1 | Product | The context-safety net. A local kind context proceeds with a banner; any other requires confirmation naming it; no confirmation, unknown context or unreadable kubeconfig refuses. |
 | `kmx/seam` | 1 | Product | What kmx knows about each upstream credential. |
 | `kmx/seamcert` | 1 | Product | Mints the certificate the plane's two data seams serve with, and answers when it expires. The authority outlives what it signs, so renewal is a re-sign rather than a redistribution. |
@@ -168,7 +168,7 @@ worth knowing before anyone moves or renames the plane's package paths.
 
 `proxy` (LLM data path and admin API), `gateway` (MCP), `inbound`
 (webhooks), `egress`, `meter` (budgets), `pricing`, `store` and `db`
-(Postgres and eleven migrations), `config`, `redact`, `metrics`, `notify`,
+(Postgres and twelve migrations), `config`, `redact`, `metrics`, `notify`,
 `ops`. Nothing here is a demonstration or a fixture; the synthetic
 upstreams live inside the test files rather than as separate packages.
 
@@ -182,15 +182,15 @@ grep: `TestTheConnectorFamiliesAreNotEmbedded`
 (`internal/kmx/app/manifests_test.go`) names the twelve manifests that must
 NOT ride along, and — because an exclusion passes for free once the thing
 it excludes stops existing — it `os.Stat`s each one and fails if it moves.
-Twenty-five of `k8s/`'s 38 files are embedded, twelve are named by that
+Twenty-six of `k8s/`'s 39 files are embedded, twelve are named by that
 test, and the thirteenth is `k8s/erp-fixtures.json`, a JSON corpus rather
 than a manifest.
 
 **Product — embedded in `kmx`, so a user with no checkout applies them
-(25):** `ollama.yaml`, `kagent-values.yaml`, `hello-world.yaml`,
+(26):** `ollama.yaml`, `kagent-values.yaml`, `hello-world.yaml`,
 `tools-agent.yaml`, `kaimahi-tools.yaml`, `egress-hosted.yaml`,
 `egress-copilot.yaml`, `wasm/runtime.yaml`, all five of `plane/`, all nine
-of `models/`, and all three of `observability/`.
+of `models/`, and all four of `observability/`.
 
 **Product — applied from a checkout only (6):** `inbound-edge.yaml`,
 `slack-mcp.yaml`, `kaimahi-slack.yaml`, `kaimahi-github.yaml`, and the
@@ -215,9 +215,9 @@ exist for a walkthrough; `release-agent.yaml` is also not embedded but is
 not a walkthrough either — it is the one agent this project depends on.
 All six are "an agent manifest in `k8s/`" and look alike.
 
-## `scripts/` — 75 tracked files, three different jobs
+## `scripts/` — 78 tracked files, three different jobs
 
-**None is orphaned**, but "orphaned" needs care: 62 of the 75 are named
+**None is orphaned**, but "orphaned" needs care: 65 of the 78 are named
 by something outside themselves, and the thirteen `scripts/mutations/*.json`
 are named by nothing at all — `check-mutations.py` finds them by globbing
 the directory. That is deliberate (a checker added without mutations is
@@ -226,7 +226,7 @@ forget to update), and it means a grep for references is the wrong test
 for that one directory.
 
 The counts below come from a classification of `git ls-files scripts` in
-which all 75 files land in exactly one bucket — not from reading the
+which all 78 files land in exactly one bucket — not from reading the
 directory and estimating.
 
 | Class | Count | Files |
@@ -235,8 +235,8 @@ directory and estimating.
 | **Product** — operator scripts, reached through make, kmx, or another product script | 16 | `plane-admin.sh`, `plane-secrets.sh`, `plane-backup.sh`, `plane-restore.sh`, `plane-metrics.sh`, `plane-pods.sh`, `slack-secret.sh`, `slack-approvers.sh`, `copilot-secret.sh`, `inbound-secret.sh`, `inbound-expose.sh`, `release-bind.sh`, `release-run.sh`, `exposure-scan.sh`, `await-approval.sh`, `show-turn.py` |
 | **Demonstration** | 3 | `erp-deploy.sh`, `ap-demo.sh`, `ap-injection.sh` |
 | **Scaffolding** — checkers and their self-tests | 16 | the thirteen `check-*` files, `kube-guard-test.sh`, `release-notes.py`, `verify-chat.py` |
-| **Scaffolding** — live-cluster probes | 14 | `*-probe.sh`, minus the one that is embedded, plus `seam-tls.sh` — not a probe itself but sourced by nine of them, to fetch the authority the seams are verified against |
-| **Scaffolding** — CI fixtures and synthetic upstreams | 6 | `scripts/ci/`: `synthetic-upstream.sh`, `plain-upstream.sh`, `mcp-echo-server.py`, `plain-mcp-server.py`, `status-unknown-probe.sh`, `workflow-fixture.yaml` |
+| **Scaffolding** — live-cluster probes | 15 | `*-probe.sh`, minus the one that is embedded, plus `seam-tls.sh` — not a probe itself but sourced by ten of them, to fetch the authority the seams are verified against |
+| **Scaffolding** — CI fixtures and synthetic upstreams | 8 | `scripts/ci/`: `synthetic-upstream.sh`, `plain-upstream.sh`, `plain-model.sh`, `mcp-echo-server.py`, `plain-mcp-server.py`, `plain-model-server.py`, `status-unknown-probe.sh`, `workflow-fixture.yaml` |
 | **Scaffolding** — mutation specifications | 13 | `scripts/mutations/*.json`, one per checker, declaring how it must be broken |
 | **Scaffolding** — a checker's record of what it has been told about | 1 | `board-open-drift.json`, the disagreements in the coordination board that `check-board.py` found, plus those found by hand where it could not look, and a record of how each was closed |
 
@@ -254,8 +254,9 @@ Three things a reader would get wrong from the directory listing alone:
   binary, extracted at runtime into a temporary tree shaped like this
   repository. Editing one changes what a user who never cloned this
   repository runs. Shell in `scripts/` reads like tooling; these are not.
-- **`scripts/ci/` is a separate world.** Six synthetic upstreams and
-  fixtures — a fake MCP server, a fake LLM upstream, a workflow fixture —
+- **`scripts/ci/` is a separate world.** Eight synthetic upstreams and
+  fixtures — two fake MCP servers, two fake LLM upstreams (one of them a
+  Responses-API endpoint), a workflow fixture —
   that exist so CI can prove a path without a real vendor. Nothing
   outside CI *runs* them — though two product docs,
   `docs/hosted-upstreams.md` and `docs/govern-your-agent.md`, link them

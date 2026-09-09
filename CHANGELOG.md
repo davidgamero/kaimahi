@@ -24,6 +24,50 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 ### Added
 
+- **The model seam speaks the OpenAI Responses API, and a call it cannot
+  meter is refused rather than counted as zero.** An upstream now
+  declares a `protocol` — `chat_completions` (`usage.prompt_tokens` /
+  `usage.completion_tokens`) or `responses` (`usage.input_tokens` /
+  `usage.output_tokens`) — and the meter reads the fields that protocol
+  names. Both are OpenAI-compatible surfaces, which is why "point it at
+  an OpenAI-compatible endpoint" was never sufficient: one current agent
+  framework's model client *is* the Responses client and offers no
+  switch, and against a table that knew only the other shape its calls
+  were first refused on the path and then, once a path was added,
+  **ledgered `0 in / 0 out`** — a token budget over that upstream could
+  never have been exhausted. The field is optional only where the path
+  already names it, so every existing table keeps working unedited; a
+  declaration that disagrees with its own path, or one this plane cannot
+  meter, is refused at load rather than resolved. A **success carrying no
+  usage the declared protocol can read is now refused (502) and the
+  answer is discarded**, with a ledger row whose new `cost_source` is
+  `unmetered` — the one case that cannot be refused is a stream already
+  flushed, which is relayed, logged at ERROR and ledgered `unmetered` all
+  the same. Migration `00012`
+  ([docs/spend.md](docs/spend.md#the-two-protocols)).
+
+- **`kmx models add` — onboard your own model endpoint.** The model seam
+  had no onboarding path at all: the only route edited
+  `k8s/plane/upstreams.yaml`, which the next `kmx plane` re-applies and
+  discards. It now works the way the tool seam already did — the operator
+  overlay ConfigMap accepts an `upstreams` block, under the same custody
+  rule (`credential_file`, `credential_header`, `internet`, `ca_file`,
+  `extra_headers` are refused by the plane, so an overlay entry is
+  in-cluster and keyless) plus one: `prices` is refused too, because a
+  price is what a cents budget is measured with and is the one number in
+  the table the plane cannot check. One `--url` carrying the path a
+  client posts to becomes the entry's base URL, its single forwarded
+  path and its protocol; `--classification` is required and has no
+  default. Three reviewable documents, not the tool seam's four: a model
+  has no `RemoteMCPServer` equivalent that a runtime without kagent could
+  apply, so the seam's base URL is printed instead. The command also
+  states what an operator arriving from `kmx tools add` would otherwise
+  assume — **the model seam has no allowlist**, so a new upstream is
+  reachable by every credential the plane has issued, bounded only by
+  their budgets. Admin contract 2
+  ([docs/kmx.md](docs/kmx.md#kmx-models-add),
+  [docs/spend.md](docs/spend.md#adding-a-model-upstream)).
+
 - **The audit row says who called.** Nothing in a governed row
   distinguished an agent the plane deployed from a shell script holding
   the same token — not the client name in the MCP handshake, which the
@@ -92,6 +136,21 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 
 ### Fixed
+
+- **`kmx lift`'s observability phase could not run at all.** The check
+  for what a cluster already had built a `kubectl` command with no verb
+  in it — `kubectl … -n kaimahi networkpolicy <name>` — which kubectl
+  reads as an attempt to run a plugin and refuses outright. It is
+  upstream of everything else in the phase and of the only line that
+  records the prior state, so no run could pass it and no resumed run
+  could skip it: **every** lift, on a cluster it created and on one it
+  did not, failed to wire Azure-managed monitoring. It failed closed, so
+  nothing was created or deleted wrongly; there was simply no dashboard.
+  Two tests now stand where nothing did: one drives the check through a
+  `kubectl` that refuses what the real one refuses, and one reads the
+  whole package's source and fails any `kubectl` call that reaches a noun
+  where a verb belongs — or that hands the command line off to a caller,
+  which is what hid this one.
 
 - **A tool name could forge a line in the audit table.** `tool_audit`'s
   `tool` and `method` come out of caller-controlled JSON and were
@@ -164,6 +223,44 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
   out of the Go test that names them, every count out of `git ls-files`.
 
 ### Changed
+
+- **The plane's scrape job is a `PodMonitor`, and the cluster-wide scrape
+  ConfigMap is no longer touched.** `ama-metrics-prometheus-config` in
+  `kube-system` is singular: every custom scrape job on the cluster shares
+  that one document. Writing it meant either overwriting jobs this project
+  did not make or stopping to ask an operator to merge ours by hand, and
+  removing it at teardown meant deleting jobs it never made. The job is now
+  a `PodMonitor` (`azmonitoring.coreos.com/v1`) named `kaimahi-plane` in the
+  `kaimahi` namespace — a namespaced object owned by whoever created it —
+  so an adopter adds their own pods by writing their own `PodMonitor` in
+  their own namespace, touching nothing of ours. `kmx lift` neither reads,
+  writes nor deletes that ConfigMap, and a test asserts it. **Nothing about
+  the boundary changed**: the ops port is still on no Service, custom
+  resources are still scraped by the same `ama-metrics` replica pods, and
+  the one NetworkPolicy allowance is unchanged. On a cluster whose metrics
+  add-on has no `PodMonitor` CRD the phase carries on and prints the job in
+  ConfigMap form for you to merge by hand; `verify` then reports that the
+  metrics half is not arriving. Teardown deletes the `PodMonitor` only if
+  this run actually applied it — not because the prior-state read, which
+  happens before the add-on installs the CRD, once said none was there.
+  **Upgrading:** nothing. A lift run by an earlier build never reached this
+  step — the verb defect below blocked the observability phase in every build
+  that shipped it — so there is no ConfigMap of ours on any cluster to clean
+  up.
+- **Teardown names the scrape jobs the add-on will take with it.** The
+  `PodMonitor` kind belongs to Azure's metrics add-on, so disabling the
+  add-on removes the custom resource definition and every object of that
+  kind on the cluster, whoever wrote them — measured on a live cluster, not
+  inferred. `kmx lift down --byo` cannot avoid that (turning off an add-on
+  this run turned on is what teardown is for), but it no longer does it
+  quietly: it lists the PodMonitors it did not create, before it acts.
+- **The lift says what its dashboard does not cover.** The view is what
+  crossed the governance plane — allowed, refused, approved, spent. It is
+  not what happened inside an agent: no spans, no per-step timings. The
+  next-steps output and `docs/aks.md` now say so, and say that
+  OpenTelemetry is the answer to that half and is neither replaced nor
+  conflicted with.
+
 
 - **`kmx plane` has a fourth step, `certificate`**, between `secrets` and
   `deploy`. `make plane-certificate` delegates to it on every target.

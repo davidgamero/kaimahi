@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/lift"
 )
@@ -22,6 +23,18 @@ const (
 	// whether the run recorded creating it, and the two must agree.
 	scraperPolicy = "kaimahi-proxy-metrics-azure"
 
+	// The scrape job itself, as a namespaced object in the plane's own
+	// namespace. Named once for the same reason the allowance is: teardown
+	// decides whether it may delete this object by whether the run recorded
+	// creating it, and the two must agree.
+	scrapeMonitor = "kaimahi-plane"
+	// The fully-qualified resource name, which is also the CRD's name. It is
+	// spelled out rather than shortened to `podmonitor` because Azure's
+	// add-on ships its CRDs under azmonitoring.coreos.com while the
+	// open-source Prometheus operator uses monitoring.coreos.com, and on a
+	// cluster running both, the short name is ambiguous and kubectl picks one.
+	scrapeMonitorResource = "podmonitors.azmonitoring.coreos.com"
+
 	// The Kind strings a resource is recorded under. They are constants
 	// because verification looks a workspace up in the run record by exact
 	// string match, in a different file: two copies of a sentence are two
@@ -30,6 +43,13 @@ const (
 	kindMetricsWorkspace = "Azure Monitor workspace (Managed Prometheus)"
 	kindLogsWorkspace    = "Log Analytics workspace (Container Insights)"
 	kindWorkbook         = "Azure Monitor workbook (the dashboard)"
+)
+
+// How long the add-on is given to install its custom resource definitions
+// after it is enabled, before the phase concludes it has none.
+const (
+	scrapeMonitorCRDWait = 4 * time.Minute
+	scrapeMonitorCRDPoll = 10 * time.Second
 )
 
 // liftObservability wires Azure-managed monitoring to a plane that is already
@@ -169,7 +189,7 @@ func (a *App) liftObservability(opt lift.Options, record *lift.Record, save func
 		return err
 	}
 
-	if err := a.wireScrape(opt, work); err != nil {
+	if err := a.wireScrape(record, save, work); err != nil {
 		return err
 	}
 	return a.deployWorkbook(opt, record, save, work, clusterID, logsID, metricsID)
@@ -347,11 +367,11 @@ func (a *App) recordPreExistingState(opt lift.Options, record *lift.Record, save
 	if err != nil {
 		return err
 	}
-	policyExisted, err := a.objectExists("-n", "kaimahi", "networkpolicy", scraperPolicy)
+	policyExisted, err := a.objectExists("kaimahi", "networkpolicy", scraperPolicy)
 	if err != nil {
 		return err
 	}
-	configExisted, err := a.objectExists("-n", scrapeConfigNamespace, "configmap", scrapeConfigMap)
+	monitorExisted, err := a.objectExists("kaimahi", scrapeMonitorResource, scrapeMonitor)
 	if err != nil {
 		return err
 	}
@@ -360,7 +380,7 @@ func (a *App) recordPreExistingState(opt lift.Options, record *lift.Record, save
 		MetricsAddonEnabled:  st.metricsEnabled,
 		LogsAddonEnabled:     st.logsEnabled,
 		ScraperPolicyExisted: policyExisted,
-		ScrapeConfigExisted:  configExisted,
+		ScrapeMonitorExisted: monitorExisted,
 	}
 	return save()
 }
@@ -369,16 +389,90 @@ func (a *App) recordPreExistingState(opt lift.Options, record *lift.Record, save
 // genuine NotFound is absence; an unreachable API server or an RBAC denial
 // must not be recorded as "it was not there", because that is what would later
 // authorise deleting it.
-func (a *App) objectExists(args ...string) (bool, error) {
-	_, err := a.kubectlCapture(append(args, "-o", "name")...)
+//
+// It takes the namespace, kind and name as three named parameters rather than
+// a variadic argument list, and builds the whole command line itself. That is
+// the fix for a real defect: the variadic form let a caller pass
+// `"-n", "kaimahi", "networkpolicy", name` with the `get` verb simply absent,
+// which kubectl reads as an attempt to run a PLUGIN called `networkpolicy` and
+// rejects with "flags cannot be placed before plugin name". Every lift failed
+// its observability phase for that reason, and nothing but running it could
+// notice, because a variadic list of strings has no shape a compiler or a
+// reader checks. Three parameters have one.
+func (a *App) objectExists(namespace, kind, name string) (bool, error) {
+	_, err := a.kubectlCapture("-n", namespace, "get", kind, name, "-o", "name")
+	switch {
+	case err == nil:
+		return true, nil
+	case isNotFound(err), noSuchResourceType(err):
+		return false, nil
+	default:
+		return false, fmt.Errorf("cannot tell whether %s already exists, so whether this run would be creating it is unknown — refusing rather than recording a guess: %w",
+			strings.Join([]string{"-n", namespace, kind, name}, " "), err)
+	}
+}
+
+// noSuchResourceType reports the one refusal that is not a refusal: kubectl
+// saying the cluster has no such KIND at all.
+//
+// It is not a NotFound — kubectl says "the server doesn't have a resource
+// type", which isNotFound deliberately does not match, because for most reads
+// a missing CRD means the operator is aimed at a cluster where the thing they
+// are asking about cannot exist and guessing would be wrong. Here it is an
+// answer rather than a failure: if the PodMonitor kind is not installed, no
+// PodMonitor of ours is on this cluster and none can be. The distinction
+// matters because the prior-state read runs BEFORE the metrics add-on is
+// enabled, and the add-on is what installs the CRD — so on every fresh
+// cluster, created or bring-your-own, this is the expected answer.
+func noSuchResourceType(err error) bool {
+	if err == nil {
+		return false
+	}
+	// One string, and deliberately only one. kubectl's other 404 wording,
+	// "the server could not find the requested resource", is also what it says
+	// for a request to a namespace that does not exist — and this classifier
+	// is consulted for the NetworkPolicy read too, where widening absence
+	// would eventually authorise deleting an allowance this run did not make.
+	return strings.Contains(err.Error(), "doesn't have a resource type")
+}
+
+// waitForScrapeMonitorCRD gives the add-on time to install its own custom
+// resource definitions before concluding it has none.
+//
+// The bound is a real answer either way: a cluster whose add-on supports
+// custom resources installs them within it, and one that does not never will,
+// so waiting longer would only lengthen the wrong outcome.
+func (a *App) waitForScrapeMonitorCRD() (bool, error) {
+	deadline := a.timeNow().Add(scrapeMonitorCRDWait)
+	told := false
+	for {
+		present, err := a.clusterObjectExists("crd", scrapeMonitorResource)
+		if err != nil || present {
+			return present, err
+		}
+		if a.timeNow().After(deadline) {
+			return false, nil
+		}
+		if !told {
+			a.notef("waiting for the metrics add-on to install its custom resource definitions (up to %s)", scrapeMonitorCRDWait)
+			told = true
+		}
+		time.Sleep(scrapeMonitorCRDPoll)
+	}
+}
+
+// clusterObjectExists is objectExists for an object that is not in a
+// namespace. It refuses to guess for the same reason and in the same words.
+func (a *App) clusterObjectExists(kind, name string) (bool, error) {
+	_, err := a.kubectlCapture("get", kind, name, "-o", "name")
 	switch {
 	case err == nil:
 		return true, nil
 	case isNotFound(err):
 		return false, nil
 	default:
-		return false, fmt.Errorf("cannot tell whether %s already exists, so whether this run would be creating it is unknown — refusing rather than recording a guess: %w",
-			strings.Join(args, " "), err)
+		return false, fmt.Errorf("cannot tell whether the cluster has %s %s, so whether a PodMonitor would be read here is unknown — refusing rather than acting on a guess: %w",
+			kind, name, err)
 	}
 }
 
@@ -389,38 +483,59 @@ func (a *App) objectExists(args ...string) (bool, error) {
 // NetworkPolicy IS the access control, and a scrape job pointed at a port
 // nothing may reach fails in a way that looks like a broken agent rather than
 // a missing rule.
-func (a *App) wireScrape(opt lift.Options, work string) error {
+//
+// Then a PodMonitor in the plane's own namespace, and nothing at all in
+// kube-system. The cluster-wide ama-metrics-prometheus-config ConfigMap is not
+// read, not written and not deleted by this project any more: it is a single
+// document shared by every custom scrape job on the cluster, and the previous
+// arrangement made this run either the thing that overwrote somebody's jobs or
+// the thing that stopped and asked them to merge ours by hand. A namespaced
+// object owned by whoever created it removes both, and it is what an adopter
+// copies to get their own pods scraped.
+func (a *App) wireScrape(record *lift.Record, save func() error, work string) error {
 	if err := a.applyManaged(work, "k8s/observability/network-policy.yaml"); err != nil {
 		return err
 	}
 
-	// The scrape ConfigMap is cluster-wide and singular. On a cluster we
-	// created, nothing else can have put one there. On yours, one that
-	// already exists holds your scrape jobs, and applying ours over it would
-	// delete them silently — so it is refused, and the job to merge is
-	// printed instead.
-	_, err := a.kubectlCapture("-n", scrapeConfigNamespace, "get", "configmap", scrapeConfigMap, "-o", "name")
-	switch {
-	case err == nil && opt.BringYourOwn:
+	// The add-on installs this CRD itself when managed Prometheus is enabled,
+	// but not at the moment the enabling command returns. `az aks update`
+	// completes when ARM says the cluster is updated; the add-on's own
+	// components arrive in the cluster afterwards, on their own schedule. A
+	// single read here would therefore answer "absent" on a perfectly modern
+	// cluster and quietly take the fallback — applying nothing, recording
+	// nothing, and leaving `verify` to report five minutes later that no
+	// sample arrived. So it waits, and only a cluster that still has no CRD
+	// after that is treated as one whose add-on predates custom resources.
+	present, err := a.waitForScrapeMonitorCRD()
+	if err != nil {
+		return err
+	}
+	if !present {
 		body, readErr := a.managedFile(work, "k8s/observability/scrape-config.yaml")
 		if readErr != nil {
 			return readErr
 		}
-		return fmt.Errorf(`%s already exists in %s, and it is not this run's.
+		a.notef(`this cluster has no %s, so its metrics add-on cannot read a PodMonitor.
 
-  That ConfigMap is cluster-wide and holds every custom scrape job on this
-  cluster. Replacing it would delete yours without saying so, so this stops
-  here instead. Add the job below to the one you have, under the same
-  prometheus-config key, and re-run:
+  Nothing else in this phase is affected, and the metrics panels will stay
+  empty until you add the job below to the %s
+  ConfigMap in %s, under the prometheus-config key. That ConfigMap holds
+  every other custom scrape job on this cluster, so merging it is yours to
+  do rather than ours:
 
-    kmx lift --step observability %s
+    kubectl -n %s edit configmap %s
 
-%s`, scrapeConfigMap, scrapeConfigNamespace, liftIdentityFlags(opt), indentBlock(scrapeJobOnly(body)))
-	case err == nil, isNotFound(err):
-		return a.applyManaged(work, "k8s/observability/scrape-config.yaml")
-	default:
-		return fmt.Errorf("cannot tell whether %s already exists (refusing to overwrite a scrape configuration on a guess): %w", scrapeConfigMap, err)
+%s`, scrapeMonitorResource, scrapeConfigMap, scrapeConfigNamespace,
+			scrapeConfigNamespace, scrapeConfigMap, indentBlock(scrapeJobOnly(body)))
+		return nil
 	}
+	if err := a.applyManaged(work, "k8s/observability/podmonitor.yaml"); err != nil {
+		return err
+	}
+	// Recorded the moment it exists, and before anything else can fail. What
+	// teardown may delete is what this run did, never what it inferred.
+	record.ScrapeMonitorApplied = true
+	return save()
 }
 
 // deployWorkbook puts the operator-facing view in the same resource group as

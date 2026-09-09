@@ -46,10 +46,8 @@ func TestHelmReleaseListArgumentsAreCompatibleWithHelm3And4(t *testing.T) {
 			t.Setenv("HELM_MAJOR", version)
 			fakeTool(t, dir, "helm", `
 case " $* " in *" --all "*) echo "unknown flag: --all" >&2; exit 2;; esac
-for flag in --deployed --failed --pending --uninstalled --superseded --uninstalling; do
-  case " $* " in *" $flag "*) :;; *) echo "missing status $flag" >&2; exit 3;; esac
-done
 [ "$1" = list ] || { echo "not list" >&2; exit 4; }
+case "$2" in --deployed|--failed|--pending|--uninstalled|--superseded|--uninstalling) ;; *) echo "bad status" >&2; exit 3;; esac
 printf '%s\n' '[]'`)
 			client := helmClient{run: &run.Runner{}, kubeContext: "kind-test", namespace: "kagent"}
 			out, err := client.listReleases("kagent")
@@ -68,7 +66,7 @@ func TestHelmReleaseListUsesOnlyCommonStatusFlags(t *testing.T) {
 	log := filepath.Join(dir, "args")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("COMMAND_LOG", log)
-	fakeTool(t, dir, "helm", `printf '%s\n' "$*" > "$COMMAND_LOG"; printf '%s\n' '[]'`)
+	fakeTool(t, dir, "helm", `printf '%s\n' "$*" >> "$COMMAND_LOG"; printf '%s\n' '[]'`)
 	client := helmClient{run: &run.Runner{}, kubeContext: "kind-test", namespace: "kagent"}
 	if _, err := client.listReleases("kagent"); err != nil {
 		t.Fatal(err)
@@ -97,6 +95,7 @@ func TestQuickstartPreservesAnExistingFullKagentRelease(t *testing.T) {
 printf 'helm %s\n' "$*" >> "$COMMAND_LOG"
 case "$1 $2" in
   "list --deployed") printf '%s\n' '[{"name":"kagent","namespace":"kagent","status":"deployed"}]' ;;
+  "list --failed"|"list --pending"|"list --uninstalled"|"list --superseded"|"list --uninstalling") printf '%s\n' '[]' ;;
   "get values") printf '%s\n' '{"kagent-tools":{"enabled":true},"kmcp":{"enabled":true},"ui":{"replicas":1}}' ;;
   *) echo "unexpected helm mutation" >&2; exit 9 ;;
 esac`)
@@ -182,7 +181,8 @@ func TestQuickstartRefusesUnhealthyCustomRelease(t *testing.T) {
 	fakeTool(t, dir, "helm", `
 printf 'helm %s\n' "$*" >> "$COMMAND_LOG"
 case "$1 $2" in
-  "list --deployed") printf '%s\n' '[{"name":"kagent","namespace":"kagent","status":"failed"}]' ;;
+  "list --deployed"|"list --pending"|"list --uninstalled"|"list --superseded"|"list --uninstalling") printf '%s\n' '[]' ;;
+  "list --failed") printf '%s\n' '[{"name":"kagent","namespace":"kagent","status":"failed"}]' ;;
   "get values") printf '%s\n' '{"custom":true}' ;;
 esac`)
 	a := &App{

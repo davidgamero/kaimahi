@@ -414,12 +414,33 @@ type helmClient struct {
 
 func (h helmClient) listReleases(name string) (string, error) {
 	// Helm 3's --all was removed in Helm 4, whose default became all statuses.
-	// Name every status explicitly so both versions include in-flight and failed
-	// releases rather than letting quickstart mistake one for absence.
-	args := []string{"list", "--deployed", "--failed", "--pending", "--uninstalled",
-		"--superseded", "--uninstalling", "--namespace", h.namespace,
-		"--kube-context", h.kubeContext, "--filter", "^" + name + "$", "--output", "json"}
-	return h.run.Capture("helm", args...)
+	// Query each status independently: Helm 3 intersects combined status flags,
+	// which can make an existing deployed release look absent.
+	releases := make([]kagentRelease, 0)
+	seen := make(map[string]bool)
+	for _, status := range []string{"--deployed", "--failed", "--pending", "--uninstalled", "--superseded", "--uninstalling"} {
+		out, err := h.run.Capture("helm", "list", status, "--namespace", h.namespace,
+			"--kube-context", h.kubeContext, "--filter", "^"+name+"$", "--output", "json")
+		if err != nil {
+			return "", err
+		}
+		var found []kagentRelease
+		if err := json.Unmarshal([]byte(out), &found); err != nil {
+			return "", fmt.Errorf("cannot decode Helm release state: %w", err)
+		}
+		if found == nil {
+			return "", fmt.Errorf("cannot decode Helm release state: expected a JSON array")
+		}
+		for _, release := range found {
+			key := release.Name + "\x00" + release.Namespace + "\x00" + release.Status
+			if !seen[key] {
+				releases = append(releases, release)
+				seen[key] = true
+			}
+		}
+	}
+	out, err := json.Marshal(releases)
+	return string(out), err
 }
 
 func (h helmClient) releaseValues(name string) (string, error) {

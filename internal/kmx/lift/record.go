@@ -76,6 +76,28 @@ type Record struct {
 	// Before is what the cluster looked like when this run arrived. Teardown
 	// consults it so it undoes only what this run did.
 	Before Pre `json:"before"`
+	// ScrapeMonitorApplied records that this run actually applied the plane's
+	// PodMonitor, as opposed to having found the cluster in a state where it
+	// could not.
+	//
+	// Before.ScrapeMonitorExisted alone is not enough to authorise deleting
+	// it, and the gap is not theoretical. The prior-state read happens before
+	// the metrics add-on is enabled, and the add-on is what installs the
+	// PodMonitor CRD — so on a cluster whose add-on has no CRD, the read
+	// answers "absent" (correctly: the kind does not exist) and the phase then
+	// creates nothing, printing the ConfigMap fallback instead. Ownership
+	// inferred from that would have teardown delete a PodMonitor somebody
+	// wrote afterwards, by hand, following our own documentation. So the
+	// deletion is authorised by an act this run performed, not by a state it
+	// observed twenty minutes earlier.
+	ScrapeMonitorApplied bool `json:"scrape_monitor_applied"`
+}
+
+// MayRemoveScrapeMonitor reports whether teardown may delete the plane's
+// PodMonitor: this run applied it, AND it was not already there when the run
+// arrived.
+func (r *Record) MayRemoveScrapeMonitor() bool {
+	return r.ScrapeMonitorApplied && r.Before.WeCreatedScrapeMonitor()
 }
 
 // Pre is the state a run found and must not mistake for its own work.
@@ -88,8 +110,8 @@ type Record struct {
 // we touched it rather than because we made it.
 //
 // The two cluster-side objects are here for the same reason, and specifically
-// so that ownership is never inferred from CONTENT: a ConfigMap that happens
-// to hold only our scrape job today might have been created by the operator
+// so that ownership is never inferred from CONTENT: an object that happens to
+// hold only our scrape job today might have been created by the operator
 // yesterday, and "it looks like ours" is not "we made it".
 type Pre struct {
 	// Recorded reports whether this struct was filled in at all. A record
@@ -103,7 +125,18 @@ type Pre struct {
 	LogsAddonEnabled    bool `json:"logs_addon_enabled"`
 
 	ScraperPolicyExisted bool `json:"scraper_policy_existed"`
-	ScrapeConfigExisted  bool `json:"scrape_config_existed"`
+	// ScrapeMonitorExisted is about the PodMonitor named kaimahi-plane in the
+	// kaimahi namespace. It replaces a field that asked the same question
+	// about the cluster-wide ama-metrics-prometheus-config ConfigMap, which
+	// the lift no longer writes and teardown therefore no longer edits.
+	//
+	// A record written before that change does NOT answer "not established"
+	// here, and it would be comfortable to think so: it has recorded=true and
+	// the old configmap field set, while this field decodes to false — which
+	// on its own reads as "we made it". What actually protects such a record
+	// is ScrapeMonitorApplied below, which is likewise absent and false, so
+	// the run is correctly held not to have applied anything.
+	ScrapeMonitorExisted bool `json:"scrape_monitor_existed"`
 }
 
 // WeEnabledMetrics reports whether THIS run turned the metrics add-on on, so
@@ -115,11 +148,11 @@ type Pre struct {
 func (p Pre) WeEnabledMetrics() bool { return p.Recorded && !p.MetricsAddonEnabled }
 func (p Pre) WeEnabledLogs() bool    { return p.Recorded && !p.LogsAddonEnabled }
 
-// WeCreatedScraperPolicy and WeCreatedScrapeConfig answer the same question
+// WeCreatedScraperPolicy and WeCreatedScrapeMonitor answer the same question
 // for the two cluster-side objects, and are the ONLY thing that authorises
 // deleting them. Their contents are not evidence of who made them.
 func (p Pre) WeCreatedScraperPolicy() bool { return p.Recorded && !p.ScraperPolicyExisted }
-func (p Pre) WeCreatedScrapeConfig() bool  { return p.Recorded && !p.ScrapeConfigExisted }
+func (p Pre) WeCreatedScrapeMonitor() bool { return p.Recorded && !p.ScrapeMonitorExisted }
 
 var runIDShape = regexp.MustCompile(`^[a-z0-9]{8}$`)
 
