@@ -73,5 +73,8 @@ func (a *App) showCtx() error {
 		fmt.Fprintf(a.Out, "context: %s\nsource:  %s\nserver:  %s\nposture: %s\n",
 			posture.Context, a.Cfg.ContextSource, host, posture.Label)
 	}
+	if posture.Host == "" && a.Cfg.ContextSource == config.SourceDefault {
+		fmt.Fprintln(a.Out, "setup:   incomplete — run `kmx quickstart` to create or repair this local cluster")
+	}
 	return nil
 }

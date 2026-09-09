@@ -283,6 +283,9 @@ func (a *App) StatusWithOptions(opt StatusOptions) error {
 	if err := a.preflight(depKubectl); err != nil {
 		return err
 	}
+	if err := a.requireExistingContext(); err != nil {
+		return err
+	}
 	if format == "" || format == "table" {
 		return a.statusTable()
 	}

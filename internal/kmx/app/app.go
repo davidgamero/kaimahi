@@ -129,11 +129,35 @@ func (a *App) kubeconfig() (*guard.Kubeconfig, error) {
 	return cfg, nil
 }
 
+func (a *App) requireExistingContext() error {
+	cfg, err := a.kubeconfig()
+	if err != nil {
+		return err
+	}
+	posture, err := guard.Classify(cfg, a.Cfg.KubeContext)
+	if err != nil {
+		return fmt.Errorf("kube-guard: %w", err)
+	}
+	if posture.Host != "" {
+		return nil
+	}
+	if a.Cfg.ContextSource == config.SourceDefault {
+		return fmt.Errorf("setup is incomplete: context %q has not been created yet\n  run `kmx quickstart` to create or repair the local kind cluster", a.Cfg.KubeContext)
+	}
+	return fmt.Errorf("context %q has not been created yet\n  run `kmx quickstart` for the local default, or select an existing context with `kmx ctx <name>`", a.Cfg.KubeContext)
+}
+
 // Guard prints where the action will land and refuses anything that is not a
 // local kind cluster without explicit confirmation. It runs at most once per
 // process.
 func (a *App) Guard(action, command string) error {
-	return a.guardWith(action, command, false)
+	return a.guardWith(action, command, false, false)
+}
+
+// GuardCreate is Guard for bring-up commands that create or repair their
+// exact kind context before performing cluster work.
+func (a *App) GuardCreate(action, command string) error {
+	return a.guardWith(action, command, false, true)
 }
 
 // GuardKnown is Guard for an action that must not take the "about to be
@@ -141,10 +165,10 @@ func (a *App) Guard(action, command string) error {
 // or the operator confirms it by name. `kmx down` is the caller — see the
 // reasoning there and on guard.Request.MustBeKnown.
 func (a *App) GuardKnown(action, command string) error {
-	return a.guardWith(action, command, true)
+	return a.guardWith(action, command, true, false)
 }
 
-func (a *App) guardWith(action, command string, mustBeKnown bool) error {
+func (a *App) guardWith(action, command string, mustBeKnown, createsContext bool) error {
 	if a.guarded {
 		return nil
 	}
@@ -156,13 +180,14 @@ func (a *App) guardWith(action, command string, mustBeKnown bool) error {
 		return err
 	}
 	if err := guard.Check(cfg, guard.Request{
-		Action:      action,
-		Context:     a.Cfg.KubeContext,
-		Source:      a.Cfg.ContextSource,
-		Namespaces:  config.GuardNamespaces,
-		Confirm:     a.Cfg.Confirm,
-		Command:     command,
-		MustBeKnown: mustBeKnown,
+		Action:         action,
+		Context:        a.Cfg.KubeContext,
+		Source:         a.Cfg.ContextSource,
+		Namespaces:     config.GuardNamespaces,
+		Confirm:        a.Cfg.Confirm,
+		Command:        command,
+		MustBeKnown:    mustBeKnown,
+		CreatesContext: createsContext,
 	}, a.Err, a.Stdin); err != nil {
 		return err
 	}

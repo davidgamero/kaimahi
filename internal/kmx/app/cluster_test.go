@@ -107,7 +107,7 @@ func TestAnExistingClusterAlsoRecordsTheInventedContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "kubectl"),
-		[]byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		[]byte("#!/bin/sh\ncase \"$*\" in *'config view'*) printf '%s\\n' '{\"current-context\":\"kind-kaimahi-p1\",\"contexts\":[{\"name\":\"kind-kaimahi-p1\",\"context\":{\"cluster\":\"kind-kaimahi-p1\"}}],\"clusters\":[{\"name\":\"kind-kaimahi-p1\",\"cluster\":{\"server\":\"https://127.0.0.1:6443\"}}]}' ;; esac\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
@@ -132,6 +132,33 @@ func TestAnExistingClusterAlsoRecordsTheInventedContext(t *testing.T) {
 	}
 	if selected != "kind-kaimahi-p1" {
 		t.Errorf("later commands will fall back again: recorded %q", selected)
+	}
+}
+
+func TestExistingKindClusterRepairsMissingKubeconfigContext(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "commands")
+	fakeTool(t, dir, "kind", `printf 'kind %s\n' "$*" >> "$COMMAND_LOG"
+case "$1 $2" in "get clusters") echo kaimahi-p1;; esac`)
+	fakeTool(t, dir, "kubectl", `printf 'kubectl %s\n' "$*" >> "$COMMAND_LOG"
+case "$*" in *"config view"*) printf '%s\n' '{"current-context":"other","contexts":[{"name":"other","context":{"cluster":"other"}}],"clusters":[{"name":"other","cluster":{"server":"https://example.test"}}]}' ;; esac`)
+	t.Setenv("PATH", dir)
+	t.Setenv("COMMAND_LOG", log)
+	t.Setenv("KMX_HOME", t.TempDir())
+	var out bytes.Buffer
+	a := &App{Cfg: &config.Config{KindCluster: "kaimahi-p1", KubeContext: "kind-kaimahi-p1", ContextSource: config.SourceDefault, ContainerEngine: "docker"}, Run: &run.Runner{Stdout: &out, Stderr: &out}, Out: &out, Err: &out}
+	if err := a.stepCluster(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "kind export kubeconfig --name kaimahi-p1") {
+		t.Fatalf("missing context was not repaired:\n%s", raw)
+	}
+	if !strings.Contains(out.String(), "repairing kubeconfig") {
+		t.Fatalf("repair was not visible:\n%s", out.String())
 	}
 }
 
