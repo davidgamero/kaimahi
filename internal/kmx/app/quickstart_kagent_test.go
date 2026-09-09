@@ -235,3 +235,28 @@ if [ "$1" = "list" ]; then printf '%s\n' '[]'; fi`)
 		t.Fatalf("install used namespace-wide pod readiness:\n%s", text)
 	}
 }
+
+func TestQuickstartReconcilesItsExistingMinimalRelease(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "commands")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("COMMAND_LOG", log)
+	fakeTool(t, dir, "helm", `
+printf 'helm %s\n' "$*" >> "$COMMAND_LOG"
+case "$1" in
+  list) printf '%s\n' '[{"name":"kagent","namespace":"kagent","status":"deployed"}]' ;;
+  get) printf '%s\n' '{"kaimahi":{"profile":"first-answer"},"kagent-tools":{"enabled":false},"kmcp":{"enabled":false},"ui":{"replicas":0}}' ;;
+esac`)
+	a := &App{Cfg: &config.Config{KubeContext: "kind-test", KagentVersion: "0.9.12"}, Run: &run.Runner{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}, Err: &bytes.Buffer{}}
+	if err := a.stepQuickstartKagent(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "upgrade --install kagent ") || strings.Contains(text, "helm install kagent ") {
+		t.Fatalf("existing minimal release used the wrong Helm verb:\n%s", text)
+	}
+}

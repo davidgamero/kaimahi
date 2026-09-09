@@ -131,7 +131,7 @@ func (a *App) GovernTools(opt ToolsOptions) error {
 	if err != nil {
 		return err
 	}
-	if opt.SecretNamespace != config.DefaultNamespace || (opt.Server == config.DefaultToolServer && opt.Secret != config.DefaultToolsSecret) {
+	if opt.Server == config.DefaultToolServer && (opt.SecretNamespace != config.DefaultNamespace || opt.Secret != config.DefaultToolsSecret) {
 		return fmt.Errorf("kmx tools govern: the applied RemoteMCPServer references Secret %s/%s; unsupported --secret or --secret-namespace would issue an unusable token", config.DefaultNamespace, config.DefaultToolsSecret)
 	}
 	if err := a.Guard(fmt.Sprintf("put agent %q behind the Kaimahi MCP gateway (credential %q)",
@@ -139,11 +139,26 @@ func (a *App) GovernTools(opt ToolsOptions) error {
 		"--server", opt.Server, "--secret", opt.Secret, "--secret-namespace", opt.SecretNamespace, "--tools", opt.Tools)); err != nil {
 		return err
 	}
-	if opt.Server != config.DefaultToolServer {
+	// A plane can govern an application this project did not write, on a
+	// cluster with no kagent at all. Six of the steps below are kagent's —
+	// the seam, its verdict, the agent patch and the rollout waits — and
+	// none of them is what makes a call governed. The credential and the
+	// allowlist are.
+	seamInstalled, err := a.kagentSeamInstalled()
+	if err != nil {
+		return err
+	}
+	// Before anything is minted: the token is shown once, so a Secret
+	// namespace that does not exist must refuse here rather than after
+	// the credential is live and unrecoverable.
+	if err := a.requireNamespace(opt.SecretNamespace, "--secret-namespace"); err != nil {
+		return err
+	}
+	if seamInstalled && opt.Server != config.DefaultToolServer {
 		if err := a.preflightToolServer(opt.Server); err != nil {
 			return err
 		}
-		raw, err := a.kubectlCapture("-n", config.DefaultNamespace, "get", "remotemcpserver", opt.Server, "-o", "json")
+		raw, err := a.kubectlCapture("-n", opt.SecretNamespace, "get", "remotemcpserver", opt.Server, "-o", "json")
 		if err != nil {
 			return err
 		}
@@ -174,22 +189,6 @@ func (a *App) GovernTools(opt ToolsOptions) error {
 		if matches != 1 {
 			return fmt.Errorf("RemoteMCPServer %s must have exactly one Authorization reference to Secret %s/%s key api-key; nothing issued", opt.Server, opt.SecretNamespace, opt.Secret)
 		}
-	}
-
-	// A plane can govern an application this project did not write, on a
-	// cluster with no kagent at all. Six of the steps below are kagent's —
-	// the seam, its verdict, the agent patch and the rollout waits — and
-	// none of them is what makes a call governed. The credential and the
-	// allowlist are.
-	seamInstalled, err := a.kagentSeamInstalled()
-	if err != nil {
-		return err
-	}
-	// Before anything is minted: the token is shown once, so a Secret
-	// namespace that does not exist must refuse here rather than after
-	// the credential is live and unrecoverable.
-	if err := a.requireNamespace(opt.SecretNamespace, "--secret-namespace"); err != nil {
-		return err
 	}
 
 	// What was true before the credential lands, so a verdict kagent reached

@@ -1186,7 +1186,7 @@ MAP_EDITS = [
     ("no `require`, and no `plane/...`\nimport anywhere in root `cmd/` or `internal/`",
      "the root module imports it freely",
      "no longer makes the module-boundary claim"),
-    ("| `cmd/kmx` (16 files)", "| `cmd/kmx` (15 files)",
+    ("| `cmd/kmx` (17 files)", "| `cmd/kmx` (16 files)",
      "gets a binary's file count wrong"),
     ("`internal/kmx/` is seventeen packages", "`internal/kmx/` is sixteen packages",
      "miscounts the packages under internal/kmx"),

@@ -34,7 +34,6 @@ JSON
   *"get secret kaimahi-admin"*) printf '%s' "$KMX_TEST_ADMIN_B64"; exit 0 ;;
   *"get secret kaimahi-governed-token"*) printf '%s' "$KMX_TEST_BOUND"; exit 0 ;;
   *"get secret kaimahi-plane-seam-tls"*) printf '%s' "$KMX_TEST_SEAM_TLS"; exit 0 ;;
-  *"get remotemcpserver"*) printf '%s' "$KMX_TEST_TOOL_SERVER"; exit 0 ;;
   *"get modelconfig custom"*)
     if [ -n "$KMX_TEST_MODEL_ERR" ]; then printf '%s\n' "$KMX_TEST_MODEL_ERR" >&2; exit 1; fi
     printf '%s' "$KMX_TEST_MODEL"; exit 0 ;;
@@ -50,6 +49,7 @@ JSON
     fi
     printf 'agent.kagent.dev/hello-world\n'; exit 0 ;;
   *"get remotemcpserver"*)
+    if [ -n "$KMX_TEST_TOOL_SERVER" ]; then printf '%s' "$KMX_TEST_TOOL_SERVER"; exit 0; fi
     [ -z "$KMX_TEST_SEAM" ] && exit 0
     printf '%s' "$KMX_TEST_SEAM"; exit 0 ;;
   *"get crd remotemcpservers.kagent.dev"*)

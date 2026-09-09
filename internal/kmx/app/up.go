@@ -512,8 +512,11 @@ func (a *App) stepQuickstartKagent() error {
 	if err != nil {
 		return err
 	}
-	if !present || minimal {
-		if present && status != "deployed" && status != "failed" {
+	if !present {
+		return a.installKagentMode(true, quickstartValues...)
+	}
+	if minimal {
+		if status != "deployed" && status != "failed" {
 			return fmt.Errorf("Helm release kagent has status %q; refusing to change it while another operation may be in progress", status)
 		}
 		return a.installKagent(quickstartValues...)
@@ -543,6 +546,10 @@ func (a *App) waitExistingKagent() error {
 // the full set simply by not passing them. Quickstart checks for absence first
 // and uses install, not upgrade, so a concurrently created release is preserved.
 func (a *App) installKagent(extra ...string) error {
+	return a.installKagentMode(false, extra...)
+}
+
+func (a *App) installKagentMode(newRelease bool, extra ...string) error {
 	version := a.Cfg.KagentVersion
 	if err := a.Run.Run("helm", "upgrade", "--install", "kagent-crds",
 		"oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds",
@@ -574,7 +581,7 @@ func (a *App) installKagent(extra ...string) error {
 		"--version", version, "--namespace", "kagent",
 		"--kube-context", a.Cfg.KubeContext, "-f", tmp.Name(),
 		"--wait", "--wait-for-jobs", "--timeout", "420s"}
-	if len(extra) > 0 {
+	if newRelease {
 		args = append([]string{"install"}, args[2:]...)
 	}
 	args = append(args, extra...)
