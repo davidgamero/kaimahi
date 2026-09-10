@@ -117,7 +117,7 @@ a kubectl and the operator's terminal.
 
 | Package | Non-test source files | Class | What it is |
 |---|---|---|---|
-| `kmx/app` | 44 | Product | Every kmx command. The shell-out orchestration layer. |
+| `kmx/app` | 45 | Product | Every kmx command. The shell-out orchestration layer. |
 | `kmx/admin` | 5 | Product | Talks to the plane's admin API. |
 | `kmx/blueprint` | 5 | Product | The declarative governed-workflow file. |
 | `kmx/scaffold` | 11 | Product | Generates the reviewable Agent YAML, and the onboarding artifacts: a tool upstream's four documents, a model upstream's three, and a migration's identity, seam allowance and workload patch. |
@@ -137,7 +137,7 @@ a kubectl and the operator's terminal.
 
 The source counts above exclude every Go test file, including newly added audit,
 session/history, Linux PTY, and typed-binding tests in `app`, `admin`, and
-`blueprint`. Those tests do not increase `app`'s 44, `admin`'s 5, or `blueprint`'s
+`blueprint`. Those tests do not increase `app`'s 45, `admin`'s 5, or `blueprint`'s
 5 non-test files; `cmd/kmx` is 19 files, tests included.
 Presentation and safety audit coverage is described
 in [cli-ux-plan.md](cli-ux-plan.md); these tests do not constitute live-cluster
@@ -270,7 +270,7 @@ own failure message. Its real callers are
 mentions — the other five are comments, which is the trap), and
 `docs/tools.md`, which gives it as a step a reader runs by hand.
 
-## `docs/` — 42 tracked files, two audiences and two assets
+## `docs/` — 43 tracked files, two audiences and two assets
 
 **Product documentation (24)** — a user or operator reads it: `README.md`
 (the index), `getting-started.md`, `kmx.md`, `aks.md`, `models.md`,
@@ -290,7 +290,7 @@ describe a scenario being run rather than a capability being configured.
 `ap-demo.md` says its ERP is simulated in its own second table row;
 `demo.md` is less explicit.
 
-**Maintainer and process (14):** `development.md`, `repository-map.md`
+**Maintainer and process (15):** `development.md`, `repository-map.md`
 (this file),
 `COORDINATION.md` (the coordination board, single-writer, and by a wide
 margin the largest file in `docs/` — enough that any tool measuring

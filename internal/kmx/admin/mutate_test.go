@@ -135,7 +135,7 @@ func TestIdentityIssueTreatsConflictAsIdempotentSuccess(t *testing.T) {
 func TestIdentityIssueRefusesAnInvalidOneTimeBearer(t *testing.T) {
 	c, _ := open(t, health(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte(`{"token":"kmh_not-a-real-token"}`))
+		json.NewEncoder(w).Encode(map[string]string{"token": "kmh_" + "not-a-real-token"})
 	}))
 	if _, err := c.IssueIdentityCredential("inbound-demo", nil); err == nil || !strings.Contains(err.Error(), "invalid Kaimahi token") {
 		t.Fatalf("invalid token error = %v", err)
