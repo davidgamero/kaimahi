@@ -484,11 +484,11 @@ govern-slack: guard $(KMX)
 		--for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True \
 		remotemcpserver/kaimahi-slack --timeout=300s
 	$(KUBECTL) apply -f k8s/slack-agent.yaml
-	$(KUBECTL) -n kagent patch agent hello-slack --type merge \
+	$(KUBECTL) -n kagent patch agents.kagent.dev hello-slack --type merge \
 		-p '{"spec":{"declarative":{"tools":[{"type":"McpServer","mcpServer":{"apiGroup":"kagent.dev","kind":"RemoteMCPServer","name":"kaimahi-slack","toolNames":[$(SLACK_TOOLNAMES_JSON)]}}]}}}'
 	$(KUBECTL) -n kagent wait \
 		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
-		agent/hello-slack --timeout=300s
+		agents.kagent.dev/hello-slack --timeout=300s
 
 ## slack-post: ask the demo agent to post to the channel. Denied until a
 ## human approves it; that denial is the point.
@@ -515,7 +515,7 @@ slack-post: $(KAGENT)
 ## slack-down: remove the Slack demo (agent, gateway seam, MCP server).
 ## The Secrets are left alone — delete them explicitly to revoke.
 slack-down: guard
-	-$(KUBECTL) -n kagent delete agent hello-slack
+	-$(KUBECTL) -n kagent delete agents.kagent.dev hello-slack
 	-$(KUBECTL) -n kagent delete remotemcpserver kaimahi-slack
 	-$(KUBECTL) -n kaimahi delete mcpserver kaimahi-slack-mcp
 
@@ -587,11 +587,11 @@ govern-github: guard $(KMX)
 		--for=jsonpath='{.status.conditions[?(@.type=="Accepted")].status}'=True \
 		remotemcpserver/kaimahi-github --timeout=300s
 	$(KUBECTL) apply -f k8s/github-agent.yaml
-	$(KUBECTL) -n kagent patch agent hello-github --type merge \
+	$(KUBECTL) -n kagent patch agents.kagent.dev hello-github --type merge \
 		-p '{"spec":{"declarative":{"tools":[{"type":"McpServer","mcpServer":{"apiGroup":"kagent.dev","kind":"RemoteMCPServer","name":"kaimahi-github","toolNames":[$(GITHUB_TOOLNAMES_JSON)]}}]}}}'
 	$(KUBECTL) -n kagent wait \
 		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
-		agent/hello-github --timeout=300s
+		agents.kagent.dev/hello-github --timeout=300s
 
 ## github-ask: ask the demo agent what is open on a repository.
 ##   make github-ask GITHUB_REPO=owner/name
@@ -609,7 +609,7 @@ github-ask: $(KAGENT)
 ## github-down: remove the GitHub demo (agent, gateway seam). The token is
 ## a separate decision: make github-revoke.
 github-down: guard
-	-$(KUBECTL) -n kagent delete agent hello-github
+	-$(KUBECTL) -n kagent delete agents.kagent.dev hello-github
 	-$(KUBECTL) -n kagent delete remotemcpserver kaimahi-github
 
 ## ---- the release agent (docs/release-agent.md) ----
@@ -645,12 +645,12 @@ govern-release: guard $(KMX)
 	$(KUBECTL) -n kagent wait --for=condition=Accepted \
 		remotemcpserver/kaimahi-release-ado --timeout=300s
 	$(KUBECTL) apply -f k8s/release-agent.yaml
-	$(KUBECTL) -n kagent wait --for=condition=Ready agent/release-agent --timeout=300s
+	$(KUBECTL) -n kagent wait --for=condition=Ready agents.kagent.dev/release-agent --timeout=300s
 
 ## release-down: remove the release agent and both seams. The tokens are a
 ## separate decision: make release-revoke.
 release-down: guard
-	-$(KUBECTL) -n kagent delete agent release-agent
+	-$(KUBECTL) -n kagent delete agents.kagent.dev release-agent
 	-$(KUBECTL) -n kagent delete remotemcpserver kaimahi-release-github
 	-$(KUBECTL) -n kagent delete remotemcpserver kaimahi-release-ado
 
@@ -724,11 +724,11 @@ govern-ap: guard $(KMX)
 	@# never reach Ready and the wait below would time out. GOVERNED_PRESET is
 	@# `governed-ollama` on kind, so this patch is a no-op there and the
 	@# committed file still names the preset kind uses.
-	$(KUBECTL) -n kagent patch agent ap-agent --type merge \
+	$(KUBECTL) -n kagent patch agents.kagent.dev ap-agent --type merge \
 		-p '{"spec":{"declarative":{"modelConfig":"$(GOVERNED_PRESET)","tools":[{"type":"McpServer","mcpServer":{"apiGroup":"kagent.dev","kind":"RemoteMCPServer","name":"kaimahi-erp","toolNames":[$(AP_TOOLNAMES_JSON)]}}]}}}'
 	$(KUBECTL) -n kagent wait \
 		--for=jsonpath='{.status.conditions[?(@.type=="Ready")].status}'=True \
-		agent/ap-agent --timeout=300s
+		agents.kagent.dev/ap-agent --timeout=300s
 
 ## ap-ask: ask the AP agent to investigate an invoice.
 ##   make ap-ask AP_INVOICE=INV-88134
@@ -763,7 +763,7 @@ ap-injection: guard $(KMX)
 
 ## ap-down: remove the accounts-payable demo (agent, gateway seam, ERP)
 ap-down: guard
-	-$(KUBECTL) -n kagent delete agent ap-agent
+	-$(KUBECTL) -n kagent delete agents.kagent.dev ap-agent
 	-$(KUBECTL) -n kagent delete remotemcpserver kaimahi-erp
 	-$(KUBECTL) delete -f k8s/erp-mcp.yaml
 	-$(KUBECTL) -n kaimahi delete configmap kaimahi-erp-fixtures

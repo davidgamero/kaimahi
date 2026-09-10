@@ -452,26 +452,26 @@ def the_cmd_table_covers_cmd(doc: Doc, tree: Tree) -> list[str]:
 
 @claim
 def the_package_table_covers_internal(doc: Doc, tree: Tree) -> list[str]:
-    """Every package under internal/, with its non-test source count.
+    """Every file-bearing internal directory, including embedded fixture data.
 
-    The count is the map's own column, so source growth cannot leave the
-    repository description stale.
+    Counts exclude Go tests, not non-Go data. Embedded fixtures count even
+    though their directories are not Go packages.
     """
     _, body = doc.section("`internal/`")
-    rows = re.findall(r"^\| `([a-z/]+)` \| \*?\*?" + NUM + r"\*?\*? \|", body, re.M | re.I)
+    rows = re.findall(r"^\| `([a-z0-9/._-]+)` \| \*?\*?" + NUM + r"\*?\*? \|", body, re.M | re.I)
     if not rows:
-        raise Anchor("the `internal/` section no longer has a package table with file counts")
+        raise Anchor("the `internal/` section no longer has a directory table with file counts")
     problems, named = [], set()
     for pkg, count in rows:
         path = "internal/" + pkg
         if path not in tree.dirs_under("internal") | {os.path.dirname(p) for p in tree.files}:
-            problems.append(f"the package table names `{pkg}`, which is not a directory in the tree")
+            problems.append(f"the directory table names `{pkg}`, which is not a directory in the tree")
             continue
         named.add(path)
         problems += compare_count(number(count), len(non_test(tree.directly_under(path))),
-                                  f"{path} non-test source files")
+                                  f"{path} non-test files")
     actual = {os.path.dirname(p) for p in tree.under("internal")}
-    return problems + compare_sets(named, actual, "internal/ package coverage")
+    return problems + compare_sets(named, actual, "internal/ directory coverage")
 
 
 @claim
@@ -1230,6 +1230,34 @@ def selftest_fixture(tree: Tree) -> int:
     import copy
 
     failed = 0
+
+    # Versioned fixture directories are data, not Go packages, but still
+    # require exact coverage and counts. Keep this independent of live prose.
+    fixture_tree = Tree(tree.root, files=[
+        "internal/kmx/schema/schema.go",
+        "internal/kmx/schema/schema_test.go",
+        "internal/kmx/schema/fixtures/v0.1.3-rc_1/agents.yaml",
+    ])
+    fixture_map = ("## `internal/` — code and fixtures\n\n"
+                   "| `kmx/schema` | 1 | Installed | validator |\n"
+                   "| `kmx/schema/fixtures/v0.1.3-rc_1` | 1 | Installed | YAML, no Go |\n")
+    for text, want_problems, label in [
+        (fixture_map, False, "versioned fixture directory is counted"),
+        (fixture_map.replace("| 1 | Installed | YAML", "| 0 | Installed | YAML"), True,
+         "fixture data cannot be reported as zero files"),
+        (fixture_map.split("| `kmx/schema/fixtures")[0], True,
+         "unlisted fixture directories remain a coverage failure"),
+    ]:
+        try:
+            found = the_package_table_covers_internal(Doc(text), fixture_tree)
+        except Anchor as exc:
+            found = [str(exc)]
+        if bool(found) != want_problems:
+            print(f"FAIL {label}: {found}")
+            failed += 1
+        else:
+            print(f"ok   {label}")
+
     real = tree.read(MAP)
     problems, ran = check(tree, real)
     if problems:

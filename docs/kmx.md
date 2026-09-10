@@ -1,9 +1,10 @@
 # `kmx` — tooling for getting agents onto Orka
 
 [Orka](orka.md) is the platform. Kaimahi's current front door is `kmx orka`
-for installation/status and `kmx migrate` for an existing application's
-**model traffic**. The Deployment remains owner-managed. Installing Orka alone
-is not this migration; neither operation silently governs application tools.
+for installation/status, `kmx agent create` for native Provider + Agent authoring,
+and `kmx migrate` for an existing application's **model traffic**. The Deployment
+remains owner-managed. Installing Orka alone is not this migration; none of these
+operations silently governs application tools.
 
 The CLI also contains the existing **legacy kagent/plane implementation** pending
 the code transition. Its commands remain documented below because they run
@@ -59,6 +60,7 @@ every flag. Command definitions are in [`cmd/kmx`](../cmd/kmx).
 |---|---|
 | `kmx orka install` | verify pinned Orka installer bytes; create wrapper-auth Secret before apply; wait for both Deployments; optionally create a keyless Provider. Uses upstream manifests unmodified. [Orka](orka.md) |
 | `kmx orka status` | read running controller version, Deployments, CRDs and Providers; distinguish unreadable from absent and running version from pin |
+| `kmx agent create [name]` | author native Provider + Agent and optional Task; retrieve a real answer only with `--task`. [Create contract](#kmx-agent-create) |
 | `kmx migrate <deployment>` | inspect workload/Provider; create seam identity and ingress; mint/reconcile credentials; write the owner-applied patch. [Migration](migrate.md) |
 | `kmx ctx [context]` | show target/source/posture or remember a target in kmx's config directory |
 
@@ -103,7 +105,7 @@ repeatable to select multiple steps.
 | `kmx up` | full local kagent profile and both demo agents; `--step` selects cluster, ollama, model, kagent, agent or tools-agent |
 | `kmx lift` / `kmx lift down` | AKS legacy kagent/Copilot journey and owned cleanup; selected infrastructure phases support migration. [AKS](aks.md) |
 | `kmx agent list` | readiness, acceptance, ModelConfig, tool wiring; table/JSON/YAML |
-| `kmx agent create [name]` / `kmx agent edit <name>` | scaffold/apply new Agent / edit owned local source without automatic apply |
+| `kmx agent edit <name>` | edit owned local kagent source without automatic apply; not an Orka bundle editor |
 | `kmx agent chat <name> [message]` | one-shot kagent invocation; `--interactive` for sessions, `--json` for raw one-shot task |
 | `kmx govern [credential]` / `kmx use <preset>` | issue/reconcile model credential and switch Agent / explicitly switch preset |
 | `kmx tools govern` / `kmx tools ungovern` | credential, allowlist and kagent tool routing / restore hello-tools' direct tools |
@@ -191,32 +193,73 @@ and agents, no guard/download/forward/mutation. Static completion works offline.
 
 ## `kmx agent create`
 
+**This command authors native Orka, not kagent.** Every bundle contains a new,
+same-name Provider and referencing Agent in `core.orka.ai/v1alpha1`, a metadata-only
+Secret skeleton, and optionally a fresh Task. It does not install Orka or adopt
+the installer's shared Provider. Start with the [first-Task guide](orka.md#author-an-orka-agent-and-get-an-answer)
+for a context-pinned local run, separately provisioned result account, and the
+release/main authorization and connection limits.
+
+For offline preview, without tools, kubeconfig reads or cluster calls:
+
 ```bash
-kmx agent create fleet-reporter --description "Reports cluster workloads" \
-  --instructions ./fleet.md --tools kagent-tool-server:k8s_get_resources
+kmx agent create preview --namespace orka-system \
+  --provider-type openai --model qwen2.5:3b --secret local-provider-key \
+  --base-url http://ollama.ollama.svc.cluster.local:11434/v1 --out -
 ```
 
-This still emits a **kagent Agent**, not an Orka authoring object. Named create
-writes `agents/<name>.yaml`, applies behind the guard and waits Ready;
-`--no-apply` writes only. No-name terminal use starts a description/name wizard
-and asks for confirmation; non-interactive use requires a name. `hello-world`
-and `hello-tools` are reserved. See `kmx agent create --help` and [isolation](isolation.md).
+Namespace, Provider type (`openai|anthropic`), actual model ID and existing Secret
+name are explicit inputs; `--secret-key` defaults to `api-key`. These are names,
+not credential values. `--instructions` reads a system-prompt file; `--tools` and
+`--skills` name Orka references, not kagent `server:tool` selections or translated
+MCP wiring. Use `kmx agent create --help` for all flags and defaults.
 
-Safety contracts: no credential input; key-shaped output refused, including
-instructions; mandatory explicit tool allowlist with validated names; uniformly
-indented block scalars; no file overwrite/force. Before apply/dry-run, the
-ModelConfig must exist and each RemoteMCPServer must be Accepted and discover
-all selected tools. A governed preset is preferred when present; otherwise the
-keyless preset is used with an ungoverned warning.
+- `--out -` prints YAML only and implies offline; `--no-apply` writes an exclusive
+  local artifact only. Default file: `agents/<name>.yaml`. Existing files are
+  never overwritten; input and final YAML reject known credential shapes.
+- Offline `--schema-target v0.1.3|main` selects [pinned CRD fixtures](../internal/kmx/orkaschema/README.md),
+  not a network fetch. Unknown fields refuse; the pinned main snapshot lacks
+  Agent/Provider rate limits and refuses those flags rather than dropping fields.
+  Offline schema validation is not CEL/admission, readiness or execution proof.
+- Online uses installed CRDs with **no fixture fallback**, checks Secret/key
+  presence and collisions, and strictly server-dry-runs each custom resource.
+  `--dry-run` writes the local artifact but no cluster resources, token or forward;
+  it tests neither result access nor execution and cannot be combined with offline modes.
+- **Never write the Secret skeleton or bulk-apply the bundle.** Provision the
+  referenced key separately through your secret-management path. kmx never creates,
+  replaces or merges that Secret. Online writes use create, not apply/patch/update:
+  Provider → current-generation Ready → Agent → current-generation Ready → optional
+  Task. For manual creation split out only those custom resources and preserve
+  that order and the UID/generation readiness checks, using an explicit context
+  and namespace. Failures leave partial state; reruns do not adopt or overwrite it.
+- `--task` authorizes a model call and requires an existing
+  `--result-service-account` in the selected namespace; kmx creates no account or
+  RBAC. It creates the Task once and waits for Succeeded plus an actual nonblank
+  answer. **Without `--task`, no model response was tested.**
+- kmx requests a ten-minute token; **the API server determines its actual TTL**.
+  It carries the account's full effective authority, not result-only scope;
+  discarding it is not revocation. Release `v0.1.3` does not enforce Task-read RBAC;
+  pinned main requires namespaced Task-get. Result bytes are not bound to a UID.
+  The context-pinned loopback HTTP forward uses one TCP connection and stops on
+  connection/forward loss, never redialing or resubmitting. This trades reconnect
+  availability for protection against later local-port reuse; initial connection
+  trust is still local. See the [full limits](orka.md#author-an-orka-agent-and-get-an-answer).
 
-`--image` is kagent BYO and expects A2A on `:8080`. Injected model/tool environment
-is **configured, not proven** to be used. `--isolation virtual-node` needs BYO;
-`kata` is refused because the Agent CRD lacks `runtimeClassName`. Declarative
-pods use UID 1001/non-root/read-only root. BYO always drops capabilities, forbids
-privilege escalation and uses RuntimeDefault seccomp; image-dependent hardening
-requires `--run-as-user <uid>` or explicit `root`. Without either, non-root and
-read-only-root are unset rather than guessed.
+No-name terminal use offers a wizard for missing required inputs and explicit
+Apply/Cancel; Escape/Ctrl-C cancel without writing. `TERM=dumb` uses linear
+prompts. Non-interactive use requires a name. `hello-world` and `hello-tools`
+remain reserved for embedded kagent examples.
 
+`--image`, `--isolation` and `--run-as-user` are removed. There is no BYO image
+scaffold, ModelConfig/MCP conversion, injected governance or copied kagent pod
+hardening. Keep application image/placement/identity in the owner's Deployment;
+[migration](migrate.md) routes its model traffic, not a BYO definition. This
+native implementation does not settle the open authoring-format decision or
+promote the isolated conversion spike to a supported interface.
+
+### Existing kagent editor
+
+`agent chat/edit/list` remain kagent-specific, not follow-ups for an Orka bundle.
 `agent edit` edits a secure temporary copy of owned local YAML via `$VISUAL`/
 `$EDITOR`; it rejects symlinks, concurrent edits, secrets, invalid identity or
 tool wiring, then atomically replaces source. It never implicitly applies.

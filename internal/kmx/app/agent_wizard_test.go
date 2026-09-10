@@ -3,13 +3,13 @@ package app
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -49,15 +49,14 @@ func TestLocalOperationCommandsRetainClusterAndEngine(t *testing.T) {
 	}
 }
 
-func TestCreateNoApplyQuotesContextAndManifestPath(t *testing.T) {
+func TestCreateNoApplyDoesNotSuggestBulkApply(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agent's $(false).yaml")
 	var out, errOut bytes.Buffer
 	a := &App{Cfg: &config.Config{KubeContext: "kind-team's test"}, Out: &out, Err: &errOut}
-	if err := a.CreateAgent(CreateOptions{Name: "demo", ModelConfig: "hello-world-model", Out: path, NoApply: true}); err != nil {
+	if err := a.CreateAgent(CreateOptions{Name: "demo", Namespace: "orka-system", ProviderType: "openai", Model: "local", Secret: "key", Out: path, NoApply: true}); err != nil {
 		t.Fatal(err)
 	}
-	want := "kubectl --context " + shellArg(a.Cfg.KubeContext) + " apply -f " + shellArg(path)
-	if !strings.Contains(errOut.String(), want) {
+	if strings.Contains(errOut.String(), " apply -f ") || !strings.Contains(errOut.String(), "Create Provider only") {
 		t.Fatalf("unsafe apply hint: %s", errOut.String())
 	}
 }
@@ -73,13 +72,13 @@ func (s *sliceScanner) Text() string { return s.values[s.index-1] }
 func (s *sliceScanner) Err() error   { return nil }
 
 func TestCreateWizardCollectsSafeDefaultsAndAppliesByDefault(t *testing.T) {
-	scanner := &sliceScanner{values: []string{"Reports unhealthy workloads", "", ""}}
+	scanner := &sliceScanner{values: []string{"Reports unhealthy workloads", "", "orka-system", "openai", "local", "model-key", ""}}
 	var out bytes.Buffer
 	opt, err := collectCreateOptions(scanner, &out, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opt.Description != "Reports unhealthy workloads" || opt.Name != "reports-unhealthy-workloads" || opt.Namespace != "kagent" {
+	if opt.Description != "Reports unhealthy workloads" || opt.Name != "reports-unhealthy-workloads" || opt.Namespace != "orka-system" || opt.ProviderType != "openai" || opt.Model != "local" || opt.Secret != "model-key" {
 		t.Fatalf("unexpected wizard options: %+v", opt)
 	}
 	if opt.Out != filepath.Join("agents", opt.Name+".yaml") || opt.NoApply {
@@ -88,13 +87,13 @@ func TestCreateWizardCollectsSafeDefaultsAndAppliesByDefault(t *testing.T) {
 	if !strings.Contains(opt.InstructionText, "Reports unhealthy workloads") {
 		t.Fatalf("description did not configure instructions: %q", opt.InstructionText)
 	}
-	if !strings.HasPrefix(out.String(), "Describe this agent: ") {
+	if !strings.HasPrefix(out.String(), createBaseURLHint+"\nDescribe this agent: ") {
 		t.Fatalf("first prompt is not the requested description prompt: %q", out.String())
 	}
 }
 
 func TestCreateWizardExplicitNoApplySkipsConfirmation(t *testing.T) {
-	scanner := &sliceScanner{values: []string{"Cluster reporter", "cluster-reporter"}}
+	scanner := &sliceScanner{values: []string{"Cluster reporter", "cluster-reporter", "orka-system", "openai", "local", "model-key"}}
 	opt, err := collectCreateOptions(scanner, &bytes.Buffer{}, CreateOptions{NoApply: true})
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +104,7 @@ func TestCreateWizardExplicitNoApplySkipsConfirmation(t *testing.T) {
 }
 
 func TestCreateWizardDeclineCancels(t *testing.T) {
-	scanner := &sliceScanner{values: []string{"Cluster reporter", "cluster-reporter", "no"}}
+	scanner := &sliceScanner{values: []string{"Cluster reporter", "cluster-reporter", "orka-system", "openai", "local", "model-key", "no"}}
 	_, err := collectCreateOptions(scanner, &bytes.Buffer{}, CreateOptions{})
 	if !errors.Is(err, errCreateCancelled) {
 		t.Fatalf("decline did not cancel creation: %v", err)
@@ -113,7 +112,7 @@ func TestCreateWizardDeclineCancels(t *testing.T) {
 }
 
 func TestCreateWizardRepromptsInvalidConfirmation(t *testing.T) {
-	scanner := &sliceScanner{values: []string{"Cluster reporter", "cluster-reporter", "maybe", "yes"}}
+	scanner := &sliceScanner{values: []string{"Cluster reporter", "cluster-reporter", "orka-system", "openai", "local", "model-key", "maybe", "yes"}}
 	var out bytes.Buffer
 	opt, err := collectCreateOptions(scanner, &out, CreateOptions{})
 	if err != nil {
@@ -124,14 +123,14 @@ func TestCreateWizardRepromptsInvalidConfirmation(t *testing.T) {
 	}
 }
 
-func TestCreateWizardScannerDoesNotAddInstructionsToBYOAgent(t *testing.T) {
+func TestCreateWizardScannerPreservesNativeInstructions(t *testing.T) {
 	scanner := &sliceScanner{values: []string{"Existing agent", "existing-agent"}}
-	opt, err := collectCreateOptions(scanner, &bytes.Buffer{}, CreateOptions{Image: "acme/agent:1", NoApply: true})
+	opt, err := collectCreateOptions(scanner, &bytes.Buffer{}, CreateOptions{Namespace: "team", ProviderType: "openai", Model: "custom-model", Secret: "model-key", InstructionText: "Supplied instructions", NoApply: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opt.InstructionText != "" {
-		t.Fatalf("BYO scanner fallback synthesized declarative instructions: %q", opt.InstructionText)
+	if opt.InstructionText != "Supplied instructions" {
+		t.Fatalf("scanner replaced native instructions: %q", opt.InstructionText)
 	}
 }
 
@@ -181,19 +180,126 @@ func TestCreateWizardModelCollectsMissingFieldsAndAppliesByDefault(t *testing.T)
 		t.Fatalf("description did not derive the name carefully: step=%d name=%q", m.step, m.input.Value())
 	}
 	m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
+	for _, field := range []struct{ label, value string }{
+		{"Namespace", "team"}, {"Provider type", "openai"},
+		{"Provider model identifier", "custom-model"}, {"Existing Provider Secret name", "model-key"},
+	} {
+		if m.step == createConfirm || m.step == createDone || !strings.Contains(ansi.Strip(m.View().Content), field.label) || m.input.Value() != "" {
+			t.Fatalf("missing explicit %s prompt (or invented default): step=%d view=%q", field.label, m.step, m.View().Content)
+		}
+		m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
+		if m.err == nil {
+			t.Fatalf("empty %s advanced", field.label)
+		}
+		m.input.SetValue(field.value)
+		m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
+	}
 	if m.step != createConfirm || m.selection != 0 {
 		t.Fatalf("wizard did not reach apply-default confirmation: step=%d selection=%d", m.step, m.selection)
 	}
 	m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
-	if m.cancelled || m.opt.NoApply || m.opt.Name != "reports-unhealthy-workloads" || m.opt.Namespace != config.DefaultNamespace {
+	if m.cancelled || m.opt.NoApply || m.opt.Name != "reports-unhealthy-workloads" || m.opt.Namespace != "team" || m.opt.ProviderType != "openai" || m.opt.Model != "custom-model" || m.opt.Secret != "model-key" || m.opt.Task != "" {
 		t.Fatalf("unexpected completed options: %+v cancelled=%v", m.opt, m.cancelled)
 	}
 }
 
+func TestCreateWizardInstructionsAreReadOnceBeforeCompletion(t *testing.T) {
+	for _, mode := range []string{"bubbles", "plain"} {
+		t.Run(mode, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "instructions.md")
+			if err := os.WriteFile(path, []byte("Use these original instructions"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			opt := nativeWizardOptions()
+			opt.Name, opt.Instructions, opt.Out = "", path, "-"
+			var completed CreateOptions
+			if mode == "bubbles" {
+				m, err := newCreateWizardModel(opt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// The model update must use bytes resolved before raw mode, not
+				// open the pathname again when the final missing field arrives.
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				m.input.SetValue("demo")
+				m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
+				if m.err != nil || m.step != createDone {
+					t.Fatalf("completion reread the instructions path: %v", m.err)
+				}
+				completed = m.opt
+			} else {
+				var err error
+				completed, err = collectCreateOptions(&sliceScanner{values: []string{"demo"}}, &bytes.Buffer{}, opt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if completed.Instructions != path || completed.InstructionText != "" {
+				t.Fatal("resolution replaced supplied flags")
+			}
+			var out bytes.Buffer
+			a := &App{Out: &out, Err: &bytes.Buffer{}}
+			if err := a.CreateAgent(completed); err != nil {
+				t.Fatalf("creation reread resolved instructions: %v", err)
+			}
+			if !strings.Contains(out.String(), "Use these original instructions") {
+				t.Fatal("artifact lost original instructions")
+			}
+		})
+	}
+}
+
+func TestCreateWizardInstructionReadFailuresNeverStartMutation(t *testing.T) {
+	for _, mode := range []string{"named", "bubbles", "plain"} {
+		for _, conflict := range []bool{false, true} {
+			t.Run(mode+fmt.Sprint(conflict), func(t *testing.T) {
+				a, opt, out, _, dir := orkaCreateFixture(t, "")
+				opt.Instructions = filepath.Join(dir, "missing.md")
+				if conflict {
+					opt.InstructionText = "inline conflicts with file"
+				}
+				var err error
+				switch mode {
+				case "named":
+					err = a.CreateAgent(opt)
+				case "bubbles":
+					opt.Name = ""
+					_, err = newCreateWizardModel(opt)
+				case "plain":
+					_, err = collectCreateOptions(&sliceScanner{}, out, opt)
+				}
+				want := "cannot read the instructions file"
+				if conflict {
+					want = "supply only one instructions source"
+				}
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("instruction error lost: %v", err)
+				}
+				if out.Len() != 0 || len(orkaCalls(t, dir)) != 0 {
+					t.Fatal("failed read started prompting, emission or cluster operations")
+				}
+				if _, err := os.Stat(opt.Out); !os.IsNotExist(err) {
+					t.Fatal("failed read created an artifact")
+				}
+			})
+		}
+	}
+}
+
 func TestCreateWizardModelValidatesInlineAndPreservesFlags(t *testing.T) {
+	prompt := filepath.Join(t.TempDir(), "prompt.md")
+	if err := os.WriteFile(prompt, []byte("Supplied instructions"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	m, err := newCreateWizardModel(CreateOptions{
 		Description: "Supplied description", Namespace: "team", Out: "custom.yaml",
-		NoApply: true, Tools: "server:read", Instructions: "prompt.md",
+		ProviderType: "anthropic", Model: "custom-model", Secret: "model-key", BaseURL: "https://model.example/v1",
+		NoApply: true, Tools: "read,search", Skills: "summarize", Instructions: prompt,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +321,7 @@ func TestCreateWizardModelValidatesInlineAndPreservesFlags(t *testing.T) {
 
 func TestCreateWizardModelCancelKeysAndVisibleSelection(t *testing.T) {
 	for _, code := range []rune{tea.KeyEscape, 'c'} {
-		m, err := newCreateWizardModel(CreateOptions{})
+		m, err := newCreateWizardModel(CreateOptions{Name: "demo", Description: "Demo"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -229,7 +335,7 @@ func TestCreateWizardModelCancelKeysAndVisibleSelection(t *testing.T) {
 		}
 	}
 
-	m, err := newCreateWizardModel(CreateOptions{Name: "demo", Description: "Demo"})
+	m, err := newCreateWizardModel(nativeWizardOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,21 +351,29 @@ func TestCreateWizardModelCancelKeysAndVisibleSelection(t *testing.T) {
 }
 
 func TestCreateWizardFilterTreatsExternalQuitAsCancellation(t *testing.T) {
-	m, err := newCreateWizardModel(CreateOptions{Name: "demo", Description: "Demo"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := cancelUnfinishedWizard(m, tea.QuitMsg{}).(tea.InterruptMsg); !ok {
-		t.Fatal("external quit at confirmation was allowed to apply")
-	}
-	m.step = createDone
-	if _, ok := cancelUnfinishedWizard(m, tea.QuitMsg{}).(tea.QuitMsg); !ok {
-		t.Fatal("intentional completion was converted to cancellation")
+	for _, signal := range []tea.Msg{tea.QuitMsg{}, tea.InterruptMsg{}} {
+		m, err := newCreateWizardModel(nativeWizardOptions())
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated, command := m.Update(cancelUnfinishedWizard(m, signal))
+		completed := updated.(createWizardModel)
+		if !completed.cancelled || completed.step != createDone || command == nil {
+			t.Fatal("external signal did not finish the model as cancelled")
+		}
+		if _, ok := command().(tea.QuitMsg); !ok {
+			t.Fatal("external cancellation did not request graceful terminal cleanup")
+		}
+		if _, ok := cancelUnfinishedWizard(completed, tea.QuitMsg{}).(tea.QuitMsg); !ok {
+			t.Fatal("completed cancellation did not allow graceful quit")
+		}
 	}
 }
 
 func TestCreateWizardModelRejectsInvalidToolsBeforeStarting(t *testing.T) {
-	if _, err := newCreateWizardModel(CreateOptions{Tools: "server:"}); err == nil {
+	opt := nativeWizardOptions()
+	opt.Tools = "server:read"
+	if _, err := newCreateWizardModel(opt); err == nil {
 		t.Fatal("invalid --tools reached the wizard")
 	}
 }
@@ -270,9 +384,11 @@ func TestCreateWizardModelRejectsInvalidSuppliedNameBeforeStarting(t *testing.T)
 	}
 }
 
-func TestCreateWizardModelSupportsBYOAndLongDescriptions(t *testing.T) {
+func TestCreateWizardModelSupportsNativeLongDescriptions(t *testing.T) {
 	long := strings.Repeat("description ", 30)
-	m, err := newCreateWizardModel(CreateOptions{Image: "acme/agent:1"})
+	opt := nativeWizardOptions()
+	opt.Name, opt.Description = "", ""
+	m, err := newCreateWizardModel(opt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,13 +398,15 @@ func TestCreateWizardModelSupportsBYOAndLongDescriptions(t *testing.T) {
 		t.Fatalf("long description was truncated: %d vs %d", len(m.opt.Description), len(strings.TrimSpace(long)))
 	}
 	m = updateCreateWizard(t, m, wizardKey(tea.KeyEnter))
-	if m.opt.InstructionText != "" {
-		t.Fatalf("BYO wizard synthesized declarative instructions: %q", m.opt.InstructionText)
+	if !strings.Contains(m.opt.InstructionText, strings.TrimSpace(long)) {
+		t.Fatalf("native wizard lost description in instructions: %q", m.opt.InstructionText)
 	}
 }
 
 func TestCreateWizardConfirmationSanitizesFlagValues(t *testing.T) {
-	m, err := newCreateWizardModel(CreateOptions{Name: "demo", Description: "safe\x1b[2J\nforged", Namespace: "team\nother", Out: "file\x1b]52;c;secret\a"})
+	opt := nativeWizardOptions()
+	opt.Out = "file\x1b]52;c;secret\a"
+	m, err := newCreateWizardModel(opt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +415,7 @@ func TestCreateWizardConfirmationSanitizesFlagValues(t *testing.T) {
 		t.Fatalf("flag value escaped confirmation hierarchy: %q", view)
 	}
 	plain := ansi.Strip(view)
-	for _, want := range []string{"safe forged", "team other", "Output:      file"} {
+	for _, want := range []string{"Demo", "team", "Output:      file"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("sanitized confirmation lacks %q: %q", want, plain)
 		}
@@ -361,23 +479,17 @@ func TestCreateNoApplyGroupsArtifactCapabilitiesAndNextStep(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "demo.yaml")
 	var out, errOut bytes.Buffer
-	times := []time.Time{time.Unix(0, 0), time.Unix(0, 0), time.Unix(0, 250_000_000), time.Unix(0, 250_000_000)}
 	a := &App{
 		Cfg: &config.Config{KubeContext: "kind-test"},
 		Run: &run.Runner{Stdout: &out, Stderr: &errOut}, Out: &out, Err: &errOut,
-		now: func() time.Time { value := times[0]; times = times[1:]; return value },
 	}
-	err := a.CreateAgent(CreateOptions{Name: "demo", Description: "Demo agent", ModelConfig: "hello-world-model", Out: path, NoApply: true})
+	err := a.CreateAgent(CreateOptions{Name: "demo", Namespace: "orka-system", ProviderType: "openai", Model: "local", Secret: "key", Description: "Demo agent", Out: path, NoApply: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := errOut.String()
 	for _, want := range []string{
-		"PHASE  [1/1] Generate agent manifest",
-		"CAPABILITIES\n  Tools: none",
-		"DONE   [1/1] Generate agent manifest (250ms)",
-		"COMPLETE  Agent manifest written; not applied (250ms total)",
-		"NEXT  Review it, then:",
+		"Orka bundle not applied", "Schema:", "Create Provider only", "never write the skeleton", "does not test admission",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("create transcript lacks %q:\n%s", want, text)
@@ -388,44 +500,63 @@ func TestCreateNoApplyGroupsArtifactCapabilitiesAndNextStep(t *testing.T) {
 	}
 }
 
-// A flag a BYO manifest silently drops is worse than no flag — and --tools was
-// worse still, because the capabilities report printed the allowlist back for a
-// document that had none.
-func TestCreateRefusesFlagsABYOManifestWouldDrop(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		opt  CreateOptions
-		want string
-	}{
-		{"tools", CreateOptions{Name: "demo", Image: "acme/a:1", Tools: "srv:t1"}, "--tools"},
-		{"instructions", CreateOptions{Name: "demo", Image: "acme/a:1", Instructions: "x.md"}, "--instructions"},
-		{"instruction text", CreateOptions{Name: "demo", Image: "acme/a:1", InstructionText: "be brief"}, "--instructions"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			a := &App{}
-			err := a.CreateAgent(tc.opt)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("a flag a BYO agent cannot carry was accepted: %v", err)
-			}
-		})
+func TestCreateWizardTaskRequestsExistingResultAccount(t *testing.T) {
+	scanner := &sliceScanner{values: []string{"demo", "demo", "orka-system", "openai", "local", "model-key", "reader", "yes"}}
+	opt, err := collectCreateOptions(scanner, &bytes.Buffer{}, CreateOptions{Task: "Say hello"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	// --model still reaches a real decision — whether the governed seams are
-	// injected — so it is not swept up in the refusal.
-	if err := refuseFlagsBYODrops(CreateOptions{Image: "acme/a:1", ModelConfig: "governed-ollama"}); err != nil {
-		t.Errorf("--model was refused, but it decides whether governance is injected: %v", err)
+	if opt.ResultServiceAccount != "reader" {
+		t.Fatalf("missing explicit account: %+v", opt)
 	}
 }
 
-// `--isolation` is refused without `--image` for every spelling, including the
-// one that resolves to no placement. Accepting `none` there was the flag doing
-// nothing quietly, which is the thing the refusal exists to prevent.
-func TestCreateRefusesIsolationWithoutAnImage(t *testing.T) {
-	for _, profile := range []string{"none", "virtual-node", "kata"} {
-		t.Run(profile, func(t *testing.T) {
-			if err := (&App{}).CreateAgent(CreateOptions{Name: "demo", Isolation: profile, NoApply: true}); err == nil ||
-				!strings.Contains(err.Error(), "needs --image") {
-				t.Fatalf("--isolation %s was accepted without --image: %v", profile, err)
+func TestCreateWizardStdoutTaskDoesNotRequireResultAccount(t *testing.T) {
+	scanner := &sliceScanner{values: []string{"demo", "demo", "orka-system", "openai", "local", "model-key"}}
+	opt, err := collectCreateOptions(scanner, &bytes.Buffer{}, CreateOptions{Out: "-", Task: "Say hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opt.NoApply || opt.ResultServiceAccount != "" {
+		t.Fatal("stdout wizard required executable result options")
+	}
+}
+
+func TestCreateWizardRefusesKeyShapedDescriptionBeforePromptEcho(t *testing.T) {
+	secret := "sk-" + "proj-" + strings.Repeat("B", 32)
+	scanner := &sliceScanner{values: []string{secret, "demo"}}
+	var out bytes.Buffer
+	_, err := collectCreateOptions(scanner, &out, CreateOptions{NoApply: true})
+	if err == nil {
+		t.Fatal("wizard accepted key-shaped input")
+	}
+	// Exercise the very same assertion with positive controls, not only the
+	// production refusal. An echoed original or case-changed sentinel must be
+	// detected even though this test does not imply production echoes secrets.
+	for _, tc := range []struct {
+		name, output string
+		echoed       bool
+	}{
+		{"real refusal", out.String() + err.Error(), false},
+		{"original echo", "prompt: " + secret, true},
+		{"changed-case echo", "error: " + strings.ToUpper(secret), true},
+		{"lowercase echo", "error: " + strings.ToLower(secret), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := strings.Contains(strings.ToLower(tc.output), strings.ToLower(secret)); got != tc.echoed {
+				t.Fatal("credential echo assertion missed an echo or rejected safe output")
 			}
 		})
+	}
+}
+
+func TestEditorParsingPinsContext(t *testing.T) {
+	dir := t.TempDir()
+	fakeTool(t, dir, "kubectl", `[ "$1" = "--context" ] && [ "$2" = "kind-test" ] || exit 1
+ printf '%s' '{"apiVersion":"kagent.dev/v1alpha2","kind":"Agent","metadata":{"name":"demo","namespace":"kagent"},"spec":{"type":"Declarative","declarative":{"modelConfig":"local"}}}'`)
+	t.Setenv("PATH", dir)
+	a := &App{Cfg: &config.Config{KubeContext: "kind-test"}, Run: &run.Runner{}}
+	if _, err := a.validateAgentEdit("demo.yaml", "demo"); err != nil {
+		t.Fatal(err)
 	}
 }

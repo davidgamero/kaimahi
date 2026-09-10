@@ -42,7 +42,7 @@ before its counts describe the intended tree.
 | Area | Installed / checkout, including legacy | Demonstration | Scaffolding |
 |---|---|---|---|
 | `cmd/` | `kmx` | `demo/kaimahi-erp` | — |
-| `internal/` | `kmx/` (16 packages) | `demo/erp` | — |
+| `internal/` | `kmx/` (17 packages), plus embedded schema fixtures | `demo/erp` | — |
 | `plane/` | legacy governance module, not the Orka platform | — | test fakes inside packages |
 | `k8s/` | embedded artifacts and checkout wiring; includes legacy plane manifests | AP and connector scenarios | — |
 | `scripts/` | 13 (6 embedded in the binary, 7 operator) | 4 | 53 (checkers, probes, CI fixtures, mutation specs) |
@@ -53,27 +53,31 @@ before its counts describe the intended tree.
 
 | Path | Class | Evidence |
 |---|---|---|
-| `cmd/kmx` (19 files) | **Installed** | The CLI, including tests. Existing commands include legacy plane operations; their presence is not the current platform definition. |
+| `cmd/kmx` (20 files) | **Installed** | The CLI, including tests. Existing commands include legacy plane operations; their presence is not the current platform definition. |
 | `cmd/demo/kaimahi-erp` (2 files) | **Demonstration** | A fake accounts-payable ERP, applied by `k8s/erp-mcp.yaml` via `scripts/erp-deploy.sh`. |
 
 ## `internal/` — packages in the existing CLI
 
-`internal/kmx/` is sixteen packages. The table describes the implementation
+`internal/kmx/` is seventeen packages. The table describes the implementation
 that remains, including legacy governance functionality. It is not a list of
 capabilities to carry forward onto Orka.
 
 The existing split puts cluster-independent decisions in packages and
 shell-out orchestration in `app`. `lift` holds naming, validation and teardown
 rules without cloud calls; the five `lift*.go` files in `app` run the cloud
-side. Source counts exclude Go test files.
+side. Counts exclude Go test files but include non-Go data; the versioned
+fixture directories below are not additional Go packages.
 
-| Package | Non-test source files | Class | What it is |
+| Package or data directory | Non-test files | Class | What it is |
 |---|---|---|---|
-| `kmx/app` | 45 | Installed | Command orchestration and shell-outs. |
+| `kmx/app` | 48 | Installed | Command orchestration and shell-outs, including native Orka create/readiness/Task-result handling. |
 | `kmx/admin` | 5 | Installed | Legacy plane admin API client. |
 | `kmx/blueprint` | 5 | Installed | Existing declarative governed-workflow format. |
-| `kmx/scaffold` | 11 | Installed | Existing agent YAML and onboarding artifacts; not a decision on the future authoring format. |
-| `kmx/guard` | 1 | Installed | Context-safety checks. |
+| `kmx/scaffold` | 11 | Installed | Native Orka bundles, retained kagent editing and onboarding artifacts; not a decision on the future authoring format. |
+| `kmx/orkaschema` | 3 | Installed | Structural schema validator, fixture attribution and upstream license. |
+| `kmx/orkaschema/fixtures/v0.1.3` | 3 | Installed | Embedded release Agent/Provider/Task CRDs for offline validation; not an installer. |
+| `kmx/orkaschema/fixtures/main` | 3 | Installed | Embedded immutable main-snapshot Agent/Provider/Task CRDs; not a runtime support claim. |
+| `kmx/guard` | 2 | Installed | Context-safety checks and read-only target resolution. |
 | `kmx/seam` | 1 | Installed | Upstream credential descriptions. |
 | `kmx/seamcert` | 1 | Installed | Certificates for the legacy plane's data seams. |
 | `kmx/toolchain` | 2 | Installed | Pinned, checksum-verified kind, kubectl and helm downloads. |

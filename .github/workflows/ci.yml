@@ -794,6 +794,7 @@ jobs:
               # The reason this job is required at all.
               "internal/kmx/guard": "the context guard's port decisions",
               "internal/kmx/scaffold": "the scaffolder's key-shape refusals",
+              "internal/kmx/orkaschema": "pinned Orka schemas and unknown-field refusals",
               "internal/kmx/kagentcli": "the pinned kagent CLI's checksum",
               # kmx downloads kind, kubectl and Helm as well as the kagent
               # CLI — the difference between five prerequisites and one. A
@@ -864,11 +865,10 @@ jobs:
           print(f"every required package ran its own tests: {sum(passed.values())} passed "
                 f"across {len(REQUIRED)} required packages")
           EOF
-          # The generated-manifest check is the only test that hands the
-          # scaffolder's output to a REAL YAML parser, and it skips itself
-          # when python3/PyYAML are missing — right on a laptop, a green
-          # no-op here. Assert it ran. (The runner has PyYAML; the "All YAML
-          # parses" step above imports it too.)
+          # Generated Orka YAML must parse without letting instructions
+          # escape their scalar. This named test now uses the Go YAML parser
+          # with no Python dependency or skip path. Keep asserting it ran:
+          # a renamed test must not turn go test -run into a green no-op.
           go test ./internal/kmx/scaffold/ -v \
             -run TestGeneratedManifestParsesAndKeepsInstructionsInsideTheScalar 2>&1 | tee parse.out
           grep -q -- '--- PASS: TestGeneratedManifestParsesAndKeepsInstructionsInsideTheScalar' parse.out
@@ -884,11 +884,22 @@ jobs:
         run: |
           set -euo pipefail
           # This is not another model-only assertion: it opens a real Linux
-          # PTY, lets Bubble Tea enter raw mode, sends Ctrl-C, and proves the
-          # terminal was restored without writing or applying an agent.
+          # PTY, checks Ctrl-C/Escape/SIGTERM cancellation and native offline
+          # completion, and proves the terminal was restored.
           go test ./internal/kmx/app \
-            -run '^TestCreateWizardPTYCancellationRestoresTerminal$' \
-            -count=1 -v
+            -run '^TestCreateWizardPTY' \
+            -count=1 -v | tee wizard-pty.out
+          grep -q -- '--- PASS: TestCreateWizardPTYCancellationRestoresTerminal' wizard-pty.out
+          grep -q -- '--- PASS: TestCreateWizardPTYNativeCompletionRestoresTerminal' wizard-pty.out
+          grep -q -- '--- PASS: TestCreateWizardPTYSIGTERMRestoresTerminal' wizard-pty.out
+          ! grep -q -- '--- SKIP:' wizard-pty.out
+      - name: Legacy kagent operations survive dual Orka discovery
+        run: |
+          set -euo pipefail
+          go test ./internal/kmx/app -run '^TestLegacyAgentsWithOrkaDiscovery$' -count=1 -v | tee agent-discovery.out
+          grep -q -- '--- PASS: TestLegacyAgentsWithOrkaDiscovery' agent-discovery.out
+          ! grep -q -- '--- SKIP:' agent-discovery.out
+
   # The governance plane's Go module — build, vet, gofmt, tests.
   # A separate quick job so proxy logic failures surface in seconds, not
   # after a 6-minute cluster bring-up.
@@ -1202,7 +1213,7 @@ jobs:
       - name: Shrink hello-world requests so preset switches can surge
         if: steps.changes.outputs.docs_only != 'true'
         run: |
-          kubectl --context kind-kaimahi-p1 -n kagent patch agent hello-world \
+          kubectl --context kind-kaimahi-p1 -n kagent patch agents.kagent.dev hello-world \
             --type merge -p '{"spec":{"declarative":{"deployment":{"resources":{"requests":{"cpu":"50m","memory":"320Mi"},"limits":{"memory":"1Gi"}}}}}}'
           kubectl --context kind-kaimahi-p1 -n kagent rollout status deploy/hello-world --timeout=300s
       # The ungoverned state has to be COUNTABLE, and honest when
@@ -1794,9 +1805,9 @@ jobs:
         if: failure() && steps.changes.outputs.docs_only != 'true'
         run: |
           kubectl --context kind-kaimahi-p1 get pods -A || true
-          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-world || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agents.kagent.dev hello-world || true
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-world --tail=100 || true
-          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-tools || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agents.kagent.dev hello-tools || true
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-tools --tail=100 || true
           kubectl --context kind-kaimahi-p1 -n kagent describe remotemcpserver kagent-tool-server || true
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/kagent-tools --tail=50 || true
@@ -1893,7 +1904,7 @@ jobs:
       - name: Shrink hello-world requests so preset switches can surge
         if: steps.changes.outputs.docs_only != 'true'
         run: |
-          kubectl --context kind-kaimahi-p1 -n kagent patch agent hello-world \
+          kubectl --context kind-kaimahi-p1 -n kagent patch agents.kagent.dev hello-world \
             --type merge -p '{"spec":{"declarative":{"deployment":{"resources":{"requests":{"cpu":"50m","memory":"320Mi"},"limits":{"memory":"1Gi"}}}}}}'
           kubectl --context kind-kaimahi-p1 -n kagent rollout status deploy/hello-world --timeout=300s
       - name: Deploy the governance plane
@@ -2215,9 +2226,9 @@ jobs:
         if: failure() && steps.changes.outputs.docs_only != 'true'
         run: |
           kubectl --context kind-kaimahi-p1 get pods -A || true
-          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-world || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agents.kagent.dev hello-world || true
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-world --tail=100 || true
-          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-tools || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agents.kagent.dev hello-tools || true
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-tools --tail=100 || true
           kubectl --context kind-kaimahi-p1 -n kagent describe remotemcpserver kagent-tool-server || true
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/kagent-tools --tail=50 || true
@@ -2314,7 +2325,7 @@ jobs:
       - name: Shrink hello-world requests so preset switches can surge
         if: steps.changes.outputs.docs_only != 'true'
         run: |
-          kubectl --context kind-kaimahi-p1 -n kagent patch agent hello-world \
+          kubectl --context kind-kaimahi-p1 -n kagent patch agents.kagent.dev hello-world \
             --type merge -p '{"spec":{"declarative":{"deployment":{"resources":{"requests":{"cpu":"50m","memory":"320Mi"},"limits":{"memory":"1Gi"}}}}}}'
           kubectl --context kind-kaimahi-p1 -n kagent rollout status deploy/hello-world --timeout=300s
       - name: Deploy the governance plane
@@ -3426,9 +3437,9 @@ jobs:
         if: failure() && steps.changes.outputs.docs_only != 'true'
         run: |
           kubectl --context kind-kaimahi-p1 get pods -A || true
-          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-world || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agents.kagent.dev hello-world || true
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-world --tail=100 || true
-          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-tools || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agents.kagent.dev hello-tools || true
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-tools --tail=100 || true
           kubectl --context kind-kaimahi-p1 -n kagent describe remotemcpserver kagent-tool-server || true
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/kagent-tools --tail=50 || true
@@ -3524,7 +3535,7 @@ jobs:
       - name: Shrink hello-world requests so preset switches can surge
         if: steps.changes.outputs.docs_only != 'true'
         run: |
-          kubectl --context kind-kaimahi-p1 -n kagent patch agent hello-world \
+          kubectl --context kind-kaimahi-p1 -n kagent patch agents.kagent.dev hello-world \
             --type merge -p '{"spec":{"declarative":{"deployment":{"resources":{"requests":{"cpu":"50m","memory":"320Mi"},"limits":{"memory":"1Gi"}}}}}}'
           kubectl --context kind-kaimahi-p1 -n kagent rollout status deploy/hello-world --timeout=300s
       - name: Deploy the governance plane
@@ -3599,9 +3610,9 @@ jobs:
         if: failure() && steps.changes.outputs.docs_only != 'true'
         run: |
           kubectl --context kind-kaimahi-p1 get pods -A || true
-          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-world || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agents.kagent.dev hello-world || true
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-world --tail=100 || true
-          kubectl --context kind-kaimahi-p1 -n kagent describe agent hello-tools || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agents.kagent.dev hello-tools || true
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/hello-tools --tail=100 || true
           kubectl --context kind-kaimahi-p1 -n kagent describe remotemcpserver kagent-tool-server || true
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/kagent-tools --tail=50 || true
@@ -3705,7 +3716,7 @@ jobs:
       - name: Shrink hello-world requests so preset switches can surge
         if: steps.changes.outputs.docs_only != 'true'
         run: |
-          kubectl --context kind-kaimahi-p1 -n kagent patch agent hello-world \
+          kubectl --context kind-kaimahi-p1 -n kagent patch agents.kagent.dev hello-world \
             --type merge -p '{"spec":{"declarative":{"deployment":{"resources":{"requests":{"cpu":"50m","memory":"320Mi"},"limits":{"memory":"1Gi"}}}}}}'
           kubectl --context kind-kaimahi-p1 -n kagent rollout status deploy/hello-world --timeout=300s
       - name: Deploy the governance plane
@@ -3719,7 +3730,7 @@ jobs:
       # its Agent is removed rather than left competing for the node.
       - name: Free the node — this shard's agent is ap-agent
         if: steps.changes.outputs.docs_only != 'true'
-        run: kubectl --context kind-kaimahi-p1 -n kagent delete agent hello-tools --ignore-not-found
+        run: kubectl --context kind-kaimahi-p1 -n kagent delete agents.kagent.dev hello-tools --ignore-not-found
       # Keyless: the fixture ERP. Built from source and side-loaded
       # (its image is never published), its corpus a ConfigMap, and it
       # refuses to start on a corpus whose arithmetic does not add up — so
@@ -3889,7 +3900,7 @@ jobs:
         if: failure() && steps.changes.outputs.docs_only != 'true'
         run: |
           kubectl --context kind-kaimahi-p1 get pods -A || true
-          kubectl --context kind-kaimahi-p1 -n kagent describe agent ap-agent || true
+          kubectl --context kind-kaimahi-p1 -n kagent describe agents.kagent.dev ap-agent || true
           kubectl --context kind-kaimahi-p1 -n kagent logs deploy/ap-agent --tail=100 || true
           kubectl --context kind-kaimahi-p1 -n kagent describe remotemcpserver kaimahi-erp || true
           kubectl --context kind-kaimahi-p1 -n kaimahi get pods -o wide || true
@@ -4041,7 +4052,7 @@ jobs:
           "$k" --context kind-kmx-quickstart -n kagent get deploy kagent-ui \
             -o jsonpath='{.spec.replicas}' | grep -qx 1
           "$k" --context kind-kmx-quickstart -n kagent get deploy kagent-tools >/dev/null
-          "$k" --context kind-kmx-quickstart -n kagent get agent hello-tools >/dev/null
+          "$k" --context kind-kmx-quickstart -n kagent get agents.kagent.dev hello-tools >/dev/null
           echo "the console, the tool server and the second agent are back"
       # Quickstart is allowed to install less on an empty cluster, but it must
       # never TAKE AWAY a capability from a release that `kmx up` or an
@@ -4062,7 +4073,7 @@ jobs:
             -o jsonpath='{.spec.replicas}' | grep -qx 1
           "$k" --context kind-kmx-quickstart -n kagent get deploy kagent-tools >/dev/null
           "$k" --context kind-kmx-quickstart -n kagent get deploy kagent-kmcp-controller-manager >/dev/null
-          "$k" --context kind-kmx-quickstart -n kagent get agent hello-tools >/dev/null
+          "$k" --context kind-kmx-quickstart -n kagent get agents.kagent.dev hello-tools >/dev/null
           echo "quickstart answered without reducing the full runtime"
       - name: The time did not double
         if: steps.changes.outputs.docs_only != 'true'
@@ -4648,16 +4659,37 @@ jobs:
         env:
           KIND_CLUSTER: kmx-clone-free
         run: kmx up
-      - name: agent create — a scaffolded agent, applied
+      - name: Orka — install beside the existing kagent runtime
         if: steps.changes.outputs.docs_only != 'true'
         working-directory: /home/runner/journey
-        env:
-          KIND_CLUSTER: kmx-clone-free
+        run: kmx --context kind-kmx-clone-free orka install
+      - name: Orka — separately provision the Task result account
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
         run: |
-          kmx agent create fleet-reporter \
-            --description 'Reports what is running in the cluster.' \
-            --tools kagent-tool-server:k8s_get_resources
-          test -f agents/fleet-reporter.yaml
+          # Names only: create never provisions this account or its RBAC.
+          # Main requires Task get; v0.1.3 authenticates result reads but does
+          # not enforce that read RBAC. The token has the SA's full authority.
+          kubectl --context kind-kmx-clone-free -n orka-system create serviceaccount orka-result-reader
+          kubectl --context kind-kmx-clone-free -n orka-system create role orka-result-reader \
+            --verb=get --resource=tasks.core.orka.ai
+          kubectl --context kind-kmx-clone-free -n orka-system create rolebinding orka-result-reader \
+            --role=orka-result-reader --serviceaccount=orka-system:orka-result-reader
+      - name: agent create — native Orka Task returns an actual local-model answer
+        if: steps.changes.outputs.docs_only != 'true'
+        working-directory: /home/runner/journey
+        run: |
+          # Reuse the installer's Secret, never its shared Provider/local.
+          # This proof is additive: later kagent hello-world/hello-tools and
+          # plane probes still exercise the original runtime/tool journey.
+          kmx --context kind-kmx-clone-free agent create orka-hello \
+            --namespace orka-system --provider-type openai --model qwen2.5:3b \
+            --secret local-provider-key \
+            --base-url http://ollama.ollama.svc.cluster.local:11434/v1 \
+            --task 'Reply with exactly this text: Orka says hello.' \
+            --result-service-account orka-result-reader > orka-answer.out
+          test -f agents/orka-hello.yaml
+          test "$(cat orka-answer.out)" = 'Orka says hello.'
       - name: plane — fetched from the Go proxy at kmx's own revision, built and side-loaded
         if: steps.changes.outputs.docs_only != 'true'
         working-directory: /home/runner/journey
@@ -4770,7 +4802,7 @@ jobs:
           n=$(kubectl --context kind-kmx-clone-free -n kagent get secret kaimahi-governed-token \
             -o jsonpath='{.data.api-key}' | base64 -d | grep -cE '^kmh_[0-9a-f]{64}$')
           test "$n" = 1
-          preset=$(kubectl --context kind-kmx-clone-free -n kagent get agent hello-world \
+          preset=$(kubectl --context kind-kmx-clone-free -n kagent get agents.kagent.dev hello-world \
             -o jsonpath='{.spec.declarative.modelConfig}')
           test "$preset" = governed-ollama
       - name: chat — the governed conversation
@@ -4899,7 +4931,7 @@ jobs:
           KIND_CLUSTER: kmx-clone-free
         run: |
           kmx use ollama
-          test "$(kubectl --context kind-kmx-clone-free -n kagent get agent hello-world \
+          test "$(kubectl --context kind-kmx-clone-free -n kagent get agents.kagent.dev hello-world \
             -o jsonpath='{.spec.declarative.modelConfig}')" = ollama
           # Exactly one pod, on the template the current revision names —
           # `rollout status` returns while the old one is still draining,
@@ -5020,7 +5052,7 @@ jobs:
           kubectl --context kind-kmx-clone-free get pods -A || true
           kubectl --context kind-kmx-clone-free -n kaimahi get pods -o wide || true
           kubectl --context kind-kmx-clone-free -n kaimahi logs -l app=kaimahi-proxy --tail=100 --prefix || true
-          kubectl --context kind-kmx-clone-free -n kagent describe agent hello-world || true
+          kubectl --context kind-kmx-clone-free -n kagent describe agents.kagent.dev hello-world || true
       - name: down
         if: always() && steps.changes.outputs.docs_only != 'true'
         run: kind delete cluster --name kmx-clone-free || true

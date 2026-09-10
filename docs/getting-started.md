@@ -1,9 +1,10 @@
 # Getting started
 
-**Orka is the platform.** Kaimahi provides tooling to install it and get an
-existing application's model traffic onto it. Start with the current
-[Orka guide](orka.md), then [migration](migrate.md); the application's Deployment
-stays owner-managed. Tool governance is separate.
+**Orka is the platform.** Kaimahi provides tooling to install it, author native
+Agents and get an existing application's model traffic onto it. Start with the
+[Orka guide](orka.md), including [native creation and a first Task](orka.md#author-an-orka-agent-and-get-an-answer),
+or [migration](migrate.md); a migrated application's Deployment stays owner-managed.
+Tool governance is separate.
 
 The local kagent quickstart below is the **existing legacy implementation**,
 pending the code transition, not an Orka-native authoring tutorial. Native Orka
@@ -54,6 +55,8 @@ These prepare kind and the keyless model server without installing kagent.
 Then install Orka on that selected cluster. Its default Provider points at this
 Ollama server; for an existing cluster use your own model/Provider configuration
 as described in [Orka](orka.md). Installation alone does not govern model traffic.
+For a new native Agent, use [agent create](#an-agent-of-your-own); the kagent
+quickstart/chat/governance sections below are a separate legacy path.
 
 For an existing application on kind, deploy the plane and follow the owner-reviewed
 [migration procedure](migrate.md) (on AKS use the [lift phases](aks.md#targets-and-resume)):
@@ -120,16 +123,24 @@ opaque plane token, never the real upstream key. Tool routing is separate;
 
 ## An agent of your own
 
+This is the **native Orka path**, not a new kagent agent for the legacy commands
+above. Preview a Provider + Agent bundle offline:
+
 ```bash
-kmx agent create fleet-reporter --description 'Reports cluster workloads' \
-  --instructions ./fleet.md --tools kagent-tool-server:k8s_get_resources
+kmx agent create my-agent --namespace orka-system \
+  --provider-type openai --model qwen2.5:3b --secret local-provider-key \
+  --base-url http://ollama.ollama.svc.cluster.local:11434/v1 --no-apply
 ```
 
-This currently generates a kagent `Agent`, applies it and waits Ready. Use
-`--no-apply` for artifact-only authoring. No-name terminal invocation offers a
-wizard. Explicit tool allowlists are required; no credential is accepted and
-key-shaped output is refused. [Scaffolding safety](kmx.md#kmx-agent-create)
-covers BYO images, isolation, local editing and preflight checks.
+Namespace, Provider type, model ID and existing Secret name are required.
+The metadata-only Secret skeleton is a reference: **never write it or bulk-apply
+the bundle**. Online creation uses installed schemas and ordered readiness waits;
+`--dry-run` checks admission but not execution. Only optional `--task` plus an
+existing result ServiceAccount tests a real model answer. Follow the
+[context-pinned first-Task guide](orka.md#author-an-orka-agent-and-get-an-answer)
+and [create safety contract](kmx.md#kmx-agent-create) before creating resources.
+No-name terminal invocation offers a wizard. `agent chat/edit/list` remain
+kagent-specific; BYO images, ModelConfig and MCP conversion are not provided.
 
 ## Using Podman instead of Docker
 

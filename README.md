@@ -13,10 +13,10 @@ incubating tooling that helps people get agents onto it**, with particular
 attention to Kubernetes and AKS. It is not another agent platform.
 
 `kmx` prepares a cluster, installs a pinned Orka, reports what is actually
-running, and helps route an existing application's model traffic through
-Orka. The application's owner keeps its Deployment and lifecycle. The seam
-between the application and Orka is a bridge: shrinking it to nothing is
-success, not lost product scope.
+running, authors native Orka Agents, and helps route an existing application's
+model traffic through Orka. The application's owner keeps its Deployment and
+lifecycle. The seam between the application and Orka is a bridge: shrinking it
+to nothing is success, not lost product scope.
 
 ## Quickstart
 
@@ -73,14 +73,17 @@ boundary. Installing Orka alone enables none of this routing.
 
 ## Status
 
-- **Current tooling:** Orka installation/status and model-traffic migration.
+- **Current tooling:** Orka installation/status, native `kmx agent create`
+  (Provider + Agent, optionally a Task with an actual answer), and model-traffic
+  migration. See the [native create guide](docs/orka.md#author-an-orka-agent-and-get-an-answer).
   Migration was exercised on kind and AKS; cloud runs are measurements,
   not a continuously maintained deployment. See [migration](docs/migrate.md).
 - **Authoring is open:** whether the supported authoring surface will be
   native Orka only or also kagent YAML over Orka is not decided.
   [docs/orka.md](docs/orka.md) recommends native resources; that is a
-  recommendation, not a ruling. Today's `kmx agent create` emits kagent
-  resources, not an Orka translation.
+  recommendation, not a ruling. Today's `kmx agent create` emits native Orka
+  resources; it does not convert kagent YAML, ModelConfigs, MCP wiring or BYO
+  images. The isolated conversion spike is not a supported CLI interface.
 - **Legacy implementation remains:** the governance plane, its connectors,
   demonstrations and kagent commands still exist. Their documentation is
   labelled as legacy reference, not a list of Orka capabilities or a

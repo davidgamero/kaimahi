@@ -1,8 +1,8 @@
 # FAQ and troubleshooting
 
-Start with [getting started](getting-started.md). Orka installation and
-model-traffic migration are the current paths; the final section below is
-for the legacy kagent/plane implementation that still exists.
+Start with [getting started](getting-started.md). Orka installation, native
+Agent creation and model-traffic migration are the current paths; the final
+section below is for the legacy kagent/plane implementation that still exists.
 
 ## Why is `kmx orka` missing?
 
@@ -29,9 +29,13 @@ inspection, no-write planning, dry-run and upgrade limits.
 ## Can kagent YAML create an Orka agent?
 
 There is no supported translation in the current CLI. `kmx agent create`
-emits kagent resources. Whether kagent YAML will become an authoring
-surface over Orka remains open; native Orka resources are the recommendation
-in [orka.md](orka.md), not a ruling that rules out future integration.
+authors a native Orka Provider + Agent and optional Task, not kagent resources
+or BYO images. Existing `agent chat/edit/list` remain kagent-specific. See the
+[create contract](kmx.md#kmx-agent-create) and [first-Task example](orka.md#author-an-orka-agent-and-get-an-answer).
+Whether kagent YAML will become an authoring surface over Orka remains open;
+native Orka resources are the recommendation in [orka.md](orka.md), not a ruling
+that rules out future integration. The isolated conversion spike does not add
+a supported CLI translation.
 
 ## A migrated application's turn still fails
 

@@ -9,8 +9,11 @@ For work **on** Kaimahi; contribution/PR expectations are in
 **Orka is the platform.** Kaimahi tooling helps agents/applications get onto it.
 The current migration governs **model traffic only** and leaves the Deployment
 owner-managed. Native-Orka-only authoring versus kagent YAML over Orka remains
-open; a recommendation is not a ruling. `orka.harness.v2` is outside the direction.
-The seam bridge shrinking as upstream capabilities arrive is a successful outcome.
+open; a recommendation is not a ruling. `kmx agent create` currently authors
+native Provider + Agent resources with an optional Task, not kagent conversion;
+see its [safety contract](kmx.md#kmx-agent-create). `orka.harness.v2` is outside
+the direction. The seam bridge shrinking as upstream capabilities arrive is a
+successful outcome.
 
 The tree still contains the **legacy kagent/plane implementation** pending code
 retirement: kagent Agent/ModelConfig/RemoteMCPServer wiring; a model proxy and MCP
@@ -33,8 +36,10 @@ Consult the [repository map](repository-map.md) for product/demo classification.
 | `scripts/`, `Makefile` | checks, probes, remaining key capture and repository demos/connectors |
 | `.github/workflows/` | actual verification jobs and docs-only routing |
 
-There are two modules because the plane builds independently. `go:embed` cannot
-cross that module boundary; clone-free kmx fetches the plane at its own revision.
+The root CLI and plane are separate modules because the plane builds independently.
+The isolated `spikes/kagent-shim/` experiment has its own module and workflow;
+it is not a root dependency or supported authoring interface. `go:embed` cannot
+cross module boundaries; clone-free kmx fetches the plane at its own revision.
 Use `kmx plane --source .` when exercising checkout changes. Plain `make` builds
 `bin/kmx` only. Development Orka commands are not in the older `v0.1.0` release;
 see [installation](kmx.md#install).
@@ -101,9 +106,10 @@ must depend on every shard. An unneeded failing shard would not gate a merge.
 
 `plane-upgrade` tests schema/data preservation and failed migrations without a
 cluster; it is not a shard. `kmx-clone-free` runs on main/manual dispatch, not as
-a required PR shard. Tags trigger the separate release workflow. None of these
-proves an AKS run: no Azure credentials belong in fork-exposed CI. A docs-only
-shortcut is not an end-to-end rerun.
+a required PR shard. Its native Orka creation journey checks an actual Task answer,
+separately from the retained kagent/plane journey. Tags trigger the separate
+release workflow. None of these proves an AKS run: no Azure credentials belong
+in fork-exposed CI. A docs-only shortcut is not an end-to-end rerun.
 
 ## How the existing plane works
 

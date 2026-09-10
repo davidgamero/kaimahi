@@ -1,7 +1,7 @@
 # Kaimahi documentation
 
 **Orka is the platform. Kaimahi is tooling to help people get agents onto
-it.** Start with the installation and migration paths below, not the
+it.** Start with the installation, native create and migration paths below, not the
 legacy governance-plane demonstrations.
 
 ## Current operator paths
@@ -10,6 +10,7 @@ legacy governance-plane demonstrations.
 |---|---|
 | Set up the current development CLI and understand prerequisites | [Getting started](getting-started.md) |
 | Install Orka, inspect before applying, or see the version actually running | [Orka](orka.md) |
+| Author a native Provider + Agent, optionally run a Task and retrieve its answer | [Native create](orka.md#author-an-orka-agent-and-get-an-answer), [CLI contract](kmx.md#kmx-agent-create) |
 | Route an existing application's model traffic through Orka | [Migration](migrate.md) |
 | Use an existing AKS cluster or provision a disposable one | [AKS](aks.md) |
 | Find a command, its safety contract, and supported output modes | [kmx reference](kmx.md) |
@@ -22,8 +23,10 @@ traffic**, not all activity by the application.
 
 Authoring is a separate, **open** decision: native Orka only versus also
 supporting kagent YAML as an authoring surface over Orka. The native
-recommendation in [orka.md](orka.md) is not a ruling. Existing kagent
-commands and manifests are not evidence of a supported translation layer.
+recommendation in [orka.md](orka.md) is not a ruling. `kmx agent create`
+currently authors native Orka resources, not a conversion. Existing kagent
+commands/manifests and the isolated conversion spike are not evidence of a
+supported translation layer.
 
 ## References for legacy code still present
 
