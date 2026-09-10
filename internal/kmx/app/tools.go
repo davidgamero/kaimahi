@@ -206,7 +206,7 @@ func (a *App) GovernTools(opt ToolsOptions) error {
 			Secret:          opt.Secret,
 			SecretNamespace: opt.SecretNamespace,
 			Command:         "kmx tools govern",
-		}, false, false); err != nil {
+		}, false); err != nil {
 			return err
 		}
 		return a.setToolAllowlist(c, opt.Credential, tools)

@@ -116,7 +116,7 @@ func (a *App) Govern(credential string, opt GovernOptions) error {
 	}
 	defer client.Close()
 
-	if err := a.issueCredential(client, credential, opt, false, false); err != nil {
+	if err := a.issueCredential(client, credential, opt, false); err != nil {
 		return err
 	}
 
@@ -190,7 +190,7 @@ func (a *App) GovernInteractiveModel(agent string) error {
 	if err != nil {
 		return err
 	}
-	secretExists, err := a.validateInteractiveResourceOwnership(agent, secret, preset)
+	_, err = a.validateInteractiveResourceOwnership(agent, secret, preset)
 	if err != nil {
 		return err
 	}
@@ -199,7 +199,7 @@ func (a *App) GovernInteractiveModel(agent string) error {
 		return err
 	}
 	defer client.Close()
-	if err := a.issueCredential(client, credential, opt, true, secretExists); err != nil {
+	if err := a.issueCredential(client, credential, opt, true); err != nil {
 		return err
 	}
 	if err := a.publishPlaneAuthority(config_kagentNamespace); err != nil {
@@ -259,7 +259,7 @@ func interactiveModelManifest(preset, secret, model string, governed bool, agent
 // The token is shown EXACTLY ONCE, at issue time, and cannot be recovered.
 // That is what makes both the check before the POST and the 409 branch below
 // more than politeness.
-func (a *App) issueCredential(client *admin.Client, credential string, opt GovernOptions, interactive, secretExists bool) error {
+func (a *App) issueCredential(client *admin.Client, credential string, opt GovernOptions, interactive bool) error {
 	// Whose token is in that Secret? Asked BEFORE issuing, because the
 	// answer can forbid the whole operation: `kmx govern demo` while the
 	// Secret holds hello-world's token would otherwise mint demo's
