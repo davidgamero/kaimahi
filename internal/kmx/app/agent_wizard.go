@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"unicode"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/scaffold"
@@ -25,7 +24,18 @@ func (a *App) CreateAgentInteractive(opt CreateOptions) error {
 	if a.Stdin == nil || !visible || !term.IsTerminal(int(a.Stdin.Fd())) || !term.IsTerminal(int(errFile.Fd())) {
 		return fmt.Errorf("kmx agent create needs a name in non-interactive input: kmx agent create <name> [flags]")
 	}
-	completed, err := collectCreateOptions(bufio.NewScanner(a.Stdin), a.Err, opt)
+	if os.Getenv("TERM") == "dumb" {
+		completed, err := collectCreateOptions(bufio.NewScanner(a.Stdin), a.Err, opt)
+		if errors.Is(err, errCreateCancelled) {
+			a.notef("Agent creation cancelled. Nothing was written or applied.")
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return a.CreateAgent(completed)
+	}
+	completed, err := runCreateWizard(a.Stdin, a.Err, opt)
 	if errors.Is(err, errCreateCancelled) {
 		a.notef("Agent creation cancelled. Nothing was written or applied.")
 		return nil
@@ -64,7 +74,7 @@ func collectCreateOptions(scanner lineScanner, out io.Writer, opt CreateOptions)
 	if _, err := scaffold.ParseTools(opt.Tools); err != nil {
 		return opt, err
 	}
-	if opt.Instructions == "" {
+	if opt.Instructions == "" && opt.Image == "" {
 		opt.InstructionText = "You are " + opt.Name + ". Your purpose is: " + opt.Description + "\nAnswer briefly and say plainly when you do not know something."
 	}
 	if opt.Namespace == "" {
@@ -125,7 +135,7 @@ func slugAgentName(description string) string {
 	var b strings.Builder
 	dash := false
 	for _, r := range strings.ToLower(description) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
 			if dash && b.Len() > 0 {
 				b.WriteByte('-')
 			}
@@ -134,11 +144,22 @@ func slugAgentName(description string) string {
 		} else {
 			dash = true
 		}
-		if b.Len() >= 50 {
-			break
-		}
 	}
-	return strings.Trim(b.String(), "-")
+	full := strings.Trim(b.String(), "-")
+	const maxDefault = 32
+	if len(full) <= maxDefault {
+		return full
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(strings.ToLower(description))))
+	suffix := fmt.Sprintf("%x", sum[:3])
+	prefix := strings.TrimRight(full[:maxDefault-len(suffix)-1], "-")
+	if boundary := strings.LastIndexByte(prefix, '-'); boundary >= 12 {
+		prefix = prefix[:boundary]
+	}
+	if prefix == "" {
+		prefix = "agent"
+	}
+	return prefix + "-" + suffix
 }
 
 func (a *App) EditAgent(name, path string) error {
