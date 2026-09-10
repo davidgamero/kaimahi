@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/guard"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/run"
 )
 
@@ -55,7 +56,11 @@ func (a *App) Up(step string) error {
 	if step != "" {
 		action, command = "run the '"+step+"' step", "kmx up --step "+step
 	}
-	if err := a.Guard(action, command); err != nil {
+	guard := a.Guard
+	if step == "" || step == "cluster" {
+		guard = a.GuardCreate
+	}
+	if err := guard(action, command); err != nil {
 		return err
 	}
 
@@ -253,6 +258,9 @@ func (a *App) stepCluster() (err error) {
 	if a.Cfg.ContainerEngine != "podman" {
 		if listed {
 			a.notef("kind cluster %q already exists", a.Cfg.KindCluster)
+			if err := a.ensureKindContext(); err != nil {
+				return err
+			}
 			return a.waitClusterServing()
 		}
 		if err := a.Run.Run("kind", "create", "cluster", "--name", a.Cfg.KindCluster); err != nil {
@@ -266,6 +274,9 @@ func (a *App) stepCluster() (err error) {
 	// lists the cluster and nothing can reach it. Listed-but-stopped is
 	// therefore not "already exists" — start the nodes back up.
 	if listed {
+		if err := a.ensureKindContext(); err != nil {
+			return err
+		}
 		nodes, err := a.Run.Capture("podman", "ps", "-a",
 			"--filter", "label=io.x-k8s.kind.cluster="+a.Cfg.KindCluster,
 			"--format", "{{.Names}}")
@@ -284,6 +295,25 @@ func (a *App) stepCluster() (err error) {
 	}
 
 	return a.waitClusterServing()
+}
+
+func (a *App) ensureKindContext() error {
+	cfg, err := a.kubeconfig()
+	if err != nil {
+		return err
+	}
+	posture, err := guard.Classify(cfg, a.Cfg.KubeContext)
+	if err != nil {
+		return err
+	}
+	if posture.Host != "" {
+		return nil
+	}
+	a.notef("kind cluster %q exists but context %q is missing; repairing kubeconfig", a.Cfg.KindCluster, a.Cfg.KubeContext)
+	if err := a.Run.Run("kind", "export", "kubeconfig", "--name", a.Cfg.KindCluster); err != nil {
+		return fmt.Errorf("cannot repair kubeconfig for kind cluster %q: %w", a.Cfg.KindCluster, err)
+	}
+	return nil
 }
 
 // kind acts on a container cluster name, while kubectl and the guard act on

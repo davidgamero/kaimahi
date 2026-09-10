@@ -220,6 +220,16 @@ func TestTheDefaultStandsOnAMachineWithNoClusters(t *testing.T) {
 	}
 }
 
+func TestACreatingCommandMayUseItsAbsentDefaultBesideUnrelatedContexts(t *testing.T) {
+	var out bytes.Buffer
+	if err := Check(load(t), Request{
+		Action: "create the cluster", Context: "kind-kaimahi-p1",
+		Source: config.SourceDefault, Command: "kmx quickstart", CreatesContext: true,
+	}, &out, nil); err != nil {
+		t.Fatalf("creating the explicit kind target was blocked by an unrelated context: %v", err)
+	}
+}
+
 // A context somebody actually named is not affected, whichever way they
 // named it. This is what keeps CI and `KIND_CLUSTER=mine kmx up` unchanged.
 func TestAChosenContextIsNeverRefusedForBeingUnchosen(t *testing.T) {

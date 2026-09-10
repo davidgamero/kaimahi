@@ -209,6 +209,10 @@ type Request struct {
 	// caller setting this gets the truthful label and the confirmation
 	// path instead of a free pass.
 	MustBeKnown bool
+	// CreatesContext permits an invented, absent kind context even when the
+	// kubeconfig contains unrelated contexts. The caller must actually create
+	// or repair this exact context before doing any cluster work.
+	CreatesContext bool
 }
 
 // Check prints the banner and either returns nil (proceed) or an error
@@ -287,7 +291,7 @@ func Check(cfg *Kubeconfig, req Request, out io.Writer, in *os.File) error {
 	// is not, with nothing having chosen between them. The banner is the only
 	// thing standing between an operator and the wrong cluster, and a banner
 	// naming a cluster nobody picked is not a safety net.
-	if req.Source == config.SourceDefault && len(cfg.Contexts) > 0 &&
+	if req.Source == config.SourceDefault && len(cfg.Contexts) > 0 && !req.CreatesContext &&
 		strings.TrimSpace(cfg.CurrentContext) != req.Context {
 		return fmt.Errorf("kube-guard: nothing chose a cluster, so kmx will not act on one.\n"+
 			"  It would have used %q, which is a name kmx made up, and your kubeconfig\n"+

@@ -87,6 +87,7 @@ func TestStatusCommandReadinessAndReportParity(t *testing.T) {
 				}
 				combined := fmt.Sprintf(`{"items":[{"kind":"Agent","metadata":{"name":"alpha"},"spec":{"declarative":{"modelConfig":"model"}},"status":{"conditions":[{"type":"Ready","status":"True"},{"type":"Accepted","status":"True"}]}},{"kind":"ModelConfig","metadata":{"name":"model"},"spec":{"openAI":{"baseUrl":%q},"apiKeySecret":"token"},"status":{"conditions":[{"type":"Accepted","status":"True"}]}},{"kind":"Pod","metadata":{"name":"runtime"},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}`, base)
 				script := fmt.Sprintf(`case "$*" in
+*"config view"*) printf '%%s' '{"current-context":"kind-test","contexts":[{"name":"kind-test","context":{"cluster":"kind-test"}}],"clusters":[{"name":"kind-test","cluster":{"server":"https://127.0.0.1:6443"}}]}';;
 *"get agents,modelconfigs,pods"*) printf '%%s' '%s';;
 *"get deployments"*) printf '%%s' '%s';;
 *"get secrets"*) printf '%%s' '%s';;
@@ -129,6 +130,31 @@ esac
 				}
 			})
 		}
+	}
+}
+
+func TestStatusExplainsHowToCompleteMissingDefaultSetup(t *testing.T) {
+	a := reportApp(t, io.Discard, `case "$*" in
+*"config view"*) printf '%s' '{"current-context":"other","contexts":[{"name":"other","context":{"cluster":"other"}}],"clusters":[{"name":"other","cluster":{"server":"https://example.test"}}]}';;
+esac`)
+	a.Cfg.ContextSource = config.SourceDefault
+	err := a.Status()
+	if err == nil || !strings.Contains(err.Error(), "setup is incomplete") || !strings.Contains(err.Error(), "kmx quickstart") {
+		t.Fatalf("missing default context did not offer the repair path: %v", err)
+	}
+}
+
+func TestCtxShowsHowToCompleteMissingDefaultSetup(t *testing.T) {
+	var out bytes.Buffer
+	a := reportApp(t, &out, `case "$*" in
+*"config view"*) printf '%s' '{"current-context":"other","contexts":[{"name":"other","context":{"cluster":"other"}}],"clusters":[{"name":"other","cluster":{"server":"https://example.test"}}]}';;
+esac`)
+	a.Cfg.ContextSource = config.SourceDefault
+	if err := a.Ctx(""); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "setup:   incomplete") || !strings.Contains(out.String(), "kmx quickstart") {
+		t.Fatalf("context report did not offer the repair path: %s", out.String())
 	}
 }
 
