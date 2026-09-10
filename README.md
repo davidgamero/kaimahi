@@ -20,44 +20,51 @@ to nothing is success, not lost product scope.
 
 ## Quickstart
 
-The Orka helpers are on `main`; the latest tagged release, `v0.1.0`, predates
-them. For this development path, install Go 1.26+ and Docker or Podman,
-ensure your Go binary directory is on `PATH`, then:
+Install the latest release and start a local agent with Docker:
 
 ```bash
-go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main
-kmx up
-kmx orka install
-kmx orka status
+curl -fsSL https://raw.githubusercontent.com/kaimahi-agents/kaimahi/main/install.sh | sh && "$HOME/.local/bin/kmx" up && "$HOME/.local/bin/kmx" agent chat hello-world "Who are you?"
 ```
 
-`@main` follows a moving development branch, not a stable release. Use a
-reviewed commit instead when you need a reproducible CLI build.
+The installer downloads the latest tagged binary, verifies its published
+checksum, and installs it without `sudo`. Setup creates a local kind cluster,
+pulls the roughly 2 GB keyless Ollama model, installs kagent, and ends with a
+real agent answer. Allow 5-10 minutes on a clean machine.
 
-`kmx up` currently creates a local kind cluster, Ollama and the existing
-kagent runtime. It is not an Orka-native setup command. `kmx orka install`
-then installs Orka's pinned manifest and a keyless local Provider; it does
-not migrate or govern an application. `kmx orka status` distinguishes the
-running controller version from the version kmx pins.
+The latest release is currently `v0.1.0`. It predates the Orka helpers and runs
+the existing kagent path. Use the development build below to try Orka.
+
+## Bleeding Edge
+
+> **Warning:** `main` is unstable. It can change without notice and is not a
+> reproducible release. Use a reviewed commit instead for repeatable builds.
+
+Install the current `main` branch with Go 1.26+ and start the Orka path:
+
+```bash
+GOBIN="$HOME/.local/bin" go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main && "$HOME/.local/bin/kmx" up && "$HOME/.local/bin/kmx" orka install && "$HOME/.local/bin/kmx" orka status
+```
+
+Re-run the line to install the newest commit. `kmx up` currently creates a
+local kind cluster, Ollama, and the existing kagent runtime; it is not an
+Orka-native setup command. `kmx orka install` adds the pinned Orka manifest and
+a keyless local Provider. `kmx orka status` reports the running and pinned
+controller versions.
 
 Already have a cluster? Read [getting started](docs/getting-started.md) and
 the [Orka installer contract](docs/orka.md), including target confirmation,
 `--no-apply`, `--dry-run`, and the Provider prerequisites. For cloud setup,
 read [AKS](docs/aks.md) before creating billable resources.
 
-From a checkout, `make` builds `bin/kmx`; use that binary for the same
-commands. [Installation and releases](docs/releases.md) describes tagged
-binaries, checksums, and upgrade limits.
+From a checkout, `make` builds `bin/kmx`. [Installation and
+releases](docs/releases.md) describes tagged binaries, checksums, and upgrade
+limits.
 
 ## Migrate model traffic
 
-For an application **already deployed and managed by its owner**, the
-current bridge uses the retained plane implementation:
-
-```bash
-kmx plane
-kmx migrate <deployment> --namespace <namespace> --model <provider>/<model>
-```
+For an application **already deployed and managed by its owner**, the current
+bridge uses the retained plane implementation. Run `kmx plane`, then
+`kmx migrate <deployment> --namespace <namespace> --model <provider>/<model>`.
 
 The placeholders must name your existing workload and an Orka Provider.
 Read the [migration guide](docs/migrate.md) before running this: inspect
