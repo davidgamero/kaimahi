@@ -25,6 +25,10 @@ EDGE_COMMAND = (
     '&& "$HOME/.local/bin/kmx" up && "$HOME/.local/bin/kmx" orka install '
     '&& "$HOME/.local/bin/kmx" orka status'
 )
+# These are exact contracts rather than collections of command regexes. Each
+# README block must be pasteable in its entirety, so accepting a reviewed
+# subset, extra line, reordered step, prompt marker, or comment would weaken
+# the property this checker exists to enforce.
 FENCE = re.compile(r"^```([^\n]*)\n(.*?)^```", re.M | re.S)
 
 
