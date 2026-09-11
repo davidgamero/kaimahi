@@ -39,7 +39,7 @@ the existing kagent path. Use the development build below to try Orka.
 > **Warning:** `main` is unstable. It can change without notice and is not a
 > reproducible release. Use a reviewed commit instead for repeatable builds.
 
-Install the current `main` branch with Go 1.26+ and start the Orka path:
+Install the current `main` branch with Go 1.26+, then install and inspect Orka:
 
 ```bash
 GOBIN="$HOME/.local/bin" go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main && "$HOME/.local/bin/kmx" up && "$HOME/.local/bin/kmx" orka install && "$HOME/.local/bin/kmx" orka status
