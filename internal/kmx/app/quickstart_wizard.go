@@ -415,7 +415,7 @@ func (m quickstartWizardModel) infrastructurePanel(width int) string {
 			body.WriteByte('\n')
 		}
 	}
-	return quickstartPanel("INFRASTRUCTURE", body.String(), width, lipgloss.Cyan)
+	return quickstartPanel("INFRASTRUCTURE", body.String(), width, lipgloss.Cyan, lipgloss.BrightBlack)
 }
 
 func (m quickstartWizardModel) agentPanel(width int) string {
@@ -457,7 +457,14 @@ func (m quickstartWizardModel) agentPanel(width int) string {
 	if m.chosen != nil && !m.modelStep {
 		fmt.Fprintf(&body, "\n\n%s %s", lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("MODEL"), quickstartModelLabel(*m.chosen))
 	}
-	return quickstartPanel("AGENT SETUP", body.String(), width, lipgloss.Magenta)
+	border := color.Color(lipgloss.Magenta)
+	if m.formDone {
+		border = lipgloss.BrightBlack
+	}
+	if m.setupErr != nil {
+		border = lipgloss.Red
+	}
+	return quickstartPanel("AGENT SETUP", body.String(), width, lipgloss.Magenta, border)
 }
 
 func (m quickstartWizardModel) quickstartModelChoiceLabel(model localModel) string {
@@ -467,9 +474,9 @@ func (m quickstartWizardModel) quickstartModelChoiceLabel(model localModel) stri
 	return quickstartModelLabel(model)
 }
 
-func quickstartPanel(title, body string, width int, borderColor color.Color) string {
+func quickstartPanel(title, body string, width int, headingColor, borderColor color.Color) string {
 	innerWidth := max(24, width-4)
-	heading := lipgloss.NewStyle().Bold(true).Foreground(borderColor).Render(" " + title + " ")
+	heading := lipgloss.NewStyle().Bold(true).Foreground(headingColor).Render(" " + title + " ")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
@@ -650,12 +657,12 @@ func (m quickstartReadyModel) View() tea.View {
 	ready := quickstartPanel("READY",
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Green).Render("Agent "+fmt.Sprintf("%q", m.name)+" is ready")+"\n\n"+
 			lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("The model and Orka runtime are available."),
-		panelWidth, lipgloss.Green)
+		panelWidth, lipgloss.Green, lipgloss.BrightBlack)
 	actions := quickstartPanel("NEXT STEP",
 		lipgloss.NewStyle().Bold(true).Render("What would you like to do?")+"\n\n"+
 			quickstartChoices(choices, m.selection)+"\n\n"+
 			lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("enter choose  •  arrows select"),
-		panelWidth, lipgloss.Magenta)
+		panelWidth, lipgloss.Magenta, lipgloss.Magenta)
 	return tea.NewView(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Cyan).Render("KMX  /  QUICKSTART COMPLETE") + "\n\n" + ready + "\n\n" + actions)
 }
 

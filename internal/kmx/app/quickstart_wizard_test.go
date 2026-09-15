@@ -142,6 +142,28 @@ func TestQuickstartWizardPanelsFitNarrowTerminal(t *testing.T) {
 	}
 }
 
+func TestQuickstartWizardBorderColorTracksFocus(t *testing.T) {
+	create, err := newCreateWizardModel(CreateOptions{Model: "qwen2.5:3b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := quickstartWizardModel{create: create, width: 80}
+	if panel := m.infrastructurePanel(78); !strings.Contains(panel, "\x1b[90m╭") {
+		t.Fatalf("passive infrastructure border is not gray:\n%s", panel)
+	}
+	if panel := m.agentPanel(78); !strings.Contains(panel, "\x1b[35m╭") {
+		t.Fatalf("focused agent border is not magenta:\n%s", panel)
+	}
+	m.formDone = true
+	if panel := m.agentPanel(78); !strings.Contains(panel, "\x1b[90m╭") {
+		t.Fatalf("waiting agent border is not gray:\n%s", panel)
+	}
+	m.setupErr = fmt.Errorf("failed")
+	if panel := m.agentPanel(78); !strings.Contains(panel, "\x1b[31m╭") {
+		t.Fatalf("failed agent border is not red:\n%s", panel)
+	}
+}
+
 func TestQuickstartDescriptionStartsWithHelloWorldAgent(t *testing.T) {
 	m, err := newCreateWizardModel(CreateOptions{descriptionDefault: "Hello world agent"})
 	if err != nil {
