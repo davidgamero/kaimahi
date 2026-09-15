@@ -725,10 +725,10 @@ func (m quickstartReadyModel) View() tea.View {
 	}
 	panelWidth := max(30, min(80, width-2))
 	choices := []string{"Chat with agent", "Finish"}
-	ready := quickstartPanel("READY",
+	ready := quickstartSection("READY",
 		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Green).Render("Agent "+fmt.Sprintf("%q", m.name)+" is ready")+"\n\n"+
 			lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("The model and Orka runtime are available."),
-		panelWidth, lipgloss.Green, lipgloss.BrightBlack)
+		panelWidth, lipgloss.Green)
 	actions := quickstartPanel("NEXT STEP",
 		lipgloss.NewStyle().Bold(true).Render("What would you like to do?")+"\n\n"+
 			quickstartChoices(choices, m.selection)+"\n\n"+

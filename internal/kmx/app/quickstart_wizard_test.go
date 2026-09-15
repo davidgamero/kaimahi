@@ -204,7 +204,8 @@ func TestQuickstartDescriptionStartsWithHelloWorldAgent(t *testing.T) {
 
 func TestQuickstartReadyScreenDefaultsToChat(t *testing.T) {
 	m := quickstartReadyModel{name: "hello-world-agent"}
-	view := ansi.Strip(m.View().Content)
+	raw := m.View().Content
+	view := ansi.Strip(raw)
 	for _, want := range []string{"QUICKSTART COMPLETE", "READY", "NEXT STEP", "› Chat with agent", `Agent "hello-world-agent" is ready`} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("ready screen missing %q:\n%s", want, view)
@@ -212,6 +213,11 @@ func TestQuickstartReadyScreenDefaultsToChat(t *testing.T) {
 	}
 	if !strings.Contains(view, "The model and Orka runtime are available") {
 		t.Fatalf("ready screen does not continue into chat by default:\n%s", view)
+	}
+	firstBorder := strings.Index(view, "╭")
+	readyText := strings.Index(view, `Agent "hello-world-agent" is ready`)
+	if firstBorder < 0 || readyText < 0 || readyText > firstBorder || strings.Count(view, "╭") != 1 || strings.Count(view, "╯") != 1 {
+		t.Fatalf("passive READY is outlined or focused NEXT STEP is not unique:\n%s", view)
 	}
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil || updated.(quickstartReadyModel).selection != 0 {
