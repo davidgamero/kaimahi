@@ -278,26 +278,32 @@ roleRef:
 }
 
 type quickstartWizardModel struct {
-	create    createWizardModel
-	events    <-chan quickstartSetupEvent
-	models    []localModel
-	modelPick chan<- *localModel
-	modelStep bool
-	selection int
-	chosen    *localModel
-	existing  []quickstartExistingAgent
-	imported  *quickstartExistingAgent
-	agentStep bool
-	setup     [4]string
-	setupErr  error
-	setupDone bool
-	formDone  bool
-	frame     int
-	width     int
-	target    quickstartTarget
+	create     createWizardModel
+	events     <-chan quickstartSetupEvent
+	models     []localModel
+	modelPick  chan<- *localModel
+	modelStep  bool
+	modelReady bool
+	selection  int
+	chosen     *localModel
+	existing   []quickstartExistingAgent
+	imported   *quickstartExistingAgent
+	agentStep  bool
+	setup      [4]string
+	setupErr   error
+	setupDone  bool
+	formDone   bool
+	frame      int
+	width      int
+	target     quickstartTarget
 }
 
 type quickstartTickMsg struct{}
+type quickstartModelReadyMsg struct{}
+
+func armQuickstartModelChoice() tea.Cmd {
+	return tea.Tick(180*time.Millisecond, func(time.Time) tea.Msg { return quickstartModelReadyMsg{} })
+}
 
 func waitQuickstartEvent(events <-chan quickstartSetupEvent) tea.Cmd {
 	return func() tea.Msg {
@@ -324,6 +330,9 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case quickstartTickMsg:
 		m.frame++
 		return m, quickstartTick()
+	case quickstartModelReadyMsg:
+		m.modelReady = true
+		return m, nil
 	case quickstartSetupEvent:
 		if msg.step < 0 {
 			m.setupDone = true
@@ -375,10 +384,14 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m, nil
 				}
+				return m, armQuickstartModelChoice()
 			}
 			return m, nil
 		}
 		if m.modelStep {
+			if !m.modelReady {
+				return m, nil
+			}
 			switch msg.Code {
 			case tea.KeyEsc:
 				m.create.cancelled, m.formDone, m.modelStep = true, true, false
@@ -519,7 +532,7 @@ func (m quickstartWizardModel) agentPanel(width int) string {
 
 func (m quickstartWizardModel) quickstartModelChoiceLabel(model localModel) string {
 	if model.Provider == "bundled" && m.setup[2] == "done" {
-		return fmt.Sprintf("%s (bundled, already downloaded)", model.Model)
+		return fmt.Sprintf("%s (KMX managed, already downloaded)", model.Model)
 	}
 	return quickstartModelLabel(model)
 }
@@ -608,13 +621,17 @@ func quickstartSize(size int64) string {
 
 func quickstartModelLabel(model localModel) string {
 	if model.Provider == "bundled" {
-		return fmt.Sprintf("%s (bundled, download during setup)", model.Model)
+		return fmt.Sprintf("%s (KMX managed, download during setup)", model.Model)
 	}
 	size := "size unknown"
 	if model.Size > 0 {
 		size = quickstartSize(model.Size)
 	}
-	return fmt.Sprintf("%s (%s on this host, %s)", model.Model, model.Provider, size)
+	source := model.Provider + " managed"
+	if model.Provider == "ollama" {
+		source = "Ollama managed"
+	}
+	return fmt.Sprintf("%s (%s, %s)", model.Model, source, size)
 }
 
 func quickstartInteractiveStep(step createWizardStep) int {

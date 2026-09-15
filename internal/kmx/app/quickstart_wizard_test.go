@@ -74,11 +74,11 @@ func TestQuickstartWizardRefusesNoninteractiveInputBeforeSetup(t *testing.T) {
 }
 
 func TestQuickstartModelChoicesShowSourceAndReportedSize(t *testing.T) {
-	if got := quickstartModelLabel(localModel{Provider: "bundled", Model: "qwen2.5:3b"}); !strings.Contains(got, "bundled") || !strings.Contains(got, "download") {
+	if got := quickstartModelLabel(localModel{Provider: "bundled", Model: "qwen2.5:3b"}); !strings.Contains(got, "KMX managed") || !strings.Contains(got, "download") {
 		t.Fatalf("bundled label=%q", got)
 	}
 	got := quickstartModelLabel(localModel{Provider: "ollama", Model: "qwen3:8b", Size: 8_000_000_000})
-	for _, want := range []string{"qwen3:8b", "ollama on this host", "8.0 GB"} {
+	for _, want := range []string{"qwen3:8b", "Ollama managed", "8.0 GB"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("host label %q missing %q", got, want)
 		}
@@ -92,8 +92,36 @@ func TestBundledModelChoiceSaysWhenDownloadAlreadyFinished(t *testing.T) {
 		t.Fatalf("pending label=%q", got)
 	}
 	m.setup[2] = "done"
-	if got := m.quickstartModelChoiceLabel(model); got != "qwen2.5:3b (bundled, already downloaded)" {
+	if got := m.quickstartModelChoiceLabel(model); got != "qwen2.5:3b (KMX managed, already downloaded)" {
 		t.Fatalf("completed label=%q", got)
+	}
+}
+
+func TestModelChoiceIgnoresQueuedEnterUntilScreenIsReady(t *testing.T) {
+	create, err := newCreateWizardModel(CreateOptions{descriptionDefault: "Hello world agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	picks := make(chan *localModel, 1)
+	m := quickstartWizardModel{create: create, agentStep: true, modelStep: true, modelPick: picks,
+		models: []localModel{{Provider: "bundled", Model: "qwen2.5:3b"}, {Provider: "ollama", Model: "qwen3:8b"}}}
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(quickstartWizardModel)
+	if cmd == nil || !m.modelStep || m.chosen != nil {
+		t.Fatalf("start transition skipped model choice: modelStep=%v chosen=%#v", m.modelStep, m.chosen)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(quickstartWizardModel)
+	if m.chosen != nil || len(picks) != 0 {
+		t.Fatal("queued Enter selected a model before the choice screen became ready")
+	}
+	updated, _ = m.Update(quickstartModelReadyMsg{})
+	m = updated.(quickstartWizardModel)
+	m.selection = 1
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(quickstartWizardModel)
+	if m.chosen == nil || m.chosen.Model != "qwen3:8b" || len(picks) != 1 {
+		t.Fatalf("explicit selection was not retained: %#v", m.chosen)
 	}
 }
 
