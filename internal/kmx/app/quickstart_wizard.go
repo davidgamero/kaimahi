@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/color"
 	"io"
 	"os"
 	"strings"
@@ -381,58 +382,131 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m quickstartWizardModel) View() tea.View {
-	var view strings.Builder
-	view.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Cyan).Render("Quickstart wizard"))
-	view.WriteString("\n\nInfrastructure\n")
+	width := m.width
+	if width <= 0 {
+		width = 88
+	}
+	panelWidth := max(30, min(96, width-2))
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Cyan).
+		Render("KMX  /  QUICKSTART WIZARD")
+	view := title + "\n\n" + m.infrastructurePanel(panelWidth) + "\n\n" + m.agentPanel(panelWidth)
+	return tea.NewView(view)
+}
+
+func (m quickstartWizardModel) infrastructurePanel(width int) string {
+	var body strings.Builder
 	labels := []string{"Kind cluster", "Ollama image", "Model " + m.create.opt.Model, "Orka runtime"}
 	for i, label := range labels {
 		status := m.setup[i]
 		if status == "" {
 			status = "pending"
 		}
-		fmt.Fprintf(&view, "  %-16s %s %-7s %s\n", label, quickstartProgressBar(status, m.frame), status, m.infrastructureSize(i))
+		state := quickstartStatusStyle(status).Render(status)
+		bar := quickstartBarStyle(status).Render(quickstartProgressBar(status, m.frame))
+		detail := lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render(m.infrastructureSize(i))
+		if width >= 76 {
+			fmt.Fprintf(&body, "%-16s %s %-7s %s", label, bar, state, detail)
+		} else {
+			fmt.Fprintf(&body, "%s\n  %s %-7s %s", label, bar, state, detail)
+		}
+		if i != len(labels)-1 {
+			body.WriteByte('\n')
+		}
 	}
-	view.WriteString("\n")
+	return quickstartPanel("INFRASTRUCTURE", body.String(), width, lipgloss.Cyan)
+}
+
+func (m quickstartWizardModel) agentPanel(width int) string {
+	var body strings.Builder
+	step := quickstartInteractiveStep(m.create.step)
 	if m.agentStep {
-		view.WriteString("Agent setup  [1/8]\nStart with\n")
+		step = 1
+	} else if m.modelStep {
+		step = 2
+	}
+	stepLabel := lipgloss.NewStyle().Foreground(lipgloss.Magenta).Bold(true).Render(fmt.Sprintf("STEP %d OF 8", step))
+	body.WriteString(stepLabel + "\n\n")
+	if m.agentStep {
+		body.WriteString(lipgloss.NewStyle().Bold(true).Render("Start with") + "\n\n")
 		choices := []string{"Create a new agent"}
 		for _, agent := range m.existing {
 			choices = append(choices, fmt.Sprintf("Use existing Agent %q (%s)", agent.Name, agent.Namespace))
 		}
-		for i, choice := range choices {
-			marker := "  "
-			if i == m.selection {
-				marker = "> "
-			}
-			fmt.Fprintf(&view, "%s%s\n", marker, choice)
-		}
+		body.WriteString(quickstartChoices(choices, m.selection))
 	} else if m.modelStep {
-		view.WriteString("Agent setup  [2/8]\nChoose a model\n")
-		for i, model := range m.models {
-			marker := "  "
-			if i == m.selection {
-				marker = "> "
-			}
-			fmt.Fprintf(&view, "%s%s\n", marker, quickstartModelLabel(model))
+		body.WriteString(lipgloss.NewStyle().Bold(true).Render("Choose a model") + "\n\n")
+		choices := make([]string, 0, len(m.models))
+		for _, model := range m.models {
+			choices = append(choices, m.quickstartModelChoiceLabel(model))
 		}
-		view.WriteString("\nenter choose • arrows select • esc cancel\n")
+		body.WriteString(quickstartChoices(choices, m.selection))
+		body.WriteString("\n\n" + lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("enter choose  •  arrows select  •  esc cancel"))
 	} else if m.formDone {
 		if m.setupErr != nil {
-			view.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Red).Render("Infrastructure setup failed. Restoring the terminal for diagnostics."))
+			body.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Red).Render("Infrastructure setup failed. Restoring the terminal for diagnostics."))
 		} else {
-			view.WriteString(fmt.Sprintf("Agent %q is queued. Waiting for the model and runtime before deployment...\n", m.create.opt.Name))
+			body.WriteString(fmt.Sprintf("Agent %q is queued. Waiting for the model and runtime before deployment...", m.create.opt.Name))
 		}
 	} else {
-		step := quickstartInteractiveStep(m.create.step)
-		fmt.Fprintf(&view, "Agent setup  [%d/8]\n", step)
 		inner := m.create.View().Content
 		inner = strings.TrimPrefix(inner, "Create an agent\n\n")
-		view.WriteString(inner)
+		body.WriteString(inner)
 	}
 	if m.chosen != nil && !m.modelStep {
-		fmt.Fprintf(&view, "\nSelected model: %s\n", quickstartModelLabel(*m.chosen))
+		fmt.Fprintf(&body, "\n\n%s %s", lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("MODEL"), quickstartModelLabel(*m.chosen))
 	}
-	return tea.NewView(view.String())
+	return quickstartPanel("AGENT SETUP", body.String(), width, lipgloss.Magenta)
+}
+
+func (m quickstartWizardModel) quickstartModelChoiceLabel(model localModel) string {
+	if model.Provider == "bundled" && m.setup[2] == "done" {
+		return fmt.Sprintf("%s (bundled, already downloaded)", model.Model)
+	}
+	return quickstartModelLabel(model)
+}
+
+func quickstartPanel(title, body string, width int, borderColor color.Color) string {
+	innerWidth := max(24, width-4)
+	heading := lipgloss.NewStyle().Bold(true).Foreground(borderColor).Render(" " + title + " ")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Padding(1, 2).
+		Width(innerWidth).
+		Render(heading + "\n\n" + body)
+}
+
+func quickstartChoices(choices []string, selected int) string {
+	var body strings.Builder
+	for i, choice := range choices {
+		if i > 0 {
+			body.WriteByte('\n')
+		}
+		if i == selected {
+			body.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Magenta).Render("› " + choice))
+		} else {
+			body.WriteString(lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("  " + choice))
+		}
+	}
+	return body.String()
+}
+
+func quickstartStatusStyle(status string) lipgloss.Style {
+	color := lipgloss.BrightBlack
+	if status == "done" {
+		color = lipgloss.Green
+	} else if status == "active" {
+		color = lipgloss.Cyan
+	} else if status == "failed" {
+		color = lipgloss.Red
+	}
+	return lipgloss.NewStyle().Foreground(color).Bold(status != "pending")
+}
+
+func quickstartBarStyle(status string) lipgloss.Style {
+	return quickstartStatusStyle(status)
 }
 
 func (m quickstartWizardModel) infrastructureSize(step int) string {
