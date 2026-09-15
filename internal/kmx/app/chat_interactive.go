@@ -59,7 +59,7 @@ type chatRenderer struct {
 	promptIndent    int
 	promptKind      cliui.FocusKind
 	promptHint      string
-	commandSummary string
+	commandSummary  string
 	transient       bool
 	transientWidth  int
 	spinnerDisabled bool
@@ -448,7 +448,7 @@ func (a *App) runInteractiveChatBackend(backend interactiveChatBackend) error {
 			}
 			last = message
 		}
-		if err := backend.Send(ctx, message, renderer); err != nil {
+		if err := sendInteractiveChatMessage(ctx, backend, message, renderer); err != nil {
 			if ctx.Err() != nil {
 				renderer.exit("cancelled")
 				return nil
@@ -457,6 +457,37 @@ func (a *App) runInteractiveChatBackend(backend interactiveChatBackend) error {
 		}
 		renderer.finish()
 	}
+}
+
+func sendInteractiveChatMessage(ctx context.Context, backend interactiveChatBackend, message string, renderer *chatRenderer) error {
+	done := make(chan struct{})
+	spinnerDone := make(chan struct{})
+	started := time.Now()
+	spinner := renderer != nil && renderer.cursor
+	if spinner {
+		renderer.pauseSpinner(false)
+		go func() {
+			defer close(spinnerDone)
+			frames := []string{"|", "/", "-", "\\"}
+			for i := 0; ; i++ {
+				select {
+				case <-done:
+					return
+				case <-time.After(250 * time.Millisecond):
+					renderer.spinner(backend.Agent(), frames[i%len(frames)], time.Since(started))
+				}
+			}
+		}()
+	} else {
+		close(spinnerDone)
+	}
+	err := backend.Send(ctx, message, renderer)
+	close(done)
+	<-spinnerDone
+	if spinner {
+		renderer.clearTransient()
+	}
+	return err
 }
 
 func (r *chatRenderer) submitted(inputWasTerminal bool) {

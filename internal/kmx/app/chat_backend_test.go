@@ -6,10 +6,32 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 type staticChatBackend struct {
 	messages []string
+}
+
+type waitingChatBackend struct{}
+
+func (waitingChatBackend) Agent() string                                { return "orka-agent" }
+func (waitingChatBackend) Connect(context.Context, *chatRenderer) error { return nil }
+func (waitingChatBackend) Send(context.Context, string, *chatRenderer) error {
+	time.Sleep(350 * time.Millisecond)
+	return nil
+}
+
+func TestSharedInteractiveChatBackendAnimatesWhileWaitingAndClears(t *testing.T) {
+	var out bytes.Buffer
+	renderer := &chatRenderer{out: &out, cursor: true, color: false}
+	if err := sendInteractiveChatMessage(context.Background(), waitingChatBackend{}, "hello", renderer); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "WORKING orka-agent") || !strings.HasSuffix(text, "\r\x1b[2K") || renderer.transient {
+		t.Fatalf("spinner did not animate and clear: %q transient=%v", text, renderer.transient)
+	}
 }
 
 func (b *staticChatBackend) Agent() string { return "shared-agent" }
