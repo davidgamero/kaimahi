@@ -285,13 +285,18 @@ func readSlashLine(ctx context.Context, in, out *os.File, renderer *chatRenderer
 	var utf8Bytes []byte
 	renderer.mu.Lock()
 	prompt := strings.Repeat(" ", renderer.promptIndent) + renderer.promptText
+	promptKind := renderer.promptKind
+	framed := renderer.cursor && renderer.ui.Rich() && height > 5 && width >= 16
 	renderer.mu.Unlock()
-	initialRows := chatInputRows(prompt, "", width)
-	cursorRow := len(initialRows) - 1
-	if initialRows[cursorRow] == "" && cursorRow > 0 {
-		cursorRow-- // The already printed prompt still has a pending wrap.
+	cursorRow, paintedRows := 0, 0
+	if !framed {
+		initialRows := chatInputRows(prompt, "", width)
+		cursorRow = len(initialRows) - 1
+		if initialRows[cursorRow] == "" && cursorRow > 0 {
+			cursorRow-- // The already printed prompt still has a pending wrap.
+		}
+		paintedRows = cursorRow + 1
 	}
-	paintedRows := cursorRow + 1
 	redraw := func(showHint, complete bool) {
 		if checkResize() {
 			return
@@ -304,6 +309,9 @@ func readSlashLine(ctx context.Context, in, out *os.File, renderer *chatRenderer
 		renderer.mu.Lock()
 		defer renderer.mu.Unlock()
 		fmt.Fprint(out, "\r")
+		if paintedRows == 0 {
+			fmt.Fprint(out, "\033[2K")
+		}
 		if cursorRow > 0 {
 			fmt.Fprintf(out, "\033[%dA", cursorRow)
 		}
@@ -317,6 +325,12 @@ func readSlashLine(ctx context.Context, in, out *os.File, renderer *chatRenderer
 			fmt.Fprintf(out, "\033[%dA", paintedRows-1)
 		}
 		rows := chatInputRows(prompt, line, width)
+		frameCursorColumn := 0
+		if framed && !complete {
+			frame := renderer.ui.FocusInput(promptKind, prompt, line, safeTerminal(hint), width-1)
+			rows, frameCursorColumn = frame.Rows, frame.CursorColumn
+			cursorRow = frame.CursorRow
+		}
 		if complete {
 			// Submission is a durable transcript, not an editing viewport. Keep
 			// every sanitized grapheme, even on terminals narrower than one glyph.
@@ -338,7 +352,18 @@ func readSlashLine(ctx context.Context, in, out *os.File, renderer *chatRenderer
 			}
 		}
 		fmt.Fprint(out, "\r", strings.Join(rows, "\r\n"))
-		cursorRow, paintedRows = len(rows)-1, len(rows)
+		paintedRows = len(rows)
+		if framed && !complete {
+			if up := len(rows) - 1 - cursorRow; up > 0 {
+				fmt.Fprintf(out, "\033[%dA", up)
+			}
+			fmt.Fprint(out, "\r")
+			if frameCursorColumn > 0 {
+				fmt.Fprintf(out, "\033[%dC", frameCursorColumn)
+			}
+			return
+		}
+		cursorRow = len(rows) - 1
 		if hint != "" && height > len(rows) {
 			fmt.Fprint(out, "\r\n\033[2K  ", safeTerminal(hint), "\033[1A\r")
 			if column := lipgloss.Width(rows[len(rows)-1]); column > 0 {

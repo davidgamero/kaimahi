@@ -488,7 +488,7 @@ func TestChatPTYStaticCalloutPromptTransitions(t *testing.T) {
 				r.assistant("agent", "durable", true)
 				r.operationPrompt("NATIVE APPROVAL", colorYellow, "Call ID: exact\nTool: delete\nArguments:\n{\"name\":\"pod-a\"}", prompt)
 				var captured strings.Builder
-				chatPTYReadUntil(t, master, &captured, func(s string) bool { return strings.Contains(s, prompt) })
+				chatPTYReadUntil(t, master, &captured, func(s string) bool { return strings.Contains(s, "Arguments:") })
 				static := captured.String()
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
@@ -500,7 +500,8 @@ func TestChatPTYStaticCalloutPromptTransitions(t *testing.T) {
 					}
 					done <- err
 				}()
-				chatPTYReadUntil(t, master, &captured, func(s string) bool { return strings.Contains(s, "\x1b[2K") })
+				frameTitle := "DECISION"
+				chatPTYReadUntil(t, master, &captured, func(s string) bool { return strings.Contains(ansi.Strip(s), "─ "+frameTitle+" ") })
 				io.WriteString(master, "yes\r")
 				if err := <-done; err != nil {
 					t.Fatal(err)
@@ -511,10 +512,8 @@ func TestChatPTYStaticCalloutPromptTransitions(t *testing.T) {
 				io.WriteString(slave, "END\n")
 				chatPTYReadUntil(t, master, &captured, func(s string) bool { return strings.HasSuffix(s, "END\r\n") })
 				screen := chatScreen(captured.String(), width)
-				staticScreen := chatScreen(static, width)
-				borderEnd := strings.LastIndex(staticScreen, "╯")
-				if borderEnd < 0 || !strings.HasPrefix(screen, staticScreen[:borderEnd+len("╯")]) || !strings.Contains(screen, "resumed") || strings.Contains(captured.String()[len(static):], "╭") {
-					t.Fatalf("native editing damaged or repainted durable callout:\n%s", screen)
+				if !strings.Contains(ansi.Strip(static), "Call ID: exact") || !strings.Contains(screen, "resumed") || strings.Count(screen, "╭") != 0 {
+					t.Fatalf("native editing damaged passive details or left a focus border:\n%s", screen)
 				}
 				if strings.Contains(screen, "YOU >") || r.transient {
 					t.Fatalf("native prompt/progress state changed: %s", screen)

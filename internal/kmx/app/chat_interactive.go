@@ -57,6 +57,7 @@ type chatRenderer struct {
 	promptOpen      bool
 	promptText      string
 	promptIndent    int
+	promptKind      cliui.FocusKind
 	transient       bool
 	transientWidth  int
 	spinnerDisabled bool
@@ -279,10 +280,15 @@ func (r *chatRenderer) operationPrompt(kind string, color actorColor, payload, p
 	r.closeLocked()
 	r.promptText = strings.Join(strings.Fields(safeTerminal(prompt)), " ") + " "
 	r.promptIndent = 2
+	r.promptKind = cliui.FocusQuestion
+	if strings.Contains(strings.ToLower(kind), "approval") {
+		r.promptKind = cliui.FocusApproval
+	}
 	if r.ui.Rich() {
-		// Only the static request is boxed. The native editor owns the rows below it.
-		fmt.Fprintln(r.out, r.ui.Callout(cliui.CalloutWarning, "Request details", []cliui.Field{{Value: safeTerminal(payload)}}))
-		fmt.Fprintf(r.out, "%s\n  %s", r.label("["+kind+"]", color), r.promptText)
+		fmt.Fprintf(r.out, "%s\n%s\n", r.label("["+kind+"]", color), indentPayload(payload))
+		if !r.cursor || !isTerminal(r.out) {
+			fmt.Fprintf(r.out, "  %s", r.promptText)
+		}
 	} else {
 		fmt.Fprintf(r.out, "%s\n%s\n  %s", r.label("["+kind+"]", color), indentPayload(payload), r.promptText)
 	}
@@ -364,8 +370,10 @@ func (r *chatRenderer) prompt() {
 	defer r.mu.Unlock()
 	r.clearLocked()
 	r.closeLocked()
-	r.promptText, r.promptIndent = r.label("YOU >", colorCyan)+" ", 0
-	fmt.Fprint(r.out, r.promptText)
+	r.promptText, r.promptIndent, r.promptKind = r.label("YOU >", colorCyan)+" ", 0, cliui.FocusMessage
+	if !r.cursor || !isTerminal(r.out) {
+		fmt.Fprint(r.out, r.promptText)
+	}
 	r.promptOpen = true
 }
 
