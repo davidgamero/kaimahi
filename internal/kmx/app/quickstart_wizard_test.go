@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"fmt"
 	"strings"
 	"testing"
@@ -226,15 +225,5 @@ func TestQuickstartReadyScreenFitsNarrowTerminal(t *testing.T) {
 		if got := lipgloss.Width(line); got > 44 {
 			t.Fatalf("ready screen line is %d cells wide: %q", got, ansi.Strip(line))
 		}
-	}
-}
-
-func TestQuickstartChatIntroducesTaskSemanticsWithoutAuthorizationWarningAsReply(t *testing.T) {
-	var out bytes.Buffer
-	fmt.Fprintln(&out, "Chatting with demo. Type /exit to finish.")
-	fmt.Fprintln(&out, "Each message runs as a fresh local Orka Task.")
-	text := out.String()
-	if !strings.Contains(text, "fresh local Orka Task") || strings.Contains(text, "full effective authority") {
-		t.Fatalf("chat introduction=%q", text)
 	}
 }

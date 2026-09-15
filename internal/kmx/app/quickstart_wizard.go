@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -747,30 +746,42 @@ func runQuickstartReadyScreen(in io.Reader, out io.Writer, name string) (bool, e
 }
 
 func (a *App) quickstartOrkaChat(agent, namespace string) error {
-	fmt.Fprintf(a.Out, "Chatting with %s. Type /exit to finish.\n", agent)
-	fmt.Fprintln(a.Out, "Each message runs as a fresh local Orka Task.")
-	scanner := bufio.NewScanner(a.Stdin)
-	for {
-		fmt.Fprint(a.Out, "\nYou > ")
-		if !scanner.Scan() {
-			return scanner.Err()
-		}
-		prompt := strings.TrimSpace(scanner.Text())
-		if prompt == "/exit" || prompt == "/quit" {
-			return nil
-		}
-		if prompt == "" {
-			continue
-		}
-		answer, err := a.runQuickstartOrkaTask(agent, namespace, prompt)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(a.Out, "\n%s > %s\n", agent, answer)
+	return a.runInteractiveChatBackend(&orkaChatBackend{app: a, agent: agent, namespace: namespace})
+}
+
+type orkaChatBackend struct {
+	app              *App
+	agent, namespace string
+}
+
+func (b *orkaChatBackend) Agent() string { return b.agent }
+
+func (b *orkaChatBackend) Connect(_ context.Context, renderer *chatRenderer) error {
+	renderer.statusStart(b.agent, b.app.Cfg.KubeContext)
+	renderer.statusSection("Runtime", "Orka | namespace "+b.namespace)
+	renderer.statusSection("Tasks", "Each message creates one fresh local Task")
+	renderer.statusEnd()
+	return nil
+}
+
+func (b *orkaChatBackend) Send(ctx context.Context, message string, renderer *chatRenderer) error {
+	renderer.beginAssistant(b.agent)
+	renderer.assistantOperation(b.agent, "WORKING", "", colorBlue, "Creating Orka Task")
+	answer, err := b.app.runQuickstartOrkaTaskContext(ctx, b.agent, b.namespace, message)
+	if err != nil {
+		return err
 	}
+	renderer.assistant(b.agent, answer, true)
+	return nil
 }
 
 func (a *App) runQuickstartOrkaTask(agent, namespace, prompt string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return a.runQuickstartOrkaTaskContext(ctx, agent, namespace, prompt)
+}
+
+func (a *App) runQuickstartOrkaTaskContext(parent context.Context, agent, namespace, prompt string) (string, error) {
 	suffix, err := randomHex(8)
 	if err != nil {
 		return "", err
@@ -781,7 +792,7 @@ func (a *App) runQuickstartOrkaTask(agent, namespace, prompt string) (string, er
 		"metadata": map[string]any{"name": prefix + "-" + suffix, "namespace": namespace},
 		"spec":     map[string]any{"type": "ai", "prompt": prompt, "agentRef": map[string]any{"name": agent, "namespace": namespace}, "resources": map[string]any{}},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 	defer cancel()
 	opt := CreateOptions{Namespace: namespace, ResultServiceAccount: "orka-result-reader", OrkaAPIService: "orka-api", ResultPort: "19180", Task: prompt}
 	quiet := *a

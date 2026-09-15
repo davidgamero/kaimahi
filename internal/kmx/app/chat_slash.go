@@ -286,6 +286,7 @@ func readSlashLine(ctx context.Context, in, out *os.File, renderer *chatRenderer
 	renderer.mu.Lock()
 	prompt := strings.Repeat(" ", renderer.promptIndent) + renderer.promptText
 	promptKind := renderer.promptKind
+	promptHint := renderer.promptHint
 	framed := renderer.cursor && renderer.ui.Rich() && height > 5 && width >= 16
 	renderer.mu.Unlock()
 	cursorRow, paintedRows := 0, 0
@@ -305,7 +306,11 @@ func readSlashLine(ctx context.Context, in, out *os.File, renderer *chatRenderer
 		if hints && showHint {
 			matches = slashMatches(line)
 		}
-		hint := fitSlashHint(slashHint(matches), width)
+		hint := promptHint
+		if hints {
+			hint = slashHint(matches)
+		}
+		hint = fitSlashHint(hint, width)
 		renderer.mu.Lock()
 		defer renderer.mu.Unlock()
 		fmt.Fprint(out, "\r")
