@@ -440,7 +440,9 @@ func (m quickstartWizardModel) View() tea.View {
 		Foreground(lipgloss.Cyan).
 		Render("KMX  /  QUICKSTART WIZARD")
 	view := title + "\n\n" + m.infrastructurePanel(panelWidth) + "\n\n" + m.agentPanel(panelWidth)
-	return tea.NewView(view)
+	rendered := tea.NewView(view)
+	rendered.AltScreen = true
+	return rendered
 }
 
 func (m quickstartWizardModel) infrastructurePanel(width int) string {
@@ -734,7 +736,9 @@ func (m quickstartReadyModel) View() tea.View {
 			quickstartChoices(choices, m.selection)+"\n\n"+
 			lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("enter choose  •  arrows select"),
 		panelWidth, lipgloss.Magenta, lipgloss.Magenta)
-	return tea.NewView(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Cyan).Render("KMX  /  QUICKSTART COMPLETE") + "\n\n" + ready + "\n\n" + actions)
+	rendered := tea.NewView(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Cyan).Render("KMX  /  QUICKSTART COMPLETE") + "\n\n" + ready + "\n\n" + actions)
+	rendered.AltScreen = true
+	return rendered
 }
 
 func runQuickstartReadyScreen(in io.Reader, out io.Writer, name string) (bool, error) {
@@ -838,7 +842,9 @@ func (m quickstartDeployModel) View() tea.View {
 	if m.done && m.err == nil {
 		status = "done"
 	}
-	return tea.NewView(fmt.Sprintf("Deploy Agent %q (Orka agent)\n\n  Provider and Agent %s %s\n", m.name, quickstartProgressBar(status, m.frame), status))
+	rendered := tea.NewView(fmt.Sprintf("Deploy Agent %q (Orka agent)\n\n  Provider and Agent %s %s\n", m.name, quickstartProgressBar(status, m.frame), status))
+	rendered.AltScreen = true
+	return rendered
 }
 
 func (a *App) runQuickstartDeployment(opt CreateOptions) error {

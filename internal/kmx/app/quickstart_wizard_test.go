@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"testing"
@@ -231,5 +232,20 @@ func TestQuickstartReadyScreenFitsNarrowTerminal(t *testing.T) {
 		if got := lipgloss.Width(line); got > 44 {
 			t.Fatalf("ready screen line is %d cells wide: %q", got, ansi.Strip(line))
 		}
+	}
+}
+
+func TestQuickstartReadyScreenRestoresAlternateScreenBeforeChat(t *testing.T) {
+	var out bytes.Buffer
+	chat, err := runQuickstartReadyScreen(strings.NewReader("\r"), &out, "hello-world-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !chat {
+		t.Fatal("default completion action was not chat")
+	}
+	rendered := out.String()
+	if !strings.Contains(rendered, "\x1b[?1049h") || !strings.Contains(rendered, "\x1b[?1049l") {
+		t.Fatalf("completion did not enter and restore the alternate screen: %q", rendered)
 	}
 }
