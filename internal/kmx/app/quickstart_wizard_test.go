@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -72,11 +74,28 @@ func TestQuickstartModelChoicesShowSourceAndReportedSize(t *testing.T) {
 	if got := quickstartModelLabel(localModel{Provider: "bundled", Model: "qwen2.5:3b"}); !strings.Contains(got, "bundled") || !strings.Contains(got, "download") {
 		t.Fatalf("bundled label=%q", got)
 	}
-	got := quickstartModelLabel(localModel{Provider: "ollama", Model: "qwen3:8b", Size: 8 << 30})
+	got := quickstartModelLabel(localModel{Provider: "ollama", Model: "qwen3:8b", Size: 8_000_000_000})
 	for _, want := range []string{"qwen3:8b", "ollama on this host", "8.0 GB"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("host label %q missing %q", got, want)
 		}
+	}
+}
+
+func TestQuickstartInfrastructureRowsExplainEstimatedSetupSize(t *testing.T) {
+	m := quickstartWizardModel{models: []localModel{{Provider: "bundled", Model: "qwen2.5:3b"}}}
+	want := []string{"~1.3 GB node image", "~1.1 GB image", "~1.9 GB model", "~860 MB images"}
+	for step, detail := range want {
+		if got := m.infrastructureSize(step); got != detail {
+			t.Fatalf("step %d detail=%q, want %q", step, got, detail)
+		}
+	}
+	m.chosen = &localModel{Provider: "ollama", Model: "qwen3:8b", Size: 8_000_000_000}
+	if got := m.infrastructureSize(1); got != "skipped; host runtime" {
+		t.Fatalf("host runtime detail=%q", got)
+	}
+	if got := m.infrastructureSize(2); got != "8.0 GB already installed" {
+		t.Fatalf("host model detail=%q", got)
 	}
 }
 
@@ -115,5 +134,15 @@ func TestQuickstartReadyScreenDefaultsToChat(t *testing.T) {
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil || updated.(quickstartReadyModel).selection != 0 {
 		t.Fatal("default ready action did not select chat")
+	}
+}
+
+func TestQuickstartChatIntroducesTaskSemanticsWithoutAuthorizationWarningAsReply(t *testing.T) {
+	var out bytes.Buffer
+	fmt.Fprintln(&out, "Chatting with demo. Type /exit to finish.")
+	fmt.Fprintln(&out, "Each message runs as a fresh local Orka Task.")
+	text := out.String()
+	if !strings.Contains(text, "fresh local Orka Task") || strings.Contains(text, "full effective authority") {
+		t.Fatalf("chat introduction=%q", text)
 	}
 }

@@ -390,7 +390,7 @@ func (m quickstartWizardModel) View() tea.View {
 		if status == "" {
 			status = "pending"
 		}
-		fmt.Fprintf(&view, "  %-16s %s %s\n", label, quickstartProgressBar(status, m.frame), status)
+		fmt.Fprintf(&view, "  %-16s %s %-7s %s\n", label, quickstartProgressBar(status, m.frame), status, m.infrastructureSize(i))
 	}
 	view.WriteString("\n")
 	if m.agentStep {
@@ -435,13 +435,48 @@ func (m quickstartWizardModel) View() tea.View {
 	return tea.NewView(view.String())
 }
 
+func (m quickstartWizardModel) infrastructureSize(step int) string {
+	switch step {
+	case 0:
+		return "~1.3 GB node image"
+	case 1:
+		if m.chosen != nil && m.chosen.Provider != "bundled" {
+			return "skipped; host runtime"
+		}
+		return "~1.1 GB image"
+	case 2:
+		model := m.chosen
+		if model == nil && len(m.models) > 0 {
+			model = &m.models[0]
+		}
+		if model != nil && model.Provider != "bundled" {
+			if model.Size > 0 {
+				return fmt.Sprintf("%s already installed", quickstartSize(model.Size))
+			}
+			return "already installed; size unknown"
+		}
+		return "~1.9 GB model"
+	case 3:
+		return "~860 MB images"
+	default:
+		return ""
+	}
+}
+
+func quickstartSize(size int64) string {
+	if size >= 1_000_000_000 {
+		return fmt.Sprintf("%.1f GB", float64(size)/1_000_000_000)
+	}
+	return fmt.Sprintf("%.0f MB", float64(size)/1_000_000)
+}
+
 func quickstartModelLabel(model localModel) string {
 	if model.Provider == "bundled" {
 		return fmt.Sprintf("%s (bundled, download during setup)", model.Model)
 	}
 	size := "size unknown"
 	if model.Size > 0 {
-		size = fmt.Sprintf("%.1f GB", float64(model.Size)/(1<<30))
+		size = quickstartSize(model.Size)
 	}
 	return fmt.Sprintf("%s (%s on this host, %s)", model.Model, model.Provider, size)
 }
@@ -550,6 +585,7 @@ func runQuickstartReadyScreen(in io.Reader, out io.Writer, name string) (bool, e
 
 func (a *App) quickstartOrkaChat(agent, namespace string) error {
 	fmt.Fprintf(a.Out, "Chatting with %s. Type /exit to finish.\n", agent)
+	fmt.Fprintln(a.Out, "Each message runs as a fresh local Orka Task.")
 	scanner := bufio.NewScanner(a.Stdin)
 	for {
 		fmt.Fprint(a.Out, "\nYou > ")
@@ -585,7 +621,10 @@ func (a *App) runQuickstartOrkaTask(agent, namespace, prompt string) (string, er
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	opt := CreateOptions{Namespace: namespace, ResultServiceAccount: "orka-result-reader", OrkaAPIService: "orka-api", ResultPort: "19180", Task: prompt}
-	session, err := a.openOrkaResultSession(ctx, opt)
+	quiet := *a
+	var diagnostics bytes.Buffer
+	quiet.Err = &diagnostics
+	session, err := quiet.openOrkaResultSession(ctx, opt)
 	if err != nil {
 		return "", err
 	}

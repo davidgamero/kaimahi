@@ -88,6 +88,8 @@ run the experimental `kmx quickstart-wizard`. Its TUI keeps kind, model, and
 Orka setup progress visible while you describe the agent. It offers bundled
 and detected host models with their source and reported size, can continue
 with an existing local Orka agent, and ends by offering a native Task chat.
+Progress rows show approximate local image/model footprints; they are size
+estimates, not byte counters from the underlying container tools.
 
 In an interactive terminal, `quickstart` checks whether Ollama is already
 running on the host and lists only models it reports as installed. Reuse is
