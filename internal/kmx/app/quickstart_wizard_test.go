@@ -16,9 +16,10 @@ func TestQuickstartWizardViewKeepsInfrastructureAboveNumberedAgentStep(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := quickstartWizardModel{create: create, setup: [4]string{"done", "active", "pending", "pending"}, frame: 3}
+	m := quickstartWizardModel{create: create, setup: [4]string{"done", "active", "pending", "pending"}, frame: 3,
+		target: quickstartTarget{Context: "kind-demo", Source: "kmx ctx", Server: "127.0.0.1", Namespaces: "orka-system, ollama", Posture: "local kind"}}
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"INFRASTRUCTURE", "Kind cluster", "Ollama image", "Model qwen2.5:3b", "Orka runtime", "AGENT SETUP", "STEP 2 OF 8", "Description"} {
+	for _, want := range []string{"TARGET & INFRASTRUCTURE", "kind-demo", "kmx ctx", "127.0.0.1", "local kind", "Kind cluster", "Ollama image", "Model qwen2.5:3b", "Orka runtime", "AGENT SETUP", "STEP 2 OF 8", "Description"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -142,25 +143,25 @@ func TestQuickstartWizardPanelsFitNarrowTerminal(t *testing.T) {
 	}
 }
 
-func TestQuickstartWizardBorderColorTracksFocus(t *testing.T) {
+func TestQuickstartWizardOnlyFocusedQuestionHasBorder(t *testing.T) {
 	create, err := newCreateWizardModel(CreateOptions{Model: "qwen2.5:3b"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	m := quickstartWizardModel{create: create, width: 80}
-	if panel := m.infrastructurePanel(78); !strings.Contains(panel, "\x1b[90m╭") {
-		t.Fatalf("passive infrastructure border is not gray:\n%s", panel)
+	if section := m.infrastructurePanel(78); strings.Contains(ansi.Strip(section), "╭") {
+		t.Fatalf("passive infrastructure is outlined:\n%s", section)
 	}
 	if panel := m.agentPanel(78); !strings.Contains(panel, "\x1b[35m╭") {
 		t.Fatalf("focused agent border is not magenta:\n%s", panel)
 	}
 	m.formDone = true
-	if panel := m.agentPanel(78); !strings.Contains(panel, "\x1b[90m╭") {
-		t.Fatalf("waiting agent border is not gray:\n%s", panel)
+	if section := m.agentPanel(78); strings.Contains(ansi.Strip(section), "╭") {
+		t.Fatalf("waiting agent section is outlined:\n%s", section)
 	}
 	m.setupErr = fmt.Errorf("failed")
-	if panel := m.agentPanel(78); !strings.Contains(panel, "\x1b[31m╭") {
-		t.Fatalf("failed agent border is not red:\n%s", panel)
+	if section := m.agentPanel(78); strings.Contains(ansi.Strip(section), "╭") || !strings.Contains(section, "\x1b[31m") {
+		t.Fatalf("failed agent section has wrong focus treatment:\n%s", section)
 	}
 }
 

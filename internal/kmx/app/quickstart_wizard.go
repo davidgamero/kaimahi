@@ -15,6 +15,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/guard"
 )
 
 // QuickstartWizardOptions configures the experimental path from an empty
@@ -25,6 +26,10 @@ type QuickstartWizardOptions struct {
 
 type quickstartExistingAgent struct {
 	Name, Namespace string
+}
+
+type quickstartTarget struct {
+	Action, Context, Source, Server, Namespaces, Posture string
 }
 
 // QuickstartWizard overlaps host-only agent authoring with cold local runtime
@@ -41,7 +46,8 @@ func (a *App) QuickstartWizard(opt QuickstartWizardOptions) error {
 	if err := a.preflight(depKind, depKubectl, a.engineDependency()); err != nil {
 		return err
 	}
-	if err := a.GuardCreate("create a local cluster, model runtime, Orka, and a user-authored agent", "kmx quickstart-wizard"); err != nil {
+	target, err := a.quickstartWizardTarget()
+	if err != nil {
 		return err
 	}
 
@@ -70,7 +76,7 @@ func (a *App) QuickstartWizard(opt QuickstartWizardOptions) error {
 	setup.Out, setup.Err, setup.Stdin = &setupLog, &setupLog, nil
 	setup.guarded = true
 	modelPick := make(chan *localModel, 1)
-	completed, imported, cancelled, setupErr, wizardErr := runQuickstartWizard(a.Stdin, a.Err, create, models, existing, modelPick,
+	completed, imported, cancelled, setupErr, wizardErr := runQuickstartWizard(a.Stdin, a.Err, create, models, existing, target, modelPick,
 		func(report func(quickstartSetupEvent)) error { return setup.quickstartWizardSetup(modelPick, report) })
 	if wizardErr != nil || setupErr != nil {
 		if setupLog.Len() > 0 {
@@ -99,6 +105,35 @@ func (a *App) QuickstartWizard(opt QuickstartWizardOptions) error {
 	}
 	a.complete("Agent is ready", started)
 	return nil
+}
+
+func (a *App) quickstartWizardTarget() (quickstartTarget, error) {
+	const action = "create a local cluster, model runtime, Orka, and a user-authored agent"
+	cfg, err := a.kubeconfig()
+	if err != nil {
+		return quickstartTarget{}, err
+	}
+	posture, err := guard.Classify(cfg, a.Cfg.KubeContext)
+	if err != nil {
+		return quickstartTarget{}, err
+	}
+	// Only the already-safe local path moves its banner into the TUI. A remote
+	// or unverified target retains GuardCreate's visible confirmation flow.
+	if !posture.Local {
+		if err := a.GuardCreate(action, "kmx quickstart-wizard"); err != nil {
+			return quickstartTarget{}, err
+		}
+	} else {
+		a.guarded = true
+	}
+	server := posture.Host
+	if server == "" {
+		server = "<none yet>"
+	}
+	return quickstartTarget{
+		Action: action, Context: posture.Context, Source: a.Cfg.ContextSource,
+		Server: server, Namespaces: "orka-system, ollama", Posture: posture.Label,
+	}, nil
 }
 
 func (a *App) quickstartExistingAgents() []quickstartExistingAgent {
@@ -259,6 +294,7 @@ type quickstartWizardModel struct {
 	formDone  bool
 	frame     int
 	width     int
+	target    quickstartTarget
 }
 
 type quickstartTickMsg struct{}
@@ -397,6 +433,20 @@ func (m quickstartWizardModel) View() tea.View {
 
 func (m quickstartWizardModel) infrastructurePanel(width int) string {
 	var body strings.Builder
+	target := []struct{ label, value string }{
+		{"ABOUT TO", m.target.Action}, {"CONTEXT", m.target.Context}, {"CHOSEN BY", m.target.Source},
+		{"SERVER", m.target.Server}, {"NAMESPACES", m.target.Namespaces}, {"POSTURE", m.target.Posture},
+	}
+	for _, field := range target {
+		if field.value == "" {
+			continue
+		}
+		label := lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Width(12).Render(field.label)
+		fmt.Fprintf(&body, "%s %s\n", label, field.value)
+	}
+	if body.Len() > 0 {
+		body.WriteByte('\n')
+	}
 	labels := []string{"Kind cluster", "Ollama image", "Model " + m.create.opt.Model, "Orka runtime"}
 	for i, label := range labels {
 		status := m.setup[i]
@@ -415,7 +465,7 @@ func (m quickstartWizardModel) infrastructurePanel(width int) string {
 			body.WriteByte('\n')
 		}
 	}
-	return quickstartPanel("INFRASTRUCTURE", body.String(), width, lipgloss.Cyan, lipgloss.BrightBlack)
+	return quickstartSection("TARGET & INFRASTRUCTURE", body.String(), width, lipgloss.Cyan)
 }
 
 func (m quickstartWizardModel) agentPanel(width int) string {
@@ -457,14 +507,14 @@ func (m quickstartWizardModel) agentPanel(width int) string {
 	if m.chosen != nil && !m.modelStep {
 		fmt.Fprintf(&body, "\n\n%s %s", lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("MODEL"), quickstartModelLabel(*m.chosen))
 	}
-	border := color.Color(lipgloss.Magenta)
 	if m.formDone {
-		border = lipgloss.BrightBlack
+		heading := color.Color(lipgloss.Magenta)
+		if m.setupErr != nil {
+			heading = lipgloss.Red
+		}
+		return quickstartSection("AGENT SETUP", body.String(), width, heading)
 	}
-	if m.setupErr != nil {
-		border = lipgloss.Red
-	}
-	return quickstartPanel("AGENT SETUP", body.String(), width, lipgloss.Magenta, border)
+	return quickstartPanel("AGENT SETUP", body.String(), width, lipgloss.Magenta, lipgloss.Magenta)
 }
 
 func (m quickstartWizardModel) quickstartModelChoiceLabel(model localModel) string {
@@ -483,6 +533,11 @@ func quickstartPanel(title, body string, width int, headingColor, borderColor co
 		Padding(1, 2).
 		Width(innerWidth).
 		Render(heading + "\n\n" + body)
+}
+
+func quickstartSection(title, body string, width int, headingColor color.Color) string {
+	heading := lipgloss.NewStyle().Bold(true).Foreground(headingColor).Render(title)
+	return lipgloss.NewStyle().Width(max(24, width-2)).PaddingLeft(1).Render(heading + "\n\n" + body)
 }
 
 func quickstartChoices(choices []string, selected int) string {
@@ -598,7 +653,7 @@ func quickstartProgressBar(status string, frame int) string {
 	}
 }
 
-func runQuickstartWizard(in io.Reader, out io.Writer, opt CreateOptions, models []localModel, existing []quickstartExistingAgent, modelPick chan<- *localModel, setup func(func(quickstartSetupEvent)) error) (CreateOptions, *quickstartExistingAgent, bool, error, error) {
+func runQuickstartWizard(in io.Reader, out io.Writer, opt CreateOptions, models []localModel, existing []quickstartExistingAgent, target quickstartTarget, modelPick chan<- *localModel, setup func(func(quickstartSetupEvent)) error) (CreateOptions, *quickstartExistingAgent, bool, error, error) {
 	create, err := newCreateWizardModel(opt)
 	if err != nil {
 		return opt, nil, false, nil, err
@@ -609,7 +664,7 @@ func runQuickstartWizard(in io.Reader, out io.Writer, opt CreateOptions, models 
 		setupResult <- setup(func(event quickstartSetupEvent) { events <- event })
 		close(events)
 	}()
-	model := quickstartWizardModel{create: create, events: events, models: models, existing: existing, modelPick: modelPick, modelStep: true, agentStep: true}
+	model := quickstartWizardModel{create: create, events: events, models: models, existing: existing, target: target, modelPick: modelPick, modelStep: true, agentStep: true}
 	result, runErr := tea.NewProgram(model, tea.WithInput(in), tea.WithOutput(out)).Run()
 	setupErr := <-setupResult
 	if runErr != nil {
