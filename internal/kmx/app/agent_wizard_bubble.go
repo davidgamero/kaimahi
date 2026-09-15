@@ -106,7 +106,7 @@ func (m *createWizardModel) startMissingStep() {
 		m.input.Placeholder = "What should this agent do?"
 		m.input.Validate = requiredDescription
 		m.input.CharLimit = 0
-		m.input.SetValue("")
+		m.input.SetValue(m.opt.descriptionDefault)
 		m.input.Focus()
 	case strings.TrimSpace(m.opt.Name) == "":
 		m.step = createName
@@ -295,7 +295,7 @@ func (m createWizardModel) View() tea.View {
 		if m.opt.Task != "" {
 			body.WriteString("\n" + createTaskAuthorityNotice + "\n")
 		}
-		body.WriteString("\nCreate Orka resources?\n")
+		fmt.Fprintf(&body, "\nCreate Agent %q (Orka agent)?\n", displayWizardValue(m.opt.Name))
 		choices := []string{"Apply", "Cancel"}
 		for i, choice := range choices {
 			marker := "  "

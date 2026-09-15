@@ -20,6 +20,7 @@ type localModel struct {
 	Provider string
 	Model    string
 	Endpoint string
+	Size     int64
 }
 
 type localModelDetector interface {
@@ -56,6 +57,7 @@ func (d ollamaDetector) Detect(ctx context.Context) ([]localModel, error) {
 	var body struct {
 		Models []struct {
 			Name string `json:"name"`
+			Size int64  `json:"size"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
@@ -64,7 +66,7 @@ func (d ollamaDetector) Detect(ctx context.Context) ([]localModel, error) {
 	models := make([]localModel, 0, len(body.Models))
 	for _, found := range body.Models {
 		if name := strings.TrimSpace(found.Name); localModelName.MatchString(name) {
-			models = append(models, localModel{Provider: "ollama", Model: name})
+			models = append(models, localModel{Provider: "ollama", Model: name, Size: found.Size})
 		}
 	}
 	return models, nil

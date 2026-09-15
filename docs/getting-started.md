@@ -83,6 +83,12 @@ kmx quickstart
 kmx quickstart --output json --task 'Who are you?'
 ```
 
+To author your own Orka agent instead of deploying the fixed demonstration,
+run the experimental `kmx quickstart-wizard`. Its TUI keeps kind, model, and
+Orka setup progress visible while you describe the agent. It offers bundled
+and detected host models with their source and reported size, can continue
+with an existing local Orka agent, and ends by offering a native Task chat.
+
 In an interactive terminal, `quickstart` checks whether Ollama is already
 running on the host and lists only models it reports as installed. Reuse is
 opt-in; the bundled in-cluster model remains the default. After kind is ready,
