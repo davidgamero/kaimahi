@@ -154,13 +154,27 @@ func TestQuickstartDescriptionStartsWithHelloWorldAgent(t *testing.T) {
 
 func TestQuickstartReadyScreenDefaultsToChat(t *testing.T) {
 	m := quickstartReadyModel{name: "hello-world-agent"}
-	view := m.View().Content
-	if !strings.Contains(view, "> Chat with agent") || !strings.Contains(view, `Agent "hello-world-agent" is ready`) {
+	view := ansi.Strip(m.View().Content)
+	for _, want := range []string{"QUICKSTART COMPLETE", "READY", "NEXT STEP", "› Chat with agent", `Agent "hello-world-agent" is ready`} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("ready screen missing %q:\n%s", want, view)
+		}
+	}
+	if !strings.Contains(view, "The model and Orka runtime are available") {
 		t.Fatalf("ready screen does not continue into chat by default:\n%s", view)
 	}
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil || updated.(quickstartReadyModel).selection != 0 {
 		t.Fatal("default ready action did not select chat")
+	}
+}
+
+func TestQuickstartReadyScreenFitsNarrowTerminal(t *testing.T) {
+	m := quickstartReadyModel{name: "hello-world-agent", width: 44}
+	for _, line := range strings.Split(m.View().Content, "\n") {
+		if got := lipgloss.Width(line); got > 44 {
+			t.Fatalf("ready screen line is %d cells wide: %q", got, ansi.Strip(line))
+		}
 	}
 }
 

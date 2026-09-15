@@ -621,13 +621,18 @@ func runQuickstartWizard(in io.Reader, out io.Writer, opt CreateOptions, models 
 type quickstartReadyModel struct {
 	name      string
 	selection int
+	width     int
 }
 
 func (m quickstartReadyModel) Init() tea.Cmd { return nil }
 func (m quickstartReadyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width = size.Width
+		return m, nil
+	}
 	if key, ok := msg.(tea.KeyPressMsg); ok {
 		switch key.Code {
-		case tea.KeyLeft, tea.KeyRight, tea.KeyTab:
+		case tea.KeyLeft, tea.KeyRight, tea.KeyUp, tea.KeyDown, tea.KeyTab:
 			m.selection = 1 - m.selection
 		case tea.KeyEnter:
 			return m, tea.Quit
@@ -636,17 +641,22 @@ func (m quickstartReadyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 func (m quickstartReadyModel) View() tea.View {
-	choices := []string{"Chat with agent", "Finish"}
-	var body strings.Builder
-	fmt.Fprintf(&body, "Agent %q is ready\n\nWhat next?\n", m.name)
-	for i, choice := range choices {
-		marker := "  "
-		if i == m.selection {
-			marker = "> "
-		}
-		body.WriteString(marker + choice + "  ")
+	width := m.width
+	if width <= 0 {
+		width = 72
 	}
-	return tea.NewView(body.String())
+	panelWidth := max(30, min(80, width-2))
+	choices := []string{"Chat with agent", "Finish"}
+	ready := quickstartPanel("READY",
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Green).Render("Agent "+fmt.Sprintf("%q", m.name)+" is ready")+"\n\n"+
+			lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("The model and Orka runtime are available."),
+		panelWidth, lipgloss.Green)
+	actions := quickstartPanel("NEXT STEP",
+		lipgloss.NewStyle().Bold(true).Render("What would you like to do?")+"\n\n"+
+			quickstartChoices(choices, m.selection)+"\n\n"+
+			lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("enter choose  •  arrows select"),
+		panelWidth, lipgloss.Magenta)
+	return tea.NewView(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Cyan).Render("KMX  /  QUICKSTART COMPLETE") + "\n\n" + ready + "\n\n" + actions)
 }
 
 func runQuickstartReadyScreen(in io.Reader, out io.Writer, name string) (bool, error) {
