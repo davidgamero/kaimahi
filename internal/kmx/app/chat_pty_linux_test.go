@@ -14,6 +14,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 )
 
 func chatPTY(t *testing.T, width int) (*os.File, *os.File) {
@@ -394,6 +395,28 @@ func TestChatPTYResizeAbortsWithoutStaleRedraw(t *testing.T) {
 				t.Fatal("history lost")
 			}
 		})
+	}
+}
+
+func TestQuickstartChatHandoffWaitsForTerminalSizeToSettle(t *testing.T) {
+	_, slave := chatPTY(t, 80)
+	done := make(chan error, 1)
+	go func() { done <- waitForStableTerminalSize(slave, slave) }()
+	time.Sleep(30 * time.Millisecond)
+	if err := unix.IoctlSetWinsize(int(slave.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 30, Col: 100}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal handoff did not stabilize")
+	}
+	width, height, err := term.GetSize(int(slave.Fd()))
+	if err != nil || width != 100 || height != 30 {
+		t.Fatalf("stable dimensions=%dx%d err=%v", width, height, err)
 	}
 }
 

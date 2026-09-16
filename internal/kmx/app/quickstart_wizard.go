@@ -15,6 +15,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/guard"
+	"golang.org/x/term"
 )
 
 // QuickstartWizardOptions configures the experimental path from an empty
@@ -750,7 +751,35 @@ func runQuickstartReadyScreen(in io.Reader, out io.Writer, name string) (bool, e
 }
 
 func (a *App) quickstartOrkaChat(agent, namespace string) error {
+	if err := waitForStableTerminalSize(a.Stdin, a.Out); err != nil {
+		return err
+	}
 	return a.runInteractiveChatBackend(&orkaChatBackend{app: a, agent: agent, namespace: namespace})
+}
+
+func waitForStableTerminalSize(in *os.File, out io.Writer) error {
+	outFile, ok := out.(*os.File)
+	if in == nil || !ok || !term.IsTerminal(int(in.Fd())) || !term.IsTerminal(int(outFile.Fd())) {
+		return nil
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	lastWidth, lastHeight := 0, 0
+	stable := 0
+	for time.Now().Before(deadline) {
+		width, height, err := term.GetSize(int(outFile.Fd()))
+		if err == nil && width > 0 && height > 0 {
+			if width == lastWidth && height == lastHeight {
+				stable++
+				if stable == 2 {
+					return nil
+				}
+			} else {
+				lastWidth, lastHeight, stable = width, height, 0
+			}
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+	return fmt.Errorf("terminal dimensions did not stabilize after quickstart; chat was not started")
 }
 
 type orkaChatBackend struct {

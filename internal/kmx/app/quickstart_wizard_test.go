@@ -249,3 +249,9 @@ func TestQuickstartReadyScreenRestoresAlternateScreenBeforeChat(t *testing.T) {
 		t.Fatalf("completion did not enter and restore the alternate screen: %q", rendered)
 	}
 }
+
+func TestStableTerminalSizeIsNoopForNonterminal(t *testing.T) {
+	if err := waitForStableTerminalSize(nil, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+}
