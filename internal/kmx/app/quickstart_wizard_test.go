@@ -142,6 +142,17 @@ func TestQuickstartInfrastructureRowsExplainEstimatedSetupSize(t *testing.T) {
 	}
 }
 
+func TestManagedOllamaKeepsPrewarmedModelResident(t *testing.T) {
+	body, err := manifest("ollama.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, "name: OLLAMA_KEEP_ALIVE") || !strings.Contains(text, `value: "1h"`) {
+		t.Fatalf("managed Ollama does not retain prewarmed weights:\n%s", text)
+	}
+}
+
 func TestQuickstartStartsWithExistingAgentOrNewChoice(t *testing.T) {
 	create, err := newCreateWizardModel(CreateOptions{descriptionDefault: "Hello world agent"})
 	if err != nil {

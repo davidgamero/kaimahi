@@ -217,7 +217,14 @@ func (a *App) quickstartWizardSetup(modelPick <-chan *localModel, report func(qu
 	if err := run(2, a.stepModel); err != nil {
 		return err
 	}
+	if err := a.prewarmQuickstartModel(); err != nil {
+		return err
+	}
 	return a.quickstartWizardOrka(report)
+}
+
+func (a *App) prewarmQuickstartModel() error {
+	return a.kubectlRun("-n", "ollama", "exec", "deploy/ollama", "--", "ollama", "run", a.Cfg.Model, "Reply with exactly: ready")
 }
 
 func (a *App) quickstartWizardOrka(report func(quickstartSetupEvent)) error {
@@ -798,7 +805,7 @@ func (b *orkaChatBackend) Connect(_ context.Context, renderer *chatRenderer) err
 
 func (b *orkaChatBackend) Send(ctx context.Context, message string, renderer *chatRenderer) error {
 	renderer.beginAssistant(b.agent)
-	renderer.assistantOperation(b.agent, "WORKING", "", colorBlue, "Creating Orka Task")
+	renderer.assistantOperation(b.agent, "WORKING", "", colorBlue, "Running a fresh Orka Task and worker; local CPU inference can take about 30-60s")
 	answer, err := b.app.runQuickstartOrkaTaskContext(ctx, b.agent, b.namespace, message)
 	if err != nil {
 		return err

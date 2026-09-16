@@ -343,6 +343,7 @@ func readSlashLine(ctx context.Context, in, out *os.File, renderer *chatRenderer
 			if lipgloss.Width(rows[len(rows)-1]) == width {
 				rows = append(rows, "")
 			}
+			hint = ""
 		}
 		// Keep editing bounded to the visible screen, even for a large paste.
 		visible := max(1, height-1)

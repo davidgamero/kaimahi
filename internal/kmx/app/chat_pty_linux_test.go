@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/cliui"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
@@ -126,6 +127,7 @@ func TestChatPTYRawInput(t *testing.T) {
 		{name: "wrapped delete", keys: "abcdefghijklmnop\x7f\x7f\r", want: "abcdefghijklmn", width: 10},
 		{name: "shrink wrapped input", keys: "abcdefghijklmnop" + strings.Repeat("\x7f", 16) + "x\r", want: "x", width: 10},
 		{name: "hint submit", keys: "/hi\t\r", want: "/history", width: 10},
+		{name: "transient backend hint", keys: "hello\r", want: "hello", width: 40},
 		{name: "tiny hint", keys: "/\x7fx\r", want: "x", width: 3},
 		{name: "grapheme delete", keys: "e\u0301👩‍💻\x7f\x7fx\r", want: "x", width: 12},
 		{name: "malformed utf8", keys: "\xc3x\r", want: "x", width: 12},
@@ -176,6 +178,10 @@ func TestChatPTYRawInput(t *testing.T) {
 			}()
 			t.Cleanup(func() { close(stop) })
 			r := &chatRenderer{out: slave, cursor: true}
+			if tc.name == "transient backend hint" {
+				r.ui = cliui.WithCapabilities(cliui.Capabilities{Rich: true, Color: false, Width: tc.width})
+				r.promptHint = "/help  /retry  /exit"
+			}
 			if tc.prompt != "" {
 				r.operationPrompt("NATIVE", colorYellow, "payload", tc.prompt)
 			} else {
@@ -263,6 +269,9 @@ func TestChatPTYRawInput(t *testing.T) {
 			}
 			if (tc.name == "long user submission" || tc.name == "wrapped delete") && strings.Count(screen, "YOU >") != 1 {
 				t.Fatalf("submission duplicated prompt/input: %s", screen)
+			}
+			if tc.name == "transient backend hint" && strings.Contains(screen, "/help  /retry  /exit") {
+				t.Fatalf("transient slash hints remained under submitted input: %s", screen)
 			}
 			if tc.prompt != "" && strings.Contains(screen, "YOU >") {
 				t.Fatalf("native prompt replaced: %s", screen)
