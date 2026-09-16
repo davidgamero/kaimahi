@@ -42,6 +42,7 @@ type ChatOptions struct {
 	Agent       string
 	Task        string
 	Interactive bool
+	Verbose     bool
 	Session     string
 }
 
@@ -64,6 +65,7 @@ func (a *App) Chat(agent, task string) error {
 
 // ChatWithOptions asks one question or starts an interactive session.
 func (a *App) ChatWithOptions(opt ChatOptions) error {
+	a.chatVerbose = opt.Verbose
 	agent, task := opt.Agent, opt.Task
 	if agent == "" {
 		agent = config.DefaultAgent

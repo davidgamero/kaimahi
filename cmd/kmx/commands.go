@@ -59,11 +59,12 @@ func newQuickstartWizardCommand(state *commandState) *cobra.Command {
 		Args:  cobra.NoArgs,
 	}
 	cmd.Flags().StringVar(&opt.Create.Instructions, "instructions", "", "file containing the system message")
-	cmd.Flags().StringVar(&opt.Create.Tools, "tools", "", "comma-separated explicit Orka tool names")
+	cmd.Flags().StringVar(&opt.Create.Tools, "tools", "", "comma-separated Orka tool names (default: k8s-get-resources)")
 	cmd.Flags().StringVar(&opt.Create.Skills, "skills", "", "comma-separated explicit Orka skill names")
 	cmd.Flags().StringVar(&opt.Create.Task, "task", "", "optional first Orka Task prompt")
 	cmd.Flags().StringVar(&opt.Create.ResultServiceAccount, "result-service-account", "", "existing ServiceAccount for Task result access")
 	cmd.Flags().StringVar(&opt.Create.Out, "out", "", "manifest output path")
+	cmd.Flags().BoolVar(&opt.Verbose, "verbose", false, "show chat WORKING and TIMING details")
 	cmd.RunE = appRun(state, func(a *app.App) error { return a.QuickstartWizard(opt) })
 	return cmd
 }

@@ -12,6 +12,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/cliui"
 	"github.com/muesli/cancelreader"
 	"github.com/rivo/uniseg"
 	"golang.org/x/term"
@@ -34,6 +35,8 @@ var slashCommandList = []slashCommand{
 	{"/sessions", "/sessions"},
 	{"/tools", "/tools off|summary|verbose"},
 	{"/ungovern", "/ungovern"},
+	{"/verbose-on", "/verbose-on"},
+	{"/verbose-off", "/verbose-off"},
 }
 
 type slashTrie struct {
@@ -93,7 +96,7 @@ func slashCommandReference() string {
 			switch command.name {
 			case "/new", "/resume", "/session", "/sessions", "/history":
 				category = "Session"
-			case "/tools":
+			case "/tools", "/verbose-on", "/verbose-off":
 				category = "Display"
 			case "/govern", "/ungovern":
 				category = "Governance"
@@ -181,6 +184,48 @@ func (i *chatInput) readLine(ctx context.Context, hints bool) (string, error) {
 
 var errTerminalUnavailable = fmt.Errorf("terminal raw mode unavailable")
 var errChatResized = fmt.Errorf("terminal resized; chat stopped without submitting the current input or approval; restart chat to continue")
+
+func waitForStableTerminalSize(in *os.File, out io.Writer) error {
+	return waitForStableTerminalSizeContext(context.Background(), in, out)
+}
+
+func waitForStableTerminalSizeContext(ctx context.Context, in *os.File, out io.Writer) error {
+	outFile, ok := out.(*os.File)
+	if in == nil || !ok || !term.IsTerminal(int(in.Fd())) || !term.IsTerminal(int(outFile.Fd())) {
+		return nil
+	}
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(25 * time.Millisecond)
+	defer poll.Stop()
+	lastWidth, lastHeight := 0, 0
+	stableSince := time.Time{}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		width, height, err := term.GetSize(int(outFile.Fd()))
+		if err == nil && width > 0 && height > 0 {
+			if width == lastWidth && height == lastHeight {
+				if !stableSince.IsZero() && time.Since(stableSince) >= 250*time.Millisecond {
+					return nil
+				}
+			} else {
+				lastWidth, lastHeight, stableSince = width, height, time.Now()
+			}
+		} else {
+			stableSince = time.Time{}
+			lastWidth, lastHeight = 0, 0
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("terminal dimensions did not stabilize after entering chat; chat was not started")
+		case <-poll.C:
+		}
+	}
+}
 
 // Explicit row breaks avoid terminal-dependent pending-wrap cursor positions.
 func chatInputRows(prompt, line string, width int) []string {
@@ -342,6 +387,9 @@ func readSlashLine(ctx context.Context, in, out *os.File, renderer *chatRenderer
 			rows = strings.Split(ansi.Hardwrap(prompt+safeTerminal(line), width, true), "\n")
 			if lipgloss.Width(rows[len(rows)-1]) == width {
 				rows = append(rows, "")
+			}
+			if framed && promptKind == cliui.FocusMessage && strings.TrimSpace(line) != "" && !strings.HasPrefix(strings.TrimSpace(line), "/") {
+				rows = renderer.ui.UserMessage(safeTerminal(line), width-1)
 			}
 			hint = ""
 		}

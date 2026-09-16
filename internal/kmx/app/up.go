@@ -357,10 +357,13 @@ func (a *App) validateKindTarget() error {
 // say so — a first run that fails is survivable, a first run that fails
 // somewhere unrelated is what makes people give up.
 func (a *App) waitClusterServing() error {
-	ready := run.Poll(60, 2*time.Second, func() bool {
+	ready := run.PollContext(a.operationContext(), 60, 2*time.Second, func() bool {
 		return a.kubectlQuiet("get", "--raw=/readyz")
 	})
 	if !ready {
+		if err := a.operationContext().Err(); err != nil {
+			return err
+		}
 		return fmt.Errorf("kind cluster %q API did not become ready after 120s", a.Cfg.KindCluster)
 	}
 	if err := a.kubectlRun("-n", "kube-system", "rollout", "status", "deployment/coredns", "--timeout=180s"); err != nil {
@@ -418,9 +421,16 @@ func (a *App) stepModel() error {
 		if err = a.kubectlRun("-n", "ollama", "exec", "deploy/ollama", "--", "ollama", "pull", a.Cfg.Model); err == nil {
 			return nil
 		}
+		if err := a.operationContext().Err(); err != nil {
+			return err
+		}
 		if attempt != 3 {
 			a.notef("the model pull failed (attempt %d/3) — retrying in 10s", attempt)
-			time.Sleep(10 * time.Second)
+			select {
+			case <-a.operationContext().Done():
+				return a.operationContext().Err()
+			case <-time.After(10 * time.Second):
+			}
 		}
 	}
 	return err

@@ -261,6 +261,9 @@ func TestChatPTYRawInput(t *testing.T) {
 				prefix = "  " + tc.prompt + " "
 			}
 			wantRows := chatInputRows(prefix, tc.want, tc.width)
+			if tc.name == "transient backend hint" {
+				wantRows = r.ui.UserMessage(tc.want, tc.width-1)
+			}
 			for index := range wantRows {
 				wantRows[index] = strings.TrimRight(wantRows[index], " ")
 			}
@@ -479,6 +482,7 @@ printf '%s\n' '{"artifact":{"parts":[{"kind":"text","text":" second"}]}}'`)
 	var stderr bytes.Buffer
 	a := &App{Out: slave, Err: &stderr}
 	r := newChatRenderer(slave)
+	r.verbose = true
 	r.beginAssistant("agent")
 	if _, err := a.invokeStream(context.Background(), dir+"/kagent", "", "agent", "hello", "", "off", r, nil); err != nil {
 		t.Fatal(err)
@@ -508,7 +512,7 @@ printf '%s\n' '{"artifact":{"parts":[{"kind":"text","text":" second"}]}}'`)
 		t.Fatalf("spinner used stderr capabilities/destination: %q / %q", output, stderr.String())
 	}
 	screen := chatScreen(output, 20)
-	if strings.Contains(screen, "WORKING") || !strings.Contains(screen, "  | first second") {
+	if strings.Contains(screen, "WORKING") || !strings.Contains(screen, "  first second") || strings.Contains(screen, "  | ") {
 		t.Fatalf("spinner or chunks damaged screen:\n%s\nraw: %q", screen, output)
 	}
 	// A terminal stderr must never enable a spinner in a plain stdout transcript.
@@ -604,6 +608,7 @@ func TestChatPTYHelpAndExitDispatch(t *testing.T) {
 			t.Setenv("TERM", "xterm-256color")
 			t.Setenv("NO_COLOR", "")
 			a := chatUXFixture(t)
+			a.chatVerbose = true
 			master, slave := chatPTY(t, 100)
 			a.Out, a.Stdin = slave, slave
 			done := make(chan error, 1)
@@ -646,6 +651,7 @@ sleep 0.6
 printf '%s\n' '{"status":{"state":"completed"},"artifact":{"parts":[{"kind":"text","text":"finished"}]}}'`)
 			r := newChatRenderer(slave)
 			a := &App{Out: slave}
+			r.verbose = true
 			if _, err := a.invokeStream(context.Background(), dir+"/kagent", "", "agent", "hello", "", mode, r, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -670,6 +676,7 @@ func TestChatPTYSpinnerResizeNeverErasesReflowedRows(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	master, slave := chatPTY(t, 80)
 	r := newChatRenderer(slave)
+	r.verbose = true
 	r.block("HISTORY", colorBlue, "durable")
 	r.spinner("agent", "|", time.Second)
 	var captured strings.Builder
@@ -713,5 +720,59 @@ func TestChatPTYNoColorKeepsScannerTranscript(t *testing.T) {
 	text := captured.String()
 	if !strings.HasPrefix(text, "CHAT STATUS\r\n------------\r\n  Agent: agent") || !strings.Contains(text, "[CHAT HELP]") || !strings.Contains(text, "Status: ended") || strings.Contains(text, "\x1b") || strings.Contains(text, "WORKING") {
 		t.Fatalf("NO_COLOR scanner transcript changed: %q", text)
+	}
+}
+
+func TestChatPTYConversationIsATopToBottomTimeline(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("NO_COLOR", "")
+	for _, width := range []int{24, 100} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			master, slave := chatPTY(t, width)
+			r := newChatRenderer(slave)
+			var captured strings.Builder
+			for turn, message := range []string{"first message", "second message"} {
+				boundary := captured.Len()
+				r.prompt()
+				done := make(chan error, 1)
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				go func() {
+					line, err := readSlashLine(ctx, slave, slave, r, false)
+					if err == nil && line != message {
+						err = fmt.Errorf("message changed: %q", line)
+					}
+					done <- err
+				}()
+				chatPTYReadUntil(t, master, &captured, func(s string) bool {
+					return strings.Contains(s[boundary:], "─ MESSAGE ")
+				})
+				if _, err := io.WriteString(master, message+"\r"); err != nil {
+					t.Fatal(err)
+				}
+				if err := <-done; err != nil {
+					t.Fatal(err)
+				}
+				r.assistant("agent", fmt.Sprintf("reply %d", turn+1), true)
+				r.responseTime(time.Duration(turn+2) * time.Second)
+				r.finish()
+				io.WriteString(slave, fmt.Sprintf("TURN %d\n", turn))
+				chatPTYReadUntil(t, master, &captured, func(s string) bool { return strings.HasSuffix(s, fmt.Sprintf("TURN %d\r\n", turn)) })
+			}
+			io.WriteString(slave, "END\n")
+			chatPTYReadUntil(t, master, &captured, func(s string) bool { return strings.HasSuffix(s, "END\r\n") })
+			screen := chatScreen(captured.String(), width)
+			if strings.Count(screen, "╭─ YOU ") != 2 || strings.Count(screen, "╰") != 2 || strings.Contains(screen, "MESSAGE") || strings.Contains(screen, "  | ") {
+				t.Fatalf("user boxes/agent background are inconsistent:\n%s", screen)
+			}
+			previous := -1
+			for _, want := range []string{"first message", "reply 1", "Responded in 2s", "second message", "reply 2", "Responded in 3s", "END"} {
+				index := strings.Index(screen, want)
+				if index <= previous {
+					t.Fatalf("missing or reordered %q:\n%s", want, screen)
+				}
+				previous = index
+			}
+		})
 	}
 }

@@ -1,6 +1,7 @@
 package cliui
 
 import (
+	"image/color"
 	"strconv"
 	"strings"
 
@@ -251,8 +252,8 @@ func (o Output) Callout(kind CalloutKind, title string, fields []Field) string {
 }
 
 // FocusKind identifies the one control currently accepting keyboard input.
-// Borders are reserved for focus; passive status and transcript content use
-// Fields, reports, or ordinary headings instead.
+// User messages retain a quiet border in the transcript; other passive content
+// uses Fields, reports, or ordinary headings.
 type FocusKind int
 
 const (
@@ -270,18 +271,27 @@ type FocusFrame struct {
 }
 
 // FocusInput renders a rounded input frame. The caller owns repainting and
-// must replace it with durable, unbordered transcript content on submission.
+// replaces it with durable transcript content on submission.
 func (o Output) FocusInput(kind FocusKind, prompt, value, hint string, width int) FocusFrame {
-	if width <= 0 {
-		width = o.cap.Width
-	}
-	width = max(12, width)
 	title, color := "MESSAGE", lipgloss.Magenta
 	if kind == FocusQuestion {
 		title, color = "ANSWER", lipgloss.Yellow
 	} else if kind == FocusApproval {
 		title, color = "DECISION", lipgloss.Yellow
 	}
+	return o.inputFrame(title, color, prompt, value, hint, width)
+}
+
+// UserMessage is a durable transcript box, with no editor hint or background.
+func (o Output) UserMessage(value string, width int) []string {
+	return o.inputFrame("YOU", lipgloss.BrightBlack, "", value, "", width).Rows
+}
+
+func (o Output) inputFrame(title string, color color.Color, prompt, value, hint string, width int) FocusFrame {
+	if width <= 0 {
+		width = o.cap.Width
+	}
+	width = max(12, width)
 	inner := max(1, width-4)
 	textRows := strings.Split(ansi.Hardwrap(prompt+value, inner, true), "\n")
 	if len(textRows) == 0 {

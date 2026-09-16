@@ -111,11 +111,12 @@ func newAgentEditCommand(state *commandState) *cobra.Command {
 }
 
 func newAgentChatCommand(state *commandState) *cobra.Command {
-	var asJSON, interactive bool
+	var asJSON, interactive, verbose bool
 	var session string
 	cmd := &cobra.Command{Use: "chat <name> [message...]", Short: "Chat with an Agent", Args: usageArgs(1, -1, "kmx agent chat [--json] [--interactive] [--session <id>] <name> [message]")}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print raw A2A task")
 	cmd.Flags().BoolVar(&interactive, "interactive", false, "keep one streamed session open")
+	cmd.Flags().BoolVar(&verbose, "verbose", false, "show chat WORKING and TIMING details")
 	cmd.Flags().StringVar(&session, "session", "", "resume this kagent session")
 	cmd.PreRunE = func(cmd *cobra.Command, _ []string) error {
 		if interactive && asJSON {
@@ -127,7 +128,7 @@ func newAgentChatCommand(state *commandState) *cobra.Command {
 	cmd.RunE = appRun(state, func(a *app.App) error {
 		args := cmd.Flags().Args()
 		a.ChatJSON(asJSON)
-		return a.ChatWithOptions(app.ChatOptions{Agent: args[0], Task: joinArgs(args[1:]), Interactive: interactive, Session: session})
+		return a.ChatWithOptions(app.ChatOptions{Agent: args[0], Task: joinArgs(args[1:]), Interactive: interactive, Session: session, Verbose: verbose})
 	})
 	return cmd
 }

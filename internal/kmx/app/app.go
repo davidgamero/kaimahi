@@ -44,9 +44,10 @@ type App struct {
 	// advice. Interactive sub-operations leave it empty and supply their own.
 	InvocationCommand string
 	// chatJSON forces raw A2A JSON from `agent chat` on a terminal.
-	chatJSON bool
-	Err      io.Writer
-	Stdin    *os.File
+	chatJSON    bool
+	chatVerbose bool
+	Err         io.Writer
+	Stdin       *os.File
 	// now is injectable so progress timing can be tested without sleeping.
 	now func() time.Time
 	// progressUI replaces destination detection in tests only. Production uses
@@ -91,6 +92,14 @@ func New(cfg *config.Config) *App {
 	r := run.Default()
 	r.Env = cfg.KindEnv()
 	return &App{Cfg: cfg, Run: r, Out: os.Stdout, Err: os.Stderr, Stdin: os.Stdin}
+}
+
+// operationContext is shared by commands, network requests, and retry waits.
+func (a *App) operationContext() context.Context {
+	if a.Run != nil && a.Run.Context != nil {
+		return a.Run.Context
+	}
+	return context.Background()
 }
 
 // kubectl returns a kubectl argument list carrying the explicit --context.

@@ -22,7 +22,8 @@ func TestSlashTrieMatchesPrefixes(t *testing.T) {
 		prefix string
 		want   []string
 	}{
-		{"/", []string{"/exit", "/govern", "/help", "/history", "/new", "/resume", "/retry", "/session", "/sessions", "/tools", "/ungovern"}},
+		{"/", []string{"/exit", "/govern", "/help", "/history", "/new", "/resume", "/retry", "/session", "/sessions", "/tools", "/ungovern", "/verbose-off", "/verbose-on"}},
+		{"/verbose", []string{"/verbose-off", "/verbose-on"}},
 		{"/h", []string{"/help", "/history"}},
 		{"/s", []string{"/session", "/sessions"}},
 		{"/sess", []string{"/session", "/sessions"}},
@@ -89,7 +90,7 @@ func dispatchedSlashCommands(t *testing.T) map[string]bool {
 	}
 	// Two shapes appear in the switch: an exact match on the whole line, and
 	// a prefix match for the commands that take an argument.
-	pattern := regexp.MustCompile(`message == "(/[a-z]+)"|strings\.HasPrefix\(message, "(/[a-z]+) "\)`)
+	pattern := regexp.MustCompile(`message == "(/[a-z-]+)"|strings\.HasPrefix\(message, "(/[a-z-]+) "\)`)
 	dispatched := map[string]bool{}
 	for _, match := range pattern.FindAllStringSubmatch(string(source), -1) {
 		for _, name := range match[1:] {

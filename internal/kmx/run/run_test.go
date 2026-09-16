@@ -62,3 +62,26 @@ func TestPollWithNoAttemptsFails(t *testing.T) {
 		t.Error("zero attempts must not report success")
 	}
 }
+
+func TestPollContextCancelsRetryDelay(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	checked := make(chan struct{})
+	done := make(chan bool, 1)
+	go func() {
+		done <- PollContext(ctx, 60, time.Hour, func() bool {
+			close(checked) // A second check would panic.
+			return false
+		})
+	}()
+	<-checked
+	cancel()
+	select {
+	case ready := <-done:
+		if ready {
+			t.Fatal("cancelled poll reported success")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancellation did not interrupt retry delay")
+	}
+}

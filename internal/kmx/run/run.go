@@ -188,12 +188,24 @@ func (r *Runner) Quiet(name string, args ...string) bool {
 // on the machines that need it to be longer, and a rollout race the wait
 // exists to absorb comes back as "the agent is not answering".
 func Poll(attempts int, interval time.Duration, check func() bool) bool {
+	return PollContext(context.Background(), attempts, interval, check)
+}
+
+// PollContext also stops between checks and during retry delays on cancellation.
+func PollContext(ctx context.Context, attempts int, interval time.Duration, check func() bool) bool {
 	for i := 0; i < attempts; i++ {
+		if ctx.Err() != nil {
+			return false
+		}
 		if check() {
 			return true
 		}
 		if i < attempts-1 {
-			time.Sleep(interval)
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(interval):
+			}
 		}
 	}
 	return false

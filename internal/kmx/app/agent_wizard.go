@@ -44,6 +44,12 @@ func finishCreateWizardOptions(opt *CreateOptions) error {
 	}
 	if opt.Instructions == "" && opt.InstructionText == "" {
 		opt.InstructionText = "You are " + opt.Name + ", a declarative Orka agent. Your purpose is: " + opt.Description + "\nAnswer briefly and say plainly when you do not know something."
+		for _, tool := range strings.Split(opt.Tools, ",") {
+			if strings.TrimSpace(tool) == quickstartK8sTool {
+				opt.InstructionText += "\n" + quickstartK8sInstructions
+				break
+			}
+		}
 	}
 	if err := validateOrkaResultOptions(opt); err != nil {
 		return err

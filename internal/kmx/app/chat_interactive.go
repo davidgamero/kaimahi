@@ -66,6 +66,7 @@ type chatRenderer struct {
 	spinnerDisabled bool
 	spinnerPaused   bool
 	pendingGap      bool
+	verbose         bool
 }
 
 func (r *chatRenderer) enterFullScreen() {
@@ -174,6 +175,11 @@ func (r *chatRenderer) block(label string, color actorColor, payload string) {
 	defer r.mu.Unlock()
 	r.clearLocked()
 	r.closeLocked()
+	if label == "YOU" && r.ui.Rich() && r.ui.Width() >= 16 {
+		fmt.Fprintln(r.out, strings.Join(r.ui.UserMessage(safeTerminal(payload), r.ui.Width()-1), "\n"))
+		fmt.Fprintln(r.out)
+		return
+	}
 	fmt.Fprintf(r.out, "%s\n%s\n\n", r.label(label, color), indentPayload(payload))
 }
 
@@ -284,13 +290,16 @@ func (r *chatRenderer) exit(reason string) {
 
 // Durable feedback is safe while commands or resumed streams may also write.
 func (r *chatRenderer) working(message string) {
-	if r == nil || !r.ui.Rich() {
+	if r == nil || !r.ui.Rich() || !r.verboseEnabled() {
 		return
 	}
 	r.operation("WORKING", "", colorBlue, message)
 }
 
 func (r *chatRenderer) operation(kind, subject string, color actorColor, payload string) {
+	if (kind == "WORKING" || kind == "TIMING") && !r.verboseEnabled() {
+		return
+	}
 	label := "[" + kind + "]"
 	if subject != "" {
 		payload = "Tool: " + safeTerminal(subject) + "\n" + payload
@@ -336,6 +345,9 @@ func (r *chatRenderer) beginAssistant(agent string) {
 func (r *chatRenderer) assistantOperation(agent, kind, subject string, color actorColor, payload string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if (kind == "WORKING" || kind == "TIMING") && !r.verbose {
+		return
+	}
 	r.clearLocked()
 	if r.openActor != agent {
 		r.closeLocked()
@@ -370,10 +382,18 @@ func (r *chatRenderer) assistant(agent, text string, start bool) {
 		r.actorLine = false
 	}
 	if !r.actorLine {
-		fmt.Fprint(r.out, "  | ")
+		if r.ui.Rich() {
+			fmt.Fprint(r.out, "  ")
+		} else {
+			fmt.Fprint(r.out, "  | ")
+		}
 		r.actorLine = true
 	}
-	fmt.Fprint(r.out, assistantPayload(text))
+	if r.ui.Rich() {
+		fmt.Fprint(r.out, strings.ReplaceAll(safeTerminal(text), "\n", "\n  "))
+	} else {
+		fmt.Fprint(r.out, assistantPayload(text))
+	}
 }
 
 func (r *chatRenderer) clearTransient() {
@@ -413,14 +433,25 @@ func (a *App) runInteractiveChatBackend(backend interactiveChatBackend) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	renderer := newChatRenderer(a.Out)
+	renderer.verbose = a.chatVerbose
 	if !newChatInput(nil, a.Stdin, a.Out, renderer).enhanced {
 		renderer.ui = cliui.WithCapabilities(cliui.Capabilities{})
 		renderer.cursor = false
 	}
 	renderer.enterFullScreen()
 	defer renderer.leaveFullScreen()
+	// Entering the alternate screen can itself change terminal dimensions.
+	// Establish the first prompt's baseline only after that transition settles.
+	if renderer.alternateScreen {
+		if err := waitForStableTerminalSizeContext(ctx, a.Stdin, a.Out); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		}
+	}
 	renderer.promptHint = "/help  /retry  /exit"
-	renderer.commandSummary = "/help /retry /exit"
+	renderer.commandSummary = "/help /retry /exit /tools /agent /verbose-on /verbose-off"
 	renderer.working("Connecting to " + backend.Agent())
 	fields, err := backend.Connect(ctx, renderer)
 	if err != nil {
@@ -459,7 +490,41 @@ func (a *App) runInteractiveChatBackend(backend interactiveChatBackend) error {
 			renderer.exit("exit requested")
 			return nil
 		case "/help":
-			renderer.operation("CHAT HELP", "", colorBlue, "Conversation:\n  /retry\n  /exit\n\nEach message creates one fresh Orka Task.")
+			renderer.operation("CHAT HELP", "", colorBlue, "Conversation:\n  /retry\n  /exit\n\nAgent:\n  /tools — search and enable tools\n  /agent — connect to another agent (resets chat)\n\nDisplay:\n  /verbose-on\n  /verbose-off\n\nEach message creates one fresh Orka Task.")
+			continue
+		case "/tools", "/agent":
+			controls, ok := backend.(configurableChatBackend)
+			if !ok {
+				renderer.operation("CHAT", "", colorBlue, "Agent configuration is unavailable for this backend.")
+				continue
+			}
+			reset, err := controls.Configure(ctx, message, renderer)
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				renderer.exit("cancelled")
+				return nil
+			}
+			if err != nil {
+				renderer.operation("CHAT", "", colorRed, safeTerminal(err.Error()))
+				continue
+			}
+			if reset {
+				last = ""
+				renderer.finish()
+				if renderer.alternateScreen {
+					fmt.Fprint(a.Out, "\x1b[H\x1b[2J")
+				}
+				fields, err := backend.Connect(ctx, renderer)
+				if err != nil {
+					return err
+				}
+				for _, field := range fields {
+					renderer.statusSection(field.Label, field.Value)
+				}
+				renderer.statusEnd()
+			}
+			continue
+		case "/verbose-on", "/verbose-off":
+			renderer.setVerbose(message == "/verbose-on")
 			continue
 		case "/retry":
 			if last == "" {
@@ -489,7 +554,7 @@ func sendInteractiveChatMessage(ctx context.Context, backend interactiveChatBack
 	done := make(chan struct{})
 	spinnerDone := make(chan struct{})
 	started := time.Now()
-	spinner := renderer != nil && renderer.cursor
+	spinner := renderer != nil && renderer.cursor && renderer.verboseEnabled()
 	if spinner {
 		renderer.pauseSpinner(false)
 		go func() {
@@ -513,7 +578,32 @@ func sendInteractiveChatMessage(ctx context.Context, backend interactiveChatBack
 	if spinner {
 		renderer.clearTransient()
 	}
+	if err == nil && renderer != nil {
+		renderer.responseTime(time.Since(started))
+	}
 	return err
+}
+
+// responseTime records end-to-end latency beneath a completed reply, not an
+// inference estimate. Failed and cancelled requests never get a success footer.
+func (r *chatRenderer) responseTime(elapsed time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.clearLocked()
+	if r.actorLine {
+		fmt.Fprintln(r.out)
+	}
+	duration := elapsed.Round(time.Millisecond).String()
+	if elapsed >= time.Second {
+		duration = elapsed.Round(100 * time.Millisecond).String()
+	}
+	text := r.wrap("Responded in "+duration+" · total request time", 2)
+	if r.ui.Rich() {
+		text = r.ui.Muted(text)
+	}
+	fmt.Fprintln(r.out, "  "+strings.ReplaceAll(text, "\n", "\n  "))
+	fmt.Fprintln(r.out)
+	r.openActor, r.actorLine, r.pendingGap = "", false, false
 }
 
 func (r *chatRenderer) submitted(inputWasTerminal bool) {
@@ -534,6 +624,9 @@ func (r *chatRenderer) spinner(agent, frame string, elapsed time.Duration) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.verbose {
+		return
+	}
 	if r.actorLine || r.promptOpen || r.spinnerDisabled || r.spinnerPaused {
 		return
 	}
@@ -562,6 +655,24 @@ func (r *chatRenderer) finish() {
 	defer r.mu.Unlock()
 	r.clearLocked()
 	r.closeLocked()
+}
+
+func (r *chatRenderer) verboseEnabled() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.verbose
+}
+
+func (r *chatRenderer) setVerbose(enabled bool) {
+	r.mu.Lock()
+	r.clearLocked()
+	r.verbose = enabled
+	r.mu.Unlock()
+	state := "off"
+	if enabled {
+		state = "on"
+	}
+	r.operation("CHAT", "", colorBlue, "Verbose: "+state)
 }
 
 func safeTerminal(s string) string {
@@ -763,6 +874,7 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	renderer := newChatRenderer(a.Out)
+	renderer.verbose = a.chatVerbose
 	// Scanner-mode chat retains its established transcript, even with a TTY output.
 	if !newChatInput(nil, a.Stdin, a.Out, renderer).enhanced {
 		renderer.ui = cliui.WithCapabilities(cliui.Capabilities{})
@@ -821,6 +933,9 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 			renderer.submitted(isInteractiveTerminal(a.Stdin))
 		}
 		switch {
+		case message == "/verbose-on" || message == "/verbose-off":
+			renderer.setVerbose(message == "/verbose-on")
+			continue
 		case message == "/exit" || message == "/quit" || message == "\x1b":
 			renderer.exit("exit requested")
 			return nil
@@ -932,6 +1047,7 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 		default:
 			last = message
 		}
+		started := time.Now()
 		renderer.beginAssistant(agent)
 		if posture.modelGoverned {
 			renderer.assistantOperation(agent, "KAIMAHI ROUTE", "", colorYellow, "Seam: model proxy\nConfiguration: verified through ready plane at chat start\nPer-call decision: not exposed by kagent stream")
@@ -980,6 +1096,7 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 				return err
 			}
 		}
+		renderer.responseTime(time.Since(started))
 		renderer.finish()
 	}
 }
@@ -1062,7 +1179,7 @@ func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, sessi
 	done := make(chan struct{})
 	spinnerDone := make(chan struct{})
 	started := time.Now()
-	spinner := renderer != nil && renderer.cursor
+	spinner := renderer != nil && renderer.cursor && renderer.verboseEnabled()
 	if spinner {
 		renderer.pauseSpinner(false)
 		go func() {
