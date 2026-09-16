@@ -65,7 +65,6 @@ func (a *App) QuickstartWizard(opt QuickstartWizardOptions) error {
 	if create.SecretKey == "" {
 		create.SecretKey = "api-key"
 	}
-	models := a.quickstartWizardModels()
 	existing := a.quickstartExistingAgents()
 
 	var setupLog bytes.Buffer
@@ -76,7 +75,8 @@ func (a *App) QuickstartWizard(opt QuickstartWizardOptions) error {
 	setup.Out, setup.Err, setup.Stdin = &setupLog, &setupLog, nil
 	setup.guarded = true
 	modelPick := make(chan *localModel, 1)
-	completed, imported, cancelled, setupErr, wizardErr := runQuickstartWizard(a.Stdin, a.Err, create, models, existing, target, modelPick,
+	defaultModel := localModel{Provider: "bundled", Model: a.Cfg.Model, Endpoint: "http://ollama.ollama.svc.cluster.local:11434"}
+	completed, imported, cancelled, setupErr, wizardErr := runQuickstartWizard(a.Stdin, a.Err, create, existing, target, defaultModel, modelPick,
 		func(report func(quickstartSetupEvent)) error { return setup.quickstartWizardSetup(modelPick, report) })
 	if wizardErr != nil || setupErr != nil {
 		if setupLog.Len() > 0 {
@@ -166,6 +166,7 @@ type quickstartSetupEvent struct {
 	status string
 	err    error
 	model  *localModel
+	models []localModel
 }
 
 func (a *App) quickstartWizardModels() []localModel {
@@ -196,28 +197,39 @@ func (a *App) quickstartWizardSetup(modelPick <-chan *localModel, report func(qu
 		report(quickstartSetupEvent{step: step, status: status, err: err})
 		return err
 	}
+	detected := make(chan []localModel, 1)
+	go func() {
+		report(quickstartSetupEvent{step: 1, status: "active"})
+		models := a.quickstartWizardModels()
+		report(quickstartSetupEvent{step: 1, status: "done", models: models})
+		detected <- models
+	}()
 	if err := run(0, a.stepCluster); err != nil {
 		return err
 	}
+	<-detected
 	choice := <-modelPick
 	if choice != nil && choice.Provider != "bundled" {
 		a.selectedLocalModel = choice
 		a.verifySelectedLocalModel()
 		if a.selectedLocalModel != nil {
-			report(quickstartSetupEvent{step: 1, status: "done", model: a.selectedLocalModel})
 			report(quickstartSetupEvent{step: 2, status: "done", model: a.selectedLocalModel})
+			report(quickstartSetupEvent{step: 3, status: "done", model: a.selectedLocalModel})
+			if err := run(4, func() error { return a.prewarmHostQuickstartModel(a.selectedLocalModel) }); err != nil {
+				return err
+			}
 			return a.quickstartWizardOrka(report)
 		}
 	}
 	bundled := &localModel{Provider: "bundled", Model: a.Cfg.Model, Endpoint: "http://ollama.ollama.svc.cluster.local:11434"}
-	report(quickstartSetupEvent{step: 2, status: "active", model: bundled})
-	if err := run(1, a.stepOllama); err != nil {
+	report(quickstartSetupEvent{step: 3, status: "pending", model: bundled})
+	if err := run(2, a.stepOllama); err != nil {
 		return err
 	}
-	if err := run(2, a.stepModel); err != nil {
+	if err := run(3, a.stepModel); err != nil {
 		return err
 	}
-	if err := a.prewarmQuickstartModel(); err != nil {
+	if err := run(4, a.prewarmQuickstartModel); err != nil {
 		return err
 	}
 	return a.quickstartWizardOrka(report)
@@ -227,11 +239,18 @@ func (a *App) prewarmQuickstartModel() error {
 	return a.kubectlRun("-n", "ollama", "exec", "deploy/ollama", "--", "ollama", "run", a.Cfg.Model, "Reply with exactly: ready")
 }
 
+func (a *App) prewarmHostQuickstartModel(model *localModel) error {
+	payload := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"Reply with exactly: ready"}],"max_tokens":1}`, model.Model)
+	node := a.Cfg.KindCluster + "-control-plane"
+	return a.Run.Run(a.Cfg.ContainerEngine, "exec", node, "curl", "-fsS", "--max-time", "120",
+		strings.TrimSuffix(model.Endpoint, "/")+"/v1/chat/completions", "-H", "Content-Type: application/json", "-d", payload)
+}
+
 func (a *App) quickstartWizardOrka(report func(quickstartSetupEvent)) error {
 	return func() error {
-		report(quickstartSetupEvent{step: 3, status: "active"})
+		report(quickstartSetupEvent{step: 5, status: "active"})
 		if err := a.OrkaInstall(OrkaOptions{Provider: "-"}); err != nil {
-			report(quickstartSetupEvent{step: 3, status: "failed", err: err})
+			report(quickstartSetupEvent{step: 5, status: "failed", err: err})
 			return err
 		}
 		body := secretManifest("kickstart-provider-key", OrkaNamespace,
@@ -245,7 +264,7 @@ func (a *App) quickstartWizardOrka(report func(quickstartSetupEvent)) error {
 		if err != nil {
 			status = "failed"
 		}
-		report(quickstartSetupEvent{step: 3, status: status, err: err})
+		report(quickstartSetupEvent{step: 5, status: status, err: err})
 		return err
 	}()
 }
@@ -285,32 +304,28 @@ roleRef:
 }
 
 type quickstartWizardModel struct {
-	create     createWizardModel
-	events     <-chan quickstartSetupEvent
-	models     []localModel
-	modelPick  chan<- *localModel
-	modelStep  bool
-	modelReady bool
-	selection  int
-	chosen     *localModel
-	existing   []quickstartExistingAgent
-	imported   *quickstartExistingAgent
-	agentStep  bool
-	setup      [4]string
-	setupErr   error
-	setupDone  bool
-	formDone   bool
-	frame      int
-	width      int
-	target     quickstartTarget
+	create       createWizardModel
+	events       <-chan quickstartSetupEvent
+	models       []localModel
+	defaultModel localModel
+	modelPick    chan<- *localModel
+	modelStep    bool
+	detectDone   bool
+	selection    int
+	chosen       *localModel
+	existing     []quickstartExistingAgent
+	imported     *quickstartExistingAgent
+	agentStep    bool
+	setup        [6]string
+	setupErr     error
+	setupDone    bool
+	formDone     bool
+	frame        int
+	width        int
+	target       quickstartTarget
 }
 
 type quickstartTickMsg struct{}
-type quickstartModelReadyMsg struct{}
-
-func armQuickstartModelChoice() tea.Cmd {
-	return tea.Tick(180*time.Millisecond, func(time.Time) tea.Msg { return quickstartModelReadyMsg{} })
-}
 
 func waitQuickstartEvent(events <-chan quickstartSetupEvent) tea.Cmd {
 	return func() tea.Msg {
@@ -337,9 +352,6 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case quickstartTickMsg:
 		m.frame++
 		return m, quickstartTick()
-	case quickstartModelReadyMsg:
-		m.modelReady = true
-		return m, nil
 	case quickstartSetupEvent:
 		if msg.step < 0 {
 			m.setupDone = true
@@ -360,13 +372,20 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.create.opt.Model = choice.Model
 			m.create.opt.BaseURL = strings.TrimSuffix(choice.Endpoint, "/") + "/v1"
 		}
+		if msg.models != nil {
+			m.models = msg.models
+			m.detectDone = true
+			if !m.agentStep && m.modelStep && len(m.models) == 1 {
+				m.chooseModel(m.models[0])
+			}
+		}
 		return m, waitQuickstartEvent(m.events)
 	case tea.KeyPressMsg:
 		if m.agentStep {
 			switch msg.Code {
 			case tea.KeyEsc:
 				m.create.cancelled, m.formDone, m.agentStep = true, true, false
-				m.modelPick <- &m.models[0]
+				m.modelPick <- &m.defaultModel
 				if m.setupDone {
 					return m, tea.Quit
 				}
@@ -385,24 +404,27 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.create.cancelled = false
 					m.create.step = createDone
 					m.formDone = true
-					m.modelPick <- &m.models[0]
+					m.modelPick <- &m.defaultModel
 					if m.setupDone {
 						return m, tea.Quit
 					}
 					return m, nil
 				}
-				return m, armQuickstartModelChoice()
+				if m.detectDone && len(m.models) == 1 {
+					m.chooseModel(m.models[0])
+				}
+				return m, nil
 			}
 			return m, nil
 		}
 		if m.modelStep {
-			if !m.modelReady {
+			if !m.detectDone || len(m.models) == 0 {
 				return m, nil
 			}
 			switch msg.Code {
 			case tea.KeyEsc:
 				m.create.cancelled, m.formDone, m.modelStep = true, true, false
-				m.modelPick <- &m.models[0]
+				m.modelPick <- &m.defaultModel
 				if m.setupDone {
 					return m, tea.Quit
 				}
@@ -411,15 +433,7 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case tea.KeyDown, tea.KeyRight, tea.KeyTab, 'j':
 				m.selection = (m.selection + 1) % len(m.models)
 			case tea.KeyEnter:
-				choice := m.models[m.selection]
-				m.chosen = &choice
-				m.create.opt.Model = choice.Model
-				if choice.Provider == "bundled" {
-					m.create.opt.BaseURL = "http://ollama.ollama.svc.cluster.local:11434/v1"
-				}
-				m.modelPick <- m.chosen
-				m.modelStep = false
-				m.create.startMissingStep()
+				m.chooseModel(m.models[m.selection])
 			}
 			return m, nil
 		}
@@ -435,6 +449,17 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, cmd
+}
+
+func (m *quickstartWizardModel) chooseModel(choice localModel) {
+	m.chosen = &choice
+	m.create.opt.Model = choice.Model
+	if choice.Provider == "bundled" {
+		m.create.opt.BaseURL = "http://ollama.ollama.svc.cluster.local:11434/v1"
+	}
+	m.modelPick <- m.chosen
+	m.modelStep = false
+	m.create.startMissingStep()
 }
 
 func (m quickstartWizardModel) View() tea.View {
@@ -469,7 +494,7 @@ func (m quickstartWizardModel) infrastructurePanel(width int) string {
 	if body.Len() > 0 {
 		body.WriteByte('\n')
 	}
-	labels := []string{"Kind cluster", "Ollama image", "Model " + m.create.opt.Model, "Orka runtime"}
+	labels := []string{"Kind cluster", "Detecting models", "Ollama image", "Model " + m.create.opt.Model, "Loading model", "Orka runtime"}
 	for i, label := range labels {
 		status := m.setup[i]
 		if status == "" {
@@ -508,13 +533,18 @@ func (m quickstartWizardModel) agentPanel(width int) string {
 		}
 		body.WriteString(quickstartChoices(choices, m.selection))
 	} else if m.modelStep {
-		body.WriteString(lipgloss.NewStyle().Bold(true).Render("Choose a model") + "\n\n")
-		choices := make([]string, 0, len(m.models))
-		for _, model := range m.models {
-			choices = append(choices, m.quickstartModelChoiceLabel(model))
+		if !m.detectDone {
+			body.WriteString(lipgloss.NewStyle().Bold(true).Render("Detecting models") + "\n\n")
+			body.WriteString(lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("Checking local model runtimes before offering choices..."))
+		} else {
+			body.WriteString(lipgloss.NewStyle().Bold(true).Render("Choose a model") + "\n\n")
+			choices := make([]string, 0, len(m.models))
+			for _, model := range m.models {
+				choices = append(choices, m.quickstartModelChoiceLabel(model))
+			}
+			body.WriteString(quickstartChoices(choices, m.selection))
+			body.WriteString("\n\n" + lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("enter choose  •  arrows/j/k select  •  esc cancel"))
 		}
-		body.WriteString(quickstartChoices(choices, m.selection))
-		body.WriteString("\n\n" + lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("enter choose  •  arrows/j/k select  •  esc cancel"))
 	} else if m.formDone {
 		if m.setupErr != nil {
 			body.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Red).Render("Infrastructure setup failed. Restoring the terminal for diagnostics."))
@@ -540,7 +570,7 @@ func (m quickstartWizardModel) agentPanel(width int) string {
 }
 
 func (m quickstartWizardModel) quickstartModelChoiceLabel(model localModel) string {
-	if model.Provider == "bundled" && m.setup[2] == "done" {
+	if model.Provider == "bundled" && m.setup[3] == "done" {
 		return fmt.Sprintf("%s (KMX managed, already downloaded)", model.Model)
 	}
 	return quickstartModelLabel(model)
@@ -598,11 +628,13 @@ func (m quickstartWizardModel) infrastructureSize(step int) string {
 	case 0:
 		return "~1.3 GB node image"
 	case 1:
+		return "host runtimes"
+	case 2:
 		if m.chosen != nil && m.chosen.Provider != "bundled" {
 			return "skipped; host runtime"
 		}
 		return "~1.1 GB image"
-	case 2:
+	case 3:
 		model := m.chosen
 		if model == nil && len(m.models) > 0 {
 			model = &m.models[0]
@@ -614,7 +646,9 @@ func (m quickstartWizardModel) infrastructureSize(step int) string {
 			return "already installed; size unknown"
 		}
 		return "~1.9 GB model"
-	case 3:
+	case 4:
+		return "weights into memory"
+	case 5:
 		return "~860 MB images"
 	default:
 		return ""
@@ -679,7 +713,7 @@ func quickstartProgressBar(status string, frame int) string {
 	}
 }
 
-func runQuickstartWizard(in io.Reader, out io.Writer, opt CreateOptions, models []localModel, existing []quickstartExistingAgent, target quickstartTarget, modelPick chan<- *localModel, setup func(func(quickstartSetupEvent)) error) (CreateOptions, *quickstartExistingAgent, bool, error, error) {
+func runQuickstartWizard(in io.Reader, out io.Writer, opt CreateOptions, existing []quickstartExistingAgent, target quickstartTarget, defaultModel localModel, modelPick chan<- *localModel, setup func(func(quickstartSetupEvent)) error) (CreateOptions, *quickstartExistingAgent, bool, error, error) {
 	create, err := newCreateWizardModel(opt)
 	if err != nil {
 		return opt, nil, false, nil, err
@@ -690,7 +724,7 @@ func runQuickstartWizard(in io.Reader, out io.Writer, opt CreateOptions, models 
 		setupResult <- setup(func(event quickstartSetupEvent) { events <- event })
 		close(events)
 	}()
-	model := quickstartWizardModel{create: create, events: events, models: models, existing: existing, target: target, modelPick: modelPick, modelStep: true, agentStep: true}
+	model := quickstartWizardModel{create: create, events: events, existing: existing, target: target, defaultModel: defaultModel, modelPick: modelPick, modelStep: true, agentStep: true}
 	result, runErr := tea.NewProgram(model, tea.WithInput(in), tea.WithOutput(out)).Run()
 	setupErr := <-setupResult
 	if runErr != nil {

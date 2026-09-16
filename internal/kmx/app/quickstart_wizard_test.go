@@ -16,10 +16,10 @@ func TestQuickstartWizardViewKeepsInfrastructureAboveNumberedAgentStep(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := quickstartWizardModel{create: create, setup: [4]string{"done", "active", "pending", "pending"}, frame: 3,
+	m := quickstartWizardModel{create: create, setup: [6]string{"done", "done", "active", "pending", "pending", "pending"}, frame: 3,
 		target: quickstartTarget{Context: "kind-demo", Source: "kmx ctx", Server: "127.0.0.1", Namespaces: "orka-system, ollama", Posture: "local kind"}}
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"TARGET & INFRASTRUCTURE", "kind-demo", "kmx ctx", "127.0.0.1", "local kind", "Kind cluster", "Ollama image", "Model qwen2.5:3b", "Orka runtime", "AGENT SETUP", "STEP 2 OF 8", "Description"} {
+	for _, want := range []string{"TARGET & INFRASTRUCTURE", "kind-demo", "kmx ctx", "127.0.0.1", "local kind", "Kind cluster", "Detecting models", "Ollama image", "Model qwen2.5:3b", "Loading model", "Orka runtime", "AGENT SETUP", "STEP 2 OF 8", "Description"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -91,7 +91,7 @@ func TestBundledModelChoiceSaysWhenDownloadAlreadyFinished(t *testing.T) {
 	if got := m.quickstartModelChoiceLabel(model); !strings.Contains(got, "download during setup") {
 		t.Fatalf("pending label=%q", got)
 	}
-	m.setup[2] = "done"
+	m.setup[3] = "done"
 	if got := m.quickstartModelChoiceLabel(model); got != "qwen2.5:3b (KMX managed, already downloaded)" {
 		t.Fatalf("completed label=%q", got)
 	}
@@ -107,7 +107,7 @@ func TestModelChoiceIgnoresQueuedEnterUntilScreenIsReady(t *testing.T) {
 		models: []localModel{{Provider: "bundled", Model: "qwen2.5:3b"}, {Provider: "ollama", Model: "qwen3:8b"}}}
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(quickstartWizardModel)
-	if cmd == nil || !m.modelStep || m.chosen != nil {
+	if cmd != nil || !m.modelStep || m.chosen != nil {
 		t.Fatalf("start transition skipped model choice: modelStep=%v chosen=%#v", m.modelStep, m.chosen)
 	}
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -115,7 +115,7 @@ func TestModelChoiceIgnoresQueuedEnterUntilScreenIsReady(t *testing.T) {
 	if m.chosen != nil || len(picks) != 0 {
 		t.Fatal("queued Enter selected a model before the choice screen became ready")
 	}
-	updated, _ = m.Update(quickstartModelReadyMsg{})
+	updated, _ = m.Update(quickstartSetupEvent{step: 1, status: "done", models: m.models})
 	m = updated.(quickstartWizardModel)
 	m.selection = 1
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -125,19 +125,62 @@ func TestModelChoiceIgnoresQueuedEnterUntilScreenIsReady(t *testing.T) {
 	}
 }
 
+func TestModelStepShowsNoOptionsUntilDetectionCompletes(t *testing.T) {
+	create, err := newCreateWizardModel(CreateOptions{descriptionDefault: "Hello world agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := quickstartWizardModel{create: create, modelStep: true}
+	view := ansi.Strip(m.agentPanel(80))
+	if !strings.Contains(view, "Detecting models") || strings.Contains(view, "Choose a model") || strings.Contains(view, "KMX managed") {
+		t.Fatalf("model options appeared before detection completed:\n%s", view)
+	}
+}
+
+func TestNoDetectedAlternativeSkipsModelQuestion(t *testing.T) {
+	create, err := newCreateWizardModel(CreateOptions{descriptionDefault: "Hello world agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	picks := make(chan *localModel, 1)
+	fallback := localModel{Provider: "bundled", Model: "qwen2.5:3b"}
+	m := quickstartWizardModel{create: create, modelStep: true, modelPick: picks, defaultModel: fallback}
+	updated, _ := m.Update(quickstartSetupEvent{step: 1, status: "done", models: []localModel{fallback}})
+	m = updated.(quickstartWizardModel)
+	if m.modelStep || m.chosen == nil || m.chosen.Model != fallback.Model || len(picks) != 1 || m.create.step != createDescription {
+		t.Fatalf("single default did not auto-advance: modelStep=%v chosen=%#v step=%d picks=%d", m.modelStep, m.chosen, m.create.step, len(picks))
+	}
+}
+
+func TestDetectedAlternativesUnlockStableModelPicker(t *testing.T) {
+	create, err := newCreateWizardModel(CreateOptions{descriptionDefault: "Hello world agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	picks := make(chan *localModel, 1)
+	models := []localModel{{Provider: "bundled", Model: "qwen2.5:3b"}, {Provider: "ollama", Model: "qwen3:8b", Size: 8_000_000_000}}
+	m := quickstartWizardModel{create: create, modelStep: true, modelPick: picks}
+	updated, _ := m.Update(quickstartSetupEvent{step: 1, status: "done", models: models})
+	m = updated.(quickstartWizardModel)
+	view := ansi.Strip(m.agentPanel(80))
+	if !m.modelStep || len(picks) != 0 || !strings.Contains(view, "Choose a model") || !strings.Contains(view, "KMX managed") || !strings.Contains(view, "Ollama managed") {
+		t.Fatalf("detected alternatives were not offered stably:\n%s", view)
+	}
+}
+
 func TestQuickstartInfrastructureRowsExplainEstimatedSetupSize(t *testing.T) {
 	m := quickstartWizardModel{models: []localModel{{Provider: "bundled", Model: "qwen2.5:3b"}}}
-	want := []string{"~1.3 GB node image", "~1.1 GB image", "~1.9 GB model", "~860 MB images"}
+	want := []string{"~1.3 GB node image", "host runtimes", "~1.1 GB image", "~1.9 GB model", "weights into memory", "~860 MB images"}
 	for step, detail := range want {
 		if got := m.infrastructureSize(step); got != detail {
 			t.Fatalf("step %d detail=%q, want %q", step, got, detail)
 		}
 	}
 	m.chosen = &localModel{Provider: "ollama", Model: "qwen3:8b", Size: 8_000_000_000}
-	if got := m.infrastructureSize(1); got != "skipped; host runtime" {
+	if got := m.infrastructureSize(2); got != "skipped; host runtime" {
 		t.Fatalf("host runtime detail=%q", got)
 	}
-	if got := m.infrastructureSize(2); got != "8.0 GB already installed" {
+	if got := m.infrastructureSize(3); got != "8.0 GB already installed" {
 		t.Fatalf("host model detail=%q", got)
 	}
 }
@@ -203,7 +246,7 @@ func TestQuickstartWizardPanelsFitNarrowTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := quickstartWizardModel{create: create, width: 52, setup: [4]string{"done", "active"}}
+	m := quickstartWizardModel{create: create, width: 52, setup: [6]string{"done", "active"}}
 	for _, line := range strings.Split(m.View().Content, "\n") {
 		if got := lipgloss.Width(line); got > 52 {
 			t.Fatalf("narrow view line is %d cells wide: %q", got, ansi.Strip(line))
