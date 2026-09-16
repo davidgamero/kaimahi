@@ -394,6 +394,10 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chooseModel(m.models[0])
 			}
 		}
+		if m.formDone && m.setupErr == nil && m.setupComplete() {
+			m.setupDone = true
+			return m, tea.Quit
+		}
 		return m, waitQuickstartEvent(m.events)
 	case tea.KeyPressMsg:
 		if m.agentStep {
@@ -578,7 +582,7 @@ func (m quickstartWizardModel) agentPanel(width int) string {
 		body.WriteString(inner)
 	}
 	if m.chosen != nil && !m.modelStep {
-		fmt.Fprintf(&body, "\n\n%s %s", lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("MODEL"), quickstartModelLabel(*m.chosen))
+		fmt.Fprintf(&body, "\n\n%s %s", lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("MODEL"), m.quickstartModelChoiceLabel(*m.chosen))
 	}
 	if m.formDone {
 		heading := color.Color(lipgloss.Magenta)
@@ -588,6 +592,15 @@ func (m quickstartWizardModel) agentPanel(width int) string {
 		return quickstartSection("AGENT SETUP", body.String(), width, heading)
 	}
 	return quickstartPanel("AGENT SETUP", body.String(), width, lipgloss.Magenta, lipgloss.Magenta)
+}
+
+func (m quickstartWizardModel) setupComplete() bool {
+	for _, status := range m.setup {
+		if status != "done" {
+			return false
+		}
+	}
+	return true
 }
 
 func (m quickstartWizardModel) quickstartModelChoiceLabel(model localModel) string {

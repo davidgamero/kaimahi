@@ -53,6 +53,32 @@ func TestQuickstartWizardWaitsForSetupAfterReview(t *testing.T) {
 	}
 }
 
+func TestCompletedSetupLeavesQueuedFrameWithoutWaitingForChannelClose(t *testing.T) {
+	create, err := newCreateWizardModel(CreateOptions{Name: "demo", Description: "Demo", Namespace: OrkaNamespace, ProviderType: "openai", Model: "qwen2.5:3b", Secret: "key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := quickstartWizardModel{create: create, formDone: true, setup: [6]string{"done", "done", "done", "done", "done", "active"}}
+	updated, cmd := m.Update(quickstartSetupEvent{step: 5, status: "done"})
+	got := updated.(quickstartWizardModel)
+	if cmd == nil || !got.setupDone || !got.setupComplete() {
+		t.Fatalf("completed setup remained queued: done=%v complete=%v cmd=%v", got.setupDone, got.setupComplete(), cmd)
+	}
+}
+
+func TestSelectedModelFooterReflectsCompletedDownload(t *testing.T) {
+	create, err := newCreateWizardModel(CreateOptions{Model: "qwen2.5:3b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := localModel{Provider: "bundled", Model: "qwen2.5:3b"}
+	m := quickstartWizardModel{create: create, chosen: &model, setup: [6]string{"done", "done", "done", "done", "done", "done"}}
+	view := ansi.Strip(m.agentPanel(80))
+	if !strings.Contains(view, "KMX managed, already downloaded") || strings.Contains(view, "download during setup") {
+		t.Fatalf("completed model footer is stale:\n%s", view)
+	}
+}
+
 func TestQuickstartProgressBarsDistinguishEveryState(t *testing.T) {
 	states := []string{"pending", "active", "done", "failed"}
 	seen := map[string]bool{}
