@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/cliui"
 )
 
 type staticChatBackend struct {
@@ -15,8 +17,10 @@ type staticChatBackend struct {
 
 type waitingChatBackend struct{}
 
-func (waitingChatBackend) Agent() string                                { return "orka-agent" }
-func (waitingChatBackend) Connect(context.Context, *chatRenderer) error { return nil }
+func (waitingChatBackend) Agent() string { return "orka-agent" }
+func (waitingChatBackend) Connect(context.Context, *chatRenderer) ([]cliui.Field, error) {
+	return nil, nil
+}
 func (waitingChatBackend) Send(context.Context, string, *chatRenderer) error {
 	time.Sleep(350 * time.Millisecond)
 	return nil
@@ -34,12 +38,26 @@ func TestSharedInteractiveChatBackendAnimatesWhileWaitingAndClears(t *testing.T)
 	}
 }
 
+func TestChatRendererFullScreenLifecycleAndDeploymentHeader(t *testing.T) {
+	var out bytes.Buffer
+	r := &chatRenderer{out: &out, cursor: true, ui: cliui.WithCapabilities(cliui.Capabilities{Rich: true, Color: false, Width: 80})}
+	r.enterFullScreen()
+	r.statusStart("agent", "kind-test")
+	r.statusSection("Deployment", "Orka Agent/agent | namespace orka-system")
+	r.statusEnd()
+	r.leaveFullScreen()
+	text := out.String()
+	for _, want := range []string{"\x1b[?1049h", "KMX  /  INTERACTIVE CHAT", "Deployment", "Orka Agent/agent", "\x1b[?1049l"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("fullscreen chat missing %q: %q", want, text)
+		}
+	}
+}
+
 func (b *staticChatBackend) Agent() string { return "shared-agent" }
-func (b *staticChatBackend) Connect(_ context.Context, renderer *chatRenderer) error {
+func (b *staticChatBackend) Connect(_ context.Context, renderer *chatRenderer) ([]cliui.Field, error) {
 	renderer.statusStart(b.Agent(), "kind-test")
-	renderer.statusSection("Runtime", "test backend")
-	renderer.statusEnd()
-	return nil
+	return []cliui.Field{{Label: "Deployment", Value: "test deployment"}, {Label: "Runtime", Value: "test backend"}}, nil
 }
 func (b *staticChatBackend) Send(_ context.Context, message string, renderer *chatRenderer) error {
 	b.messages = append(b.messages, message)

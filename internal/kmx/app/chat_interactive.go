@@ -60,11 +60,29 @@ type chatRenderer struct {
 	promptKind      cliui.FocusKind
 	promptHint      string
 	commandSummary  string
+	alternateScreen bool
 	transient       bool
 	transientWidth  int
 	spinnerDisabled bool
 	spinnerPaused   bool
 	pendingGap      bool
+}
+
+func (r *chatRenderer) enterFullScreen() {
+	if r == nil || !r.cursor || r.alternateScreen {
+		return
+	}
+	fmt.Fprint(r.out, "\x1b[?1049h\x1b[H\x1b[2J")
+	r.alternateScreen = true
+}
+
+func (r *chatRenderer) leaveFullScreen() {
+	if r == nil || !r.alternateScreen {
+		return
+	}
+	r.finish()
+	fmt.Fprint(r.out, "\x1b[?1049l")
+	r.alternateScreen = false
 }
 
 func newChatRenderer(out io.Writer) *chatRenderer {
@@ -165,6 +183,8 @@ func (r *chatRenderer) statusStart(agent, kubeContext string) {
 	r.clearLocked()
 	r.closeLocked()
 	if r.ui.Rich() {
+		fmt.Fprintln(r.out, r.ui.Heading(r.wrap("KMX  /  INTERACTIVE CHAT", 0)))
+		fmt.Fprintln(r.out)
 		title := strings.Join(strings.Fields(safeTerminal(agent)), " ")
 		title = r.wrap(title, 0)
 		if r.color {
@@ -385,7 +405,7 @@ func (r *chatRenderer) prompt() {
 
 type interactiveChatBackend interface {
 	Agent() string
-	Connect(context.Context, *chatRenderer) error
+	Connect(context.Context, *chatRenderer) ([]cliui.Field, error)
 	Send(context.Context, string, *chatRenderer) error
 }
 
@@ -397,13 +417,19 @@ func (a *App) runInteractiveChatBackend(backend interactiveChatBackend) error {
 		renderer.ui = cliui.WithCapabilities(cliui.Capabilities{})
 		renderer.cursor = false
 	}
-	defer renderer.finish()
+	renderer.enterFullScreen()
+	defer renderer.leaveFullScreen()
 	renderer.promptHint = "/help  /retry  /exit"
 	renderer.commandSummary = "/help /retry /exit"
 	renderer.working("Connecting to " + backend.Agent())
-	if err := backend.Connect(ctx, renderer); err != nil {
+	fields, err := backend.Connect(ctx, renderer)
+	if err != nil {
 		return err
 	}
+	for _, field := range fields {
+		renderer.statusSection(field.Label, field.Value)
+	}
+	renderer.statusEnd()
 	input := newChatInput(bufio.NewScanner(a.Stdin), a.Stdin, a.Out, renderer)
 	last := ""
 	for {
@@ -742,7 +768,8 @@ func (a *App) interactiveChat(kagent, agent, initialTask, session string) error 
 		renderer.ui = cliui.WithCapabilities(cliui.Capabilities{})
 		renderer.cursor = false
 	}
-	defer renderer.finish()
+	renderer.enterFullScreen()
+	defer renderer.leaveFullScreen()
 	renderer.working("Connecting to " + agent)
 	if err := a.waitServable(agent); err != nil {
 		return err
@@ -966,6 +993,7 @@ func (a *App) refreshChatPosture(agent string, renderer *chatRenderer) (*chatGov
 		renderer.statusEnd()
 		return nil, err
 	}
+	renderer.statusSection("Deployment", "kagent Agent/"+agent+" | controller deployment/kagent-controller")
 	renderer.statusEnd()
 	return posture, nil
 }

@@ -241,6 +241,23 @@ func TestQuickstartWizardVimKeysNavigateSelections(t *testing.T) {
 	}
 }
 
+func TestQuickstartWizardInterruptCancelsUIAndSetup(t *testing.T) {
+	create, err := newCreateWizardModel(CreateOptions{descriptionDefault: "Hello world agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	picks := make(chan *localModel, 1)
+	cancelled := false
+	m := quickstartWizardModel{create: create, agentStep: true, modelStep: true, modelPick: picks,
+		defaultModel: localModel{Provider: "bundled", Model: "qwen2.5:3b"}, cancelSetup: func() { cancelled = true }}
+	filtered := cancelQuickstartWizard(m, tea.InterruptMsg{})
+	updated, cmd := m.Update(filtered)
+	got := updated.(quickstartWizardModel)
+	if !got.create.cancelled || !got.formDone || !cancelled || cmd == nil || len(picks) != 1 {
+		t.Fatalf("interrupt did not cancel all owners: cancelled=%v formDone=%v setup=%v cmd=%v picks=%d", got.create.cancelled, got.formDone, cancelled, cmd, len(picks))
+	}
+}
+
 func TestQuickstartWizardPanelsFitNarrowTerminal(t *testing.T) {
 	create, err := newCreateWizardModel(CreateOptions{Model: "qwen2.5:3b"})
 	if err != nil {

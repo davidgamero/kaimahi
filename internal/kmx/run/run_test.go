@@ -1,9 +1,28 @@
 package run
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 )
+
+func TestRunnerContextCancelsActiveCommand(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &Runner{Context: ctx}
+	done := make(chan error, 1)
+	go func() { done <- r.Run("sleep", "30") }()
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil || !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled command error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled command remained active")
+	}
+}
 
 // Poll is bounded by ATTEMPTS, not by wall-clock — the shell's
 // `for _ in $(seq 1 N)`. The difference bites exactly where it matters: each

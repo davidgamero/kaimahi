@@ -14,6 +14,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/cliui"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/guard"
 	"golang.org/x/term"
 )
@@ -70,24 +71,27 @@ func (a *App) QuickstartWizard(opt QuickstartWizardOptions) error {
 	var setupLog bytes.Buffer
 	setup := *a
 	runner := *a.Run
+	setupCtx, cancelSetup := context.WithCancel(context.Background())
+	defer cancelSetup()
+	runner.Context = setupCtx
 	runner.Stdout, runner.Stderr = &setupLog, &setupLog
 	setup.Run = &runner
 	setup.Out, setup.Err, setup.Stdin = &setupLog, &setupLog, nil
 	setup.guarded = true
 	modelPick := make(chan *localModel, 1)
 	defaultModel := localModel{Provider: "bundled", Model: a.Cfg.Model, Endpoint: "http://ollama.ollama.svc.cluster.local:11434"}
-	completed, imported, cancelled, setupErr, wizardErr := runQuickstartWizard(a.Stdin, a.Err, create, existing, target, defaultModel, modelPick,
+	completed, imported, cancelled, setupErr, wizardErr := runQuickstartWizard(a.Stdin, a.Err, create, existing, target, defaultModel, modelPick, cancelSetup,
 		func(report func(quickstartSetupEvent)) error { return setup.quickstartWizardSetup(modelPick, report) })
+	if cancelled {
+		a.notef("Quickstart cancelled. Active setup work was stopped; completed resources were left in place.")
+		return nil
+	}
 	if wizardErr != nil || setupErr != nil {
 		if setupLog.Len() > 0 {
 			fmt.Fprintln(a.Err, "\nInfrastructure setup log:")
 			_, _ = setupLog.WriteTo(a.Err)
 		}
 		return errors.Join(wizardErr, setupErr)
-	}
-	if cancelled {
-		a.notef("Agent creation cancelled. Local infrastructure setup completed; no agent artifact or resources were created.")
-		return nil
 	}
 	if imported == nil {
 		if err := a.runQuickstartDeployment(completed); err != nil {
@@ -309,6 +313,7 @@ type quickstartWizardModel struct {
 	models       []localModel
 	defaultModel localModel
 	modelPick    chan<- *localModel
+	cancelSetup  context.CancelFunc
 	modelStep    bool
 	detectDone   bool
 	selection    int
@@ -347,6 +352,16 @@ func (m quickstartWizardModel) Init() tea.Cmd {
 
 func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case createWizardCancelMsg:
+		m.create.cancelled, m.formDone, m.agentStep, m.modelStep = true, true, false, false
+		select {
+		case m.modelPick <- &m.defaultModel:
+		default:
+		}
+		if m.cancelSetup != nil {
+			m.cancelSetup()
+		}
+		return m, tea.Quit
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 	case quickstartTickMsg:
@@ -443,6 +458,12 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.create = updated.(createWizardModel)
 	if m.create.step == createDone {
 		m.formDone = true
+		if m.create.cancelled {
+			if m.cancelSetup != nil {
+				m.cancelSetup()
+			}
+			return m, tea.Quit
+		}
 		if m.setupDone || m.setupErr != nil {
 			return m, tea.Quit
 		}
@@ -713,7 +734,7 @@ func quickstartProgressBar(status string, frame int) string {
 	}
 }
 
-func runQuickstartWizard(in io.Reader, out io.Writer, opt CreateOptions, existing []quickstartExistingAgent, target quickstartTarget, defaultModel localModel, modelPick chan<- *localModel, setup func(func(quickstartSetupEvent)) error) (CreateOptions, *quickstartExistingAgent, bool, error, error) {
+func runQuickstartWizard(in io.Reader, out io.Writer, opt CreateOptions, existing []quickstartExistingAgent, target quickstartTarget, defaultModel localModel, modelPick chan<- *localModel, cancelSetup context.CancelFunc, setup func(func(quickstartSetupEvent)) error) (CreateOptions, *quickstartExistingAgent, bool, error, error) {
 	create, err := newCreateWizardModel(opt)
 	if err != nil {
 		return opt, nil, false, nil, err
@@ -724,8 +745,8 @@ func runQuickstartWizard(in io.Reader, out io.Writer, opt CreateOptions, existin
 		setupResult <- setup(func(event quickstartSetupEvent) { events <- event })
 		close(events)
 	}()
-	model := quickstartWizardModel{create: create, events: events, existing: existing, target: target, defaultModel: defaultModel, modelPick: modelPick, modelStep: true, agentStep: true}
-	result, runErr := tea.NewProgram(model, tea.WithInput(in), tea.WithOutput(out)).Run()
+	model := quickstartWizardModel{create: create, events: events, existing: existing, target: target, defaultModel: defaultModel, modelPick: modelPick, cancelSetup: cancelSetup, modelStep: true, agentStep: true}
+	result, runErr := tea.NewProgram(model, tea.WithInput(in), tea.WithOutput(out), tea.WithFilter(cancelQuickstartWizard)).Run()
 	setupErr := <-setupResult
 	if runErr != nil {
 		return opt, nil, false, setupErr, runErr
@@ -738,6 +759,14 @@ func runQuickstartWizard(in io.Reader, out io.Writer, opt CreateOptions, existin
 		return opt, nil, false, setupErr, completed.create.err
 	}
 	return completed.create.opt, completed.imported, completed.create.cancelled, setupErr, nil
+}
+
+func cancelQuickstartWizard(_ tea.Model, msg tea.Msg) tea.Msg {
+	switch msg.(type) {
+	case tea.InterruptMsg, tea.QuitMsg:
+		return createWizardCancelMsg{}
+	}
+	return msg
 }
 
 type quickstartReadyModel struct {
@@ -829,12 +858,13 @@ type orkaChatBackend struct {
 
 func (b *orkaChatBackend) Agent() string { return b.agent }
 
-func (b *orkaChatBackend) Connect(_ context.Context, renderer *chatRenderer) error {
+func (b *orkaChatBackend) Connect(_ context.Context, renderer *chatRenderer) ([]cliui.Field, error) {
 	renderer.statusStart(b.agent, b.app.Cfg.KubeContext)
-	renderer.statusSection("Runtime", "Orka | namespace "+b.namespace)
-	renderer.statusSection("Tasks", "Each message creates one fresh local Task")
-	renderer.statusEnd()
-	return nil
+	return []cliui.Field{
+		{Label: "Deployment", Value: "Orka Agent/" + b.agent + " | namespace " + b.namespace},
+		{Label: "Runtime", Value: "Orka Task worker Jobs"},
+		{Label: "Tasks", Value: "Each message creates one fresh local Task"},
+	}, nil
 }
 
 func (b *orkaChatBackend) Send(ctx context.Context, message string, renderer *chatRenderer) error {

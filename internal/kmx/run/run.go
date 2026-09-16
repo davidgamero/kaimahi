@@ -10,6 +10,7 @@ package run
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +35,9 @@ type Runner struct {
 	Unset []string
 	// Echo prints each command before running it, like make does.
 	Echo bool
+	// Context bounds every child command when set. Interactive coordinators use
+	// it to stop active downloads and waits when their UI is cancelled.
+	Context context.Context
 }
 
 // Default returns a Runner wired to the process's own streams.
@@ -43,6 +47,9 @@ func Default() *Runner {
 
 func (r *Runner) cmd(name string, args ...string) *exec.Cmd {
 	c := exec.Command(name, args...)
+	if r.Context != nil {
+		c = exec.CommandContext(r.Context, name, args...)
+	}
 	if len(r.Env) > 0 || len(r.Unset) > 0 {
 		c.Env = environ(os.Environ(), r.Env, r.Unset)
 	}
@@ -84,6 +91,9 @@ func (r *Runner) Run(name string, args ...string) error {
 	c := r.cmd(name, args...)
 	c.Stdout, c.Stderr = r.Stdout, r.Stderr
 	if err := c.Run(); err != nil {
+		if r.Context != nil && r.Context.Err() != nil {
+			return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), r.Context.Err())
+		}
 		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
 	return nil
@@ -98,6 +108,9 @@ func (r *Runner) RunStdin(stdin []byte, name string, args ...string) error {
 	c.Stdin = bytes.NewReader(stdin)
 	c.Stdout, c.Stderr = r.Stdout, r.Stderr
 	if err := c.Run(); err != nil {
+		if r.Context != nil && r.Context.Err() != nil {
+			return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), r.Context.Err())
+		}
 		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
 	return nil
