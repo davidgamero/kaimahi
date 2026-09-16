@@ -158,6 +158,35 @@ func TestQuickstartStartsWithExistingAgentOrNewChoice(t *testing.T) {
 	}
 }
 
+func TestQuickstartWizardVimKeysNavigateSelections(t *testing.T) {
+	create, err := newCreateWizardModel(CreateOptions{descriptionDefault: "Hello world agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := quickstartWizardModel{create: create, agentStep: true, modelStep: true,
+		existing: []quickstartExistingAgent{{Name: "existing", Namespace: OrkaNamespace}},
+		models:   []localModel{{Provider: "bundled", Model: "qwen2.5:3b"}}}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'j'})
+	m = updated.(quickstartWizardModel)
+	if m.selection != 1 {
+		t.Fatalf("j selection=%d, want 1", m.selection)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'k'})
+	if got := updated.(quickstartWizardModel).selection; got != 0 {
+		t.Fatalf("k selection=%d, want 0", got)
+	}
+
+	ready := quickstartReadyModel{name: "existing"}
+	updatedReady, _ := ready.Update(tea.KeyPressMsg{Code: 'j'})
+	if got := updatedReady.(quickstartReadyModel).selection; got != 1 {
+		t.Fatalf("ready j selection=%d, want 1", got)
+	}
+	updatedReady, _ = updatedReady.(quickstartReadyModel).Update(tea.KeyPressMsg{Code: 'k'})
+	if got := updatedReady.(quickstartReadyModel).selection; got != 0 {
+		t.Fatalf("ready k selection=%d, want 0", got)
+	}
+}
+
 func TestQuickstartWizardPanelsFitNarrowTerminal(t *testing.T) {
 	create, err := newCreateWizardModel(CreateOptions{Model: "qwen2.5:3b"})
 	if err != nil {

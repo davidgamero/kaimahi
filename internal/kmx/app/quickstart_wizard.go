@@ -363,9 +363,9 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.setupDone {
 					return m, tea.Quit
 				}
-			case tea.KeyUp, tea.KeyLeft:
+			case tea.KeyUp, tea.KeyLeft, 'k':
 				m.selection = (m.selection - 1 + len(m.existing) + 1) % (len(m.existing) + 1)
-			case tea.KeyDown, tea.KeyRight, tea.KeyTab:
+			case tea.KeyDown, tea.KeyRight, tea.KeyTab, 'j':
 				m.selection = (m.selection + 1) % (len(m.existing) + 1)
 			case tea.KeyEnter:
 				picked := m.selection
@@ -399,9 +399,9 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.setupDone {
 					return m, tea.Quit
 				}
-			case tea.KeyUp, tea.KeyLeft:
+			case tea.KeyUp, tea.KeyLeft, 'k':
 				m.selection = (m.selection - 1 + len(m.models)) % len(m.models)
-			case tea.KeyDown, tea.KeyRight, tea.KeyTab:
+			case tea.KeyDown, tea.KeyRight, tea.KeyTab, 'j':
 				m.selection = (m.selection + 1) % len(m.models)
 			case tea.KeyEnter:
 				choice := m.models[m.selection]
@@ -507,7 +507,7 @@ func (m quickstartWizardModel) agentPanel(width int) string {
 			choices = append(choices, m.quickstartModelChoiceLabel(model))
 		}
 		body.WriteString(quickstartChoices(choices, m.selection))
-		body.WriteString("\n\n" + lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("enter choose  •  arrows select  •  esc cancel"))
+		body.WriteString("\n\n" + lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("enter choose  •  arrows/j/k select  •  esc cancel"))
 	} else if m.formDone {
 		if m.setupErr != nil {
 			body.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Red).Render("Infrastructure setup failed. Restoring the terminal for diagnostics."))
@@ -713,7 +713,7 @@ func (m quickstartReadyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if key, ok := msg.(tea.KeyPressMsg); ok {
 		switch key.Code {
-		case tea.KeyLeft, tea.KeyRight, tea.KeyUp, tea.KeyDown, tea.KeyTab:
+		case tea.KeyLeft, tea.KeyRight, tea.KeyUp, tea.KeyDown, tea.KeyTab, 'j', 'k':
 			m.selection = 1 - m.selection
 		case tea.KeyEnter:
 			return m, tea.Quit
@@ -735,7 +735,7 @@ func (m quickstartReadyModel) View() tea.View {
 	actions := quickstartPanel("NEXT STEP",
 		lipgloss.NewStyle().Bold(true).Render("What would you like to do?")+"\n\n"+
 			quickstartChoices(choices, m.selection)+"\n\n"+
-			lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("enter choose  •  arrows select"),
+			lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("enter choose  •  arrows/j/k select"),
 		panelWidth, lipgloss.Magenta, lipgloss.Magenta)
 	rendered := tea.NewView(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Cyan).Render("KMX  /  QUICKSTART COMPLETE") + "\n\n" + ready + "\n\n" + actions)
 	rendered.AltScreen = true
@@ -762,22 +762,21 @@ func waitForStableTerminalSize(in *os.File, out io.Writer) error {
 	if in == nil || !ok || !term.IsTerminal(int(in.Fd())) || !term.IsTerminal(int(outFile.Fd())) {
 		return nil
 	}
-	deadline := time.Now().Add(500 * time.Millisecond)
+	deadline := time.Now().Add(time.Second)
 	lastWidth, lastHeight := 0, 0
-	stable := 0
+	stableSince := time.Time{}
 	for time.Now().Before(deadline) {
 		width, height, err := term.GetSize(int(outFile.Fd()))
 		if err == nil && width > 0 && height > 0 {
 			if width == lastWidth && height == lastHeight {
-				stable++
-				if stable == 2 {
+				if !stableSince.IsZero() && time.Since(stableSince) >= 250*time.Millisecond {
 					return nil
 				}
 			} else {
-				lastWidth, lastHeight, stable = width, height, 0
+				lastWidth, lastHeight, stableSince = width, height, time.Now()
 			}
 		}
-		time.Sleep(40 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 	return fmt.Errorf("terminal dimensions did not stabilize after quickstart; chat was not started")
 }

@@ -90,7 +90,7 @@ func newCreateWizardModel(opt CreateOptions) (createWizardModel, error) {
 		help:  help.New(),
 		keys: createWizardKeys{
 			Next:   key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "continue")),
-			Select: key.NewBinding(key.WithKeys("left", "right", "up", "down", "tab"), key.WithHelp("arrows", "select")),
+			Select: key.NewBinding(key.WithKeys("left", "right", "up", "down", "tab", "j", "k"), key.WithHelp("arrows/j/k", "select")),
 			Cancel: key.NewBinding(key.WithKeys("esc", "ctrl+c"), key.WithHelp("esc", "cancel")),
 		},
 	}

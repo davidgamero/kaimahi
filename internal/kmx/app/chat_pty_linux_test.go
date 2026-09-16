@@ -403,6 +403,10 @@ func TestQuickstartChatHandoffWaitsForTerminalSizeToSettle(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- waitForStableTerminalSize(slave, slave) }()
 	time.Sleep(30 * time.Millisecond)
+	if err := unix.IoctlSetWinsize(int(slave.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 28, Col: 90}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(180 * time.Millisecond)
 	if err := unix.IoctlSetWinsize(int(slave.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 30, Col: 100}); err != nil {
 		t.Fatal(err)
 	}
@@ -417,6 +421,41 @@ func TestQuickstartChatHandoffWaitsForTerminalSizeToSettle(t *testing.T) {
 	width, height, err := term.GetSize(int(slave.Fd()))
 	if err != nil || width != 100 || height != 30 {
 		t.Fatalf("stable dimensions=%dx%d err=%v", width, height, err)
+	}
+}
+
+func TestQuickstartChatHandoffDoesNotTripFirstRawPrompt(t *testing.T) {
+	master, slave := chatPTY(t, 80)
+	r := newChatRenderer(slave)
+	done := make(chan error, 1)
+	go func() {
+		if err := waitForStableTerminalSize(slave, slave); err != nil {
+			done <- err
+			return
+		}
+		r.prompt()
+		_, err := readSlashLine(context.Background(), slave, slave, r, false)
+		done <- err
+	}()
+	time.Sleep(40 * time.Millisecond)
+	if err := unix.IoctlSetWinsize(int(slave.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 28, Col: 90}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(180 * time.Millisecond)
+	if err := unix.IoctlSetWinsize(int(slave.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 30, Col: 100}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(350 * time.Millisecond)
+	if _, err := io.WriteString(master, "/exit\r"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("first prompt failed after handoff: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first prompt did not accept input after handoff")
 	}
 }
 
