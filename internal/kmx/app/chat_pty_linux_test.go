@@ -344,6 +344,11 @@ func TestChatPTYResizeAbortsWithoutStaleRedraw(t *testing.T) {
 				for !ready(captured.String()) {
 					fds := []unix.PollFd{{Fd: int32(master.Fd()), Events: unix.POLLIN}}
 					n, err := unix.Poll(fds, 20)
+					// Signals (including Go runtime preemption) can interrupt poll
+					// without a terminal failure. Retry within the original deadline.
+					if err == unix.EINTR && time.Now().Before(deadline) {
+						continue
+					}
 					if err != nil || time.Now().After(deadline) {
 						t.Fatalf("PTY output timeout: %v %q", err, captured.String())
 					}
@@ -352,6 +357,9 @@ func TestChatPTYResizeAbortsWithoutStaleRedraw(t *testing.T) {
 					}
 					var buf [8192]byte
 					n, err = unix.Read(int(master.Fd()), buf[:])
+					if err == unix.EINTR {
+						continue
+					}
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -369,13 +377,23 @@ func TestChatPTYResizeAbortsWithoutStaleRedraw(t *testing.T) {
 			}
 			// Allow completed writes to drain before marking the resize boundary.
 			fds := []unix.PollFd{{Fd: int32(master.Fd()), Events: unix.POLLIN}}
+			deadline := time.Now().Add(2 * time.Second)
 			for {
-				n, _ := unix.Poll(fds, 20)
+				n, err := unix.Poll(fds, 20)
+				if err == unix.EINTR && time.Now().Before(deadline) {
+					continue
+				}
+				if err != nil || time.Now().After(deadline) {
+					t.Fatalf("PTY drain failed: %v %q", err, captured.String())
+				}
 				if n == 0 {
 					break
 				}
 				var buf [8192]byte
-				n, err := unix.Read(int(master.Fd()), buf[:])
+				n, err = unix.Read(int(master.Fd()), buf[:])
+				if err == unix.EINTR {
+					continue
+				}
 				if err != nil {
 					t.Fatal(err)
 				}
