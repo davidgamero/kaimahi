@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -55,5 +57,22 @@ func TestLiftFetchPropagatesCancellation(t *testing.T) {
 	_, err := liftFetchProgress(ctx, &bytes.Buffer{}, "Fetching", func(ctx context.Context) ([]byte, error) { return nil, ctx.Err() })
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestLiftSubscriptionsStopsOnTenantFailure(t *testing.T) {
+	for _, response := range []string{"exit 1", `printf 'null'`, `printf '""'`} {
+		dir := t.TempDir()
+		marker := filepath.Join(dir, "listed")
+		t.Setenv("AZ_LIST_MARKER", marker)
+		fakeTool(t, dir, "az", `case "$*" in *"account show"*) `+response+`;; *) printf called > "$AZ_LIST_MARKER"; printf '[]';; esac`)
+		t.Setenv("PATH", dir)
+		b := &orkaChatBackend{app: &App{Out: &bytes.Buffer{}}}
+		if _, err := b.liftSubscriptions(t.Context()); err == nil {
+			t.Fatal("tenant failure ignored")
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatal("subscription listing ran after tenant failure")
+		}
 	}
 }

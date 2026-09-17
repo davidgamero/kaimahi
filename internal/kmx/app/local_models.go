@@ -162,9 +162,6 @@ func (a *App) promptLocalModel(found []localModel) (*localModel, error) {
 	}
 
 	fmt.Fprintln(a.Err, "Installed local models were detected:")
-	for i, model := range found {
-		fmt.Fprintf(a.Err, "  %d. %s/%s\n", i+1, model.Provider, model.Model)
-	}
 	fmt.Fprintln(a.Err, "  1. Install KMX's bundled model")
 	for i, model := range found {
 		fmt.Fprintf(a.Err, "  %d. Try %s/%s from kind\n", i+2, model.Provider, model.Model)

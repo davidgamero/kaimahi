@@ -103,9 +103,15 @@ func writePrivateAgentFile(path string, raw []byte) error {
 		file.Close()
 		return err
 	}
+	if err = file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
 	if err = file.Close(); err != nil {
 		return err
 	}
+	// Go's Windows implementation uses MoveFileEx with REPLACE_EXISTING;
+	// do not delete the destination first and introduce a missing-file window.
 	return os.Rename(file.Name(), path)
 }
 

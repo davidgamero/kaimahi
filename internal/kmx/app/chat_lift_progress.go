@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -109,18 +108,15 @@ func (b *orkaChatBackend) liftAzureCreate(ctx context.Context, args ...string) (
 
 func (b *orkaChatBackend) liftSubscriptions(ctx context.Context) ([]byte, error) {
 	raw, err := b.liftAzureFetch(ctx, "account", "show", "--query", "tenantId", "-o", "json", "--only-show-errors")
-	if errors.Is(err, context.Canceled) {
+	if err != nil {
 		return nil, err
 	}
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	tenant := "unknown"
-	if err == nil {
-		var id string
-		if json.Unmarshal(raw, &id) == nil && id != "" {
-			tenant = id
-		}
+	var tenant string
+	if json.Unmarshal(raw, &tenant) != nil || strings.TrimSpace(tenant) == "" {
+		return nil, fmt.Errorf("Azure account lookup returned no tenant; check az login")
 	}
 	label := "Fetching subscriptions for tenant:" + tenant + " (active; includes all accessible tenants)"
 	return b.liftLoading(ctx, label, func(ctx context.Context) ([]byte, error) {

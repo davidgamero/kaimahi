@@ -672,6 +672,31 @@ func TestQuickstartRerunDefaultsToExistingAgent(t *testing.T) {
 	}
 }
 
+func TestQuickstartHostModelEmitsVerifiedProviderEndpoint(t *testing.T) {
+	for _, endpoint := range []string{"", "http://host.docker.internal:11434/"} {
+		create, err := newCreateWizardModel(CreateOptions{Name: "demo", Description: "Demo", Namespace: OrkaNamespace, ProviderType: "openai", Model: "initial", Secret: "key"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := quickstartWizardModel{create: create, modelStep: true, modelPick: make(chan *localModel, 1)}
+		choice := localModel{Provider: "ollama", Model: "host-model", Endpoint: endpoint}
+		m.chooseModel(choice)
+		if endpoint != "" && m.create.opt.BaseURL != "http://host.docker.internal:11434/v1" {
+			t.Fatalf("selected endpoint=%q", m.create.opt.BaseURL)
+		}
+		choice.Endpoint = "http://172.18.0.1:11434"
+		updated, _ := m.Update(quickstartSetupEvent{step: 2, status: "done", model: &choice})
+		bundle, err := createOrkaBundle(updated.(quickstartWizardModel).create.opt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec := bundle.Provider["spec"].(map[string]any)
+		if spec["baseURL"] != "http://172.18.0.1:11434/v1" || spec["defaultModel"] != "host-model" {
+			t.Fatalf("provider=%v", spec)
+		}
+	}
+}
+
 func TestQuickstartDuplicateNameStaysInForm(t *testing.T) {
 	create, err := newCreateWizardModel(CreateOptions{Namespace: OrkaNamespace, ProviderType: "openai", Model: "test", Secret: "key", descriptionDefault: "Hello world agent"})
 	if err != nil {

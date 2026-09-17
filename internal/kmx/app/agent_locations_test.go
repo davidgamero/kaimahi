@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -69,6 +70,23 @@ func TestFailedAgentSwitchKeepsConnection(t *testing.T) {
 	}
 	if b.app != source || b.agent != "demo" {
 		t.Fatal("failed target replaced source")
+	}
+}
+
+func TestPrivateAgentFileReplacesExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.json")
+	for _, contents := range []string{"initial kubeconfig contents", "new"} {
+		if err := writePrivateAgentFile(path, []byte(contents)); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != contents {
+			t.Fatalf("contents=%q err=%v", got, err)
+		}
+	}
+	files, err := os.ReadDir(filepath.Dir(path))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("temporary files remain: %v err=%v", files, err)
 	}
 }
 

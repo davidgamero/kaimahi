@@ -632,6 +632,9 @@ func (m *quickstartWizardModel) chooseModel(choice localModel) {
 	m.chosen = &choice
 	if choice.Provider != "copilot" && choice.Provider != "existing" {
 		m.create.opt.Model = choice.Model
+		if choice.Endpoint != "" {
+			m.create.opt.BaseURL = strings.TrimSuffix(choice.Endpoint, "/") + "/v1"
+		}
 	}
 	if choice.Provider == "copilot" {
 		m.create.opt.Model = m.defaultModel.Model

@@ -17,6 +17,28 @@ type staticLocalDetector struct {
 	calls  int
 }
 
+func TestLocalModelPromptPrintsOneNumberedList(t *testing.T) {
+	in, err := os.CreateTemp(t.TempDir(), "input")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	_, _ = in.WriteString("2\n")
+	_, _ = in.Seek(0, 0)
+	var out bytes.Buffer
+	a := &App{Stdin: in, Err: &out}
+	models := []localModel{{Provider: "ollama", Model: "first"}, {Provider: "ollama", Model: "second"}}
+	choice, err := a.promptLocalModel(models)
+	if err != nil || choice.Model != "first" {
+		t.Fatalf("choice=%v err=%v", choice, err)
+	}
+	for _, value := range []string{"1.", "2.", "3.", "ollama/first", "ollama/second"} {
+		if strings.Count(out.String(), value) != 1 {
+			t.Fatalf("duplicated or missing %q:\n%s", value, out.String())
+		}
+	}
+}
+
 func (d *staticLocalDetector) Detect(context.Context) ([]localModel, error) {
 	d.calls++
 	return d.models, nil
