@@ -195,12 +195,10 @@ func (b *orkaChatBackend) liftAgent(ctx context.Context, renderer *chatRenderer)
 	from := liftLocationLabel(strings.HasPrefix(sourceLocation, "local-"), b.app.Cfg.KubeContext, b.app.chatClusterName)
 	to := liftLocationLabel(posture.Local, target.Context, target.Cluster)
 	detail := fmt.Sprintf("Agent %s/%s\nFrom: %s\nTo: %s\nServer: %s\nSubscription: %s\nResource group: %s / AKS: %s", b.namespace, b.agent, from, to, posture.Host, target.Subscription, target.ResourceGroup, target.Cluster)
-	index, ok, err := b.liftAction(ctx, "Target\n"+detail, []chatPickerItem{{name: "Cancel"}, {name: "Check prerequisites and configure inference"}})
-	if err != nil || !ok || index == 0 {
-		return err
-	}
-	// The explicit target review is the in-TUI mutation confirmation. Existing
-	// online creation still owns schemas, collisions, admission and Ready waits.
+	// Target selection starts read-only prerequisite discovery. Each install or
+	// provisioning action has its own explicit confirmation; Provider/Agent
+	// writes are authorized by the single final deployment review below.
+	// Online creation still owns schemas, collisions, admission and Ready waits.
 	worker.guarded = true
 	worker.liftReuse = true
 	worker.Out = io.Discard
@@ -220,7 +218,7 @@ func (b *orkaChatBackend) liftAgent(ctx context.Context, renderer *chatRenderer)
 	}
 	b.liftStage(4, "")
 	providerSpec := bundle.Provider["spec"].(map[string]any)
-	index, ok, err = b.liftAction(ctx, "Deploy\n"+detail+fmt.Sprintf("\nModel: %v\nEndpoint: %v", providerSpec["defaultModel"], providerSpec["baseURL"]), []chatPickerItem{{name: "Cancel"}, {name: "Deploy Provider and Agent"}})
+	index, ok, err := b.liftAction(ctx, "Deploy\n"+detail+fmt.Sprintf("\nModel: %v\nEndpoint: %v\nProvider/Agent: create missing, reuse matching; conflicts stop deployment", providerSpec["defaultModel"], providerSpec["baseURL"]), []chatPickerItem{{name: "Cancel"}, {name: "Deploy Provider and Agent"}})
 	if err != nil || !ok || index == 0 {
 		return err
 	}

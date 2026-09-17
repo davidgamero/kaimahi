@@ -39,3 +39,25 @@ and the completion selection. It redraws the sticky header and anchors a fresh
 editor below the existing transcript rather than erasing with obsolete cursor
 coordinates. Resize itself never submits a message or approval. The non-full-screen
 raw-input fallback retains its conservative resize-abort behavior.
+
+## Message editing and scrollback
+
+Full-screen Orka chat uses a retained transcript viewport with a pinned header and
+message editor. The same interface is used after quickstart and by Orka
+`agent chat --interactive`.
+
+- **Ctrl-W:** delete the word before the cursor.
+- **Ctrl-A / Ctrl-E:** move to the beginning/end of the message.
+- **Left / Right:** move within the message; edits happen at the cursor.
+- **Up / Down:** recall sent messages; Down past the newest restores the draft.
+  When slash completions are open, Up/Down selects a completion instead.
+- **PageUp / PageDown**, **Shift-Up / Shift-Down**, or the **mouse wheel:** scroll
+  conversation history while leaving the header and editor fixed.
+- **Ctrl-Home / Ctrl-End:** oldest history / latest messages.
+- **Shift-Enter / Alt-Enter:** insert a newline. Enter sends when idle.
+
+History can be browsed and the next message drafted while a response is running;
+Enter does not submit another request until the current one finishes. Ctrl-C
+cancels the active worker and restores the terminal. `/agent` resets conversation
+and recall history on a successful switch. Tool-call headings and payloads are
+indented underneath the agent heading, including after wrapping on narrow windows.

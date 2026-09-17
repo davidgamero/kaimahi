@@ -17,7 +17,7 @@ matches `AKS-production`, and multiple words can match name and detail fields.
 Type normally (including j/k), use arrows to navigate, and Enter to select.
 Escape switches to Vim navigation: **j/k**, **g/G** for first/last, and **/**
 to return to search. Escape again cancels the pane; Ctrl-C exits chat.
-Action prompts (Create/Cancel, install confirmation, target/deploy review, and
+Action prompts (Create/Cancel, install confirmation, deployment review, and
 quota refresh/back) disable search entirely. Their choices cannot be filtered
 away, and Escape cancels immediately. Search availability and initial mode are
 separate picker options; a lone creation entry also has search disabled.
@@ -36,7 +36,10 @@ subscription and resource group. Missing old selections are not added to results
 Interactive Azure discovery and provisioning waits use a centered loading box
 below the lift header. Escape/Ctrl-C cancels the fetch and joins it before returning.
 
-The final lift review defaults to Cancel and identifies the Agent and destination.
+Selecting a target starts read-only prerequisite discovery immediately; there is
+no separate Target review. Installations and resource creation retain their own
+explicit confirmations. One final deployment review defaults to Cancel and shows
+the Agent, destination, model, endpoint and create/reuse behavior.
 Deploy creates the selected Agent and its Provider on that target, using the
 existing installed-schema, collision, server-admission and readiness checks.
 Server-managed metadata/status are dropped; Agent specification (tools, skills,

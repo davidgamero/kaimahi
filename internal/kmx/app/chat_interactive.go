@@ -47,6 +47,7 @@ const (
 )
 
 type chatRenderer struct {
+	timeline                   func(chatTimelineEvent)
 	slashCommands              []slashCommand
 	out                        io.Writer
 	mu                         sync.Mutex
@@ -183,6 +184,10 @@ func (r *chatRenderer) closeLocked() {
 func (r *chatRenderer) block(label string, color actorColor, payload string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.timeline != nil {
+		r.timeline(chatTimelineEvent{kind: "operation", label: label, text: payload})
+		return
+	}
 	r.clearLocked()
 	r.closeLocked()
 	if label == "YOU" && r.ui.Rich() && r.ui.Width() >= 16 {
@@ -196,6 +201,10 @@ func (r *chatRenderer) block(label string, color actorColor, payload string) {
 func (r *chatRenderer) statusStart(agent, kubeContext string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.timeline != nil {
+		r.timeline(chatTimelineEvent{kind: "status", agent: agent, text: kubeContext})
+		return
+	}
 	r.clearLocked()
 	r.closeLocked()
 	if r.stickyHeader && r.alternateScreen {
@@ -261,6 +270,9 @@ func (r *chatRenderer) statusModel(model string, governed bool) {
 func (r *chatRenderer) statusSection(label, payload string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.timeline != nil {
+		return
+	}
 	label = strings.Join(strings.Fields(safeTerminal(label)), " ")
 	payload = strings.TrimSuffix(safeTerminal(payload), "\n")
 	if r.stickyHeader && r.alternateScreen {
@@ -283,6 +295,9 @@ func (r *chatRenderer) statusSection(label, payload string) {
 func (r *chatRenderer) statusEnd() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.timeline != nil {
+		return
+	}
 	if r.stickyHeader && r.alternateScreen {
 		r.headerCollecting = false
 		r.drawStickyHeaderLocked()
@@ -361,6 +376,13 @@ func (r *chatRenderer) operationPrompt(kind string, color actorColor, payload, p
 func (r *chatRenderer) beginAssistant(agent string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.timeline != nil {
+		if r.openActor != agent {
+			r.timeline(chatTimelineEvent{kind: "agent", agent: agent})
+			r.openActor = agent
+		}
+		return
+	}
 	r.clearLocked()
 	if r.openActor == agent {
 		return
@@ -374,6 +396,17 @@ func (r *chatRenderer) assistantOperation(agent, kind, subject string, color act
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if (kind == "WORKING" || kind == "TIMING") && !r.verbose {
+		return
+	}
+	if r.timeline != nil {
+		if r.openActor != agent {
+			r.timeline(chatTimelineEvent{kind: "agent", agent: agent})
+			r.openActor = agent
+		}
+		if subject != "" {
+			payload = "Tool: " + subject + "\n" + payload
+		}
+		r.timeline(chatTimelineEvent{kind: "agent-operation", agent: agent, label: kind, text: payload})
 		return
 	}
 	r.clearLocked()
@@ -399,6 +432,14 @@ func (r *chatRenderer) assistantOperation(agent, kind, subject string, color act
 func (r *chatRenderer) assistant(agent, text string, start bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.timeline != nil {
+		if r.openActor != agent {
+			r.timeline(chatTimelineEvent{kind: "agent", agent: agent})
+			r.openActor = agent
+		}
+		r.timeline(chatTimelineEvent{kind: "assistant", agent: agent, text: text, start: start})
+		return
+	}
 	r.clearLocked()
 	if r.openActor != agent {
 		r.closeLocked()
@@ -462,6 +503,9 @@ func (a *App) runInteractiveChatBackend(backend interactiveChatBackend) error {
 }
 
 func (a *App) runInteractiveChatBackendInitial(backend interactiveChatBackend, initial string) error {
+	if isInteractiveTerminal(a.Stdin) && isInteractiveTerminal(a.Out) && os.Getenv("TERM") != "dumb" && os.Getenv("NO_COLOR") == "" {
+		return a.runChatTimeline(backend, initial)
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	renderer := newChatRenderer(a.Out)
@@ -652,6 +696,10 @@ func sendInteractiveChatMessage(ctx context.Context, backend interactiveChatBack
 func (r *chatRenderer) responseTime(elapsed time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.timeline != nil {
+		r.timeline(chatTimelineEvent{kind: "timing", text: "Responded in " + formatElapsed(elapsed) + " · total request time"})
+		return
+	}
 	r.clearLocked()
 	if r.actorLine {
 		fmt.Fprintln(r.out)
