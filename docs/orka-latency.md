@@ -99,8 +99,9 @@ These warm-cache results do not claim to eliminate a first uncached request.
 
 Enable `--verbose` on `kmx quickstart-wizard`, or enter `/verbose-on` in chat,
 to show `WORKING` progress and the `TIMING` section. `/verbose-off` hides those
-details again and skips the timing lookup. The brief total response time remains
-visible in either mode. Correlate the displayed Task with:
+details again and skips the timing lookup. The responding animation with elapsed
+seconds and the brief total response time remain visible in either mode.
+Correlate the displayed Task with:
 
 ```sh
 kubectl --context kind-kaimahi-p1 -n orka-system get tasks.core.orka.ai
@@ -113,3 +114,26 @@ For prompt-evaluation versus generation time, Ollama's native non-streaming
 `/api/chat` response exposes `load_duration`, `prompt_eval_duration`,
 `eval_duration`, `prompt_eval_count`, and `eval_count`. Model requests in the chat
 profile include both evaluation and generation; Orka's events do not split them.
+
+## Pod-list tool turn (2026-09-16)
+
+The question `what pods are running?` took 146.684 s from TaskCreated to
+TaskSucceeded for Task `hello-world-agent-0e7fc60df61e1047`:
+
+- First model request: 8.095 s, 1,173 input / 24 output tokens.
+- Kubernetes tool call: 48 ms, returning 3,309 characters including completed pods.
+- Second model request: 134.618 s, 2,546 input / 1,019 output tokens.
+- Worker completion to TaskSucceeded: 2.467 s.
+
+The tool now supports a server-side pod `phase` filter and its description asks
+the model to select `Running` for this question. Compact JSON also reduces
+unnecessary whitespace. A subsequent real Task with the same question took
+69.086 s end to end, with two model calls totaling 62.705 s, 2,983 input / 340
+output tokens across those calls, and 88 ms between calls. This comparison is
+observational: cache state and model generation vary. The smaller response helps,
+but CPU model execution still dominates. The generated answer also misspelled a
+namespace; model summaries are not a substitute for the authoritative tool data.
+
+Chat keeps an elapsed responding animation even without verbose mode. On Linux,
+terminal echo is disabled while waiting for Orka, preserving canonical input and
+SIGINT so arrow presses do not print `^[[B` into the transcript and Ctrl-C works.

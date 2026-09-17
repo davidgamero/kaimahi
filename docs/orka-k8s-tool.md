@@ -22,7 +22,8 @@ List deployments in namespace orka-system using k8s-get-resources.
 ```
 
 In Orka interactive chat, `/tools` opens a searchable list of registered tools
-and existing references. Type to filter, use arrows to select, Space to toggle,
+and existing references. The screen clears before loading. Use arrows or j/k to
+select, press `/` to search, Space to toggle,
 and Enter to save. Escape returns without changes; Ctrl-C exits chat. The four
 automatic v0.1.3 memory tools are shown as locked on because the worker injects
 them independently of the Agent references.
@@ -52,6 +53,8 @@ separate from the dedicated reader service account's read-only permissions.
 Supported resources: pods, services, namespaces, nodes, configmaps,
 persistentvolumeclaims, deployments, statefulsets, daemonsets, replicasets,
 jobs and cronjobs. Omitting namespace lists across namespaces.
+For pods, the optional `phase` parameter filters at the Kubernetes API; use
+`Running` to omit completed worker Jobs when listing running pods.
 
 ## Verification
 

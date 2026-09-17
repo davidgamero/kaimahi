@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -36,7 +37,12 @@ func (a *App) installQuickstartK8sTool() error {
 	if err := a.applyBytes("Orka Kubernetes tool server", body); err != nil {
 		return err
 	}
-	if err := a.apply("orka-k8s-tool.yaml"); err != nil {
+	resources, err := manifest("orka-k8s-tool.yaml")
+	if err != nil {
+		return err
+	}
+	resources = []byte(strings.Replace(string(resources), "kmx-tool-code-checksum", fmt.Sprintf("%x", sha256.Sum256(script)), 1))
+	if err := a.applyBytes("Orka Kubernetes tool resources", resources); err != nil {
 		return err
 	}
 	return a.kubectlRun("-n", OrkaNamespace, "rollout", "status", "deploy/kmx-k8s-tool", "--timeout=180s")

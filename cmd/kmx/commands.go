@@ -65,6 +65,10 @@ func newQuickstartWizardCommand(state *commandState) *cobra.Command {
 	cmd.Flags().StringVar(&opt.Create.ResultServiceAccount, "result-service-account", "", "existing ServiceAccount for Task result access")
 	cmd.Flags().StringVar(&opt.Create.Out, "out", "", "manifest output path")
 	cmd.Flags().BoolVar(&opt.Verbose, "verbose", false, "show chat WORKING and TIMING details")
+	cmd.Flags().StringVar(&opt.AzureDiscovery, "azure-discovery", "cli", "AKS cluster listing: cli or sdk (DefaultAzureCredential)")
+	_ = cmd.RegisterFlagCompletionFunc("azure-discovery", staticCompletion([]string{"cli", "sdk"}))
+	cmd.Flags().StringVar(&opt.Inference, "inference", "auto", "legacy discovery hint; wizard always requires an explicit source/model selection")
+	_ = cmd.RegisterFlagCompletionFunc("inference", staticCompletion([]string{"auto", "copilot", "local"}))
 	cmd.RunE = appRun(state, func(a *app.App) error { return a.QuickstartWizard(opt) })
 	return cmd
 }

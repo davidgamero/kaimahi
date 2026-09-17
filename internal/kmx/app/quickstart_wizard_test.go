@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,12 +29,12 @@ func TestQuickstartWizardViewKeepsInfrastructureAboveNumberedAgentStep(t *testin
 	m := quickstartWizardModel{create: create, setup: [6]string{"done", "done", "active", "pending", "pending", "pending"}, frame: 3,
 		target: quickstartTarget{Context: "kind-demo", Source: "kmx ctx", Server: "127.0.0.1", Namespaces: "orka-system, ollama", Posture: "local kind"}}
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"TARGET & INFRASTRUCTURE", "kind-demo", "kmx ctx", "127.0.0.1", "local kind", "Kind cluster", "Detecting models", "Model runtime", "Model download", "Loading model", "Orka runtime", "AGENT SETUP", "STAGE 3 OF 4", "Description"} {
+	for _, want := range []string{"kind-demo", "local kind", "Setup 2/6", "Model runtime", "3/4", "Description"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
 	}
-	if strings.Index(view, "INFRASTRUCTURE") > strings.Index(view, "AGENT SETUP") {
+	if strings.Index(view, "Setup 2/6") > strings.Index(view, "Description") {
 		t.Fatalf("infrastructure progress is not at the top:\n%s", view)
 	}
 }
@@ -53,7 +54,7 @@ func TestQuickstartWizardWaitsForSetupAfterReview(t *testing.T) {
 	if cmd != nil || !got.formDone || got.setupDone {
 		t.Fatalf("review did not wait for setup: formDone=%v setupDone=%v cmd=%v", got.formDone, got.setupDone, cmd)
 	}
-	if !strings.Contains(got.View().Content, `Agent "demo" is queued. Waiting for the model and runtime`) {
+	if !strings.Contains(got.View().Content, "Waiting for infrastructure") {
 		t.Fatalf("waiting state is not visible:\n%s", got.View().Content)
 	}
 	_, cmd = got.Update(quickstartSetupEvent{step: -1, status: "complete"})
@@ -172,7 +173,7 @@ func TestModelStepShowsNoOptionsUntilDetectionCompletes(t *testing.T) {
 	}
 }
 
-func TestNoDetectedAlternativeSkipsModelQuestion(t *testing.T) {
+func TestSingleDetectedOptionStillRequiresSelection(t *testing.T) {
 	create, err := newCreateWizardModel(CreateOptions{descriptionDefault: "Hello world agent"})
 	if err != nil {
 		t.Fatal(err)
@@ -182,8 +183,39 @@ func TestNoDetectedAlternativeSkipsModelQuestion(t *testing.T) {
 	m := quickstartWizardModel{create: create, modelStep: true, modelPick: picks, defaultModel: fallback}
 	updated, _ := m.Update(quickstartSetupEvent{step: 1, status: "done", models: []localModel{fallback}})
 	m = updated.(quickstartWizardModel)
-	if m.modelStep || m.chosen == nil || m.chosen.Model != fallback.Model || len(picks) != 1 || m.create.step != createDescription {
-		t.Fatalf("single default did not auto-advance: modelStep=%v chosen=%#v step=%d picks=%d", m.modelStep, m.chosen, m.create.step, len(picks))
+	if !m.modelStep || m.chosen != nil || len(picks) != 0 {
+		t.Fatal("single option was automatically selected")
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if updated.(quickstartWizardModel).modelStep || len(picks) != 1 {
+		t.Fatal("explicit selection did not advance")
+	}
+}
+
+func TestExistingAgentMustChooseInferenceAfterDetection(t *testing.T) {
+	create, err := newCreateWizardModel(CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	picks := make(chan *localModel, 1)
+	m := quickstartWizardModel{create: create, agentStep: true, modelStep: true, selection: 1, modelPick: picks, existing: []quickstartExistingAgent{{Name: "existing", Namespace: OrkaNamespace}}}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(quickstartWizardModel)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(quickstartWizardModel)
+	if len(picks) != 0 || m.formDone {
+		t.Fatal("existing agent bypassed detection")
+	}
+	updated, _ = m.Update(quickstartSetupEvent{step: 0, status: "done", models: []localModel{{Provider: "bundled", Model: "local"}, {Provider: "copilot", Model: "fast"}}})
+	m = updated.(quickstartWizardModel)
+	if len(picks) != 0 || len(m.models) != 2 || m.models[0].Provider != "copilot" || m.models[1].Provider != "existing" {
+		t.Fatal("detection auto-selected or changed existing Provider")
+	}
+	m.selection = 0
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(quickstartWizardModel)
+	if !m.formDone || m.modelStep || (<-picks).Model != "auto" {
+		t.Fatal("explicit Copilot model lost")
 	}
 }
 
@@ -198,7 +230,7 @@ func TestDetectedAlternativesUnlockStableModelPicker(t *testing.T) {
 	updated, _ := m.Update(quickstartSetupEvent{step: 1, status: "done", models: models})
 	m = updated.(quickstartWizardModel)
 	view := ansi.Strip(m.agentPanel(80))
-	if !m.modelStep || len(picks) != 0 || !strings.Contains(view, "Choose a model") || !strings.Contains(view, "KMX managed") || !strings.Contains(view, "Ollama managed") {
+	if !m.modelStep || len(picks) != 0 || !strings.Contains(view, "Inference Provider") || !strings.Contains(view, "Local Orka Model") || !strings.Contains(view, "Ollama managed") {
 		t.Fatalf("detected alternatives were not offered stably:\n%s", view)
 	}
 }
@@ -240,7 +272,7 @@ func TestQuickstartStartsWithExistingAgentOrNewChoice(t *testing.T) {
 		existing: []quickstartExistingAgent{{Name: "existing", Namespace: OrkaNamespace}},
 		models:   []localModel{{Provider: "bundled", Model: "qwen2.5:3b"}}}
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"AGENT SETUP", "STAGE 1 OF 4", "Create a new agent", `Use existing Agent "existing" (orka-system)`} {
+	for _, want := range []string{"1/4", "Create a new agent", `Use existing Agent existing`} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("start choice missing %q:\n%s", want, view)
 		}
@@ -315,8 +347,8 @@ func TestQuickstartWizardOnlyFocusedQuestionHasBorder(t *testing.T) {
 	if section := m.infrastructurePanel(78); strings.Contains(ansi.Strip(section), "╭") {
 		t.Fatalf("passive infrastructure is outlined:\n%s", section)
 	}
-	if panel := m.agentPanel(78); !strings.Contains(panel, "\x1b[35m╭") {
-		t.Fatalf("focused agent border is not magenta:\n%s", panel)
+	if panel := m.agentPanel(78); !strings.Contains(panel, "\x1b[34m╭") {
+		t.Fatalf("focused agent border is not dark blue:\n%s", panel)
 	}
 	m.formDone = true
 	if section := m.agentPanel(78); strings.Contains(ansi.Strip(section), "╭") {
@@ -342,16 +374,16 @@ func TestQuickstartReadyScreenDefaultsToChat(t *testing.T) {
 	m := quickstartReadyModel{name: "hello-world-agent"}
 	raw := m.View().Content
 	view := ansi.Strip(raw)
-	for _, want := range []string{"QUICKSTART COMPLETE", "READY", "NEXT STEP", "› Chat with agent", `Agent "hello-world-agent" is ready`} {
+	for _, want := range []string{"setup complete (3/3)", "Ready", "NEXT STEP", "› Chat with agent", "agent:hello-world-agent", "location:current cluster"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("ready screen missing %q:\n%s", want, view)
 		}
 	}
-	if !strings.Contains(view, "The model and Orka runtime are available") {
-		t.Fatalf("ready screen does not continue into chat by default:\n%s", view)
+	if lipgloss.Height(raw) > 8 {
+		t.Fatalf("ready screen is too tall:\n%s", view)
 	}
 	firstBorder := strings.Index(view, "╭")
-	readyText := strings.Index(view, `Agent "hello-world-agent" is ready`)
+	readyText := strings.Index(view, "status: Ready")
 	if firstBorder < 0 || readyText < 0 || readyText > firstBorder || strings.Count(view, "╭") != 1 || strings.Count(view, "╯") != 1 {
 		t.Fatalf("passive READY is outlined or focused NEXT STEP is not unique:\n%s", view)
 	}
@@ -442,7 +474,15 @@ func TestQuickstartNormalCompletionIsNotCancellation(t *testing.T) {
 	fallback := localModel{Provider: "bundled", Model: "test"}
 	var out bytes.Buffer
 	// Existing-agent selection avoids coupling this lifecycle test to form timing.
-	_, imported, cancelled, setupErr, err := runQuickstartWizard(strings.NewReader("j\r"), &out, opt,
+	in, writer := io.Pipe()
+	defer in.Close()
+	go func() {
+		defer writer.Close()
+		_, _ = io.WriteString(writer, "\r")
+		time.Sleep(100 * time.Millisecond)
+		_, _ = io.WriteString(writer, "\r")
+	}()
+	_, imported, cancelled, setupErr, err := runQuickstartWizard(in, &out, opt,
 		[]quickstartExistingAgent{{Name: "existing", Namespace: OrkaNamespace}}, quickstartTarget{}, fallback, picks, cancel,
 		func(report func(quickstartSetupEvent)) error {
 			report(quickstartSetupEvent{step: 0, status: "done", models: []localModel{fallback}})
@@ -614,5 +654,94 @@ func TestQuickstartInstallerDownloadRespectsCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("installer download ignored cancellation")
+	}
+}
+
+func TestQuickstartRerunDefaultsToExistingAgent(t *testing.T) {
+	for _, tc := range []struct {
+		agents []quickstartExistingAgent
+		want   int
+	}{
+		{nil, 0},
+		{[]quickstartExistingAgent{{Name: "custom"}}, 1},
+		{[]quickstartExistingAgent{{Name: "custom"}, {Name: "hello-world-agent"}}, 2},
+	} {
+		if got := quickstartInitialAgentSelection(tc.agents); got != tc.want {
+			t.Fatalf("selection=%d want=%d", got, tc.want)
+		}
+	}
+}
+
+func TestQuickstartDuplicateNameStaysInForm(t *testing.T) {
+	create, err := newCreateWizardModel(CreateOptions{Namespace: OrkaNamespace, ProviderType: "openai", Model: "test", Secret: "key", descriptionDefault: "Hello world agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := quickstartWizardModel{create: create, existing: []quickstartExistingAgent{{Name: "hello-world-agent", Namespace: OrkaNamespace}}}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(quickstartWizardModel)
+	if m.create.step != createName {
+		t.Fatalf("step=%v", m.create.step)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(quickstartWizardModel)
+	if m.create.step != createName || m.formDone || m.create.err == nil || !strings.Contains(m.create.err.Error(), "already exists") {
+		t.Fatalf("duplicate accepted: %+v", m.create)
+	}
+	m.create.input.SetValue("another-agent")
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(quickstartWizardModel)
+	if m.create.step != createConfirm || m.create.err != nil {
+		t.Fatalf("new name rejected: step=%v err=%v", m.create.step, m.create.err)
+	}
+}
+
+func TestCompactQuickstartFitsSmallTerminalsAndKeepsSelection(t *testing.T) {
+	for _, size := range [][2]int{{80, 24}, {60, 16}, {40, 12}, {28, 10}} {
+		for _, screen := range []string{"agents", "models", "description", "review"} {
+			t.Run(fmt.Sprintf("%dx%d/%s", size[0], size[1], screen), func(t *testing.T) {
+				create, err := newCreateWizardModel(CreateOptions{Namespace: OrkaNamespace, Model: "qwen2.5:3b"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				m := quickstartWizardModel{create: create, width: size[0], height: size[1], setup: [6]string{"done", "done", "waiting"}, target: quickstartTarget{Context: "kind-kaimahi-p1", Posture: "local kind"}}
+				switch screen {
+				case "agents":
+					m.agentStep = true
+					for i := 0; i < 30; i++ {
+						m.existing = append(m.existing, quickstartExistingAgent{Name: fmt.Sprintf("agent-%02d", i)})
+					}
+					m.selection = 25
+				case "models":
+					m.modelStep, m.detectDone = true, true
+					for i := 0; i < 30; i++ {
+						m.models = append(m.models, localModel{Provider: "ollama", Model: fmt.Sprintf("model-%02d", i)})
+					}
+					m.selection = 25
+				case "review":
+					m.create.step = createConfirm
+				}
+				view := m.View().Content
+				if lipgloss.Height(view) > size[1] {
+					t.Fatalf("too tall: %d > %d\n%s", lipgloss.Height(view), size[1], view)
+				}
+				for _, line := range strings.Split(view, "\n") {
+					if lipgloss.Width(line) > size[0] {
+						t.Fatalf("too wide: %d > %d\n%s", lipgloss.Width(line), size[0], view)
+					}
+				}
+				if screen == "agents" || screen == "models" {
+					if !strings.Contains(view, "› ") {
+						t.Fatalf("selection hidden:\n%s", view)
+					}
+				}
+				if screen == "description" && !strings.Contains(view, "> ") {
+					t.Fatalf("input hidden:\n%s", view)
+				}
+				if screen == "review" && !strings.Contains(view, "Apply") {
+					t.Fatalf("review choice hidden:\n%s", view)
+				}
+			})
+		}
 	}
 }

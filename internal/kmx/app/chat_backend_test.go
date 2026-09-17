@@ -165,9 +165,12 @@ func TestChatWorkingAndTimingDefaultToHidden(t *testing.T) {
 	r.operation("WORKING", "", colorBlue, "working")
 	r.assistantOperation("agent", "WORKING", "", colorBlue, "working")
 	r.assistantOperation("agent", "TIMING", "", colorBlue, "timing")
-	r.spinner("agent", "|", time.Second)
 	if out.Len() != 0 {
 		t.Fatalf("default chat emitted verbose details: %q", out.String())
+	}
+	r.spinner("agent", "|", time.Second)
+	if !strings.Contains(out.String(), "RESPONDING agent | 1s") || !r.transient {
+		t.Fatalf("normal mode lost responding animation: %q", out.String())
 	}
 	r.verbose = true
 	r.spinner("agent", "|", time.Second)

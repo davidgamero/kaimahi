@@ -46,7 +46,7 @@ func TestQuickstartWizardPTYCtrlCRestoresTerminal(t *testing.T) {
 				if _, err := io.WriteString(master, "\r"); err != nil {
 					t.Fatal(err)
 				}
-				chatPTYReadUntil(t, master, &captured, func(s string) bool { return strings.Contains(s, "Checking local model runtimes") })
+				chatPTYReadUntil(t, master, &captured, func(s string) bool { return strings.Contains(s, "Detecting models before") })
 			}
 			if _, err := io.WriteString(master, "\x03"); err != nil {
 				t.Fatal(err)
@@ -174,5 +174,35 @@ func TestChatTerminalStabilizationRespectsCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("chat startup ignored cancellation")
+	}
+}
+
+func TestChatPickerClearsBeforeReturningToMessage(t *testing.T) {
+	t.Setenv("TERM", "xterm-256color")
+	for _, key := range []string{"\r", "\x1b"} {
+		master, slave := chatPTY(t, 60)
+		done := make(chan error, 1)
+		go func() {
+			_, err := runChatPicker(context.Background(), slave, slave, chatPicker{title: "TOOLS", multiple: true, items: []chatPickerItem{{name: "k8s-get-resources", enabled: true}}})
+			done <- err
+		}()
+		var captured strings.Builder
+		chatPTYReadUntil(t, master, &captured, func(s string) bool { return strings.Contains(s, "k8s-get-resources") })
+		_, _ = io.WriteString(master, key)
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("picker did not close")
+		}
+		_, _ = io.WriteString(slave, "Tools summary\nYOU > \nEND\n")
+		chatPTYReadUntil(t, master, &captured, func(s string) bool { return strings.HasSuffix(s, "END\r\n") })
+		text := captured.String()
+		clear := strings.LastIndex(text, "\x1b[H\x1b[2J")
+		if clear < 0 || clear > strings.Index(text, "Tools summary") || strings.Contains(text[clear:], "k8s-get-resources") {
+			t.Fatalf("picker not cleared before chat: %q", text)
+		}
 	}
 }

@@ -301,7 +301,7 @@ func (m createWizardModel) View() tea.View {
 			marker := "  "
 			if i == m.selection {
 				marker = "> "
-				choice = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Magenta).Render(choice)
+				choice = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Cyan).Render(choice)
 			}
 			body.WriteString(marker + choice + "  ")
 		}

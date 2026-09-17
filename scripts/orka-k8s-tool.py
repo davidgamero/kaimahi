@@ -5,6 +5,7 @@ import os
 import re
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -21,7 +22,7 @@ SA = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 
 def resource_path(args):
-    if not isinstance(args, dict) or set(args) - {"resource", "namespace"}:
+    if not isinstance(args, dict) or set(args) - {"resource", "namespace", "phase"}:
         raise ValueError("Expected resource and optional namespace")
     resource, namespace = args.get("resource"), args.get("namespace", "")
     if not isinstance(resource, str) or resource not in RESOURCES:
@@ -31,7 +32,15 @@ def resource_path(args):
     if resource in ("nodes", "namespaces") and namespace:
         raise ValueError("This resource is cluster-scoped; omit namespace")
     scope = "/namespaces/" + namespace if namespace else ""
-    return RESOURCES[resource] + scope + "/" + resource + "?limit=100"
+    query = {"limit": "100"}
+    phase = args.get("phase", "")
+    if not isinstance(phase, str) or phase not in ("", "Pending", "Running", "Succeeded", "Failed", "Unknown"):
+        raise ValueError("Invalid pod phase")
+    if phase:
+        if resource != "pods":
+            raise ValueError("Phase applies only to pods")
+        query["fieldSelector"] = "status.phase=" + phase
+    return RESOURCES[resource] + scope + "/" + resource + "?" + urllib.parse.urlencode(query)
 
 
 def list_resources(args):
@@ -69,7 +78,7 @@ def list_resources(args):
 
 class Handler(BaseHTTPRequestHandler):
     def respond(self, status, body):
-        raw = json.dumps(body).encode()
+        raw = json.dumps(body, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))

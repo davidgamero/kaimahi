@@ -268,6 +268,7 @@ func (a *App) waitOrkaTaskResult(ctx context.Context, namespace string, id orkaI
 
 func (a *App) waitOrkaTaskResultProgress(ctx context.Context, namespace string, id orkaIdentity, session *orkaResultSession, ready func()) (answer string, err error) {
 	succeeded := false
+	var before *orkaObject
 	defer func() {
 		if err != nil {
 			err = fmt.Errorf("Task %s/%s UID %s (execution succeeded: %t): %w; no execution retry or cleanup", namespace, id.Name, id.UID, succeeded, err)
@@ -283,6 +284,7 @@ func (a *App) waitOrkaTaskResultProgress(ctx context.Context, namespace string, 
 		}
 		succeeded = object.Status.Phase == "Succeeded"
 		if succeeded && object.Status.ResultRef.Available {
+			before = object
 			if ready != nil {
 				ready()
 			}
@@ -294,9 +296,13 @@ func (a *App) waitOrkaTaskResultProgress(ctx context.Context, namespace string, 
 	}
 	for {
 		// Both checks surround the actual HTTP read, not merely the earlier poll.
-		before, err := a.readOrkaObject(ctx, namespace, id)
-		if err != nil {
-			return "", err
+		// The successful status read above is already the identity/state check
+		// immediately before the first HTTP read. Re-read only on result retries.
+		if before == nil {
+			before, err = a.readOrkaObject(ctx, namespace, id)
+			if err != nil {
+				return "", err
+			}
 		}
 		if !orkaTaskSuccessful(before) {
 			return "", fmt.Errorf("Task no longer has successful terminal state and available result")
@@ -346,6 +352,7 @@ func (a *App) waitOrkaTaskResultProgress(ctx context.Context, namespace string, 
 			}
 			return answer, nil
 		}
+		before = nil
 		if err := orkaPause(ctx); err != nil {
 			return "", fmt.Errorf("result remained unavailable: %w", err)
 		}

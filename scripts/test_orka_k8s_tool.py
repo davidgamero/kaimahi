@@ -27,6 +27,12 @@ class ReaderTests(unittest.TestCase):
             self.assertEqual(request.get_method(), "GET")
             self.assertEqual(request.full_url, "https://kubernetes.default.svc/api/v1/configmaps?limit=100")
 
+    def test_running_pods_filter_is_sent_to_kubernetes(self):
+        self.assertEqual(reader.resource_path({"resource": "pods", "phase": "Running"}), "/api/v1/pods?limit=100&fieldSelector=status.phase%3DRunning")
+        for args in ({"resource": "nodes", "phase": "Running"}, {"resource": "pods", "phase": "Running&watch=true"}):
+            with self.assertRaises(ValueError):
+                reader.resource_path(args)
+
 
 if __name__ == "__main__":
     unittest.main()

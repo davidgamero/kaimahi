@@ -46,6 +46,8 @@ spec:
       app: kmx-k8s-tool
   template:
     metadata:
+      annotations:
+        kaimahi.dev/tool-code: kmx-tool-code-checksum
       labels:
         app: kmx-k8s-tool
     spec:
@@ -104,7 +106,7 @@ metadata:
   name: k8s-get-resources
   namespace: orka-system
 spec:
-  description: List live Kubernetes resources, read-only. Returns names, namespaces and status. Use for questions about the cluster; never invent resource names. Omit namespace to list across all namespaces.
+  description: List live Kubernetes resources, read-only. Returns names, namespaces and status. For running pods set resource=pods and phase=Running to exclude completed Jobs. Answer concisely from the returned names; never invent names. Omit namespace for all namespaces.
   parameters:
     type: object
     additionalProperties: false
@@ -115,6 +117,10 @@ spec:
       namespace:
         type: string
         description: Optional namespace; omit for all namespaces.
+      phase:
+        type: string
+        enum: [Pending, Running, Succeeded, Failed, Unknown]
+        description: Optional pod phase filter. Use Running when asked which pods are running.
     required: [resource]
   http:
     url: http://kmx-k8s-tool.orka-system.svc.cluster.local:8080/resources

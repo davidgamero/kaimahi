@@ -37,17 +37,25 @@ type progressPresenter interface {
 // App carries the resolved configuration and the streams every command
 // writes to.
 type App struct {
-	Cfg *config.Config
-	Run *run.Runner
-	Out io.Writer
+	chatClusterName string
+	liftReuse       bool
+	// operationProgress reports real stage transitions to an owning deployment UI.
+	operationProgress func(name, status string, err error)
+	Cfg               *config.Config
+	Run               *run.Runner
+	Out               io.Writer
 	// InvocationCommand is the shell-quoted CLI invocation used for guard retry
 	// advice. Interactive sub-operations leave it empty and supply their own.
 	InvocationCommand string
 	// chatJSON forces raw A2A JSON from `agent chat` on a terminal.
-	chatJSON    bool
-	chatVerbose bool
-	Err         io.Writer
-	Stdin       *os.File
+	chatJSON           bool
+	chatVerbose        bool
+	chatInference      string
+	azureDiscoveryMode string
+	copilotCLI         string
+	copilotModel       string
+	Err                io.Writer
+	Stdin              *os.File
 	// now is injectable so progress timing can be tested without sleeping.
 	now func() time.Time
 	// progressUI replaces destination detection in tests only. Production uses

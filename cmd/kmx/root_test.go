@@ -61,6 +61,26 @@ func TestInteractiveCommandsExposeVerboseFlag(t *testing.T) {
 	}
 }
 
+func TestQuickstartExposesAzureDiscoveryAlternative(t *testing.T) {
+	var out, diagnostics bytes.Buffer
+	deps, _ := testDependencies(&out, &diagnostics)
+	root := newRootCommand(&commandState{deps: deps})
+	cmd, _, err := root.Find([]string{"quickstart-wizard"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	flag := cmd.Flags().Lookup("azure-discovery")
+	if flag == nil || flag.DefValue != "cli" {
+		t.Fatal("CLI default or discovery alternative missing")
+	}
+	if err := cmd.ParseFlags([]string{"--azure-discovery", "sdk"}); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := cmd.Flags().GetString("azure-discovery"); value != "sdk" {
+		t.Fatalf("value=%q", value)
+	}
+}
+
 func TestGuardRetryKeepsInvocationArgumentsAndResolvedTarget(t *testing.T) {
 	var out, errOut bytes.Buffer
 	deps, _ := testDependencies(&out, &errOut)

@@ -273,7 +273,7 @@ type FocusFrame struct {
 // FocusInput renders a rounded input frame. The caller owns repainting and
 // replaces it with durable transcript content on submission.
 func (o Output) FocusInput(kind FocusKind, prompt, value, hint string, width int) FocusFrame {
-	title, color := "MESSAGE", lipgloss.Magenta
+	title, color := "MESSAGE", lipgloss.Blue
 	if kind == FocusQuestion {
 		title, color = "ANSWER", lipgloss.Yellow
 	} else if kind == FocusApproval {

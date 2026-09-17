@@ -14,6 +14,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/cliui"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/guard"
 )
@@ -21,8 +22,10 @@ import (
 // QuickstartWizardOptions configures the experimental path from an empty
 // machine to a user-authored Orka agent.
 type QuickstartWizardOptions struct {
-	Create  CreateOptions
-	Verbose bool
+	AzureDiscovery string
+	Create         CreateOptions
+	Verbose        bool
+	Inference      string
 }
 
 type quickstartExistingAgent struct {
@@ -37,6 +40,15 @@ type quickstartTarget struct {
 // setup. Background setup never owns stdin or writes through the full-screen
 // wizard; its complete log is emitted after the terminal has been restored.
 func (a *App) QuickstartWizard(opt QuickstartWizardOptions) error {
+	switch opt.AzureDiscovery {
+	case "", "cli", "sdk":
+	default:
+		return fmt.Errorf("unknown Azure discovery %q; use cli or sdk", opt.AzureDiscovery)
+	}
+	a.azureDiscoveryMode = opt.AzureDiscovery
+	if _, err := quickstartInference(opt.Inference, "detected-later"); err != nil {
+		return err
+	}
 	a.chatVerbose = opt.Verbose
 	started := a.timeNow()
 	if a.Stdin == nil || !isInteractiveTerminal(a.Stdin) || !isInteractiveTerminal(a.Err) || os.Getenv("TERM") == "dumb" {
@@ -72,6 +84,7 @@ func (a *App) QuickstartWizard(opt QuickstartWizardOptions) error {
 
 	var setupLog bytes.Buffer
 	setup := *a
+	setup.chatInference = opt.Inference
 	cfg := *a.Cfg
 	setup.Cfg = &cfg
 	runner := *a.Run
@@ -85,7 +98,7 @@ func (a *App) QuickstartWizard(opt QuickstartWizardOptions) error {
 	modelPick := make(chan *localModel, 1)
 	defaultModel := localModel{Provider: "bundled", Model: a.Cfg.Model, Endpoint: "http://ollama.ollama.svc.cluster.local:11434"}
 	completed, imported, cancelled, setupErr, wizardErr := runQuickstartWizard(a.Stdin, a.Err, create, existing, target, defaultModel, modelPick, cancelSetup,
-		func(report func(quickstartSetupEvent)) error { return setup.quickstartWizardSetup(modelPick, report) })
+		func(report func(quickstartSetupEvent)) error { return setup.quickstartWizardSetup(modelPick, report) }, a.checkQuickstartName)
 	if cancelled {
 		a.notef("Quickstart cancelled. Active setup work was stopped; completed resources were left in place.")
 		return nil
@@ -100,6 +113,8 @@ func (a *App) QuickstartWizard(opt QuickstartWizardOptions) error {
 	if imported != nil {
 		completed.Name, completed.Namespace = imported.Name, imported.Namespace
 	}
+	a.copilotCLI = setup.copilotCLI
+	a.chatInference, a.copilotModel = setup.chatInference, setup.copilotModel
 	deploy := func(worker *App) error { return worker.CreateAgent(completed) }
 	if imported != nil {
 		deploy = func(worker *App) error { return worker.attachQuickstartK8sTool(completed.Name, completed.Namespace) }
@@ -111,7 +126,11 @@ func (a *App) QuickstartWizard(opt QuickstartWizardOptions) error {
 		}
 		return err
 	}
-	chat, err := runQuickstartReadyScreen(a.Stdin, a.Err, completed.Name)
+	location := a.Cfg.KubeContext
+	if strings.HasPrefix(target.Posture, "local") {
+		location = "local-" + location
+	}
+	chat, err := runQuickstartReadyScreen(a.Stdin, a.Err, completed.Name, location)
 	if err != nil {
 		return err
 	}
@@ -217,11 +236,21 @@ func (a *App) quickstartWizardSetup(modelPick <-chan *localModel, report func(qu
 		return err
 	}
 	report(quickstartSetupEvent{step: 0, status: "active"})
+	a.copilotCLI = detectCopilotCLI()
 	models := a.quickstartWizardModels()
 	if err := a.operationContext().Err(); err != nil {
 		return err
 	}
-	report(quickstartSetupEvent{step: 0, status: "done", models: models})
+	note := "No Copilot CLI detected; chat will use the local Orka model."
+	if a.copilotCLI != "" {
+		login := copilotLoginStatus(a.operationContext(), a.copilotCLI)
+		note = "Copilot CLI installed · " + login
+		if login == "logged in" {
+			models = append(models, localModel{Provider: "copilot", Model: "auto"})
+			note += " · auto model"
+		}
+	}
+	report(quickstartSetupEvent{step: 0, status: "done", models: models, note: note})
 	if err := run(1, a.stepCluster); err != nil {
 		return err
 	}
@@ -231,6 +260,21 @@ func (a *App) quickstartWizardSetup(modelPick <-chan *localModel, report func(qu
 	case <-a.operationContext().Done():
 		return a.operationContext().Err()
 	case choice = <-modelPick:
+	}
+	if choice == nil {
+		return fmt.Errorf("inference selection is required")
+	}
+	a.chatInference = "local"
+	if choice.Provider == "copilot" {
+		a.chatInference, a.copilotModel = "copilot", choice.Model
+		// Local resources remain available for an explicit comparison later.
+		choice = &localModel{Provider: "bundled", Model: a.Cfg.Model}
+	}
+	if choice.Provider == "existing" {
+		for step := 2; step <= 4; step++ {
+			report(quickstartSetupEvent{step: step, status: "skipped", note: "Using the existing Agent Provider."})
+		}
+		return a.quickstartWizardOrka(report)
 	}
 	if choice != nil && choice.Provider != "bundled" {
 		report(quickstartSetupEvent{step: 2, status: "active", note: "Checking the selected host runtime from kind..."})
@@ -250,7 +294,7 @@ func (a *App) quickstartWizardSetup(modelPick <-chan *localModel, report func(qu
 		}
 	}
 	bundled := &localModel{Provider: "bundled", Model: a.Cfg.Model, Endpoint: "http://ollama.ollama.svc.cluster.local:11434"}
-	note := "Using the KMX-managed model."
+	note = "Using the KMX-managed model."
 	if choice != nil && choice.Provider != "bundled" {
 		note = "Selected host model is unreachable from kind; falling back to KMX-managed " + bundled.Model + "."
 	}
@@ -346,28 +390,37 @@ roleRef:
 }
 
 type quickstartWizardModel struct {
-	create       createWizardModel
-	events       <-chan quickstartSetupEvent
-	models       []localModel
-	defaultModel localModel
-	modelPick    chan<- *localModel
-	cancelSetup  context.CancelFunc
-	modelStep    bool
-	detectDone   bool
-	selection    int
-	chosen       *localModel
-	existing     []quickstartExistingAgent
-	imported     *quickstartExistingAgent
-	agentStep    bool
-	setup        [6]string
-	setupErr     error
-	setupDone    bool
-	formDone     bool
-	frame        int
-	width        int
-	target       quickstartTarget
-	setupNote    string
-	quitting     bool
+	create                   createWizardModel
+	events                   <-chan quickstartSetupEvent
+	models                   []localModel
+	defaultModel             localModel
+	modelPick                chan<- *localModel
+	cancelSetup              context.CancelFunc
+	modelStep                bool
+	detectDone               bool
+	selection                int
+	chosen                   *localModel
+	existing                 []quickstartExistingAgent
+	imported                 *quickstartExistingAgent
+	agentStep                bool
+	setup                    [6]string
+	setupErr                 error
+	setupDone                bool
+	formDone                 bool
+	frame                    int
+	width                    int
+	height                   int
+	target                   quickstartTarget
+	setupNote                string
+	inferenceNote            string
+	quitting                 bool
+	nameCheck                quickstartNameCheck
+	nameContext              context.Context
+	nameCancel               context.CancelFunc
+	nameRevision             int
+	nameValue, nameNamespace string
+	namePending, nameChecked bool
+	nameErr                  error
 }
 
 type quickstartTickMsg struct{}
@@ -395,7 +448,28 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		msg = createWizardCancelMsg{}
 	}
 	switch msg := msg.(type) {
+	case quickstartNameDebounce:
+		if !m.currentNameCheck(msg) {
+			return m, nil
+		}
+		parent := m.nameContext
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+		m.nameCancel = cancel
+		check := m.nameCheck
+		return m, func() tea.Msg { defer cancel(); return quickstartNameResult{msg, check(ctx, msg.namespace, msg.name)} }
+	case quickstartNameResult:
+		if !m.currentNameCheck(msg.quickstartNameDebounce) {
+			return m, nil
+		}
+		m.namePending, m.nameChecked, m.nameErr = false, true, msg.err
+		return m, nil
 	case createWizardCancelMsg:
+		if m.nameCancel != nil {
+			m.nameCancel()
+		}
 		m.create.cancelled, m.formDone, m.agentStep, m.modelStep = true, true, false, false
 		if m.cancelSetup != nil {
 			m.cancelSetup()
@@ -404,6 +478,7 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		updated, _ := m.create.Update(tea.WindowSizeMsg{Width: max(24, min(96, msg.Width-2)-10), Height: msg.Height})
 		m.create = updated.(createWizardModel)
 		return m, nil
@@ -427,6 +502,9 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.note != "" {
 			m.setupNote = msg.note
+			if msg.step == 0 {
+				m.inferenceNote = msg.note
+			}
 		}
 		if msg.err != nil {
 			m.setupErr = msg.err
@@ -435,17 +513,16 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.model != nil {
 			choice := *msg.model
-			m.chosen = &choice
+			if m.chosen == nil || m.chosen.Provider != "copilot" {
+				m.chosen = &choice
+			}
 			m.create.opt.Model = choice.Model
 			m.create.opt.BaseURL = strings.TrimSuffix(choice.Endpoint, "/") + "/v1"
 		}
 		if msg.models != nil {
 			m.models = msg.models
 			m.detectDone = true
-			if !m.agentStep && m.modelStep && len(m.models) == 1 {
-				m.chooseModel(m.models[0])
-				return m, tea.Batch(waitQuickstartEvent(m.events), m.create.Init())
-			}
+			m.filterInferenceChoices()
 		}
 		if m.formDone && m.setupErr == nil && m.setupComplete() {
 			m.setupDone = true
@@ -454,6 +531,15 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, waitQuickstartEvent(m.events)
 	case tea.KeyPressMsg:
+		if !m.agentStep && !m.modelStep && m.create.step == createName && m.nameCheck != nil && msg.Code == tea.KeyEnter {
+			if !m.nameChecked || m.nameErr != nil {
+				if m.nameErr != nil {
+					m.nameValue = ""
+					return m, m.scheduleNameCheck()
+				}
+				return m, nil
+			}
+		}
 		if m.agentStep {
 			switch msg.Code {
 			case tea.KeyUp, tea.KeyLeft, 'k':
@@ -465,24 +551,14 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.agentStep = false
 				m.selection = 0
 				if picked > 0 {
-					m.modelStep = false
 					choice := m.existing[picked-1]
 					m.imported = &choice
 					m.create.opt.Name, m.create.opt.Namespace = choice.Name, choice.Namespace
 					m.create.cancelled = false
 					m.create.err = nil
 					m.create.step = createDone
-					m.formDone = true
-					m.modelPick <- &m.defaultModel
-					if m.setupDone {
-						m.quitting = true
-						return m, tea.Quit
-					}
+					m.filterInferenceChoices()
 					return m, nil
-				}
-				if m.detectDone && len(m.models) == 1 {
-					m.chooseModel(m.models[0])
-					return m, m.create.Init()
 				}
 				return m, nil
 			}
@@ -499,7 +575,8 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selection = (m.selection + 1) % len(m.models)
 			case tea.KeyEnter:
 				m.chooseModel(m.models[m.selection])
-				return m, m.create.Init()
+				check := m.scheduleNameCheck()
+				return m, tea.Batch(m.create.Init(), check)
 			}
 			return m, nil
 		}
@@ -514,6 +591,25 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	updated, cmd := m.create.Update(msg)
 	m.create = updated.(createWizardModel)
+	if m.create.step == createName {
+		m.create.input.Validate = func(value string) error {
+			if err := validateAgentName(value); err != nil {
+				return err
+			}
+			if m.nameCheck != nil {
+				return nil
+			}
+			for _, agent := range m.existing {
+				if agent.Name == strings.TrimSpace(value) && agent.Namespace == m.create.opt.Namespace {
+					return fmt.Errorf("Agent %q already exists in %s; choose a different name, or restart and select Use existing Agent", agent.Name, agent.Namespace)
+				}
+			}
+			return nil
+		}
+		if check := m.scheduleNameCheck(); check != nil {
+			cmd = tea.Batch(cmd, check)
+		}
+	}
 	if m.create.step == createDone {
 		m.formDone = true
 		if m.create.cancelled || m.create.err != nil {
@@ -534,13 +630,45 @@ func (m quickstartWizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *quickstartWizardModel) chooseModel(choice localModel) {
 	m.chosen = &choice
-	m.create.opt.Model = choice.Model
+	if choice.Provider != "copilot" && choice.Provider != "existing" {
+		m.create.opt.Model = choice.Model
+	}
+	if choice.Provider == "copilot" {
+		m.create.opt.Model = m.defaultModel.Model
+		m.create.opt.BaseURL = m.defaultModel.Endpoint + "/v1"
+	}
 	if choice.Provider == "bundled" {
 		m.create.opt.BaseURL = "http://ollama.ollama.svc.cluster.local:11434/v1"
 	}
 	m.modelPick <- m.chosen
 	m.modelStep = false
+	if m.imported != nil {
+		m.formDone = true
+		return
+	}
 	m.create.startMissingStep()
+}
+
+func (m *quickstartWizardModel) filterInferenceChoices() {
+	if !m.detectDone {
+		return
+	}
+	var choices []localModel
+	if m.imported != nil {
+		choices = append(choices, localModel{Provider: "existing", Model: "Current Agent Provider"})
+	}
+	copilotAdded := false
+	for _, model := range m.models {
+		if model.Provider == "copilot" {
+			if !copilotAdded {
+				choices = append([]localModel{{Provider: "copilot", Model: "auto"}}, choices...)
+				copilotAdded = true
+			}
+		} else if m.imported == nil {
+			choices = append(choices, model)
+		}
+	}
+	m.models = choices
 }
 
 func (m quickstartWizardModel) View() tea.View {
@@ -548,15 +676,175 @@ func (m quickstartWizardModel) View() tea.View {
 	if width <= 0 {
 		width = 88
 	}
-	panelWidth := max(30, min(96, width-2))
+	width = max(8, width)
 	title := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Cyan).
 		Render("KMX  /  QUICKSTART WIZARD")
-	view := title + "\n\nPHASE 1 OF 3 · Prepare infrastructure and agent\n\n" + m.infrastructurePanel(panelWidth) + "\n\n" + m.agentPanel(panelWidth) + "\n\nesc / ctrl+c cancel"
+	height := m.height
+	if height <= 0 {
+		height = 24
+	}
+	lines := []string{ansi.Truncate(title, width, ""), m.compactInfrastructure(width), m.compactTarget(width)}
+	lines = append(lines, m.compactQuestion(width, max(1, height-4)))
+	lines = append(lines, ansi.Truncate("enter continue · ↑/↓ select · esc/ctrl+c cancel", width, ""))
+	view := strings.Join(lines, "\n")
 	rendered := tea.NewView(view)
 	rendered.AltScreen = true
 	return rendered
+}
+
+func (m quickstartWizardModel) compactInfrastructure(width int) string {
+	labels := []string{"Detect models", "Kind cluster", "Model runtime", "Download model", "Load model", "Orka + tools"}
+	if m.chosen != nil && m.chosen.Provider == "copilot" {
+		labels[2], labels[3], labels[4] = "Configuring model", "Configuring model", "Configuring model"
+	}
+	completed, current := 0, -1
+	for i, status := range m.setup {
+		if status == "done" || status == "skipped" {
+			completed++
+			continue
+		}
+		if current < 0 {
+			current = i
+		}
+	}
+	text := "Setup 6/6 ✓ ready"
+	if current >= 0 {
+		status := m.setup[current]
+		if status == "" {
+			status = "pending"
+		}
+		marker := "·"
+		if status == "active" {
+			marker = []string{"⠋", "⠙", "⠹", "⠸"}[m.frame%4]
+		}
+		if status == "waiting" {
+			labels[current] = "Awaiting your choice"
+		}
+		text = fmt.Sprintf("Setup %d/6 %s %s · %s", completed, marker, labels[current], status)
+	}
+	return ansi.Truncate(text, width, "…")
+}
+
+func (m quickstartWizardModel) compactTarget(width int) string {
+	text := m.target.Context
+	if text == "" {
+		text = "Local setup"
+	}
+	if m.target.Posture != "" {
+		text += " · " + m.target.Posture
+	}
+	if strings.Contains(m.inferenceNote, "Copilot CLI installed") {
+		status := "status unavailable"
+		if strings.Contains(m.inferenceNote, "not logged in") {
+			status = "not logged in"
+		} else if strings.Contains(m.inferenceNote, "logged in") {
+			status = "logged in"
+		}
+		text += " · Copilot: " + status
+	}
+	return ansi.Truncate(text, width, "…")
+}
+
+// Lists are windowed around the cursor; text fields retain their editable row.
+func (m quickstartWizardModel) compactQuestion(width, height int) string {
+	inner := max(1, width-6)
+	title := "Agent details"
+	var rows []string
+	var choices []string
+	selection := m.selection
+	switch {
+	case m.agentStep:
+		title = "1/4 · Start with"
+		choices = append(choices, "Create a new agent")
+		for _, a := range m.existing {
+			label := "Use existing Agent " + a.Name
+			if width < 60 {
+				label = a.Name + " (existing)"
+			}
+			choices = append(choices, label)
+		}
+	case m.modelStep:
+		title = "2/4 · Inference Provider"
+		if !m.detectDone {
+			rows = []string{"Detecting models before offering choices…"}
+		} else {
+			for _, model := range m.models {
+				choices = append(choices, quickstartProviderLabel(model))
+			}
+		}
+	case m.formDone:
+		title = "Agent queued"
+		rows = []string{m.create.opt.Name, "Waiting for infrastructure…"}
+		if m.setupErr != nil {
+			rows = []string{"Setup failed; restoring terminal."}
+		}
+	case m.create.step == createConfirm:
+		title = "4/4 · Review"
+		o := m.create.opt
+		rows = []string{o.Name + " · " + o.Namespace, o.ProviderType + " · " + o.Model, "Endpoint: " + o.BaseURL, "Tools: " + o.Tools, "Secret: " + o.Secret, "Output: " + o.Out}
+		selection = m.create.selection
+		choices = []string{"Apply", "Cancel"}
+	default:
+		labels := map[createWizardStep]string{createDescription: "Description", createName: "Agent name", createNamespace: "Namespace", createProviderType: "Provider type", createModel: "Model", createSecret: "Secret name", createResultAccount: "Result ServiceAccount"}
+		title = "3/4 · " + labels[m.create.step]
+		input := m.create.input
+		input.SetWidth(max(1, inner-2))
+		rows = []string{input.View()}
+		if m.create.step == createName && m.nameCheck != nil {
+			if m.nameErr != nil {
+				rows = append(rows, m.nameErr.Error())
+			} else if m.namePending {
+				rows = append(rows, "Checking name…")
+			} else if m.nameChecked {
+				rows = append(rows, "Name available")
+			}
+		}
+		if m.create.err != nil && m.create.input.Value() != "" {
+			rows = append(rows, m.create.err.Error())
+		}
+	}
+	budget := max(1, height-3)
+	if len(choices) > 0 {
+		description := ""
+		if m.modelStep && m.detectDone && selection < len(m.models) && budget >= 3 {
+			description = quickstartProviderDescription(m.models[selection])
+		}
+		if len(rows) > max(0, budget-2) {
+			rows = rows[:max(0, budget-2)]
+		}
+		count := max(1, budget-len(rows))
+		if description != "" {
+			count = max(1, count-1)
+		}
+		start := max(0, min(selection-count/2, len(choices)-count))
+		for i := start; i < min(len(choices), start+count); i++ {
+			prefix := "  "
+			if i == selection {
+				prefix = "› "
+			}
+			row := ansi.Truncate(prefix+choices[i], inner, "…")
+			if i == selection {
+				row = pickerSelectedStyle().Width(inner).Render(row)
+			}
+			rows = append(rows, row)
+		}
+		if description != "" {
+			rows = append(rows, lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render(ansi.Truncate(description, inner, "…")))
+		}
+	}
+	if len(rows) > budget {
+		rows = rows[:budget]
+	}
+	for i, row := range rows {
+		rows[i] = ansi.Truncate(strings.ReplaceAll(row, "\n", " "), inner, "…")
+	}
+	body := ansi.Truncate(title, inner, "…") + "\n" + strings.Join(rows, "\n")
+	if height < 4 {
+		return ansi.Truncate(title+": "+strings.Join(rows, " "), width, "…")
+	}
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Blue).Padding(0, 1).Width(width - 2).Render(body)
 }
 
 func (m quickstartWizardModel) infrastructurePanel(width int) string {
@@ -580,6 +868,9 @@ func (m quickstartWizardModel) infrastructurePanel(width int) string {
 		modelLabel = "Model " + m.chosen.Model
 	}
 	labels := []string{"Detecting models", "Kind cluster", "Model runtime", modelLabel, "Loading model", "Orka runtime"}
+	if m.chosen != nil && m.chosen.Provider == "copilot" {
+		labels[2], labels[3], labels[4] = "Configuring model", "Configuring model", "Configuring model"
+	}
 	for i, label := range labels {
 		status := m.setup[i]
 		if status == "" {
@@ -604,6 +895,9 @@ func (m quickstartWizardModel) infrastructurePanel(width int) string {
 	if m.setupNote != "" {
 		body.WriteString("\n" + m.setupNote)
 	}
+	if m.inferenceNote != "" && m.inferenceNote != m.setupNote {
+		body.WriteString("\n" + m.inferenceNote)
+	}
 	return quickstartSection("TARGET & INFRASTRUCTURE", body.String(), width, lipgloss.Cyan)
 }
 
@@ -616,7 +910,7 @@ func (m quickstartWizardModel) agentPanel(width int) string {
 		step = 2
 	}
 	stages := []string{"Agent source", "Model discovery & choice", "Agent details", "Review & continue"}
-	stepLabel := lipgloss.NewStyle().Foreground(lipgloss.Magenta).Bold(true).Render(fmt.Sprintf("STAGE %d OF 4 · %s", step, stages[step-1]))
+	stepLabel := lipgloss.NewStyle().Foreground(lipgloss.Blue).Bold(true).Render(fmt.Sprintf("STAGE %d OF 4 · %s", step, stages[step-1]))
 	body.WriteString(stepLabel + "\n\n")
 	if m.agentStep {
 		body.WriteString(lipgloss.NewStyle().Bold(true).Render("Start with") + "\n\n")
@@ -631,12 +925,15 @@ func (m quickstartWizardModel) agentPanel(width int) string {
 			body.WriteString(lipgloss.NewStyle().Bold(true).Render("Detecting models") + "\n\n")
 			body.WriteString(lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("Checking local model runtimes before offering choices..."))
 		} else {
-			body.WriteString(lipgloss.NewStyle().Bold(true).Render("Choose a model") + "\n\n")
+			body.WriteString(lipgloss.NewStyle().Bold(true).Render("Inference Provider") + "\n\n")
 			choices := make([]string, 0, len(m.models))
 			for _, model := range m.models {
-				choices = append(choices, m.quickstartModelChoiceLabel(model))
+				choices = append(choices, quickstartProviderLabel(model))
 			}
 			body.WriteString(quickstartChoices(choices, m.selection))
+			if m.selection < len(m.models) {
+				body.WriteString("\n" + quickstartProviderDescription(m.models[m.selection]))
+			}
 			body.WriteString("\n\n" + lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("enter choose  •  arrows/j/k select"))
 		}
 	} else if m.formDone {
@@ -658,13 +955,13 @@ func (m quickstartWizardModel) agentPanel(width int) string {
 		fmt.Fprintf(&body, "\n\n%s %s", lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("MODEL"), m.quickstartModelChoiceLabel(*m.chosen))
 	}
 	if m.formDone {
-		heading := color.Color(lipgloss.Magenta)
+		heading := color.Color(lipgloss.Blue)
 		if m.setupErr != nil {
 			heading = lipgloss.Red
 		}
 		return quickstartSection("AGENT SETUP", body.String(), width, heading)
 	}
-	return quickstartPanel("AGENT SETUP", body.String(), width, lipgloss.Magenta, lipgloss.Magenta)
+	return quickstartPanel("AGENT SETUP", body.String(), width, lipgloss.Blue, lipgloss.Blue)
 }
 
 func (m quickstartWizardModel) setupComplete() bool {
@@ -706,7 +1003,7 @@ func quickstartChoices(choices []string, selected int) string {
 			body.WriteByte('\n')
 		}
 		if i == selected {
-			body.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Magenta).Render("› " + choice))
+			body.WriteString(pickerSelectedStyle().Render("› " + choice))
 		} else {
 			body.WriteString(lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("  " + choice))
 		}
@@ -770,6 +1067,12 @@ func quickstartSize(size int64) string {
 }
 
 func quickstartModelLabel(model localModel) string {
+	if model.Provider == "copilot" {
+		return "Copilot CLI · " + model.Model
+	}
+	if model.Provider == "existing" {
+		return "Orka · current Agent Provider"
+	}
 	if model.Provider == "bundled" {
 		return fmt.Sprintf("%s (KMX managed, download during setup)", model.Model)
 	}
@@ -782,6 +1085,35 @@ func quickstartModelLabel(model localModel) string {
 		source = "Ollama managed"
 	}
 	return fmt.Sprintf("%s (%s, %s)", model.Model, source, size)
+}
+
+func quickstartProviderLabel(model localModel) string {
+	switch model.Provider {
+	case "bundled":
+		return "Local Orka Model (available to install)"
+	case "copilot":
+		return "Copilot CLI - auto (detected)"
+	case "existing":
+		return "Local Orka Model (detected)"
+	default:
+		return "(detected) " + quickstartModelLabel(model)
+	}
+}
+
+func quickstartProviderDescription(model localModel) string {
+	switch model.Provider {
+	case "bundled":
+		if model.Model == "qwen2.5:3b" {
+			return model.Model + " · Ollama (requires ~1.9 GB download if not installed)"
+		}
+		return model.Model + " · Ollama (requires model download if not installed)"
+	case "existing":
+		return "Uses this Agent's configured model and endpoint; no new model download"
+	case "copilot":
+		return "Copilot CLI · auto model · no local model download"
+	default:
+		return quickstartModelLabel(model)
+	}
 }
 
 func quickstartInteractiveStep(step createWizardStep) int {
@@ -812,7 +1144,7 @@ func quickstartProgressBar(status string, frame int) string {
 	}
 }
 
-func runQuickstartWizard(in io.Reader, out io.Writer, opt CreateOptions, existing []quickstartExistingAgent, target quickstartTarget, defaultModel localModel, modelPick chan<- *localModel, cancelSetup context.CancelFunc, setup func(func(quickstartSetupEvent)) error) (CreateOptions, *quickstartExistingAgent, bool, error, error) {
+func runQuickstartWizard(in io.Reader, out io.Writer, opt CreateOptions, existing []quickstartExistingAgent, target quickstartTarget, defaultModel localModel, modelPick chan<- *localModel, cancelSetup context.CancelFunc, setup func(func(quickstartSetupEvent)) error, checks ...quickstartNameCheck) (CreateOptions, *quickstartExistingAgent, bool, error, error) {
 	create, err := newCreateWizardModel(opt)
 	if err != nil {
 		return opt, nil, false, nil, err
@@ -830,6 +1162,13 @@ func runQuickstartWizard(in io.Reader, out io.Writer, opt CreateOptions, existin
 		close(events)
 	}()
 	model := quickstartWizardModel{create: create, events: events, existing: existing, target: target, defaultModel: defaultModel, modelPick: modelPick, cancelSetup: cancelSetup, modelStep: true, agentStep: true}
+	model.selection = quickstartInitialAgentSelection(existing)
+	nameCtx, cancelNames := context.WithCancel(context.Background())
+	defer cancelNames()
+	model.nameContext = nameCtx
+	if len(checks) > 0 {
+		model.nameCheck = checks[0]
+	}
 	result, runErr := tea.NewProgram(model, tea.WithInput(in), tea.WithOutput(out), tea.WithFilter(cancelQuickstartWizard)).Run()
 	// A terminal startup/read failure must also release every background owner.
 	cancelSetup()
@@ -846,6 +1185,20 @@ func runQuickstartWizard(in io.Reader, out io.Writer, opt CreateOptions, existin
 		return opt, nil, false, setupErr, completed.create.err
 	}
 	return completed.create.opt, completed.imported, completed.create.cancelled, setupErr, nil
+}
+
+// Reruns should reconnect to the quickstart agent rather than creating a second
+// bundle with its name. Creating another agent remains an explicit choice.
+func quickstartInitialAgentSelection(existing []quickstartExistingAgent) int {
+	for i, agent := range existing {
+		if agent.Name == "hello-world-agent" {
+			return i + 1
+		}
+	}
+	if len(existing) > 0 {
+		return 1
+	}
+	return 0
 }
 
 func cancelQuickstartWizard(model tea.Model, msg tea.Msg) tea.Msg {
@@ -871,8 +1224,10 @@ func cancelQuickstartWizard(model tea.Model, msg tea.Msg) tea.Msg {
 
 type quickstartReadyModel struct {
 	name      string
+	location  string
 	selection int
 	width     int
+	height    int
 	accepted  bool
 	cancelled bool
 }
@@ -888,6 +1243,7 @@ func (m quickstartReadyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if size, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width = size.Width
+		m.height = size.Height
 		return m, nil
 	}
 	if key, ok := msg.(tea.KeyPressMsg); ok {
@@ -906,60 +1262,161 @@ func (m quickstartReadyModel) View() tea.View {
 	if width <= 0 {
 		width = 72
 	}
-	panelWidth := max(30, min(80, width-2))
+	width = max(8, width)
+	inner := max(1, min(80, width)-4)
 	choices := []string{"Chat with agent", "Finish"}
-	ready := quickstartSection("READY",
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Green).Render("Agent "+fmt.Sprintf("%q", m.name)+" is ready")+"\n\n"+
-			lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("The model and Orka runtime are available."),
-		panelWidth, lipgloss.Green)
-	actions := quickstartPanel("NEXT STEP",
-		lipgloss.NewStyle().Bold(true).Render("What would you like to do?")+"\n\n"+
-			quickstartChoices(choices, m.selection)+"\n\n"+
-			lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Render("enter choose  •  arrows/j/k select  •  esc / ctrl+c finish"),
-		panelWidth, lipgloss.Magenta, lipgloss.Magenta)
-	rendered := tea.NewView(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Cyan).Render("KMX  /  QUICKSTART COMPLETE") + "\n\nPHASE 3 OF 3 · Ready\n\n" + ready + "\n\n" + actions)
+	location := m.location
+	if location == "" {
+		location = "current cluster"
+	}
+	header := agentConnectionHeader(m.name, location, "Ready · setup complete (3/3)", width)
+	rows := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Blue).Render("NEXT STEP")}
+	for i, choice := range choices {
+		prefix := "  "
+		if i == m.selection {
+			prefix = "› "
+		}
+		row := ansi.Truncate(prefix+choice, inner, "…")
+		if i == m.selection {
+			row = pickerSelectedStyle().Width(inner).Render(row)
+		}
+		rows = append(rows, row)
+	}
+	border := lipgloss.NewStyle().Foreground(lipgloss.Blue)
+	panel := border.Render("╭" + strings.Repeat("─", inner+2) + "╮")
+	for _, row := range rows {
+		panel += "\n" + border.Render("│") + " " + row + strings.Repeat(" ", max(0, inner-lipgloss.Width(row))) + " " + border.Render("│")
+	}
+	panel += "\n" + border.Render("╰"+strings.Repeat("─", inner+2)+"╯")
+	rendered := tea.NewView(header + "\n" + panel + "\n" + ansi.Truncate("enter choose · ↑/↓ j/k · esc/ctrl+c finish", width, ""))
 	rendered.AltScreen = true
 	return rendered
 }
 
-func runQuickstartReadyScreen(in io.Reader, out io.Writer, name string) (bool, error) {
-	result, err := tea.NewProgram(quickstartReadyModel{name: name}, tea.WithInput(in), tea.WithOutput(out), tea.WithFilter(cancelQuickstartWizard)).Run()
+func runQuickstartReadyScreen(in io.Reader, out io.Writer, name string, locations ...string) (bool, error) {
+	m := quickstartReadyModel{name: name}
+	if len(locations) > 0 {
+		m.location = locations[0]
+	}
+	result, err := tea.NewProgram(m, tea.WithInput(in), tea.WithOutput(out), tea.WithFilter(cancelQuickstartWizard)).Run()
 	if err != nil {
 		return false, err
 	}
-	m := result.(quickstartReadyModel)
+	m = result.(quickstartReadyModel)
 	return m.accepted && !m.cancelled && m.selection == 0, nil
 }
 
 func (a *App) quickstartOrkaChat(agent, namespace string) error {
-	return a.runInteractiveChatBackend(&orkaChatBackend{app: a, agent: agent, namespace: namespace})
+	return a.ChatWithOptions(ChatOptions{Agent: agent, Namespace: namespace, Runtime: "orka", Interactive: true, Verbose: a.chatVerbose, AzureDiscovery: a.azureDiscoveryMode})
 }
 
 type orkaChatBackend struct {
+	liftHeader       *liftHeader
+	azureDiscovery   *azureSDKDiscovery
 	app              *App
 	agent, namespace string
+	chatContext      context.Context
+	toolConnections  map[string]*copilotToolConnection
+	resultSession    *orkaResultSession
 }
 
 func (b *orkaChatBackend) Agent() string { return b.agent }
 
-func (b *orkaChatBackend) Connect(_ context.Context, renderer *chatRenderer) ([]cliui.Field, error) {
+func (b *orkaChatBackend) Connect(ctx context.Context, renderer *chatRenderer) ([]cliui.Field, error) {
+	b.chatContext = ctx
+	location, err := b.app.chatLocation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tools, err := b.enabledToolsSummary(ctx)
+	if err != nil {
+		return nil, err
+	}
 	renderer.statusStart(b.agent, b.app.Cfg.KubeContext)
+	runtime, tasks := "Orka Task worker Jobs", "Each message creates one fresh local Task"
+	if b.app.chatInference == "copilot" {
+		runtime, tasks = "Host Copilot CLI · "+b.app.copilotModel, "Copilot prompts with KMX tool execution; no Orka Task created"
+		supported, _, err := b.copilotTools(ctx)
+		if err != nil {
+			return nil, err
+		}
+		names := make([]string, 0, len(supported))
+		for _, tool := range supported {
+			names = append(names, tool.Name)
+		}
+		tools = fmt.Sprintf("(%d tools enabled via adapter) %s", len(names), strings.Join(names, ", "))
+	}
 	return []cliui.Field{
+		{Label: "Location", Value: location},
 		{Label: "Deployment", Value: "Orka Agent/" + b.agent + " | namespace " + b.namespace},
-		{Label: "Runtime", Value: "Orka Task worker Jobs"},
-		{Label: "Tasks", Value: "Each message creates one fresh local Task"},
+		{Label: "Runtime", Value: runtime},
+		{Label: "Tasks", Value: tasks},
+		{Label: "Tools", Value: tools},
+		{Label: "Inference", Value: b.inferenceLabel()},
 	}, nil
 }
 
 func (b *orkaChatBackend) Send(ctx context.Context, message string, renderer *chatRenderer) error {
 	renderer.beginAssistant(b.agent)
+	if b.app.chatInference == "copilot" {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		raw, err := b.app.orkaCapture(ctx, nil, "-n", b.namespace, "get", "agents.core.orka.ai", b.agent, "-o", "json")
+		if err != nil {
+			return err
+		}
+		instructions, err := b.copilotInstructionsFromAgent(ctx, raw)
+		if err != nil {
+			return err
+		}
+		tools, unavailable, err := b.copilotToolsFromAgent(ctx, raw)
+		answer, err := b.copilotPreparedTurn(ctx, instructions, message, renderer, tools, unavailable, err)
+		if err != nil {
+			return err
+		}
+		renderer.assistant(b.agent, answer, true)
+		return nil
+	}
 	var profile *orkaTaskProfile
 	if renderer.verboseEnabled() {
 		profile = &orkaTaskProfile{}
 	}
+	if b.resultSession != nil {
+		deadline, _ := b.resultSession.ctx.Deadline()
+		if b.resultSession.ctx.Err() != nil || time.Until(deadline) < 5*time.Minute {
+			b.resultSession.close()
+			b.resultSession = nil
+		}
+	}
+	sessionStarted := time.Now()
+	openedSession := false
+	if b.resultSession == nil {
+		parent := b.chatContext
+		if parent == nil {
+			parent = ctx
+		}
+		sessionCtx, cancel := context.WithTimeout(parent, 8*time.Minute)
+		quiet := *b.app
+		quiet.Err = io.Discard
+		session, err := quiet.openOrkaResultSession(sessionCtx, CreateOptions{Namespace: b.namespace, ResultServiceAccount: "orka-result-reader", OrkaAPIService: "orka-api", ResultPort: "19180"})
+		if err != nil {
+			cancel()
+			return err
+		}
+		context.AfterFunc(session.ctx, cancel)
+		b.resultSession = session
+		openedSession = true
+	}
+	sessionTime := time.Duration(0)
+	if openedSession {
+		sessionTime = time.Since(sessionStarted)
+	}
 	answer, err := b.app.runQuickstartOrkaTaskProfile(ctx, b.agent, b.namespace, message, profile, func(phase string) {
 		renderer.assistantOperation(b.agent, "WORKING", "", colorBlue, phase)
-	})
+	}, b.resultSession)
+	if profile != nil {
+		profile.session += sessionTime
+	}
 	if err != nil {
 		return err
 	}
@@ -980,7 +1437,7 @@ func (a *App) runQuickstartOrkaTaskContext(parent context.Context, agent, namesp
 	return a.runQuickstartOrkaTaskProfile(parent, agent, namespace, prompt, nil, nil)
 }
 
-func (a *App) runQuickstartOrkaTaskProfile(parent context.Context, agent, namespace, prompt string, profile *orkaTaskProfile, report func(string)) (string, error) {
+func (a *App) runQuickstartOrkaTaskProfile(parent context.Context, agent, namespace, prompt string, profile *orkaTaskProfile, report func(string), reuse ...*orkaResultSession) (string, error) {
 	phase := func(label string) {
 		if report != nil {
 			report(label)
@@ -1004,17 +1461,26 @@ func (a *App) runQuickstartOrkaTaskProfile(parent context.Context, agent, namesp
 	quiet.Err = &diagnostics
 	phase("Opening result connection")
 	started := time.Now()
-	session, err := quiet.openOrkaResultSession(ctx, opt)
-	if err != nil {
-		return "", err
+	var session *orkaResultSession
+	if len(reuse) > 0 {
+		session = reuse[0]
+	} else {
+		session, err = quiet.openOrkaResultSession(ctx, opt)
+		if err != nil {
+			return "", err
+		}
+		defer session.close()
 	}
-	defer session.close()
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+	unhook := context.AfterFunc(session.ctx, stop)
+	defer unhook()
 	if profile != nil {
 		profile.session = time.Since(started)
 	}
 	phase("Creating Task")
 	started = time.Now()
-	id, err := a.createOrkaObject(session.ctx, namespace, doc)
+	id, err := a.createOrkaObject(ctx, namespace, doc)
 	if err != nil {
 		return "", err
 	}
@@ -1023,7 +1489,7 @@ func (a *App) runQuickstartOrkaTaskProfile(parent context.Context, agent, namesp
 	}
 	phase("Task " + id.Name + ": waiting for worker execution and completion")
 	started = time.Now()
-	answer, err := a.waitOrkaTaskResultProgress(session.ctx, namespace, id, session, func() {
+	answer, err := a.waitOrkaTaskResultProgress(ctx, namespace, id, session, func() {
 		if profile != nil {
 			profile.execution = time.Since(started)
 		}

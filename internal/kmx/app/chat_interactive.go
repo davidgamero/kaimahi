@@ -47,26 +47,32 @@ const (
 )
 
 type chatRenderer struct {
-	out             io.Writer
-	mu              sync.Mutex
-	color           bool
-	ui              cliui.Output
-	cursor          bool
-	openActor       string
-	actorLine       bool
-	promptOpen      bool
-	promptText      string
-	promptIndent    int
-	promptKind      cliui.FocusKind
-	promptHint      string
-	commandSummary  string
-	alternateScreen bool
-	transient       bool
-	transientWidth  int
-	spinnerDisabled bool
-	spinnerPaused   bool
-	pendingGap      bool
-	verbose         bool
+	slashCommands              []slashCommand
+	out                        io.Writer
+	mu                         sync.Mutex
+	color                      bool
+	ui                         cliui.Output
+	cursor                     bool
+	openActor                  string
+	actorLine                  bool
+	promptOpen                 bool
+	promptText                 string
+	promptIndent               int
+	promptKind                 cliui.FocusKind
+	promptHint                 string
+	commandSummary             string
+	alternateScreen            bool
+	transient                  bool
+	transientWidth             int
+	spinnerDisabled            bool
+	spinnerPaused              bool
+	pendingGap                 bool
+	verbose                    bool
+	stickyHeader               bool
+	headerRows                 int
+	headerAgent, headerContext string
+	headerFields               []cliui.Field
+	headerCollecting           bool
 }
 
 func (r *chatRenderer) enterFullScreen() {
@@ -82,6 +88,10 @@ func (r *chatRenderer) leaveFullScreen() {
 		return
 	}
 	r.finish()
+	if r.headerRows > 0 {
+		fmt.Fprint(r.out, "\x1b[r")
+		r.headerRows = 0
+	}
 	fmt.Fprint(r.out, "\x1b[?1049l")
 	r.alternateScreen = false
 }
@@ -188,6 +198,12 @@ func (r *chatRenderer) statusStart(agent, kubeContext string) {
 	defer r.mu.Unlock()
 	r.clearLocked()
 	r.closeLocked()
+	if r.stickyHeader && r.alternateScreen {
+		r.headerAgent, r.headerContext = agent, kubeContext
+		r.headerFields = nil
+		r.headerCollecting = true
+		return
+	}
 	if r.ui.Rich() {
 		fmt.Fprintln(r.out, r.ui.Heading(r.wrap("KMX  /  INTERACTIVE CHAT", 0)))
 		fmt.Fprintln(r.out)
@@ -247,6 +263,13 @@ func (r *chatRenderer) statusSection(label, payload string) {
 	defer r.mu.Unlock()
 	label = strings.Join(strings.Fields(safeTerminal(label)), " ")
 	payload = strings.TrimSuffix(safeTerminal(payload), "\n")
+	if r.stickyHeader && r.alternateScreen {
+		r.updateHeaderFieldLocked(label, payload)
+		if !r.headerCollecting {
+			r.drawStickyHeaderLocked()
+		}
+		return
+	}
 	if r.ui.Rich() {
 		fmt.Fprintln(r.out, r.ui.Fields([]cliui.Field{{Label: label, Value: payload}}))
 		return
@@ -260,6 +283,11 @@ func (r *chatRenderer) statusSection(label, payload string) {
 func (r *chatRenderer) statusEnd() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.stickyHeader && r.alternateScreen {
+		r.headerCollecting = false
+		r.drawStickyHeaderLocked()
+		return
+	}
 	if r.ui.Rich() {
 		fmt.Fprintln(r.out, r.wrap("Type a message. /help for commands; /exit to leave", 0))
 	} else {
@@ -430,10 +458,18 @@ type interactiveChatBackend interface {
 }
 
 func (a *App) runInteractiveChatBackend(backend interactiveChatBackend) error {
+	return a.runInteractiveChatBackendInitial(backend, "")
+}
+
+func (a *App) runInteractiveChatBackendInitial(backend interactiveChatBackend, initial string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	renderer := newChatRenderer(a.Out)
 	renderer.verbose = a.chatVerbose
+	renderer.stickyHeader = true
+	if closer, ok := backend.(interface{ Close() }); ok {
+		defer closer.Close()
+	}
 	if !newChatInput(nil, a.Stdin, a.Out, renderer).enhanced {
 		renderer.ui = cliui.WithCapabilities(cliui.Capabilities{})
 		renderer.cursor = false
@@ -451,7 +487,8 @@ func (a *App) runInteractiveChatBackend(backend interactiveChatBackend) error {
 		}
 	}
 	renderer.promptHint = "/help  /retry  /exit"
-	renderer.commandSummary = "/help /retry /exit /tools /agent /verbose-on /verbose-off"
+	renderer.slashCommands = orkaSlashCommands
+	renderer.commandSummary = "/help /retry /exit /tools /agent /lift /inference-copilot /inference-local /verbose-on /verbose-off"
 	renderer.working("Connecting to " + backend.Agent())
 	fields, err := backend.Connect(ctx, renderer)
 	if err != nil {
@@ -464,8 +501,15 @@ func (a *App) runInteractiveChatBackend(backend interactiveChatBackend) error {
 	input := newChatInput(bufio.NewScanner(a.Stdin), a.Stdin, a.Out, renderer)
 	last := ""
 	for {
-		renderer.prompt()
-		line, err := input.readLine(ctx, false)
+		line := ""
+		var err error
+		if initial != "" {
+			line, initial = initial, ""
+			renderer.block("YOU", colorCyan, line)
+		} else {
+			renderer.prompt()
+			line, err = input.readLine(ctx, true)
+		}
 		if err != nil {
 			if err == io.EOF || errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				reason := "end of input"
@@ -490,26 +534,42 @@ func (a *App) runInteractiveChatBackend(backend interactiveChatBackend) error {
 			renderer.exit("exit requested")
 			return nil
 		case "/help":
-			renderer.operation("CHAT HELP", "", colorBlue, "Conversation:\n  /retry\n  /exit\n\nAgent:\n  /tools — search and enable tools\n  /agent — connect to another agent (resets chat)\n\nDisplay:\n  /verbose-on\n  /verbose-off\n\nEach message creates one fresh Orka Task.")
+			renderer.operation("CHAT HELP", "", colorBlue, "Conversation:\n  /retry\n  /exit\n\nAgent:\n  /tools — search and enable Orka tools\n  /agent — connect to another agent (resets chat)\n  /lift — deploy to a kubeconfig or AKS target (j/k navigate, / search)\n\nInference:\n  /inference-copilot — choose a discovered Copilot model; KMX HTTP tool adapter\n  /inference-local — Orka Provider and native tool execution\n  /retry — repeat the last prompt on the selected backend\n\nDisplay:\n  /verbose-on\n  /verbose-off")
 			continue
-		case "/tools", "/agent":
+		case "/tools", "/agent", "/lift", "/inference-copilot", "/inference-local":
 			controls, ok := backend.(configurableChatBackend)
 			if !ok {
 				renderer.operation("CHAT", "", colorBlue, "Agent configuration is unavailable for this backend.")
 				continue
 			}
+			renderer.suspendStickyHeader()
 			reset, err := controls.Configure(ctx, message, renderer)
 			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				renderer.exit("cancelled")
 				return nil
 			}
 			if err != nil {
+				if renderer.stickyHeader {
+					renderer.mu.Lock()
+					renderer.drawStickyHeaderLocked()
+					renderer.mu.Unlock()
+				}
 				renderer.operation("CHAT", "", colorRed, safeTerminal(err.Error()))
 				continue
 			}
 			if reset {
 				last = ""
-				renderer.finish()
+			}
+			refresh := reset
+			switch message {
+			case "/tools", "/agent", "/lift", "/inference-copilot", "/inference-local":
+				refresh = true
+			}
+			if refresh {
+				// Tool-save feedback may already have repainted the sticky header.
+				// Reset its row ownership before clearing/home; otherwise the next
+				// header redraw restores the cursor to row 1 and input overwrites it.
+				renderer.suspendStickyHeader()
 				if renderer.alternateScreen {
 					fmt.Fprint(a.Out, "\x1b[H\x1b[2J")
 				}
@@ -539,7 +599,10 @@ func (a *App) runInteractiveChatBackend(backend interactiveChatBackend) error {
 			}
 			last = message
 		}
-		if err := sendInteractiveChatMessage(ctx, backend, message, renderer); err != nil {
+		restoreEcho := quietChatWait(a.Stdin)
+		err = sendInteractiveChatMessage(ctx, backend, message, renderer)
+		restoreEcho()
+		if err != nil {
 			if ctx.Err() != nil {
 				renderer.exit("cancelled")
 				return nil
@@ -554,7 +617,7 @@ func sendInteractiveChatMessage(ctx context.Context, backend interactiveChatBack
 	done := make(chan struct{})
 	spinnerDone := make(chan struct{})
 	started := time.Now()
-	spinner := renderer != nil && renderer.cursor && renderer.verboseEnabled()
+	spinner := renderer != nil && renderer.cursor
 	if spinner {
 		renderer.pauseSpinner(false)
 		go func() {
@@ -624,9 +687,6 @@ func (r *chatRenderer) spinner(agent, frame string, elapsed time.Duration) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !r.verbose {
-		return
-	}
 	if r.actorLine || r.promptOpen || r.spinnerDisabled || r.spinnerPaused {
 		return
 	}
@@ -634,7 +694,11 @@ func (r *chatRenderer) spinner(agent, frame string, elapsed time.Duration) {
 	if r.spinnerDisabled {
 		return
 	}
-	text := fmt.Sprintf("%s %s %ds", r.label("WORKING", colorBlue), strings.Join(strings.Fields(safeTerminal(agent)+" "+safeTerminal(frame)), " "), int(elapsed.Seconds()))
+	label := "RESPONDING"
+	if r.verbose {
+		label = "WORKING"
+	}
+	text := fmt.Sprintf("%s %s %ds", r.label(label, colorBlue), strings.Join(strings.Fields(safeTerminal(agent)+" "+safeTerminal(frame)), " "), int(elapsed.Seconds()))
 	// Keep the transient on one physical row so clearing it cannot erase history.
 	width := r.ui.Width()
 	if file, ok := r.out.(*os.File); ok {
@@ -1179,7 +1243,7 @@ func (a *App) invokeStream(ctx context.Context, kagent, base, agent, task, sessi
 	done := make(chan struct{})
 	spinnerDone := make(chan struct{})
 	started := time.Now()
-	spinner := renderer != nil && renderer.cursor && renderer.verboseEnabled()
+	spinner := renderer != nil && renderer.cursor
 	if spinner {
 		renderer.pauseSpinner(false)
 		go func() {
