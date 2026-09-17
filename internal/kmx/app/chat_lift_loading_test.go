@@ -36,9 +36,10 @@ func TestLiftLoadingCentersBelowHeader(t *testing.T) {
 }
 
 func TestLiftLoadingScopeSegmentsUseSeparateRows(t *testing.T) {
-	m := liftLoadingModel{label: "Fetching AKS credentials · subscription:10d023e1-58c4-4eb7-b386-4ded55597abb · rg:demo-rg · resource:demo-aks", width: 100, height: 24, started: time.Now()}
+	subscription := strings.Repeat("a", 8) + "-" + strings.Repeat("b", 4) + "-" + strings.Repeat("c", 4) + "-" + strings.Repeat("d", 4) + "-" + strings.Repeat("e", 12)
+	m := liftLoadingModel{label: "Fetching AKS credentials · subscription:" + subscription + " · rg:demo-rg · resource:demo-aks", width: 100, height: 24, started: time.Now()}
 	view := ansi.Strip(m.View().Content)
-	for _, want := range []string{"Fetching AKS credentials", "subscription: 10d023e1-58c4-4eb7-b386-4ded55597abb", "rg: demo-rg", "resource:demo-aks"} {
+	for _, want := range []string{"Fetching AKS credentials", "subscription: " + subscription, "rg: demo-rg", "resource:demo-aks"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("missing complete segment %q:\n%s", want, view)
 		}

@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -110,5 +109,5 @@ func TestLiveAzureDiscoveryPerformance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Log(fmt.Sprintf("sdk fresh-client duration=%.3fs clusters=%d", time.Since(start).Seconds(), len(clusters)))
+	t.Logf("sdk fresh-client duration=%.3fs clusters=%d", time.Since(start).Seconds(), len(clusters))
 }

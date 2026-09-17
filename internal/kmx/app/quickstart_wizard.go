@@ -1427,16 +1427,6 @@ func (b *orkaChatBackend) Send(ctx context.Context, message string, renderer *ch
 	return nil
 }
 
-func (a *App) runQuickstartOrkaTask(agent, namespace, prompt string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	return a.runQuickstartOrkaTaskContext(ctx, agent, namespace, prompt)
-}
-
-func (a *App) runQuickstartOrkaTaskContext(parent context.Context, agent, namespace, prompt string) (string, error) {
-	return a.runQuickstartOrkaTaskProfile(parent, agent, namespace, prompt, nil, nil)
-}
-
 func (a *App) runQuickstartOrkaTaskProfile(parent context.Context, agent, namespace, prompt string, profile *orkaTaskProfile, report func(string), reuse ...*orkaResultSession) (string, error) {
 	phase := func(label string) {
 		if report != nil {

@@ -237,13 +237,6 @@ func copilotToolLoop(ctx context.Context, instructions, message string, tools []
 	return "", fmt.Errorf("Copilot exceeded the 8-step tool loop limit")
 }
 
-func (b *orkaChatBackend) copilotToolTurn(parent context.Context, instructions, message string, renderer *chatRenderer) (string, error) {
-	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
-	defer cancel()
-	tools, unavailable, err := b.copilotTools(ctx)
-	return b.copilotPreparedTurn(ctx, instructions, message, renderer, tools, unavailable, err)
-}
-
 func (b *orkaChatBackend) copilotPreparedTurn(ctx context.Context, instructions, message string, renderer *chatRenderer, tools []copilotTool, unavailable []string, err error) (string, error) {
 	if err != nil {
 		return "", err

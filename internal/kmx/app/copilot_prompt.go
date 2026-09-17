@@ -220,14 +220,6 @@ func copilotJSONAnswer(raw []byte) (string, error) {
 	return strings.TrimSpace(safeTerminal(answer)), nil
 }
 
-func (b *orkaChatBackend) copilotInstructions(ctx context.Context) (string, error) {
-	raw, err := b.app.orkaCapture(ctx, nil, "-n", b.namespace, "get", "agents.core.orka.ai", b.agent, "-o", "json")
-	if err != nil {
-		return "", err
-	}
-	return b.copilotInstructionsFromAgent(ctx, raw)
-}
-
 func (b *orkaChatBackend) copilotInstructionsFromAgent(ctx context.Context, raw []byte) (string, error) {
 	var agent struct {
 		Spec struct {
