@@ -532,7 +532,7 @@ func (a *App) runInteractiveChatBackendInitial(backend interactiveChatBackend, i
 	}
 	renderer.promptHint = "/help  /retry  /exit"
 	renderer.slashCommands = orkaSlashCommands
-	renderer.commandSummary = "/help /retry /exit /tools /agent /lift /inference-copilot /inference-local /verbose-on /verbose-off"
+	renderer.commandSummary = "/help /retry /exit /tools /agent /lift /inference /inference-foundry /inference-copilot /inference-local /verbose-on /verbose-off"
 	renderer.working("Connecting to " + backend.Agent())
 	fields, err := backend.Connect(ctx, renderer)
 	if err != nil {
@@ -580,7 +580,7 @@ func (a *App) runInteractiveChatBackendInitial(backend interactiveChatBackend, i
 		case "/help":
 			renderer.operation("CHAT HELP", "", colorBlue, "Conversation:\n  /retry\n  /exit\n\nAgent:\n  /tools — search and enable Orka tools\n  /agent — connect to another agent (resets chat)\n  /lift — deploy to a kubeconfig or AKS target (j/k navigate, / search)\n\nInference:\n  /inference-copilot — choose a discovered Copilot model; KMX HTTP tool adapter\n  /inference-local — Orka Provider and native tool execution\n  /retry — repeat the last prompt on the selected backend\n\nDisplay:\n  /verbose-on\n  /verbose-off")
 			continue
-		case "/tools", "/agent", "/lift", "/inference-copilot", "/inference-local":
+		case "/tools", "/agent", "/lift", "/inference", "/inference-copilot", "/inference-local", "/inference-foundry":
 			controls, ok := backend.(configurableChatBackend)
 			if !ok {
 				renderer.operation("CHAT", "", colorBlue, "Agent configuration is unavailable for this backend.")
@@ -606,7 +606,7 @@ func (a *App) runInteractiveChatBackendInitial(backend interactiveChatBackend, i
 			}
 			refresh := reset
 			switch message {
-			case "/tools", "/agent", "/lift", "/inference-copilot", "/inference-local":
+			case "/tools", "/agent", "/lift", "/inference", "/inference-copilot", "/inference-local", "/inference-foundry":
 				refresh = true
 			}
 			if refresh {
