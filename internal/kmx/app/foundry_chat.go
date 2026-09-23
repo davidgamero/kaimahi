@@ -201,7 +201,7 @@ func (c *foundryChatClient) complete(ctx context.Context, messages []foundryMess
 	if choice.Finish != "stop" && choice.Finish != "tool_calls" {
 		return empty, fmt.Errorf("Foundry completion ended with %s", safeTerminal(choice.Finish))
 	}
-	if strings.Contains(choice.Message.Content, token) {
+	if strings.Contains(choice.Message.Content, token) || strings.Contains(safeTerminal(choice.Message.Content), token) {
 		return empty, fmt.Errorf("refusing credential material in model response")
 	}
 	return choice.Message, nil

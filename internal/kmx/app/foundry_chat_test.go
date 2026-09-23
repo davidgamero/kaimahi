@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -45,6 +46,41 @@ func TestFoundryCredentialReuseAndNativeTools(t *testing.T) {
 	}
 	if credential.calls != 1 {
 		t.Fatal("token acquired on each model request")
+	}
+}
+
+func TestFoundryTurnRejectsCredentialMaterial(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "raw token", content: "Your token is test-private-token"},
+		{name: "ANSI inside token", content: "Your token is test-\x1b[31mprivate\x1b[0m-token"},
+		{name: "control character inside token", content: "Your token is test-private-\x00token"},
+		{name: "safe answer", content: "A \x1b[32msafe\x1b[0m answer", want: "A safe answer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content, err := json.Marshal(tc.content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := &foundryChatClient{config: foundryChatConfig{Endpoint: "https://example.openai.azure.com", Deployment: "chat"}, credential: &foundryTestCredential{}}
+			client.http = &http.Client{Transport: foundryRoundTrip(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":` + string(content) + `}}]}`))}, nil
+			})}
+			b := &orkaChatBackend{app: &App{foundryClient: client}}
+			answer, err := b.foundryTurn(t.Context(), "prompt", "question", nil, newChatRenderer(io.Discard))
+			if tc.want != "" {
+				if err != nil || answer != tc.want {
+					t.Fatalf("answer=%q err=%v", answer, err)
+				}
+				return
+			}
+			if answer != "" || err == nil || err.Error() != "refusing credential material in model response" {
+				t.Fatalf("credential response was not safely rejected: answer=%q err=%v", answer, err)
+			}
+		})
 	}
 }
 
