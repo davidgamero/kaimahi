@@ -1,117 +1,170 @@
-<p align="center">
-  <img src="brand/hero.png"
-       alt="Kaimahi night worker guarding paths for AI agents"
-       width="100%">
-</p>
+<div align="center">
+
+<img src="brand/ketu.svg" alt="Kaimahi ketu mark" width="128" />
 
 # Kaimahi
 
-## Get agents onto Orka
+**Agent Builder CLI for Kubernetes.**
 
-**[Orka](https://github.com/orka-agents/orka) is the platform. Kaimahi is
-incubating tooling that helps people get agents onto it**, with particular
-attention to Kubernetes and AKS. It is not another agent platform.
+[![CI](https://github.com/kaimahi-agents/kaimahi/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kaimahi-agents/kaimahi/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/kaimahi-agents/kaimahi)](https://github.com/kaimahi-agents/kaimahi/releases)
+[![License](https://img.shields.io/github/license/kaimahi-agents/kaimahi)](LICENSE)
 
-`kmx` prepares a cluster, installs a pinned Orka, reports what is actually
-running, authors native Orka Agents, and helps route an existing application's
-model traffic through Orka. The application's owner keeps its Deployment and
-lifecycle. The seam between the application and Orka is a bridge: shrinking it
-to nothing is success, not lost product scope.
+[Getting started](docs/getting-started.md) · [Runtime contract](docs/runtime-adapters.md) · [`kmx` reference](docs/kmx.md) · [Contributing](CONTRIBUTING.md)
+
+<sub>[About the ketu mark](brand/README.md#ketu-mark)</sub>
+
+</div>
+
+---
+
+Kaimahi's `kmx` CLI helps developers create an agent, prove it locally, and
+move it into a real environment without learning each runtime's manifests first.
+
+## Create, Prove, Lift
+
+```bash
+kmx agent create
+kmx agent lift
+```
+
+`create` is the path from an idea to an editable local agent. `lift` is the path
+from "it works here" to a selected Kubernetes or AKS environment. KMX keeps the
+target and changes explicit while the runtime handles execution.
+
+These are the simple commands KMX is converging on. `kmx agent create` exists
+today for a prepared target. A standalone `kmx agent lift` is not implemented
+yet; the current lift is available as `/lift` from interactive chat. See the
+[lifecycle direction](https://github.com/kaimahi-agents/kaimahi/issues/194).
 
 ## Quickstart
 
-The Orka helpers are on `main`; the latest tagged release, `v0.1.0`, predates
-them. For this development path, install Go 1.26+ and Docker or Podman,
-ensure your Go binary directory is on `PATH`, then:
+The current end-to-end workflow is interactive. The required commands are on
+`main`; the latest tagged release, `v0.1.0`, predates them. Install Go 1.26+ and
+Docker or Podman, ensure the Go binary directory is on `PATH`, then run:
 
 ```bash
 go install github.com/kaimahi-agents/kaimahi/cmd/kmx@main
-# Docker (default):
-kmx up
-# Or choose Podman explicitly instead:
-kmx --container-engine podman up
-kmx orka install
-kmx orka status
+kmx quickstart-wizard
 ```
 
-`@main` follows a moving development branch, not a stable release. Use a
-reviewed commit instead when you need a reproducible CLI build.
+The wizard prepares a local Kubernetes target while you describe the agent. To
+complete the journey:
 
-`kmx up` currently creates a local kind cluster, Ollama and the existing
-kagent runtime. It is not an Orka-native setup command. `kmx orka install`
-then installs Orka's pinned manifest and a keyless local Provider; it does
-not migrate or govern an application. `kmx orka status` distinguishes the
-running controller version from the version kmx pins.
+1. Choose **Chat with agent** when setup is ready.
+2. Send a prompt and wait for an answer to prove the selected execution path.
+3. Enter `/lift`, choose an existing Kubernetes or AKS target, review the
+   destination and inference choice, then confirm.
 
-Already have a cluster? Read [getting started](docs/getting-started.md) and
-the [Orka installer contract](docs/orka.md), including target confirmation,
-`--no-apply`, `--dry-run`, and the Provider prerequisites. For cloud setup,
-read [AKS](docs/aks.md) before creating billable resources.
+The current lift reads the live source agent, deploys to an existing target, and
+does not replay a task or delete the source. Choosing new cloud inference can
+create billable resources. Read the [interactive lift guide](docs/interactive-lift.md)
+for the complete behavior and recovery boundaries.
 
-From a checkout, `make` builds `bin/kmx`; use that binary for the same
-commands. [Installation and releases](docs/releases.md) describes tagged
-binaries, checksums, and upgrade limits.
+Quickstart creates local cluster resources, result-reader RBAC, and a read-only
+Kubernetes inventory tool. Completed setup can remain after cancellation. Read
+[getting started](docs/getting-started.md) before using it on a shared machine.
 
-## Migrate model traffic
+Use Podman explicitly with:
 
-For an application **already deployed and managed by its owner**, the
-current bridge uses the retained plane implementation:
+```bash
+kmx --container-engine podman quickstart-wizard
+```
+
+`@main` is a moving development branch. Use a reviewed commit for a reproducible
+build. From a checkout, `make` builds `bin/kmx` without provisioning anything.
+
+## Runtime Contract
+
+[Orka](https://github.com/orka-agents/orka) is the first-class runtime. The
+selected runtime owns execution and enforcement. Read the [runtime adapter
+contract](docs/runtime-adapters.md) for the boundaries between KMX and runtimes.
+
+## Current Commands
+
+| Goal | Current interface | Boundary |
+|---|---|---|
+| Create a complete local agent environment | `kmx quickstart-wizard` | Interactive local workflow |
+| Create on a prepared target | `kmx agent create` | Does not install the runtime or provision credentials |
+| Prove an answer | Interactive chat or `kmx agent create --task ...` | Readiness alone is not execution proof |
+| Lift an agent | `/lift` in interactive chat | Uses a live agent and an existing destination |
+| Inspect agents | `kmx agent list`, `show`, and interactive `chat` | Runtime and namespace semantics remain explicit |
+| Provision an AKS target | `kmx aks up` | Billable platform workflow; does not create the agent |
+
+`kmx agent create` writes reviewable YAML, validates it against the selected
+target, creates dependencies in order, and waits for current-generation
+readiness. A real answer requires `--task` plus pre-existing result access.
+Credentials, namespaces, and RBAC remain separate operator responsibilities.
+Use `--out -` or `--no-apply` for offline output and `--dry-run` for server
+admission without cluster writes. Read the complete
+[`agent create` contract](docs/kmx.md#kmx-agent-create).
+
+## Lifecycle
+
+The simple front door does not remove deeper lifecycle needs. The direction in
+[#194](https://github.com/kaimahi-agents/kaimahi/issues/194) includes Git-tracked
+agent definitions, immutable revision digests, deployment receipts, evaluation,
+target-aware status, diff, and rollback.
+
+Those operations do not have full standalone command parity on `main`. The
+initial state model should use Git and the selected runtime rather than introduce
+a second KMX server or controller. Rollback means deploying and verifying an
+earlier revision; it cannot undo external actions already completed by an agent.
+
+## Migrate Model Traffic
+
+`kmx migrate` is a separate compatibility bridge for an existing application:
 
 ```bash
 kmx plane
 kmx migrate <deployment> --namespace <namespace> --model <provider>/<model>
 ```
 
-The placeholders must name your existing workload and an Orka Provider.
-Read the [migration guide](docs/migrate.md) before running this: inspect
-and apply the workload patch the command prints. `kmx migrate` does not
-patch your Deployment for you, adopt it, convert it into an Orka Agent, or
-create Orka Tasks for its requests.
-
-**Governance here means governed model traffic**, not application ownership
-or automatic governance of every tool, network connection, and inbound
-event. Authentication, Provider scope, recording, protocol translation,
-credential renewal and known limitations are documented at the migration
-boundary. Installing Orka alone enables none of this routing.
+The application owner keeps the Deployment and reviews the generated patch. The
+bridge covers a supported model-client shape; it does not convert the application
+into an agent, govern all of its activity, or replace runtime enforcement. Read
+the [migration guide](docs/migrate.md) for protocol, credential, and ownership
+limits.
 
 ## Status
 
-- **Current tooling:** Orka installation/status, native `kmx agent create`
-  (Provider + Agent, optionally a Task with an actual answer), and model-traffic
-  migration. See the [native create guide](docs/orka.md#author-an-orka-agent-and-get-an-answer).
-  Migration was exercised on kind and AKS; cloud runs are measurements,
-  not a continuously maintained deployment. See [migration](docs/migrate.md).
-- **Authoring is open:** whether the supported authoring surface will be
-  native Orka only or also kagent YAML over Orka is not decided.
-  [docs/orka.md](docs/orka.md) recommends native resources; that is a
-  recommendation, not a ruling. Today's `kmx agent create` emits native Orka
-  resources; it does not convert kagent YAML, ModelConfigs, MCP wiring or BYO
-  images. The isolated conversion spike is not a supported CLI interface.
-- **The bridge is shrinking:** the model seam, budgets/ledger and existing
-  kagent commands remain. The custom MCP gateway, all custom approvals/grants,
-  workflows and connector fixtures are retired; native Orka tools and direct
-  kagent MCP/HITL are not. Existing installations need
-  [deliberate upgrade review](docs/operations.md#upgrading-after-approval-retirement),
-  including old-replica and rollback risks. Historical SQL and stored data remain
-  intact, accessible through SQL/backups rather than removed approval APIs.
-- **Upstream first:** do not rebuild what Orka supplies. `orka.harness.v2`
-  is not a direction for this project. OTLP with GenAI conventions ships
-  in Orka; it is not an outstanding Kaimahi upstream candidate.
+Kaimahi is pre-1.0 and incubating. Interactive local creation, creation on the
+first-class runtime, inspection, chat, lift to an existing target, AKS platform
+provisioning, and model-traffic migration are implemented. Standalone agent lift
+and the complete lifecycle remain directional. Legacy commands and the retained
+model-traffic bridge stay available while migration paths mature. AKS paths use
+billable resources and are not continuously re-proved in CI.
 
 ## Documentation
 
-Start at the [documentation index](docs/README.md), which separates current
-operator paths from references for the legacy code still in this tree.
-
-- [Getting started](docs/getting-started.md) and [kmx reference](docs/kmx.md)
-- [Installing Orka](docs/orka.md) and [migrating an application](docs/migrate.md)
-- [AKS](docs/aks.md) and [troubleshooting](docs/FAQ.md)
-- [Repository map](docs/repository-map.md) and [current coordination](docs/COORDINATION.md)
+| Start here | Purpose |
+|---|---|
+| [Getting started](docs/getting-started.md) | Prerequisites and current local workflows |
+| [`kmx` reference](docs/kmx.md) | Commands, safety rules, and output contracts |
+| [Runtime contract](docs/runtime-adapters.md) | Runtime, context, session, inference, lifecycle, and enforcement boundaries |
+| [Runtime setup](docs/orka.md) | First-class implementation setup, native creation, and first task |
+| [Interactive lift](docs/interactive-lift.md) | Current agent-to-target behavior |
+| [AKS](docs/aks.md) | Billable resource ownership, provisioning, and teardown |
+| [Migration](docs/migrate.md) | Existing-application model-traffic bridge |
+| [Direction issue #194](https://github.com/kaimahi-agents/kaimahi/issues/194) | Proposed definitions, adapters, and lifecycle |
+| [Documentation index](docs/README.md) | All current guides and maintainer references |
 
 ## Development
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) and the
-[entry-point principles](docs/entry-point-principles.md). Changes land via
-pull requests to `main` with checks green and verification actually run.
-The project name's cultural and publication boundaries remain in
+[developer entry-point principles](docs/entry-point-principles.md). Changes land
+through pull requests to `main` with checks green and verification actually run.
+The project name's cultural and publication boundaries are documented in
 [docs/NAMING.md](docs/NAMING.md).
+
+> [!IMPORTANT]
+> **Kaimahi is experimental and under active development.** Commands, generated
+> artifacts, and behavior may change between pre-1.0 releases. It is not yet
+> recommended for production use. Use a dedicated test environment, review every
+> proposed mutation, and [open an issue](https://github.com/kaimahi-agents/kaimahi/issues)
+> with feedback, bugs, or ideas.
+
+> [!NOTE]
+> KMX is the Agent Builder and lifecycle layer, not a runtime or generic
+> governance control plane. The selected runtime owns execution and enforcement.
+> See the [runtime contract](docs/runtime-adapters.md) for the current boundary.
