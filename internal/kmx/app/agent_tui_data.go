@@ -177,21 +177,22 @@ func (a *App) agentTUIEnvironments(ctx context.Context) ([]agentTUIEnvironment, 
 		}
 		defaultKubeconfig = filepath.Join(home, ".kube", "config")
 	}
-	seen := map[string]bool{}
+	seen := map[string]int{}
 	for _, c := range kube.Contexts {
 		p, err := guard.Classify(kube, c.Name)
 		if err != nil || p.Host == "" {
 			continue
 		}
+		seen[c.Name] = len(envs)
 		envs = append(envs, agentTUIEnvironment{Name: c.Name, Kubeconfig: defaultKubeconfig, Local: p.Local})
-		seen[c.Name] = true
 	}
 	locations, err := loadAgentLocations()
 	if err != nil {
 		return envs, err
 	}
+	saved := map[string]bool{}
 	for _, l := range locations {
-		if seen[l.Context] || l.Kubeconfig == "" {
+		if saved[l.Context] || l.Kubeconfig == "" {
 			continue
 		}
 		raw, err := appAtAgentLocation(a, l).orkaCapture(ctx, nil, "config", "view", "-o", "json")
@@ -206,11 +207,33 @@ func (a *App) agentTUIEnvironments(ctx context.Context) ([]agentTUIEnvironment, 
 		if err != nil || p.Host == "" {
 			continue
 		}
-		envs = append(envs, agentTUIEnvironment{Name: l.Context, Kubeconfig: l.Kubeconfig, Local: p.Local})
-		seen[l.Context] = true
+		env := agentTUIEnvironment{Name: l.Context, Kubeconfig: l.Kubeconfig, Local: p.Local}
+		if index, ok := seen[l.Context]; ok {
+			envs[index] = env
+		} else {
+			seen[l.Context] = len(envs)
+			envs = append(envs, env)
+		}
+		saved[l.Context] = true
 	}
 	sort.Slice(envs, func(i, j int) bool { return envs[i].Name < envs[j].Name })
 	return envs, nil
+}
+
+// Empty inventories are valid only when Kubernetes explicitly returns an array.
+// Missing/null items (including Status objects) are not evidence of absence.
+func decodeConsoleList(raw []byte, dst any) error {
+	var envelope struct {
+		Items json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return err
+	}
+	items := strings.TrimSpace(string(envelope.Items))
+	if !strings.HasPrefix(items, "[") {
+		return fmt.Errorf("invalid Kubernetes list: items must be an array")
+	}
+	return json.Unmarshal(raw, dst)
 }
 
 // Inventory reads are bounded and independent per column. Missing API groups
@@ -230,7 +253,7 @@ func (a *App) agentTUIInventory(ctx context.Context, env agentTUIEnvironment, na
 	read := func(kind, ns string, dst any) bool {
 		raw, err := a.orkaCapture(ctx, nil, "-n", ns, "get", kind, "-o", "json")
 		if err == nil {
-			err = json.Unmarshal(raw, dst)
+			err = decodeConsoleList(raw, dst)
 		}
 		if err != nil {
 			problems = append(problems, kind+": "+err.Error())
@@ -277,7 +300,7 @@ func (a *App) agentTUIInventory(ctx context.Context, env agentTUIEnvironment, na
 				}
 				raw, err := a.orkaCapture(ctx, nil, "-n", namespace, "get", "tools.core.orka.ai", "-o", "json")
 				if err == nil {
-					err = json.Unmarshal(raw, &tools)
+					err = decodeConsoleList(raw, &tools)
 				}
 				if err != nil {
 					toolReadError = "definition unavailable: " + err.Error()
@@ -347,6 +370,7 @@ func (a *App) agentTUIInventory(ctx context.Context, env agentTUIEnvironment, na
 				Type        string
 				Declarative struct {
 					ModelConfig, SystemMessage string
+					SystemMessageFrom          *struct{ Type, Name, Key string }
 					Tools                      []struct {
 						Type      string
 						MCPServer *struct {
@@ -367,6 +391,16 @@ func (a *App) agentTUIInventory(ctx context.Context, env agentTUIEnvironment, na
 			for _, item := range list.Items {
 				row := agentTUIAgent{Name: item.Metadata.Name, Namespace: "kagent", Runtime: "kagent", Version: item.Metadata.version(), Ready: condition(item.Status.Conditions, "Ready"), Provider: item.Spec.Declarative.ModelConfig, InferenceReady: "unknown"}
 				row.SystemPrompt, row.PromptSource = item.Spec.Declarative.SystemMessage, "spec.declarative.systemMessage"
+				if ref := item.Spec.Declarative.SystemMessageFrom; ref != nil {
+					if ref.Type == "ConfigMap" {
+						prompt := agentTUISystemPrompt{ConfigMapRef: &struct{ Name, Key string }{ref.Name, ref.Key}}
+						a.agentTUIPrompt(ctx, "kagent", prompt, &row)
+					} else {
+						row.SystemPrompt = ""
+						row.PromptSource = ref.Type + " " + ref.Name + " · key " + ref.Key
+						row.PromptError = "System prompt reference is not a ConfigMap; contents are not read by the console"
+					}
+				}
 				for _, ref := range item.Spec.Declarative.Tools {
 					if ref.MCPServer != nil {
 						server := ref.MCPServer

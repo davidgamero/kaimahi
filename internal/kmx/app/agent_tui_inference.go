@@ -29,6 +29,7 @@ type consoleInferenceSource struct {
 	Subscription  string `json:"subscription,omitempty"`
 	ResourceGroup string `json:"resourceGroup,omitempty"`
 	Account       string `json:"account,omitempty"`
+	Namespace     string `json:"namespace,omitempty"`
 }
 
 type consoleInferenceSnapshot struct {
@@ -251,7 +252,10 @@ func (a *App) consoleLoadInference(ctx context.Context, env agentTUIEnvironment,
 	}
 	var object struct {
 		Metadata struct{ ResourceVersion string }
-		Spec     struct{ Model map[string]any }
+		Spec     struct {
+			Model       map[string]any
+			ProviderRef struct{ Name, Namespace string }
+		}
 	}
 	if err = json.Unmarshal(raw, &object); err != nil {
 		return snapshot, err
@@ -264,15 +268,31 @@ func (a *App) consoleLoadInference(ctx context.Context, env agentTUIEnvironment,
 	if err != nil {
 		return snapshot, err
 	}
-	var list objectList[struct {
+	type configuration struct {
 		Metadata struct{ Name string }
 		Spec     struct{ Type, Provider, DefaultModel, Model, BaseURL string }
-	}]
-	if err = json.Unmarshal(raw, &list); err != nil {
+	}
+	var list objectList[configuration]
+	if err = decodeConsoleList(raw, &list); err != nil {
 		return snapshot, err
 	}
 	for _, c := range list.Items {
-		snapshot.Sources = append(snapshot.Sources, consoleInferenceSource{Kind: "cluster", Name: c.Metadata.Name, Model: valueOr(c.Spec.DefaultModel, c.Spec.Model), Provider: valueOr(c.Spec.Type, c.Spec.Provider), Endpoint: c.Spec.BaseURL})
+		snapshot.Sources = append(snapshot.Sources, consoleInferenceSource{Kind: "cluster", Namespace: agent.Namespace, Name: c.Metadata.Name, Model: valueOr(c.Spec.DefaultModel, c.Spec.Model), Provider: valueOr(c.Spec.Type, c.Spec.Provider), Endpoint: c.Spec.BaseURL})
+	}
+	ref := object.Spec.ProviderRef
+	if agent.Runtime == "orka" && ref.Namespace != "" && ref.Namespace != agent.Namespace {
+		raw, err = worker.orkaCapture(ctx, nil, "-n", ref.Namespace, "get", configs, ref.Name, "-o", "json")
+		if err != nil {
+			return snapshot, fmt.Errorf("cannot read current shared Provider: %w", err)
+		}
+		var shared configuration
+		if err = json.Unmarshal(raw, &shared); err != nil {
+			return snapshot, err
+		}
+		if shared.Metadata.Name != ref.Name {
+			return snapshot, fmt.Errorf("shared Provider returned an invalid identity")
+		}
+		snapshot.Sources = append(snapshot.Sources, consoleInferenceSource{Kind: "cluster", Name: ref.Name, Namespace: ref.Namespace, Model: shared.Spec.DefaultModel, Provider: shared.Spec.Type, Endpoint: shared.Spec.BaseURL})
 	}
 	saved, err := loadConsoleInference(env, agent)
 	if err != nil {
@@ -381,7 +401,7 @@ func (a *App) consoleSaveInference(ctx context.Context, env agentTUIEnvironment,
 		}
 		model = "" // New connector's default model is the chosen model.
 	}
-	patch, err := consoleInferencePatch(agent.Runtime, snapshot.Version, source.Name, agent.Namespace, model, snapshot.Model)
+	patch, err := consoleInferencePatch(agent.Runtime, snapshot.Version, source.Name, valueOr(source.Namespace, agent.Namespace), model, snapshot.Model)
 	if err != nil {
 		return err
 	}
@@ -498,7 +518,7 @@ func (a *App) consoleCreateConnector(ctx context.Context, agent agentTUIAgent, s
 	if agent.Runtime == "kagent" {
 		spec := map[string]any{"provider": "OpenAI", "model": s.Model, "apiKeySecret": s.Secret, "apiKeySecretKey": s.SecretKey, "openAI": map[string]any{"baseUrl": s.Endpoint}}
 		if s.Kind == "ollama" {
-			spec = map[string]any{"provider": "Ollama", "model": s.Model, "ollama": map[string]any{"host": strings.TrimSuffix(s.Endpoint, "/v1")}}
+			spec = map[string]any{"provider": "Ollama", "model": s.Model, "ollama": map[string]any{"host": consoleOllamaEndpoint(s.Endpoint, false)}}
 		}
 		body, _ := json.Marshal(map[string]any{"apiVersion": "kagent.dev/v1alpha2", "kind": "ModelConfig", "metadata": map[string]string{"name": s.Name, "namespace": agent.Namespace}, "spec": spec})
 		_, err := a.orkaCapture(ctx, body, "-n", agent.Namespace, "create", "--validate=strict", "-f", "-", "-o", "json")
@@ -509,10 +529,7 @@ func (a *App) consoleCreateConnector(ctx context.Context, agent agentTUIAgent, s
 		secret = s.Name + "-keyless"
 		key = "api-key"
 		provider = "openai"
-		endpoint = strings.TrimRight(endpoint, "/")
-		if !strings.HasSuffix(endpoint, "/v1") {
-			endpoint += "/v1"
-		}
+		endpoint = consoleOllamaEndpoint(endpoint, true)
 	}
 	bundle, err := createOrkaBundle(CreateOptions{Name: s.Name, Namespace: agent.Namespace, ProviderType: provider, Model: s.Model, BaseURL: endpoint, Secret: secret, SecretKey: key})
 	if err != nil {
@@ -536,6 +553,14 @@ func (a *App) consoleCreateConnector(ctx context.Context, agent agentTUIAgent, s
 	waitCtx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	return a.waitOrkaReady(waitCtx, agent.Namespace, id)
+}
+
+func consoleOllamaEndpoint(endpoint string, openAI bool) string {
+	endpoint = strings.TrimSuffix(strings.TrimRight(endpoint, "/"), "/v1")
+	if openAI {
+		endpoint += "/v1"
+	}
+	return endpoint
 }
 
 func consoleInferencePatch(runtime, version, configuration, namespace, model string, currentModel map[string]any) ([]byte, error) {

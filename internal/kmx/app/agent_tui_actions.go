@@ -55,7 +55,7 @@ func (a *App) runAgentTUIAction(action agentTUIAction) (agentTUIEnvironment, err
 	if action.create != nil {
 		// The existing cluster phase owns cloud account review, confirmation,
 		// provisioning records and retry advice. Run it with the terminal restored.
-		worker := appAtAgentLocation(a, agentLocation{Context: a.Cfg.KubeContext})
+		worker := action.source.app(a)
 		worker.InvocationCommand = ""
 		if err := worker.Lift(*action.create); err != nil {
 			return target, err

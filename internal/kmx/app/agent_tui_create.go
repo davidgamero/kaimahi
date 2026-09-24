@@ -89,6 +89,9 @@ func (m agentTUIModel) updateCreatePane(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case quickstartTickMsg:
+		if !p.loading && !p.running {
+			return m, nil
+		}
 		p.frame++
 		return m, quickstartTick()
 	case tea.WindowSizeMsg:
@@ -142,7 +145,7 @@ func (m agentTUIModel) updateCreatePane(msg tea.Msg) (tea.Model, tea.Cmd) {
 	p.running = true
 	result, cancel := m.startCreate(p.env, p.server, p.wizard.opt)
 	p.cancel = cancel
-	return m, func() tea.Msg { return <-result }
+	return m, tea.Batch(quickstartTick(), func() tea.Msg { return <-result })
 }
 
 func (m agentTUIModel) creationView() string {

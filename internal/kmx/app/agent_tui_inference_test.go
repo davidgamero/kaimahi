@@ -321,3 +321,82 @@ func TestRemoteChatRejectsHostInferenceBeforeLogin(t *testing.T) {
 		t.Fatal("remote host turn was allowed")
 	}
 }
+
+func TestConsoleListsRejectMissingAndNullItems(t *testing.T) {
+	for _, body := range []string{`{}`, `null`, `{"items":null}`, `{"items":{}}`, `{"kind":"Status"}`} {
+		var list objectList[agentTUIMetadata]
+		if err := decodeConsoleList([]byte(body), &list); err == nil {
+			t.Fatalf("accepted malformed list: %s", body)
+		}
+	}
+	var list objectList[agentTUIMetadata]
+	if err := decodeConsoleList([]byte(`{"items":[]}`), &list); err != nil || list.Items == nil {
+		t.Fatal("explicit empty list rejected")
+	}
+	dir := t.TempDir()
+	fakeTool(t, dir, "kubectl", `case "$*" in
+ *'config view'*) printf '%s' '{"contexts":[{"name":"remote","context":{"cluster":"r"}}],"clusters":[{"name":"r","cluster":{"server":"https://remote.example.com"}}]}' ;;
+ *api-resources*) printf 'agents.core.orka.ai\n' ;;
+ *'get agents.core.orka.ai demo'*) printf '%s' '{"metadata":{"resourceVersion":"42"}}' ;;
+ *) printf '%s' '{"items":null}' ;;
+esac`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	a := &App{Cfg: &config.Config{}, Run: &run.Runner{}}
+	env := agentTUIEnvironment{Name: "remote"}
+	if agents, err := a.agentTUIInventory(t.Context(), env, "agents"); err == nil || len(agents) != 0 {
+		t.Fatal("inventory did not surface malformed list")
+	}
+	if _, err := a.consoleLoadInference(t.Context(), env, agentTUIAgent{Runtime: "orka", Name: "demo", Namespace: "agents"}); err == nil {
+		t.Fatal("inference did not surface malformed list")
+	}
+}
+
+func TestConsoleInferenceSharedProviderKeepsNamespace(t *testing.T) {
+	dir := t.TempDir()
+	fakeTool(t, dir, "kubectl", `case "$*" in
+ *'config view'*) printf '%s' '{"contexts":[{"name":"remote","context":{"cluster":"r"}}],"clusters":[{"name":"r","cluster":{"server":"https://remote.example.com"}}]}' ;;
+ *'get agents.core.orka.ai demo'*) printf '%s' '{"metadata":{"resourceVersion":"42"},"spec":{"providerRef":{"name":"shared","namespace":"inference"}}}' ;;
+ *'-n agents get providers.core.orka.ai -o json'*) printf '%s' '{"items":[]}' ;;
+ *'-n inference get providers.core.orka.ai shared'*) printf '%s' '{"metadata":{"name":"shared"},"spec":{"type":"openai","defaultModel":"shared-model"}}' ;;
+ *) exit 1 ;;
+esac`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	a := &App{Cfg: &config.Config{}, Run: &run.Runner{}}
+	snapshot, err := a.consoleLoadInference(t.Context(), agentTUIEnvironment{Name: "remote"}, agentTUIAgent{Runtime: "orka", Name: "demo", Namespace: "agents"})
+	if err != nil || len(snapshot.Sources) != 1 {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+	source := snapshot.Sources[0]
+	if source.Namespace != "inference" || source.Name != "shared" {
+		t.Fatal("lost shared Provider identity")
+	}
+	raw, err := consoleInferencePatch("orka", snapshot.Version, source.Name, source.Namespace, "", nil)
+	if err != nil || !strings.Contains(string(raw), `"namespace":"inference"`) {
+		t.Fatalf("patch=%s err=%v", raw, err)
+	}
+}
+
+func TestConsoleOllamaEndpointNormalizationAndReviewModel(t *testing.T) {
+	for _, suffix := range []string{"", "/", "/v1", "/v1/"} {
+		endpoint := "http://ollama:11434" + suffix
+		if got := consoleOllamaEndpoint(endpoint, false); got != "http://ollama:11434" {
+			t.Fatal(got)
+		}
+		if got := consoleOllamaEndpoint(endpoint, true); got != "http://ollama:11434/v1" {
+			t.Fatal(got)
+		}
+	}
+	m := newAgentTUIModel(AgentTUIOptions{Demo: true})
+	m.inference = &consoleInferencePane{agent: *m.selected(), env: m.columns[0].Env, model: "old-override"}
+	m.inference.setFields("ollama")
+	if m.inference.model != "" {
+		t.Fatal("new connector retained old override")
+	}
+	m.inference.source = consoleInferenceSource{Kind: "ollama", Model: "new-model", Name: "new"}
+	m.inference.model = "stale-override"
+	m.inference.stage = "review"
+	view := ansi.Strip(m.inferenceView())
+	if !strings.Contains(view, "Model: new-model") || strings.Contains(view, "stale-override") {
+		t.Fatal("review model differs from saved connector")
+	}
+}

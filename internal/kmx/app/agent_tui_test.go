@@ -767,3 +767,48 @@ esac`)
 		t.Fatalf("changed target not refused: %v", err)
 	}
 }
+
+func TestConsoleCreationTimerOnlyRunsDuringWork(t *testing.T) {
+	m := newAgentTUIModel(AgentTUIOptions{Demo: true})
+	m = tuiKey(m, 'n', "n")
+	for _, state := range []string{"form", "finished", "loading", "running"} {
+		m.creation.loading = state == "loading"
+		m.creation.running = state == "running"
+		m.creation.finished = state == "finished"
+		_, cmd := m.Update(quickstartTickMsg{})
+		if (cmd != nil) != (state == "loading" || state == "running") {
+			t.Fatalf("timer running in %s", state)
+		}
+	}
+}
+
+func TestConsoleKagentPromptReferenceAndSavedContextPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	saved := filepath.Join(dir, "saved-config")
+	if _, err := writeAgentLocation(agentLocation{Agent: "demo", Namespace: "kagent", Context: "remote", Kubeconfig: saved}, nil); err != nil {
+		t.Fatal(err)
+	}
+	fakeTool(t, dir, "kubectl", `case "$*" in
+ *'config view'*) printf '%s' '{"contexts":[{"name":"remote","context":{"cluster":"r"}}],"clusters":[{"name":"r","cluster":{"server":"https://remote.example.com"}}]}' ;;
+ *api-resources*) printf 'agents.kagent.dev\n' ;;
+ *'get agents.kagent.dev'*) printf '%s' '{"items":[{"metadata":{"name":"demo"},"spec":{"declarative":{"systemMessageFrom":{"type":"ConfigMap","name":"instructions","key":"prompt"}}}}]}' ;;
+ *'get modelconfigs.kagent.dev'*) printf '%s' '{"items":[]}' ;;
+ *'get configmap instructions'*) printf '%s' '{"data":{"prompt":"Referenced system prompt"}}' ;;
+ *) exit 1 ;;
+esac`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	a := &App{Cfg: &config.Config{KubeContext: "different-configured-context"}, Run: &run.Runner{}}
+	envs, err := a.agentTUIEnvironments(t.Context())
+	if err != nil || len(envs) != 1 || envs[0].Kubeconfig != saved {
+		t.Fatalf("envs=%+v err=%v", envs, err)
+	}
+	worker := envs[0].app(a)
+	if worker.Cfg.KubeContext != "remote" || !strings.Contains(strings.Join(worker.Run.Env, " "), "KUBECONFIG="+saved) {
+		t.Fatal("selected source routing lost")
+	}
+	agents, err := a.agentTUIInventory(t.Context(), envs[0], OrkaNamespace)
+	if err != nil || len(agents) != 1 || agents[0].SystemPrompt != "Referenced system prompt" {
+		t.Fatalf("agents=%+v err=%v", agents, err)
+	}
+}

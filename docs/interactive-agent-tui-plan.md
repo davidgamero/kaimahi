@@ -34,6 +34,9 @@ saved preferences are skipped. The local column uses the same
 kind-name plus loopback-server classification as kmx's context guard. Remote
 contexts include saved lift locations with private kubeconfig snapshots. An
 explicit missing/wrong-type context is reported instead of silently substituted.
+When a saved lift context also exists in the default kubeconfig, its validated
+private snapshot takes precedence. Newly provisioned lift environments inherit
+the selected source context and kubeconfig, rather than the console's startup default.
 
 When no remote environment is selected, its column collapses into a narrow setup
 panel. Focus it and press `s` or Enter to select a remote context, or `L` to lift
@@ -72,6 +75,9 @@ Version is the `app.kubernetes.io/version` label. If absent, the dashboard says
 defaults resolve missing agent model overrides. Missing/unreadable inference
 information is `unknown`. Errors stay visible alongside any successfully read
 agents. Endpoint details omit credentials, paths and query parameters.
+Missing/null Kubernetes list items are reported as errors, not empty inventory.
+kagent ConfigMap-backed `systemMessageFrom` prompts are resolved; Secret-backed
+prompt references are identified without reading their contents.
 
 Refresh with `r` or `/refresh`; reads run independently for each column. Selection
 is retained by runtime/namespace/name when the selected agent still exists.
@@ -119,6 +125,8 @@ optional model override for Orka, or an existing ModelConfig for kagent. An empt
 Orka override uses the Provider default. Saving updates the agent reference, not
 the shared Provider or ModelConfig. The review names the agent, context and
 configuration before saving. Saving and cancellation remain inside the overlay.
+The agent's current cross-namespace Orka Provider is included with its namespace,
+which is retained when selected and saved.
 
 **Add inference source…** is the last item, even when no configurations exist:
 

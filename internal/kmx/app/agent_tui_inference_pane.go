@@ -90,6 +90,9 @@ func (p *consoleInferencePane) setFields(kind string) {
 	p.field = 0
 	p.stage = "fields"
 	p.err = nil
+	if kind != "cluster" {
+		p.model = ""
+	}
 	var labels, values []string
 	switch kind {
 	case "foundry-cluster":
@@ -408,7 +411,11 @@ func (m agentTUIModel) inferenceView() string {
 	switch p.stage {
 	case "sources":
 		for _, s := range p.snapshot.Sources {
-			choices = append(choices, s.Name+" · "+s.Kind+" · "+s.Model)
+			name := s.Name
+			if s.Namespace != "" {
+				name = s.Namespace + "/" + name
+			}
+			choices = append(choices, name+" · "+s.Kind+" · "+s.Model)
 		}
 		choices = append(choices, "Add inference source…")
 	case "kinds":
@@ -457,7 +464,14 @@ func (m agentTUIModel) inferenceView() string {
 		rows = append(rows, input.View())
 		footer = "<tab> next · shift+tab back · <enter> continue · <esc> cancel"
 	case "review":
-		rows = append(rows, fit("Source: "+p.source.Name+" · "+p.source.Kind), fit("Model: "+valueOr(p.model, valueOr(p.source.Model, "Provider default"))))
+		model := p.source.Model
+		if p.source.Kind == "cluster" {
+			model = valueOr(p.model, model)
+		}
+		rows = append(rows, fit("Source: "+p.source.Name+" · "+p.source.Kind), fit("Model: "+valueOr(model, "Provider default")))
+		if p.source.Namespace != "" {
+			rows = append(rows, fit("Provider namespace: "+p.source.Namespace))
+		}
 		if p.source.Endpoint != "" {
 			rows = append(rows, fit("Endpoint: "+p.source.Endpoint))
 		}
