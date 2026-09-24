@@ -122,11 +122,16 @@ configuration before saving. Saving and cancellation remain inside the overlay.
 
 **Add inference source…** is the last item, even when no configurations exist:
 
+The inference header uses a distinct title color, muted environment text and a
+spaced divider above the choices. Every new source asks for its name last, with
+an editable default derived from the source kind/provider and model settings.
+
 | Source | Setup and execution |
 |---|---|
-| Foundry | Enter an existing Azure endpoint, deployment and optional tenant. Verify `az login` credentials and save a host-chat connector; no model request during setup. Native Orka agents only. |
+| Azure (when `az` is installed) | Browse subscriptions, Foundry/OpenAI resources and ready deployments. For local kind, save a Foundry host connector. For remote Kubernetes, retrieve an API key during setup, create a cluster Secret and Provider/ModelConfig, and test a small billed request from a cluster Job. |
+| Foundry | Local kind: endpoint, deployment and optional tenant using host Azure login. Remote Kubernetes: endpoint, deployment and an existing cluster Secret/key reference; no local Azure CLI required. Remote setup probes inference from the cluster. |
 | Ollama | Enter a connector name, cluster-reachable Ollama endpoint and installed model. Create an Orka Provider or kagent ModelConfig and select it. Orka uses a new, keyless dummy Secret required by its Provider schema. |
-| Copilot | Select a model by name from an installed, authenticated Copilot CLI (`copilot login`). Verify account/model availability and save a host-chat connector. Native Orka agents only. |
+| Copilot | Local kind/native Orka only. Select a model from an installed, authenticated Copilot CLI. Not offered or permitted for remote environments. |
 | API key | Enter connector name, provider type, endpoint, model and an existing Kubernetes Secret/key reference. Create a Provider or ModelConfig. The form does not collect the credential value. Orka supports OpenAI/Anthropic; kagent supports OpenAI-compatible endpoints. |
 
 These forms configure connectors to existing services; they do not provision a
@@ -140,6 +145,16 @@ Host connectors are saved per context/runtime/namespace/agent under the private
 not tokens, and apply to subsequent chats launched from the console. They do not
 change the cluster's Provider. Selecting a cluster source clears the host override.
 The console labels host overrides explicitly and reports health as not checked.
+
+Remote AKS and other Kubernetes environments always execute through cluster
+configuration. Saved host overrides from earlier versions are ignored remotely;
+chat also rejects host Foundry/Copilot selection and execution on non-local
+contexts. Remote Foundry authenticates with an API key stored in Kubernetes,
+not the user's Azure CLI session. Azure CLI is only a setup/discovery convenience.
+Manual Secret-reference setup works without it. No workstation process is needed
+for subsequent cluster inference. This is not managed/workload identity support:
+Foundry accounts with API keys disabled need worker-side token refresh support
+and are refused by the Azure key setup path.
 
 Tools reuses the Orka multi-select picker: Space toggles tools, `/` searches,
 and Enter saves. Automatic Orka tools remain locked. Both editors use

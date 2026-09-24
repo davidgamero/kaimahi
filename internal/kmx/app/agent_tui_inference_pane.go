@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -17,22 +18,34 @@ type consoleInferenceLoaded struct {
 	err      error
 }
 type consoleInferenceSaved struct{ err error }
+type consoleAzureChoice struct {
+	Label, Detail, ID, Tenant, ResourceGroup, Endpoint, Model string
+}
+type consoleAzureLoaded struct {
+	pane    *consoleInferencePane
+	stage   string
+	choices []consoleAzureChoice
+	err     error
+}
 type consoleInferenceField struct {
 	label string
 	input textinput.Model
 }
 type consoleInferencePane struct {
-	env                     agentTUIEnvironment
-	agent                   agentTUIAgent
-	snapshot                consoleInferenceSnapshot
-	stage                   string
-	selection, field, frame int
-	source                  consoleInferenceSource
-	fields                  []consoleInferenceField
-	model                   string
-	err                     error
-	cancel                  context.CancelFunc
-	cancelling              bool
+	env                                                              agentTUIEnvironment
+	agent                                                            agentTUIAgent
+	snapshot                                                         consoleInferenceSnapshot
+	stage                                                            string
+	selection, field, frame                                          int
+	source                                                           consoleInferenceSource
+	fields                                                           []consoleInferenceField
+	model                                                            string
+	err                                                              error
+	cancel                                                           context.CancelFunc
+	cancelling                                                       bool
+	azureAvailable                                                   bool
+	azureChoices                                                     []consoleAzureChoice
+	azureSubscription, azureTenant, azureResourceGroup, azureAccount string
 }
 
 func (m agentTUIModel) openInference() (tea.Model, tea.Cmd) {
@@ -41,6 +54,8 @@ func (m agentTUIModel) openInference() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	p := &consoleInferencePane{env: m.columns[m.focus].Env, agent: *agent, stage: "loading"}
+	_, azErr := exec.LookPath("az")
+	p.azureAvailable = azErr == nil
 	m.inference = p
 	if m.opt.Demo {
 		p.stage = "sources"
@@ -52,10 +67,21 @@ func (m agentTUIModel) openInference() (tea.Model, tea.Cmd) {
 }
 
 func (p *consoleInferencePane) sourceKinds() []string {
+	if !p.env.Local {
+		kinds := []string{"foundry-cluster", "ollama", "apikey"}
+		if p.azureAvailable {
+			kinds = append([]string{"azure"}, kinds...)
+		}
+		return kinds
+	}
 	if p.agent.Runtime == "kagent" {
 		return []string{"ollama", "apikey"}
 	}
-	return []string{"foundry", "ollama", "copilot", "apikey"}
+	kinds := []string{"foundry", "ollama", "copilot", "apikey"}
+	if p.azureAvailable {
+		kinds = append([]string{"azure"}, kinds...)
+	}
+	return kinds
 }
 
 func (p *consoleInferencePane) setFields(kind string) {
@@ -66,6 +92,9 @@ func (p *consoleInferencePane) setFields(kind string) {
 	p.err = nil
 	var labels, values []string
 	switch kind {
+	case "foundry-cluster":
+		labels = []string{"Foundry HTTPS endpoint", "Deployment / model", "Existing cluster Secret name", "Secret key name"}
+		values = []string{"", "", "", "api-key"}
 	case "foundry":
 		labels = []string{"Foundry HTTPS endpoint", "Deployment / model", "Tenant (optional)"}
 		values = []string{"", "", ""}
@@ -73,11 +102,11 @@ func (p *consoleInferencePane) setFields(kind string) {
 		labels = []string{"Copilot model"}
 		values = []string{"gpt-4.1"}
 	case "ollama":
-		labels = []string{"Connector name", "Ollama endpoint (reachable from cluster)", "Model"}
-		values = []string{"ollama", "http://ollama.ollama.svc.cluster.local:11434", "qwen2.5:3b"}
+		labels = []string{"Ollama endpoint (reachable from cluster)", "Model"}
+		values = []string{"http://ollama.ollama.svc.cluster.local:11434", "qwen2.5:3b"}
 	case "apikey":
-		labels = []string{"Connector name", "Provider type (openai / anthropic)", "API endpoint", "Model", "Existing Kubernetes Secret name", "Secret key name"}
-		values = []string{"", "openai", "https://api.openai.com/v1", "", "", "api-key"}
+		labels = []string{"Provider type (openai / anthropic)", "API endpoint", "Model", "Existing Kubernetes Secret name", "Secret key name"}
+		values = []string{"openai", "https://api.openai.com/v1", "", "", "api-key"}
 	case "cluster":
 		labels = []string{"Model override (empty uses Provider default)"}
 		values = []string{p.model}
@@ -98,25 +127,76 @@ func (p *consoleInferencePane) readFields() error {
 	v := func(i int) string { return strings.TrimSpace(p.fields[i].input.Value()) }
 	s := p.source
 	switch s.Kind {
+	case "foundry-cluster":
+		s.Endpoint, s.Model, s.Secret, s.SecretKey = v(0), v(1), v(2), v(3)
 	case "cluster":
 		p.model = v(0)
 		return refuseWizardCredentials(p.model)
 	case "foundry":
 		s.Endpoint, s.Model, s.Tenant = v(0), v(1), v(2)
-		s.Name = "Foundry " + s.Model
 	case "copilot":
 		s.Model = v(0)
-		s.Name = "Copilot " + s.Model
 	case "ollama":
-		s.Name, s.Endpoint, s.Model = v(0), v(1), v(2)
+		s.Endpoint, s.Model = v(0), v(1)
 	case "apikey":
-		s.Name, s.Provider, s.Endpoint, s.Model, s.Secret, s.SecretKey = v(0), v(1), v(2), v(3), v(4), v(5)
+		s.Provider, s.Endpoint, s.Model, s.Secret, s.SecretKey = v(0), v(1), v(2), v(3), v(4)
 	}
+	s.Name = consoleInferenceDefaultName(s)
 	if err := s.validate(p.agent.Runtime); err != nil {
 		return err
 	}
 	p.source = s
 	return nil
+}
+
+func consoleInferenceDefaultName(s consoleInferenceSource) string {
+	prefix := s.Kind
+	if s.Kind == "foundry-cluster" {
+		prefix = "foundry"
+	}
+	if s.Kind == "apikey" {
+		prefix = valueOr(s.Provider, "api")
+	}
+	return slugAgentName(prefix + "-" + s.Model)
+}
+
+func (p *consoleInferencePane) nameSource() tea.Cmd {
+	p.stage = "name"
+	p.field = 0
+	p.err = nil
+	input := textinput.New()
+	input.CharLimit = 63
+	input.SetWidth(64)
+	input.SetValue(consoleInferenceDefaultName(p.source))
+	input.CursorEnd()
+	p.fields = []consoleInferenceField{{label: "Inference source name", input: input}}
+	return p.fields[0].input.Focus()
+}
+
+func (m agentTUIModel) loadAzure(stage string) (tea.Model, tea.Cmd) {
+	p := m.inference
+	p.stage = "azure-loading"
+	p.err = nil
+	p.selection = 0
+	if m.opt.Demo {
+		choices := []consoleAzureChoice{{Label: "Demo subscription", ID: "demo", Tenant: ""}}
+		if stage == "azure-accounts" {
+			choices = []consoleAzureChoice{{Label: "Demo Foundry", ID: "demo-foundry", ResourceGroup: "demo", Endpoint: "https://example.openai.azure.com"}}
+		}
+		if stage == "azure-deployments" {
+			choices = []consoleAzureChoice{{Label: "chat-model", Model: "chat-model", Detail: "gpt-4.1"}}
+		}
+		return m, func() tea.Msg { return consoleAzureLoaded{p, stage, choices, nil} }
+	}
+	ctx, cancel := context.WithCancel(m.inferenceContext)
+	p.cancel = cancel
+	fetch := m.loadAzureInference
+	sub, group, account := p.azureSubscription, p.azureResourceGroup, p.azureAccount
+	return m, tea.Batch(quickstartTick(), func() tea.Msg {
+		defer cancel()
+		choices, err := fetch(ctx, stage, sub, group, account)
+		return consoleAzureLoaded{p, stage, choices, err}
+	})
 }
 
 func (m agentTUIModel) updateInference(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -132,6 +212,19 @@ func (m agentTUIModel) updateInference(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.stage = "done"
 		}
 		return m, nil
+	case consoleAzureLoaded:
+		if msg.pane != p {
+			return m, nil
+		}
+		p.stage, p.azureChoices, p.err = msg.stage, msg.choices, msg.err
+		p.cancel = nil
+		if p.err == nil && len(msg.choices) == 0 {
+			p.err = fmt.Errorf("no available Azure choices; check login/access or use manual Foundry setup")
+		}
+		if p.err != nil {
+			p.stage = "kinds"
+		}
+		return m, nil
 	case consoleInferenceSaved:
 		p.err = msg.err
 		p.stage = "done"
@@ -144,7 +237,7 @@ func (m agentTUIModel) updateInference(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case quickstartTickMsg:
 		p.frame++
-		if p.stage == "loading" || p.stage == "saving" {
+		if p.stage == "loading" || p.stage == "saving" || p.stage == "azure-loading" {
 			return m, quickstartTick()
 		}
 		return m, nil
@@ -160,22 +253,44 @@ func (m agentTUIModel) updateInference(msg tea.Msg) (tea.Model, tea.Cmd) {
 				p.cancel()
 				return m, nil
 			}
+			if p.cancel != nil {
+				p.cancel()
+			}
 			m.inference = nil
 			return m, nil
 		}
 		switch p.stage {
-		case "loading", "saving":
+		case "loading", "saving", "azure-loading":
 			return m, nil
 		case "done":
 			if msg.Code == tea.KeyEnter {
 				m.inference = nil
 			}
 			return m, nil
+		case "name":
+			if msg.Code == tea.KeyEnter {
+				p.source.Name = strings.TrimSpace(p.fields[0].input.Value())
+				if p.source.Name == "" {
+					p.source.Name = consoleInferenceDefaultName(p.source)
+				}
+				p.err = p.source.validate(p.agent.Runtime)
+				if p.err == nil {
+					p.stage = "review"
+					p.selection = 0
+				}
+				return m, nil
+			}
+			var cmd tea.Cmd
+			p.fields[0].input, cmd = p.fields[0].input.Update(msg)
+			return m, cmd
 		case "fields":
 			if msg.Code == tea.KeyEnter && p.field == len(p.fields)-1 {
 				p.err = p.readFields()
 				if p.err != nil {
 					return m, nil
+				}
+				if p.source.Kind != "cluster" {
+					return m, p.nameSource()
 				}
 				p.stage = "review"
 				p.selection = 0
@@ -201,6 +316,12 @@ func (m agentTUIModel) updateInference(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if p.stage == "review" {
 				count = 2
 			}
+			if strings.HasPrefix(p.stage, "azure-") {
+				count = len(p.azureChoices)
+			}
+			if count == 0 {
+				return m, nil
+			}
 			switch msg.String() {
 			case "j", "down", "tab":
 				p.selection = (p.selection + 1) % count
@@ -225,8 +346,27 @@ func (m agentTUIModel) updateInference(msg tea.Msg) (tea.Model, tea.Cmd) {
 					p.stage = "review"
 					p.selection = 0
 				case "kinds":
+					if p.sourceKinds()[p.selection] == "azure" {
+						return m.loadAzure("azure-subscriptions")
+					}
 					p.setFields(p.sourceKinds()[p.selection])
 					return m, p.fields[0].input.Focus()
+				case "azure-subscriptions":
+					choice := p.azureChoices[p.selection]
+					p.azureSubscription, p.azureTenant = choice.ID, choice.Tenant
+					return m.loadAzure("azure-accounts")
+				case "azure-accounts":
+					choice := p.azureChoices[p.selection]
+					p.azureAccount, p.azureResourceGroup = choice.ID, choice.ResourceGroup
+					p.source = consoleInferenceSource{Kind: "foundry", Endpoint: choice.Endpoint, Tenant: p.azureTenant}
+					if !p.env.Local {
+						p.source.Kind = "foundry-cluster"
+						p.source.Subscription, p.source.ResourceGroup, p.source.Account = p.azureSubscription, p.azureResourceGroup, p.azureAccount
+					}
+					return m.loadAzure("azure-deployments")
+				case "azure-deployments":
+					p.source.Model = p.azureChoices[p.selection].Model
+					return m, p.nameSource()
 				case "review":
 					if p.selection == 0 {
 						m.inference = nil
@@ -246,7 +386,7 @@ func (m agentTUIModel) updateInference(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if p.stage == "fields" {
+	if p.stage == "fields" || p.stage == "name" {
 		var cmd tea.Cmd
 		p.fields[p.field].input, cmd = p.fields[p.field].input.Update(msg)
 		return m, cmd
@@ -260,7 +400,9 @@ func (m agentTUIModel) inferenceView() string {
 	inner := width - 4
 	height := min(28, m.height-2)
 	fit := func(s string) string { return ansi.Truncate(tuiOneLine(s), inner, "…") }
-	rows := []string{fit("INFERENCE · " + p.agent.Name), fit(p.env.Name + " · " + p.agent.Namespace)}
+	heading := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Cyan)
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("#93A4B5"))
+	rows := []string{heading.Render(fit("INFERENCE · " + p.agent.Name)), muted.Render(fit(p.env.Name + " · " + p.agent.Namespace)), "", muted.Render(strings.Repeat("─", inner)), ""}
 	footer := "j/k ↑/↓ choose · <enter> select · <esc> close"
 	var choices []string
 	switch p.stage {
@@ -273,7 +415,11 @@ func (m agentTUIModel) inferenceView() string {
 		for _, kind := range p.sourceKinds() {
 			switch kind {
 			case "foundry":
-				choices = append(choices, "Foundry · host Azure login connector")
+				choices = append(choices, "Foundry · enter endpoint and deployment")
+			case "foundry-cluster":
+				choices = append(choices, "Foundry · cluster authentication with Secret")
+			case "azure":
+				choices = append(choices, "Azure · discover Foundry deployments with az login")
 			case "copilot":
 				choices = append(choices, "Copilot · host GitHub login connector")
 			case "ollama":
@@ -282,6 +428,18 @@ func (m agentTUIModel) inferenceView() string {
 				choices = append(choices, "API key · cluster Secret-backed connector")
 			}
 		}
+	case "azure-subscriptions", "azure-accounts", "azure-deployments":
+		label := map[string]string{"azure-subscriptions": "Azure subscription", "azure-accounts": "Foundry resource", "azure-deployments": "Model deployment"}[p.stage]
+		rows = append(rows, heading.Render(label))
+		for _, choice := range p.azureChoices {
+			choices = append(choices, choice.Label+" · "+choice.Detail)
+		}
+	case "name":
+		rows = append(rows, heading.Render("Inference source name"), fit(p.source.Kind+" · "+p.source.Model))
+		input := p.fields[0].input
+		input.SetWidth(max(1, inner-2))
+		rows = append(rows, input.View(), muted.Render(fit("Accept the suggested name or type your own.")))
+		footer = "<enter> review · <esc> cancel"
 	case "fields":
 		rows = append(rows, fit("Add / edit "+p.source.Kind))
 		if p.source.Kind == "foundry" {
@@ -289,6 +447,9 @@ func (m agentTUIModel) inferenceView() string {
 		}
 		if p.source.Kind == "copilot" {
 			rows = append(rows, fit("Uses installed Copilot CLI and copilot login on this host."))
+		}
+		if p.source.Kind == "foundry-cluster" {
+			rows = append(rows, fit("Cluster calls Foundry directly; no host inference/login required."))
 		}
 		rows = append(rows, fit(fmt.Sprintf("%d/%d · %s", p.field+1, len(p.fields), p.fields[p.field].label)))
 		input := p.fields[p.field].input
@@ -308,9 +469,18 @@ func (m agentTUIModel) inferenceView() string {
 		if p.source.Secret != "" {
 			rows = append(rows, fit("Secret: "+p.source.Secret+" / "+p.source.SecretKey))
 		}
+		if p.source.Kind == "foundry-cluster" {
+			rows = append(rows, fit("Cluster Secret + Provider; one small billed cluster probe."))
+			if p.source.Account != "" {
+				rows = append(rows, fit("Azure CLI retrieves key once during setup; no runtime dependency."))
+			}
+		}
 		choices = []string{"Cancel", "Save inference"}
-	case "loading", "saving":
+	case "loading", "saving", "azure-loading":
 		text := "Loading inference sources…"
+		if p.stage == "azure-loading" {
+			text = "Discovering Azure Foundry resources…"
+		}
 		if p.stage == "saving" {
 			text = "Setting up inference; waiting for readiness…"
 		}

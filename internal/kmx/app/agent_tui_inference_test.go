@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,14 +41,18 @@ func TestConsoleInferenceOverlaySourcesFormsAndDemo(t *testing.T) {
 		m = tuiKey(m, tea.KeyEnter, "")
 		values := map[string][]string{
 			"foundry": {"https://example.openai.azure.com", "chat-model", ""},
-			"ollama":  {"test-ollama", "http://ollama.ollama.svc.cluster.local:11434", "qwen2.5:3b"},
+			"ollama":  {"http://ollama.ollama.svc.cluster.local:11434", "qwen2.5:3b"},
 			"copilot": {"gpt-4.1"},
-			"apikey":  {"test-api", "openai", "https://api.example.com/v1", "test-model", "provider-key", "api-key"},
+			"apikey":  {"openai", "https://api.example.com/v1", "test-model", "provider-key", "api-key"},
 		}[kind]
 		for _, value := range values {
 			m.inference.fields[m.inference.field].input.SetValue(value)
 			m = tuiKey(m, tea.KeyEnter, "")
 		}
+		if m.inference.stage != "name" || m.inference.fields[0].input.Value() == "" {
+			t.Fatalf("%s must ask for name last", kind)
+		}
+		m = tuiKey(m, tea.KeyEnter, "")
 		if m.inference.stage != "review" {
 			t.Fatalf("%s form: %v", kind, m.inference.err)
 		}
@@ -106,7 +111,7 @@ func TestConsoleInferenceOverlaySaveCancelAndStaleLoad(t *testing.T) {
 
 func TestConsoleInferenceSourcePersistenceAndValidation(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	env := agentTUIEnvironment{Name: "kind-test"}
+	env := agentTUIEnvironment{Name: "kind-test", Local: true}
 	agent := agentTUIAgent{Name: "demo", Namespace: "agents", Runtime: "orka"}
 	source := consoleInferenceSource{Kind: "foundry", Name: "test", Endpoint: "https://example.openai.azure.com", Model: "test-model"}
 	if err := saveConsoleInference(env, agent, &source); err != nil {
@@ -169,5 +174,150 @@ esac`)
 	spec := doc["spec"].(map[string]any)
 	if doc["kind"] != "ModelConfig" || spec["provider"] != "Ollama" || spec["ollama"].(map[string]any)["host"] != s.Endpoint {
 		t.Fatalf("connector=%s", raw)
+	}
+}
+
+func TestConsoleInferenceAzureDiscoveryAndFinalName(t *testing.T) {
+	m := newAgentTUIModel(AgentTUIOptions{Demo: true})
+	m = tuiKey(m, tea.KeyEnter, "")
+	m = tuiKey(m, 'f', "f")
+	p := m.inference
+	p.azureAvailable = false
+	if strings.Contains(strings.Join(p.sourceKinds(), ","), "azure") {
+		t.Fatal("Azure offered without CLI")
+	}
+	p.azureAvailable = true
+	p.stage = "kinds"
+	p.selection = 0
+	if p.sourceKinds()[0] != "azure" {
+		t.Fatal("Azure discovery missing")
+	}
+	for _, stage := range []string{"azure-subscriptions", "azure-accounts", "azure-deployments"} {
+		updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		m = updated.(agentTUIModel)
+		if m.inference.stage != "azure-loading" || cmd == nil {
+			t.Fatal("Azure selection did not discover next stage")
+		}
+		updated, _ = m.Update(cmd())
+		m = updated.(agentTUIModel)
+		if m.inference.stage != stage {
+			t.Fatalf("stage=%s want=%s", m.inference.stage, stage)
+		}
+	}
+	m = tuiKey(m, tea.KeyEnter, "")
+	if p.stage != "name" || p.fields[0].input.Value() != "foundry-chat-model" {
+		t.Fatalf("name step=%s value=%s", p.stage, p.fields[0].input.Value())
+	}
+	p.fields[0].input.SetValue("my-foundry")
+	m = tuiKey(m, tea.KeyEnter, "")
+	if p.stage != "review" || p.source.Name != "my-foundry" || p.source.Endpoint != "https://example.openai.azure.com" {
+		t.Fatalf("source=%+v", p.source)
+	}
+}
+
+func TestConsoleInferenceAzureCommandsPinScope(t *testing.T) {
+	dir := t.TempDir()
+	fakeTool(t, dir, "az", `case "$*" in
+ 'account list '*) printf '%s' '[{"name":"Demo","id":"sub-test","tenantId":"tenant-test"}]' ;;
+ 'cognitiveservices account list --subscription sub-test '*) printf '%s' '[{"name":"demo","kind":"OpenAI","resourceGroup":"rg-test","location":"westus3","properties":{"endpoint":"https://example.openai.azure.com/"}}]' ;;
+ 'cognitiveservices account deployment list --subscription sub-test --resource-group rg-test --name demo '*) printf '%s' '[{"name":"ready","properties":{"provisioningState":"Succeeded","model":{"name":"gpt-4.1","version":"test"}}},{"name":"pending","properties":{"provisioningState":"Creating"}}]' ;;
+ *) exit 1 ;;
+esac`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, stage := range []string{"azure-subscriptions", "azure-accounts", "azure-deployments"} {
+		choices, err := consoleAzureChoices(t.Context(), stage, "sub-test", "rg-test", "demo")
+		if err != nil || len(choices) != 1 {
+			t.Fatalf("%s choices=%+v err=%v", stage, choices, err)
+		}
+		if stage == "azure-deployments" && choices[0].Model != "ready" {
+			t.Fatal("non-ready deployment offered")
+		}
+	}
+}
+
+func TestConsoleRemoteInferenceNeverOffersOrLoadsHostSources(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for _, runtime := range []string{"orka", "kagent"} {
+		p := consoleInferencePane{env: agentTUIEnvironment{Name: "remote"}, agent: agentTUIAgent{Runtime: runtime}, azureAvailable: true}
+		kinds := strings.Join(p.sourceKinds(), ",")
+		if strings.Contains(kinds, "copilot") || !strings.Contains(kinds, "foundry-cluster") || !strings.Contains(kinds, "azure") {
+			t.Fatalf("remote source kinds=%s", kinds)
+		}
+		p.setFields("foundry-cluster")
+		if p.fields[2].label != "Existing cluster Secret name" {
+			t.Fatal("remote Foundry asks for host login instead of cluster credential")
+		}
+	}
+	env := agentTUIEnvironment{Name: "remote"}
+	agent := agentTUIAgent{Runtime: "orka", Name: "demo", Namespace: "agents"}
+	source := consoleInferenceSource{Kind: "copilot", Name: "host", Model: "test"}
+	// Simulate a legacy remote override left by an earlier console version.
+	path, _ := consoleInferencePath(env, agent)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(source)
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if loaded, err := loadConsoleInference(env, agent); err != nil || loaded != nil {
+		t.Fatal("legacy remote host override was applied")
+	}
+	if err := saveConsoleInference(env, agent, &source); err == nil {
+		t.Fatal("remote host override saved")
+	}
+	a := &App{}
+	if err := a.consoleSaveInference(t.Context(), env, agent, consoleInferenceSnapshot{}, source, ""); err == nil || !strings.Contains(err.Error(), "remote environments") {
+		t.Fatalf("host save not rejected before auth: %v", err)
+	}
+}
+
+func TestRemoteManualFoundryProbeUsesClusterSecretWithoutAzureCLI(t *testing.T) {
+	dir := t.TempDir()
+	body := filepath.Join(dir, "probe")
+	t.Setenv("PROBE_BODY", body)
+	fakeTool(t, dir, "kubectl", `case "$*" in
+ *'create -f -'*) /bin/cat > "$PROBE_BODY" ;;
+ *'get job'*) printf '%s' '{"status":{"succeeded":1}}' ;;
+ *'delete job'*) exit 0 ;;
+ *) exit 1 ;;
+esac`)
+	t.Setenv("PATH", dir) // No az or copilot exists on this path.
+	a := &App{Cfg: &config.Config{KubeContext: "remote"}, Run: &run.Runner{}, Err: io.Discard}
+	source := consoleInferenceSource{Kind: "foundry-cluster", Name: "remote-foundry", Endpoint: "https://example.openai.azure.com", Model: "deployment", Secret: "existing-key", SecretKey: "custom-key"}
+	configured, err := a.consolePrepareClusterFoundry(t.Context(), agentTUIAgent{Runtime: "orka", Namespace: "agents"}, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configured.Kind != "apikey" || configured.Endpoint != "https://example.openai.azure.com/openai/v1" {
+		t.Fatalf("connector=%+v", configured)
+	}
+	raw, err := os.ReadFile(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"secretName":"existing-key"`, `"key":"custom-key"`, `"path":"api-key"`, `"namespace":"agents"`, `"value":"deployment"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("cluster probe missing %s", want)
+		}
+	}
+	if strings.Contains(string(raw), "stringData") {
+		t.Fatal("probe embedded credential material")
+	}
+}
+
+func TestRemoteChatRejectsHostInferenceBeforeLogin(t *testing.T) {
+	dir := t.TempDir()
+	fakeTool(t, dir, "kubectl", `printf '%s' '{"contexts":[{"name":"kind-misleading","context":{"cluster":"remote"}}],"clusters":[{"name":"remote","cluster":{"server":"https://remote.example.com"}}]}'`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	a := &App{Cfg: &config.Config{KubeContext: "kind-misleading"}, Run: &run.Runner{}}
+	b := &orkaChatBackend{app: a}
+	for _, command := range []string{"/inference", "/inference-foundry", "/inference-copilot"} {
+		if _, err := b.Configure(t.Context(), command, nil); err == nil || !strings.Contains(err.Error(), "remote agents") {
+			t.Fatalf("%s not rejected: %v", command, err)
+		}
+	}
+	if err := b.sendHostTurn(t.Context(), "test", nil, nil); err == nil {
+		t.Fatal("remote host turn was allowed")
 	}
 }

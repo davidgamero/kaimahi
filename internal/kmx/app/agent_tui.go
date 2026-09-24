@@ -55,6 +55,8 @@ type agentTUIModel struct {
 	saveEnvironment                              func(local bool, name string) error
 	creation                                     *agentTUICreatePane
 	inference                                    *consoleInferencePane
+	inferenceContext                             context.Context
+	loadAzureInference                           func(context.Context, string, string, string, string) ([]consoleAzureChoice, error)
 	loadInference                                func(agentTUIEnvironment, agentTUIAgent) (consoleInferenceSnapshot, error)
 	startInference                               func(agentTUIEnvironment, agentTUIAgent, consoleInferenceSnapshot, consoleInferenceSource, string) (<-chan consoleInferenceSaved, context.CancelFunc)
 	loadCreateTarget                             func(agentTUIEnvironment) (string, error)
@@ -102,6 +104,8 @@ func (a *App) AgentTUI(opt AgentTUIOptions) error {
 	for {
 		ctx, cancel := context.WithCancel(a.operationContext())
 		var workers sync.WaitGroup
+		m.inferenceContext = ctx
+		m.loadAzureInference = consoleAzureChoices
 		m.loadInference = func(env agentTUIEnvironment, agent agentTUIAgent) (consoleInferenceSnapshot, error) {
 			return a.consoleLoadInference(ctx, env, agent)
 		}
@@ -446,7 +450,7 @@ func (m agentTUIModel) agentActions(a agentTUIAgent) []agentTUIMenuAction {
 	if !a.External {
 		actions = append(actions, agentTUIMenuAction{"f", "Edit inference"})
 		if a.Runtime == "orka" {
-			actions = append(actions, agentTUIMenuAction{"t", "Edit tools"})
+			actions = append(actions, agentTUIMenuAction{"t", "Add / edit tools"})
 		}
 	}
 	if m.focus == 0 && a.canLift() {

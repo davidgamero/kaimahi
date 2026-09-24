@@ -488,6 +488,23 @@ func TestAgentTUIEditActionsAndInferencePatch(t *testing.T) {
 	}
 }
 
+func TestAgentTUIToolActionAvailableWithoutConfiguredTools(t *testing.T) {
+	for _, column := range []int{0, 1} {
+		m := newAgentTUIModel(AgentTUIOptions{Demo: true})
+		m.focus = column
+		m.columns[column].Agents[0].Tools = nil
+		m = tuiKey(m, tea.KeyEnter, "")
+		if !strings.Contains(ansi.Strip(m.View().Content), "Add / edit tools") {
+			t.Fatal("tool-free agent must still offer tool configuration")
+		}
+		m.opt.Demo = false
+		m = tuiKey(m, 't', "t")
+		if m.action == nil || m.action.kind != "tools" || m.action.source != m.columns[column].Env {
+			t.Fatalf("tool-free agent failed to open targeted editor: %+v", m.action)
+		}
+	}
+}
+
 func TestAgentTUIEmptyEnvironmentCreation(t *testing.T) {
 	for _, demo := range []bool{true, false} {
 		m := newAgentTUIModel(AgentTUIOptions{Demo: true, Namespace: "agents"})

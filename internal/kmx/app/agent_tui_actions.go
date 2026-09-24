@@ -11,6 +11,12 @@ func (a *App) runAgentTUIAction(action agentTUIAction) (agentTUIEnvironment, err
 	source := action.source.app(a)
 	source.InvocationCommand = ""
 	if action.kind == "chat" {
+		if !action.source.Local {
+			source.chatInference = "local"
+			source.foundryClient = nil
+			source.copilotCLI = ""
+			source.copilotModel = ""
+		}
 		saved, err := loadConsoleInference(action.source, action.agent)
 		if err != nil {
 			return agentTUIEnvironment{}, err

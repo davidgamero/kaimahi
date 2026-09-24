@@ -8,22 +8,27 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/guard"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/scaffold"
 )
 
 // Host sources store routing metadata only; Azure/Copilot retain their own login.
 type consoleInferenceSource struct {
-	Kind      string `json:"kind"`
-	Name      string `json:"name"`
-	Model     string `json:"model"`
-	Endpoint  string `json:"endpoint,omitempty"`
-	Tenant    string `json:"tenant,omitempty"`
-	Provider  string `json:"provider,omitempty"`
-	Secret    string `json:"secret,omitempty"`
-	SecretKey string `json:"secretKey,omitempty"`
+	Kind          string `json:"kind"`
+	Name          string `json:"name"`
+	Model         string `json:"model"`
+	Endpoint      string `json:"endpoint,omitempty"`
+	Tenant        string `json:"tenant,omitempty"`
+	Provider      string `json:"provider,omitempty"`
+	Secret        string `json:"secret,omitempty"`
+	SecretKey     string `json:"secretKey,omitempty"`
+	Subscription  string `json:"subscription,omitempty"`
+	ResourceGroup string `json:"resourceGroup,omitempty"`
+	Account       string `json:"account,omitempty"`
 }
 
 type consoleInferenceSnapshot struct {
@@ -42,6 +47,11 @@ func consoleInferencePath(env agentTUIEnvironment, agent agentTUIAgent) (string,
 }
 
 func loadConsoleInference(env agentTUIEnvironment, agent agentTUIAgent) (*consoleInferenceSource, error) {
+	// Older console builds could save host overrides for remote agents. Ignore
+	// them so remote execution always uses its cluster's configured credentials.
+	if !env.Local {
+		return nil, nil
+	}
 	path, err := consoleInferencePath(env, agent)
 	if err != nil {
 		return nil, err
@@ -78,6 +88,9 @@ func saveConsoleInference(env agentTUIEnvironment, agent agentTUIAgent, source *
 		}
 		return err
 	}
+	if !env.Local {
+		return fmt.Errorf("remote environments cannot use host inference overrides")
+	}
 	if err = source.validate(agent.Runtime); err != nil {
 		return err
 	}
@@ -98,7 +111,33 @@ func (s consoleInferenceSource) validate(runtime string) error {
 	if strings.TrimSpace(s.Model) == "" {
 		return fmt.Errorf("model or deployment is required")
 	}
+	if strings.TrimSpace(s.Name) == "" {
+		return fmt.Errorf("inference source name is required")
+	}
 	switch s.Kind {
+	case "foundry-cluster":
+		if runtime != "orka" && runtime != "kagent" {
+			return fmt.Errorf("unsupported cluster runtime")
+		}
+		if err := scaffold.ValidateObjectName(s.Name); err != nil {
+			return err
+		}
+		if err := (foundryChatConfig{Endpoint: s.Endpoint, Deployment: s.Model}).validate(); err != nil {
+			return err
+		}
+		if s.Account != "" {
+			if s.Subscription == "" || s.ResourceGroup == "" {
+				return fmt.Errorf("Foundry Azure setup requires a subscription and resource group")
+			}
+			return nil
+		}
+		if err := scaffold.ValidateObjectName(s.Secret); err != nil {
+			return fmt.Errorf("existing cluster Secret name is required: %w", err)
+		}
+		if s.SecretKey == "" || strings.ContainsAny(s.SecretKey, " /\r\n") {
+			return fmt.Errorf("Secret key name is required")
+		}
+		return nil
 	case "foundry":
 		if runtime != "orka" {
 			return fmt.Errorf("Foundry host inference requires a native Orka agent")
@@ -138,6 +177,63 @@ func (s consoleInferenceSource) validate(runtime string) error {
 	default:
 		return fmt.Errorf("unknown inference source")
 	}
+}
+
+func consoleAzureChoices(ctx context.Context, stage, subscription, group, account string) ([]consoleAzureChoice, error) {
+	var args []string
+	switch stage {
+	case "azure-subscriptions":
+		args = []string{"account", "list", "--query", "[?state=='Enabled'].{name:name,id:id,tenantId:tenantId}", "-o", "json", "--only-show-errors"}
+	case "azure-accounts":
+		args = []string{"cognitiveservices", "account", "list", "--subscription", subscription, "-o", "json", "--only-show-errors"}
+	case "azure-deployments":
+		args = []string{"cognitiveservices", "account", "deployment", "list", "--subscription", subscription, "--resource-group", group, "--name", account, "-o", "json", "--only-show-errors"}
+	default:
+		return nil, fmt.Errorf("unknown Azure discovery stage")
+	}
+	raw, err := liftDiscovery(ctx, "az", args...)
+	if err != nil {
+		return nil, err
+	}
+	var choices []consoleAzureChoice
+	switch stage {
+	case "azure-subscriptions":
+		var subs []struct{ Name, ID, TenantID string }
+		if err = json.Unmarshal(raw, &subs); err != nil {
+			return nil, err
+		}
+		for _, s := range subs {
+			choices = append(choices, consoleAzureChoice{Label: s.Name, ID: s.ID, Tenant: s.TenantID, Detail: "Azure subscription"})
+		}
+	case "azure-accounts":
+		var accounts []foundryAccount
+		if err = json.Unmarshal(raw, &accounts); err != nil {
+			return nil, err
+		}
+		for _, a := range accounts {
+			if a.Kind != "OpenAI" && a.Kind != "AIServices" {
+				continue
+			}
+			endpoint, err := foundryBaseURL(a)
+			if err != nil {
+				continue
+			}
+			choices = append(choices, consoleAzureChoice{Label: a.Name, ID: a.Name, ResourceGroup: a.ResourceGroup, Endpoint: endpoint, Detail: a.ResourceGroup + " · " + a.Location})
+		}
+	case "azure-deployments":
+		var deployments []foundryDeployment
+		if err = json.Unmarshal(raw, &deployments); err != nil {
+			return nil, err
+		}
+		for _, d := range deployments {
+			if d.Properties.ProvisioningState != "Succeeded" {
+				continue
+			}
+			choices = append(choices, consoleAzureChoice{Label: d.Name, Model: d.Name, Detail: d.Properties.Model.Name + " · " + d.Properties.Model.Version})
+		}
+	}
+	sort.SliceStable(choices, func(i, j int) bool { return choices[i].Label < choices[j].Label })
+	return choices, nil
 }
 
 func (a *App) consoleLoadInference(ctx context.Context, env agentTUIEnvironment, agent agentTUIAgent) (consoleInferenceSnapshot, error) {
@@ -208,6 +304,12 @@ func (a *App) consoleSaveInference(ctx context.Context, env agentTUIEnvironment,
 		}
 	}
 	if source.Kind == "foundry" || source.Kind == "copilot" {
+		if !env.Local {
+			return fmt.Errorf("remote environments cannot use local Copilot or Azure CLI inference; configure a cluster Provider instead")
+		}
+		if err := env.app(a).requireLocalHostInference(ctx); err != nil {
+			return err
+		}
 		if source.Kind == "foundry" {
 			client, err := newFoundryChatClient(foundryChatConfig{Endpoint: source.Endpoint, Deployment: source.Model, Tenant: source.Tenant})
 			if err != nil {
@@ -267,6 +369,13 @@ func (a *App) consoleSaveInference(ctx context.Context, env agentTUIEnvironment,
 		return fmt.Errorf("agent changed; reopen inference before saving")
 	}
 	if source.Kind != "cluster" {
+		if source.Kind == "foundry-cluster" {
+			var err error
+			source, err = worker.consolePrepareClusterFoundry(ctx, agent, source)
+			if err != nil {
+				return err
+			}
+		}
 		if err := worker.consoleCreateConnector(ctx, agent, source); err != nil {
 			return err
 		}
@@ -296,6 +405,90 @@ func (a *App) consoleSaveInference(ctx context.Context, env agentTUIEnvironment,
 		return worker.waitOrkaReady(waitCtx, agent.Namespace, orkaIdentity{Kind: "Agent", Name: agent.Name, UID: updated.Metadata.UID, Generation: updated.Metadata.Generation})
 	}
 	return nil
+}
+
+// Host inference is a local-kind development feature, never a remote runtime.
+// Reclassify from kubeconfig, rather than trusting a cosmetic context name.
+func (a *App) requireLocalHostInference(ctx context.Context) error {
+	raw, err := a.orkaCapture(ctx, nil, "config", "view", "-o", "json")
+	if err != nil {
+		return err
+	}
+	kube, err := guard.ParseKubeconfig(raw)
+	if err != nil {
+		return err
+	}
+	posture, err := guard.Classify(kube, a.Cfg.KubeContext)
+	if err != nil {
+		return err
+	}
+	if !posture.Local || posture.Host == "" {
+		return fmt.Errorf("host Copilot/Azure CLI inference is only available for local kind; remote agents must use cluster-configured inference")
+	}
+	return nil
+}
+
+func (a *App) consolePrepareClusterFoundry(ctx context.Context, agent agentTUIAgent, s consoleInferenceSource) (consoleInferenceSource, error) {
+	if err := s.validate(agent.Runtime); err != nil {
+		return s, err
+	}
+	if s.Account != "" {
+		target := chatLiftTarget{Subscription: s.Subscription}
+		account := foundryAccount{Name: s.Account, ResourceGroup: s.ResourceGroup}
+		args := append([]string{"cognitiveservices", "account", "show"}, foundryScope(target, account)...)
+		raw, err := liftDiscovery(ctx, "az", append(args, "-o", "json", "--only-show-errors")...)
+		if err != nil {
+			return s, err
+		}
+		if err = json.Unmarshal(raw, &account); err != nil {
+			return s, err
+		}
+		if account.Properties.DisableLocalAuth {
+			return s, fmt.Errorf("Foundry disables API keys; this runtime needs worker-side workload identity support before keyless remote setup is possible")
+		}
+		endpoint, err := foundryBaseURL(account)
+		if err != nil {
+			return s, err
+		}
+		if strings.TrimRight(endpoint, "/") != strings.TrimRight(s.Endpoint, "/") {
+			return s, fmt.Errorf("Foundry endpoint changed; reopen setup")
+		}
+		args = append([]string{"cognitiveservices", "account", "keys", "list"}, foundryScope(target, account)...)
+		raw, err = liftDiscovery(ctx, "az", append(args, "-o", "json", "--only-show-errors")...)
+		if err != nil {
+			return s, err
+		}
+		var keys struct{ Key1 string }
+		if json.Unmarshal(raw, &keys) != nil || keys.Key1 == "" {
+			return s, fmt.Errorf("Foundry returned no usable API key")
+		}
+		suffix, err := randomHex(4)
+		if err != nil {
+			return s, err
+		}
+		s.Secret, s.SecretKey = "kmx-foundry-"+suffix, "api-key"
+		body, err := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]string{"name": s.Secret, "namespace": agent.Namespace}, "type": "Opaque", "stringData": map[string]string{"api-key": keys.Key1}})
+		if err != nil {
+			return s, err
+		}
+		if _, err = a.orkaCapture(ctx, body, "-n", agent.Namespace, "create", "-f", "-", "-o", "name"); err != nil {
+			return s, fmt.Errorf("could not create cluster Foundry credential Secret: %w", err)
+		}
+	}
+	// Test from the target cluster using the mounted Secret, not host credentials.
+	s.Endpoint = strings.TrimRight(s.Endpoint, "/")
+	if !strings.HasSuffix(s.Endpoint, "/openai/v1") {
+		s.Endpoint += "/openai/v1"
+	}
+	if err := a.verifyFoundryEndpointKey(ctx, agent.Namespace, s.Secret, s.SecretKey, s.Endpoint, s.Model); err != nil {
+		return s, fmt.Errorf("cluster Foundry verification failed; Secret %s retained: %w", s.Secret, err)
+	}
+	s.Kind, s.Provider = "apikey", "openai"
+	s.Endpoint = strings.TrimRight(s.Endpoint, "/")
+	if !strings.HasSuffix(s.Endpoint, "/openai/v1") {
+		s.Endpoint += "/openai/v1"
+	}
+	return s, nil
 }
 
 func (a *App) consoleCreateConnector(ctx context.Context, agent agentTUIAgent, s consoleInferenceSource) error {
