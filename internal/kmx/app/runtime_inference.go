@@ -28,7 +28,7 @@ func (p copilotHostInference) Run(ctx context.Context, definition hostTurnDefini
 		r.assistantOperation(agent, "TOOL CALL", tool.Name, colorBlue, "Executing registered HTTP tool")
 		raw, err := execute(ctx, tool, args)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("tool %s failed; no automatic retry: %w", tool.Name, err)
 		}
 		if len(raw) > 32<<10 {
 			return "", fmt.Errorf("tool result exceeds 32 KiB")
