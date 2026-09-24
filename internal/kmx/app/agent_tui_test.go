@@ -454,6 +454,12 @@ func TestAgentTUIEditActionsAndInferencePatch(t *testing.T) {
 		if key == 't' {
 			want = "tools"
 		}
+		if key == 'f' {
+			if m.action != nil || m.inference == nil || m.inference.agent.Name != "assistant" || m.inference.env.Name != "kind-local-demo" {
+				t.Fatal("inference should open a targeted overlay")
+			}
+			continue
+		}
 		if m.action == nil || m.action.kind != want || m.action.source.Name != "kind-local-demo" || m.action.agent.Name != "assistant" {
 			t.Fatalf("action=%+v", m.action)
 		}

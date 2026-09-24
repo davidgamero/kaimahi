@@ -412,6 +412,23 @@ func (a *App) agentTUIInventory(ctx context.Context, env agentTUIEnvironment, na
 		}
 		return agents[i].Name < agents[j].Name
 	})
+	for i := range agents {
+		source, err := loadConsoleInference(env, agents[i])
+		if err != nil {
+			problems = append(problems, "host inference configuration: "+err.Error())
+			continue
+		}
+		if source != nil {
+			agents[i].Provider = "host " + source.Kind
+			agents[i].Model = source.Model
+			agents[i].Endpoint = agentTUIEndpoint(source.Endpoint)
+			if source.Kind == "copilot" {
+				agents[i].Endpoint = "Copilot CLI on this host"
+			}
+			agents[i].InferenceReady = "not checked (host chat override)"
+			agents[i].InferenceConfig = "Saved for console chat; cluster Provider unchanged"
+		}
+	}
 	if len(problems) > 0 {
 		return agents, fmt.Errorf("%s", strings.Join(problems, "; "))
 	}

@@ -113,15 +113,39 @@ local native Orka agents, then suggests remote environments and `new`. Duplicate
 names within a column use `runtime/namespace/name` completion to disambiguate.
 
 The Enter actions menu also offers **Edit inference** (`f` in the menu) and,
-for native Orka agents, **Edit tools** (`t` in the menu). Inference selects an
-existing Provider in the agent namespace plus an optional model override for
-Orka, or an existing ModelConfig for kagent. An empty Orka override uses the
-Provider default. Saving updates the agent reference, not the shared Provider or
-ModelConfig. The review names the agent, context and configuration before saving.
+for native Orka agents, **Edit tools** (`t` in the menu). Inference opens a window
+over the inventory. Select an existing Provider in the agent namespace plus an
+optional model override for Orka, or an existing ModelConfig for kagent. An empty
+Orka override uses the Provider default. Saving updates the agent reference, not
+the shared Provider or ModelConfig. The review names the agent, context and
+configuration before saving. Saving and cancellation remain inside the overlay.
+
+**Add inference source…** is the last item, even when no configurations exist:
+
+| Source | Setup and execution |
+|---|---|
+| Foundry | Enter an existing Azure endpoint, deployment and optional tenant. Verify `az login` credentials and save a host-chat connector; no model request during setup. Native Orka agents only. |
+| Ollama | Enter a connector name, cluster-reachable Ollama endpoint and installed model. Create an Orka Provider or kagent ModelConfig and select it. Orka uses a new, keyless dummy Secret required by its Provider schema. |
+| Copilot | Select a model by name from an installed, authenticated Copilot CLI (`copilot login`). Verify account/model availability and save a host-chat connector. Native Orka agents only. |
+| API key | Enter connector name, provider type, endpoint, model and an existing Kubernetes Secret/key reference. Create a Provider or ModelConfig. The form does not collect the credential value. Orka supports OpenAI/Anthropic; kagent supports OpenAI-compatible endpoints. |
+
+These forms configure connectors to existing services; they do not provision a
+Foundry resource/deployment, install Ollama/Copilot, or download model weights.
+Missing logins and dependencies are reported in the result pane. New cluster
+connectors are create-only; collisions stop setup. If a later step fails or is
+cancelled, already-created resources remain available for inspection.
+
+Host connectors are saved per context/runtime/namespace/agent under the private
+`kmx/console-inference/` configuration directory. They contain routing metadata,
+not tokens, and apply to subsequent chats launched from the console. They do not
+change the cluster's Provider. Selecting a cluster source clears the host override.
+The console labels host overrides explicitly and reports health as not checked.
+
 Tools reuses the Orka multi-select picker: Space toggles tools, `/` searches,
 and Enter saves. Automatic Orka tools remain locked. Both editors use
 resource-version checks to reject concurrent agent edits and refresh inventory
-on return. Demo actions report the choice without writing. External Orka
+on return (host-only source changes do not patch the cluster). Demo inference
+forms can be completed and reviewed without writing. External Orka
 runtimes remain inspection-only; kagent tool editing is not exposed.
 
 ## Chat and lift

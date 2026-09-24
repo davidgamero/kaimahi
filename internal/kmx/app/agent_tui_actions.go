@@ -11,14 +11,29 @@ func (a *App) runAgentTUIAction(action agentTUIAction) (agentTUIEnvironment, err
 	source := action.source.app(a)
 	source.InvocationCommand = ""
 	if action.kind == "chat" {
+		saved, err := loadConsoleInference(action.source, action.agent)
+		if err != nil {
+			return agentTUIEnvironment{}, err
+		}
+		if saved != nil {
+			source.chatInference = saved.Kind
+			if saved.Kind == "foundry" {
+				client, err := newFoundryChatClient(foundryChatConfig{Endpoint: saved.Endpoint, Deployment: saved.Model, Tenant: saved.Tenant})
+				if err != nil {
+					return agentTUIEnvironment{}, err
+				}
+				source.foundryClient = client
+				defer client.http.CloseIdleConnections()
+			} else {
+				source.copilotCLI = detectCopilotCLI()
+				source.copilotModel = saved.Model
+			}
+		}
 		return agentTUIEnvironment{}, source.ChatWithOptions(ChatOptions{Agent: action.agent.Name, Namespace: action.agent.Namespace, Runtime: action.agent.Runtime, Interactive: true})
 	}
-	if action.kind == "inference" || action.kind == "tools" {
+	if action.kind == "tools" {
 		if action.agent.External || action.kind == "tools" && action.agent.Runtime != "orka" {
 			return agentTUIEnvironment{}, fmt.Errorf("editor unavailable for this runtime")
-		}
-		if action.kind == "inference" {
-			return agentTUIEnvironment{}, source.consoleEditInference(action.agent)
 		}
 		b := &orkaChatBackend{app: source, agent: action.agent.Name, namespace: action.agent.Namespace}
 		defer b.Close()

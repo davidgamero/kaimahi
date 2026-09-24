@@ -54,6 +54,9 @@ type agentTUIModel struct {
 	loadInventory                                func(agentTUIEnvironment) ([]agentTUIAgent, error)
 	saveEnvironment                              func(local bool, name string) error
 	creation                                     *agentTUICreatePane
+	inference                                    *consoleInferencePane
+	loadInference                                func(agentTUIEnvironment, agentTUIAgent) (consoleInferenceSnapshot, error)
+	startInference                               func(agentTUIEnvironment, agentTUIAgent, consoleInferenceSnapshot, consoleInferenceSource, string) (<-chan consoleInferenceSaved, context.CancelFunc)
 	loadCreateTarget                             func(agentTUIEnvironment) (string, error)
 	startCreate                                  func(agentTUIEnvironment, string, CreateOptions) (<-chan agentTUICreateResult, context.CancelFunc)
 }
@@ -99,6 +102,19 @@ func (a *App) AgentTUI(opt AgentTUIOptions) error {
 	for {
 		ctx, cancel := context.WithCancel(a.operationContext())
 		var workers sync.WaitGroup
+		m.loadInference = func(env agentTUIEnvironment, agent agentTUIAgent) (consoleInferenceSnapshot, error) {
+			return a.consoleLoadInference(ctx, env, agent)
+		}
+		m.startInference = func(env agentTUIEnvironment, agent agentTUIAgent, snapshot consoleInferenceSnapshot, source consoleInferenceSource, model string) (<-chan consoleInferenceSaved, context.CancelFunc) {
+			workCtx, stop := context.WithCancel(ctx)
+			result := make(chan consoleInferenceSaved, 1)
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				result <- consoleInferenceSaved{a.consoleSaveInference(workCtx, env, agent, snapshot, source, model)}
+			}()
+			return result, stop
+		}
 		m.loadCreateTarget = func(env agentTUIEnvironment) (string, error) { return a.consoleCreateTarget(ctx, env) }
 		m.startCreate = func(env agentTUIEnvironment, server string, options CreateOptions) (<-chan agentTUICreateResult, context.CancelFunc) {
 			workCtx, stop := context.WithCancel(ctx)
@@ -119,7 +135,7 @@ func (a *App) AgentTUI(opt AgentTUIOptions) error {
 			return a.agentTUIInventory(ctx, env, opt.Namespace)
 		}
 		filter := func(model tea.Model, msg tea.Msg) tea.Msg {
-			if _, ok := msg.(tea.InterruptMsg); ok && model.(agentTUIModel).creation != nil {
+			if _, ok := msg.(tea.InterruptMsg); ok && (model.(agentTUIModel).creation != nil || model.(agentTUIModel).inference != nil) {
 				return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 			}
 			return msg
@@ -176,6 +192,16 @@ func (m *agentTUIModel) refresh() tea.Cmd {
 }
 
 func (m agentTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.inference != nil {
+		if size, ok := msg.(tea.WindowSizeMsg); ok {
+			m.width, m.height = size.Width, size.Height
+		}
+		switch msg.(type) {
+		case agentTUIEnvsMsg, agentTUIInventoryMsg, agentTUIPreferenceMsg:
+		default:
+			return m.updateInference(msg)
+		}
+	}
 	if m.creation != nil {
 		switch event := msg.(type) {
 		case tea.WindowSizeMsg:
@@ -479,11 +505,10 @@ func (m agentTUIModel) updateActions(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.execute("/chat " + m.agentToken(*a, m.focus))
 	case "L":
 		return m.openCommand("/lift " + m.agentToken(*a, 0) + " ")
-	case "f", "t":
-		kind := "inference"
-		if chosen == "t" {
-			kind = "tools"
-		}
+	case "f":
+		return m.openInference()
+	case "t":
+		kind := "tools"
 		if m.opt.Demo {
 			m.status = "DEMO · edit " + kind + " for " + a.Name + " (no action performed)"
 			return m, nil
@@ -910,6 +935,10 @@ func (m agentTUIModel) View() tea.View {
 		lines = append(lines, "")
 	}
 	content := header + "\n" + strings.Join(lines, "\n") + "\n" + strings.Join(footer, "\n")
+	if m.inference != nil {
+		panel := m.inferenceView()
+		content = lipgloss.NewCompositor(lipgloss.NewLayer(content), lipgloss.NewLayer(panel).X((w-lipgloss.Width(panel))/2).Y(max(0, (h-lipgloss.Height(panel))/2)).Z(1)).Render()
+	}
 	if m.creation != nil {
 		panel := m.creationView()
 		content = lipgloss.NewCompositor(lipgloss.NewLayer(content), lipgloss.NewLayer(panel).X((w-lipgloss.Width(panel))/2).Y(max(0, (h-lipgloss.Height(panel))/2)).Z(1)).Render()
