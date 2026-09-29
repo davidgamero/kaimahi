@@ -389,7 +389,7 @@ func (a orkaRuntimeAdapter) Evaluate(ctx context.Context, ref agentruntime.Agent
 	// per case.
 	quiet := *app
 	quiet.Err = io.Discard
-	session, err := quiet.openOrkaResultSession(ctx, CreateOptions{Namespace: ref.Namespace, ResultServiceAccount: orkaResultAccount, OrkaAPIService: "orka-api", ResultPort: port})
+	session, err := quiet.openOrkaResultSession(ctx, CreateOptions{Namespace: ref.Namespace, ResultServiceAccount: orkaResultAccount, ResultPort: port})
 	if err != nil {
 		return agentruntime.EvaluationReceipt{}, err
 	}
@@ -636,8 +636,10 @@ func orkaObjectNamespace(doc map[string]any) string {
 }
 
 // RenderOrkaBundleFile renders agent.yaml against caller-supplied target
-// bindings using the pinned offline schema. It never reads a cluster or uses
-// the bundle's creation-target bindings.yaml, so lift can supply new bindings.
+// bindings without selecting an offline schema. A portable bundle created for
+// v0.1.3 may contain fields removed in v0.2.0; lift validates against the
+// destination's installed CRDs before any write, while status only compares
+// live resources. Neither path reads a cluster during this render.
 func RenderOrkaBundleFile(path string, bindings agentruntime.OrkaBindings) (agentruntime.RenderedBundle, error) {
 	if err := scaffold.RefuseKeyShapes(path); err != nil {
 		return agentruntime.RenderedBundle{}, fmt.Errorf("refusing credential-shaped bundle path")
@@ -646,7 +648,7 @@ func RenderOrkaBundleFile(path string, bindings agentruntime.OrkaBindings) (agen
 	if err != nil {
 		return agentruntime.RenderedBundle{}, fmt.Errorf("read portable agent: %w", err)
 	}
-	adapter := orkaRuntimeAdapter{create: &CreateOptions{NoApply: true}, bindings: &bindings}
+	adapter := orkaRuntimeAdapter{create: &CreateOptions{}, bindings: &bindings}
 	rendered, _, err := adapter.renderOrka(source)
 	return rendered, err
 }

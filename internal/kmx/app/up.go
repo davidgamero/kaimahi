@@ -154,6 +154,17 @@ func (a *App) upDefault() error {
 	if err := a.runPhase(phase{current: 1, total: 4, name: upPhaseName("cluster")}, a.stepCluster); err != nil {
 		return err
 	}
+	// Refuse unsupported Orka state before an expensive model pull. A fresh
+	// cluster is safe to inspect here; the check never installs or repairs it.
+	known, err := a.orkaInstallState()
+	if err != nil {
+		return fmt.Errorf("Orka preflight: %w", err)
+	}
+	if known {
+		if err := a.OrkaReady(); err != nil {
+			return fmt.Errorf("Orka preflight: %w", err)
+		}
+	}
 	a.verifySelectedLocalModel()
 	if a.selectedLocalModel == nil {
 		if err := a.runPhase(phase{current: 2, total: 4, name: upPhaseName("ollama")}, a.stepOllama); err != nil {
@@ -174,8 +185,7 @@ func (a *App) preflightUp(steps []string) error {
 
 // upDependencies is what this selection of steps shells out to. It is
 // separate from preflightUp so the list is readable — and assertable —
-// without provisioning anything: Helm was fetched onto operators' machines
-// for the legacy chart alone, and nothing here may quietly ask for it again.
+// without provisioning anything.
 func (a *App) upDependencies(steps []string) []dependency {
 	wanted := map[string]bool{}
 	for _, step := range steps {
@@ -187,6 +197,9 @@ func (a *App) upDependencies(steps []string) []dependency {
 	}
 	if wanted["ollama"] || wanted["model"] || wanted["orka"] {
 		dependencies = append(dependencies, depKubectl)
+	}
+	if wanted["orka"] {
+		dependencies = append(dependencies, depHelm)
 	}
 	return dependencies
 }
