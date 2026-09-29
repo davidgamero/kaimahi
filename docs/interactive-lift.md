@@ -1,6 +1,7 @@
 # Interactive Orka lift
 
-In quickstart's Orka chat, enter `/lift` to open the target picker:
+For the custom first journey, see [getting started](getting-started.md).
+From a live Orka chat, `/lift` opens the target picker:
 
 - **Kubeconfig context:** search the contexts already configured locally.
 - **Azure AKS:** select a subscription, then search all its AKS clusters. Results

@@ -1,10 +1,7 @@
 # `kmx agent lift`
 
 `kmx agent lift` deploys an existing on-disk agent bundle to a prepared Orka
-cluster. It does not read or capture a live source Agent. Unlike interactive
-[`/lift`](interactive-lift.md), it takes a named destination and inference
-Provider rather than discovering either through a chat session. `/lift` remains
-an independent interactive path; this command does not change it.
+cluster. It takes a named destination and inference Provider.
 
 ```console
 kmx agent lift <bundle-dir> --to-context <ctx> [--to-namespace <ns>] --inference provider:<name> [--plan]

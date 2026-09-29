@@ -34,7 +34,8 @@ curl -fsSL https://raw.githubusercontent.com/kaimahi-agents/kaimahi/main/install
 go install github.com/kaimahi-agents/kaimahi/cmd/kmx@v0.3.0
 ```
 
-With `kmx` on your PATH, run the first-answer path:
+To create your own agent and hear it answer locally, follow the interactive
+journey below. For a fixed, non-interactive hello-world demonstration instead:
 
 ```bash
 kmx quickstart
@@ -42,30 +43,29 @@ kmx quickstart
 
 `kmx quickstart` provisions local kind and Orka and runs a fixed Agent's fresh Task.
 `kmx up` provisions the local runtime without creating an Agent.
-`kmx quickstart-wizard` helps you create your own Agent interactively.
+`kmx quickstart-wizard` is the custom interactive path:
+
+```bash
+kmx quickstart-wizard
+```
+
+Create an agent, choose **Chat with agent**, get a local answer, then enter
+`/lift`. After connecting, send a new message to confirm the lifted agent
+answers; follow [getting started](docs/getting-started.md) for the steps.
+
 `kmx agent create` writes an editable bundle on a prepared target.
 `kmx agent lift` deploys that bundle to a prepared Orka target.
 `kmx agent status` reads its revision, readiness, drift and evaluation result.
 `kmx agent evaluate` runs the bundle's cases against that deployed revision.
-See the [bundle lift guide](docs/agent-lift.md) for the create example, target
-preparation, receipts and evaluation boundaries; `/lift` remains the separate
-interactive path from a live Agent.
+See the [bundle lift guide](docs/agent-lift.md) for target preparation, receipts
+and evaluation.
 
 ## Quickstart
 
 The fixed first-answer path uses local kind, Ollama, Provider and Agent.
 The wizard prepares a local Kubernetes target while you describe your own agent.
-To complete the wizard journey:
-
-1. Choose **Chat with agent** when setup is ready.
-2. Send a prompt and wait for an answer to prove the selected execution path.
-3. Enter `/lift`, choose an existing Kubernetes or AKS target, review the
-   destination and inference choice, then confirm.
-
-The current lift reads the live source agent, deploys to an existing target, and
-does not replay a task or delete the source. Choosing new cloud inference can
-create billable resources. Read the [interactive lift guide](docs/interactive-lift.md)
-for the complete behavior and recovery boundaries.
+Choosing new cloud inference can create billable resources. Read the
+[interactive lift guide](docs/interactive-lift.md) for behavior and recovery.
 
 Both paths create local cluster resources and result-reader RBAC. The wizard
 also installs a read-only Kubernetes inventory Tool. Orka v0.1.3 reaches its
@@ -103,7 +103,7 @@ contract](docs/runtime-adapters.md) for the boundaries between KMX and runtimes.
 | Lift a bundle to a prepared target | `kmx agent lift <bundle-dir> --to-context <ctx> --inference provider:<name>` | Reconciles on an existing Orka target; `--plan` writes nothing |
 | Compare Git and deployed revisions | `kmx agent status <bundle-dir> [--to-context <ctx>] [-o table\|json]` | Read-only per-target revision, readiness, drift and evaluation |
 | Check a revision before promoting it | `kmx agent evaluate <bundle-dir> [--to-context <ctx>] [--case <id>]` | Runs `eval/*.yaml` cases as Tasks against the deployed revision; exits non-zero unless all pass |
-| Lift a live agent interactively | `/lift` in interactive chat | Uses a live agent and an existing destination |
+| Lift an agent interactively | `/lift` in interactive chat | Choose and review a destination in chat |
 | Inspect agents | `kmx agent list`, `show`, and interactive `chat` | Orka-only; list/show/chat default to `orka-system`, while `create` requires `--namespace` |
 | Provision an AKS target | `kmx aks up` | Billable platform workflow; does not create the agent |
 
