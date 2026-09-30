@@ -379,12 +379,18 @@ than the first.
    git push --atomic origin v0.4.0 plane/v0.4.0
    ```
 
-4. Watch the `release` workflow. It refuses to publish if: the version is not
-   semantic, `plane/vX.Y.Z` is missing or points somewhere else, the changelog
-   has no section, the built binary does not report the tag, or the checksums
-   do not verify. The release also carries `kmx.rb`, rendered from those exact
-   checksums. For a stable release, download that exact asset and submit it as
-   the formula change in the official tap:
+4. Watch the `release` workflow. It builds through
+   [GoReleaser](../.goreleaser.yaml), checks that exact artifact set, then
+   publishes those same files together as one GitHub release. It refuses to
+   publish if: the version is not semantic, `plane/vX.Y.Z` is missing or
+   points somewhere else, the changelog has no section, the built binary does
+   not report the tag, or the checksums do not verify. The release also carries
+   `kmx.rb`, GoReleaser's rendered formula for those exact checksums
+   (`brews.skip_upload: true` keeps it from being pushed to the tap on its own
+   — that stays a human's job, next). A failed asset upload can leave a GitHub
+   draft; inspect and remove that incomplete draft before rerunning the tag
+   workflow. For a stable release, download the exact formula asset and submit
+   it as the change in the official tap:
 
    ```bash
    tap=$(mktemp -d)
@@ -397,9 +403,79 @@ than the first.
    ```
 
 5. From that tap checkout, create a branch, commit `Formula/kmx.rb`, and open a
-   pull request to `kaimahi-agents/homebrew-tap`. Merge it only after review and
-   the tap's macOS and Linux formula checks pass. Prerelease formula assets are
-   inspection evidence and do not replace the stable formula.
+   pull request to `kaimahi-agents/homebrew-tap`. Its CI
+   (`.github/workflows/tests.yml` in that repo) runs `brew style`,
+   `brew audit --strict --online`, `brew readall`, `brew install`, and
+   `brew test` on macOS and Linux — that is what "review and the tap's
+   formula checks pass" means, and it is the actual gate; GoReleaser
+   rendering cleanly is necessary but not sufficient. To rehearse the same
+   checks locally before opening the PR (catches issues without waiting on
+   that CI). Run this from the candidate tap checkout created in step 4. It
+   refuses to replace an installed `kmx` keg, preserves any existing tap
+   checkout, and keeps the temporary trust entry outside your normal Homebrew
+   configuration:
+
+   ```bash
+   (
+     set -euo pipefail
+     candidate=$PWD
+     tap_name=kaimahi-agents/tap
+     formula="$tap_name/kmx"
+     tap_parent="$(brew --repository)/Library/Taps/kaimahi-agents"
+     tap_dir="$tap_parent/homebrew-tap"
+     if brew list --formula --versions kmx 2>/dev/null | grep -q .; then
+       echo "refusing to replace installed kmx; use a clean Homebrew installation" >&2
+       exit 1
+     fi
+     mkdir -p "$tap_parent"
+     backup_root=$(mktemp -d "$tap_parent/.kmx-tap-backup.XXXXXX")
+     saved_tap="$backup_root/homebrew-tap"
+     trust_home=$(mktemp -d)
+     had_tap=false
+     candidate_linked=false
+     install_started=false
+     cleanup() {
+       local status=$?
+       if [ "$install_started" = true ]; then
+         if ! brew uninstall --force "$formula" >/dev/null 2>&1; then
+           echo "failed to uninstall candidate $formula; remove it manually" >&2
+           status=1
+         fi
+       fi
+       if [ "$candidate_linked" = true ] && [ -L "$tap_dir" ]; then rm "$tap_dir"; fi
+       if [ "$had_tap" = true ] && { [ -e "$saved_tap" ] || [ -L "$saved_tap" ]; }; then
+         mv "$saved_tap" "$tap_dir"
+       fi
+       rm -rf "$backup_root" "$trust_home"
+       exit "$status"
+     }
+     trap cleanup EXIT
+     if [ -e "$tap_dir" ] || [ -L "$tap_dir" ]; then
+       mv "$tap_dir" "$saved_tap"
+       had_tap=true
+     fi
+     mkdir -p "$tap_parent"
+     ln -s "$candidate" "$tap_dir"
+     candidate_linked=true
+     export XDG_CONFIG_HOME="$trust_home"
+     brew trust --tap "$tap_name"
+     brew style "$formula"
+     brew audit --strict --online "$formula"
+     brew readall --os=all --arch=all "$tap_name"
+     install_started=true
+     brew install "$formula"
+     kmx_prefix=$(brew --prefix "$formula")
+     installed_version=$("$kmx_prefix/bin/kmx" version | sed -n '1s/^kmx v\([^ ]*\) (release build)$/\1/p')
+     formula_version=$(brew info --json=v2 "$formula" | brew ruby -rjson -e 'puts JSON.parse(STDIN.read).fetch("formulae").first.fetch("versions").fetch("stable")')
+     test -n "$installed_version"
+     test "$installed_version" = "$formula_version"
+     brew test "$formula"
+   )
+   ```
+
+   Merge the PR only after review and the tap's actual CI (not just this
+   rehearsal) passes. Prerelease formula assets are inspection evidence and
+   do not replace the stable formula.
 6. Check the result with both routes: `go install …/cmd/kmx@vX.Y.Z && kmx version`,
    then the following on a clean Homebrew installation:
 
