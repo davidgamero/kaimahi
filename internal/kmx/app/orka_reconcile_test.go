@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"text/template"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/run"
@@ -69,6 +70,23 @@ func TestReconcileKubectlHelper(t *testing.T) {
 	}
 	if i := slices.Index(args, "get"); i >= 0 {
 		kind, name := args[i+1], args[i+2]
+		if name == "--all-namespaces" {
+			raw, err := os.ReadFile(filepath.Join(dir, "list-"+kind+".json"))
+			if os.IsNotExist(err) {
+				raw = []byte(`{"items":[]}`)
+			} else if err != nil {
+				fail()
+			}
+			var list map[string]any
+			if json.Unmarshal(raw, &list) != nil {
+				fail()
+			}
+			projection, err := template.New("dependents").Parse(retireDependentsProjection())
+			if err != nil || projection.Execute(os.Stdout, list) != nil {
+				fail()
+			}
+			os.Exit(0)
+		}
 		if os.Getenv("KMX_STATUS_FORBIDDEN") == "1" && kind == "agents.core.orka.ai" {
 			fail()
 		}
@@ -92,6 +110,11 @@ func TestReconcileKubectlHelper(t *testing.T) {
 					uid := getenvLiftTest("KMX_LIFT_CLUSTER_UID", "cluster-uid")
 					if _, err := os.Stat(filepath.Join(dir, "repointed-after-preflight")); err == nil {
 						uid = "repointed-uid"
+					}
+					if path := os.Getenv("KMX_RETIRE_SELECTION_BLOCK"); path != "" {
+						_ = os.Remove(path)
+						_ = os.Mkdir(path, 0700)
+						_ = os.WriteFile(filepath.Join(path, "block"), nil, 0600)
 					}
 					fmt.Printf(`{"kind":"Namespace","metadata":{"name":"kube-system","uid":%q}}`, uid)
 					os.Exit(0)
@@ -235,6 +258,36 @@ func TestReconcileKubectlHelper(t *testing.T) {
 		if meta == nil || meta["name"] != name {
 			fail()
 		}
+		if len(call.Patch) >= 5 && call.Patch[0]["op"] == "test" && call.Patch[1]["path"] == "/metadata/uid" {
+			if os.Getenv("KMX_RETIRE_FAIL_PATCH_ONCE") == kind {
+				flag := filepath.Join(dir, "retire-failed-"+kind)
+				if _, err := os.Stat(flag); os.IsNotExist(err) {
+					_ = os.WriteFile(flag, nil, 0600)
+					fail()
+				}
+			}
+			if call.Patch[0]["value"] != meta["resourceVersion"] || call.Patch[1]["value"] != meta["uid"] {
+				fail()
+			}
+			annotations, _ := meta["annotations"].(map[string]any)
+			for _, op := range call.Patch[2:] {
+				key := strings.NewReplacer("~1", "/", "~0", "~").Replace(strings.TrimPrefix(fmt.Sprint(op["path"]), "/metadata/annotations/"))
+				if op["op"] != "remove" || !strings.HasPrefix(fmt.Sprint(op["path"]), "/metadata/annotations/") {
+					fail()
+				}
+				if _, ok := annotations[key]; !ok {
+					fail()
+				}
+				delete(annotations, key)
+			}
+			meta["resourceVersion"] = "2"
+			body, _ := json.Marshal(live)
+			if os.WriteFile(path, body, 0600) != nil {
+				fail()
+			}
+			_, _ = os.Stdout.Write(body)
+			os.Exit(0)
+		}
 		// Every marker-refresh patch is exactly: a resourceVersion test
 		// precondition, then replace ops on only the two digest annotations.
 		// Anything else is refused, matching the real API server rejecting an
@@ -267,6 +320,27 @@ func TestReconcileKubectlHelper(t *testing.T) {
 			fail()
 		}
 		_, _ = os.Stdout.Write(body)
+		os.Exit(0)
+	}
+	if i := slices.Index(args, "delete"); i >= 0 {
+		kind, name := args[i+1], args[i+2]
+		path := filepath.Join(dir, kind+".json")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			fail()
+		}
+		var live map[string]any
+		if json.Unmarshal(raw, &live) != nil {
+			fail()
+		}
+		meta := live["metadata"].(map[string]any)
+		if meta["name"] != name || !slices.Contains(args, "--resource-version="+fmt.Sprint(meta["resourceVersion"])) {
+			fail()
+		}
+		if os.Remove(path) != nil {
+			fail()
+		}
+		fmt.Print("deleted")
 		os.Exit(0)
 	}
 	if call.Document == nil {
@@ -480,6 +554,103 @@ func TestReconcileOutcomesAndReceipt(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Removing the origin write from either create or adoption must fail this test.
+func TestReconcileOriginSetOnCreationAndAdoption(t *testing.T) {
+	for _, tc := range []struct {
+		name, want string
+		seed       bool
+	}{
+		{name: "create", want: "created"},
+		{name: "adopt", want: "adopted", seed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter, bundle, dir := reconcileFixture(t)
+			if tc.seed {
+				for _, kind := range []string{"Provider", "Agent"} {
+					seedReconcile(t, dir, reconcileLive(t, dir, kind, bundle))
+				}
+			}
+			result, err := adapter.Deploy(context.Background(), bundle, agentruntime.DeployOptions{Reconcile: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, kind := range []string{"Provider", "Agent"} {
+				if string(result.Receipt.Resources[i].Outcome) != tc.want {
+					t.Fatalf("%s outcome: %+v", kind, result.Receipt.Resources[i])
+				}
+				if got := storedReconcileOrigin(t, dir, kind); got != tc.want {
+					t.Fatalf("%s origin = %v, want %s", kind, got, tc.want)
+				}
+			}
+			receipt, err := json.Marshal(result.Receipt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(receipt), "kaimahi.dev/origin") || strings.Contains(string(receipt), `"origin"`) {
+				t.Fatalf("origin leaked into receipt: %s", receipt)
+			}
+		})
+	}
+}
+
+// Replacing a drifted object must preserve an existing origin, and must not
+// guess an origin for owned objects created before the marker existed.
+func TestReconcileUpdatePreservesOriginIncludingLegacyAbsence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		origin any
+	}{
+		{name: "created", origin: "created"},
+		{name: "adopted", origin: "adopted"},
+		{name: "legacy without origin"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter, bundle, dir := reconcileFixture(t)
+			provider := reconcileLive(t, dir, "Provider", bundle)
+			seedReconcile(t, dir, provider)
+			agent := reconcileLive(t, dir, "Agent", bundle)
+			agent["spec"].(map[string]any)["systemPrompt"] = map[string]any{"inline": "drift"}
+			meta := agent["metadata"].(map[string]any)
+			ann, _ := meta["annotations"].(map[string]any)
+			if ann == nil {
+				ann = map[string]any{}
+			}
+			ann[orkaBundleMarker] = "sample"
+			ann[orkaPortableMarker] = bundle.PortableDigest()
+			ann[orkaRenderedMarker] = bundle.RenderedDigest()
+			if tc.origin != nil {
+				ann["kaimahi.dev/origin"] = tc.origin
+			}
+			meta["annotations"] = ann
+			seedReconcile(t, dir, agent)
+			result, err := adapter.Deploy(context.Background(), bundle, agentruntime.DeployOptions{Reconcile: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Receipt.Resources[1].Outcome != agentruntime.ResourceUpdated {
+				t.Fatalf("expected update, got %+v", result.Receipt.Resources[1])
+			}
+			if got := storedReconcileOrigin(t, dir, "Agent"); got != tc.origin {
+				t.Fatalf("updated origin = %v, want %v", got, tc.origin)
+			}
+		})
+	}
+}
+
+func storedReconcileOrigin(t *testing.T, dir, kind string) any {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, strings.ToLower(kind)+"s.core.orka.ai.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		t.Fatal(err)
+	}
+	annotations, _ := obj["metadata"].(map[string]any)["annotations"].(map[string]any)
+	return annotations["kaimahi.dev/origin"]
 }
 
 func TestReconcileRefusesReceiptAfterProviderLosesReady(t *testing.T) {
@@ -733,6 +904,9 @@ func TestReconcileSameFieldsStaleMarkersRefreshWithoutGenerationBump(t *testing.
 	if annotations["kaimahi.dev/portable-digest"] != revised.PortableDigest() || annotations["kaimahi.dev/rendered-digest"] != revised.RenderedDigest() {
 		t.Fatalf("stale markers were not refreshed: %v", annotations)
 	}
+	if annotations["kaimahi.dev/origin"] != "created" {
+		t.Fatalf("digest refresh changed origin: %v", annotations["kaimahi.dev/origin"])
+	}
 	if meta["resourceVersion"] != "2" {
 		t.Fatalf("marker refresh did not perform a versioned write: %v", meta["resourceVersion"])
 	}
@@ -864,5 +1038,63 @@ func TestDefaultDeployStillRefusesIdenticalExistingName(t *testing.T) {
 	_, err := adapter.Deploy(context.Background(), bundle, agentruntime.DeployOptions{})
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("create-only collided without refusing: %v", err)
+	}
+}
+
+// A later rendered annotation cannot rewrite origin or backfill legacy owned
+// objects, even when the lift must replace their drifted spec.
+func TestReconcileIgnoresRenderedOriginOnOwnedUpdate(t *testing.T) {
+	for _, tc := range []struct {
+		name, origin string
+	}{
+		{name: "marked", origin: "created"},
+		{name: "legacy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter, rendered, dir := reconcileFixture(t)
+			bundle, err := orkaBundleFromRendered(rendered)
+			if err != nil {
+				t.Fatal(err)
+			}
+			live := reconcileLive(t, dir, "Agent", rendered)
+			live["spec"].(map[string]any)["systemPrompt"] = map[string]any{"inline": "drift"}
+			meta := live["metadata"].(map[string]any)
+			annotations, _ := meta["annotations"].(map[string]any)
+			if annotations == nil {
+				annotations = map[string]any{}
+			}
+			annotations[orkaBundleMarker] = "sample"
+			annotations[orkaPortableMarker] = rendered.PortableDigest()
+			annotations[orkaRenderedMarker] = rendered.RenderedDigest()
+			if tc.origin != "" {
+				annotations["kaimahi.dev/origin"] = tc.origin
+			}
+			meta["annotations"] = annotations
+			seedReconcile(t, dir, live)
+			wanted := bundle.Agent["metadata"].(map[string]any)
+			wantedAnnotations, _ := wanted["annotations"].(map[string]any)
+			if wantedAnnotations == nil {
+				wantedAnnotations = map[string]any{}
+				wanted["annotations"] = wantedAnnotations
+			}
+			wantedAnnotations["kaimahi.dev/origin"] = "adopted"
+			check, err := adapter.app.inspectOrkaReconcile(context.Background(), adapter.create.Namespace, bundle.Agent, rendered)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if check.outcome != agentruntime.ResourceUpdated {
+				t.Fatalf("drift did not prompt update: %+v", check)
+			}
+			if _, err := adapter.app.applyOrkaReconcile(context.Background(), adapter.create.Namespace, check); err != nil {
+				t.Fatal(err)
+			}
+			var want any
+			if tc.origin != "" {
+				want = tc.origin
+			}
+			if got := storedReconcileOrigin(t, dir, "Agent"); got != want {
+				t.Fatalf("owned origin overwritten: got %v, want %v", got, want)
+			}
+		})
 	}
 }

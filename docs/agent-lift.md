@@ -289,9 +289,12 @@ reports an outcome for **each** resource:
 
 Ordinary updates do not require a prompt; an interactive terminal may confirm
 them. Ownership annotations are `kaimahi.dev/bundle`,
-`kaimahi.dev/portable-digest` and `kaimahi.dev/rendered-digest`. These are
-applied outside the immutable rendered documents and do not change their
-digest. Reconciliation refuses Tasks. A partial failure may leave resources
+`kaimahi.dev/portable-digest` and `kaimahi.dev/rendered-digest`. Lift also
+sets `kaimahi.dev/origin` to `created` or `adopted` on the first write of each
+object and preserves it on later lifts. Older owned objects without this marker
+keep it absent: kmx cannot infer whether they were originally adopted. These
+annotations are applied outside the immutable rendered documents and do not
+change their digest. Reconciliation refuses Tasks. A partial failure may leave resources
 already written; inspect the error and rerun after addressing its cause rather
 than assuming an automatic rollback.
 
@@ -421,6 +424,70 @@ than re-running the prompt, which would create another Task. Result sessions
 use the selected ServiceAccount's full effective authority and a temporary
 loopback port-forward; do not grant it more access than needed.
 
+## Retiring a bundle from a target
+
+```console
+kmx agent retire <bundle-dir> [--to-context <ctx>] [--to-namespace <ns>] [--plan] [--delete-adopted]
+```
+
+Retire uses the bundle's remembered destination or an explicit context, pins
+kubectl to it, checks cluster identity against the remembered target and lift
+receipts, and applies the remote-context confirmation guard before writing.
+After the remembered target is cleared, it recovers a uniquely recorded
+namespace from lift receipts; if several were used under one context, supply
+`--to-namespace`.
+
+`--plan` runs the same ownership and dependent inspection as execution and
+reports each proposed deletion or release without changing resources, receipts
+or remembered selection. The selected destination Provider, its Secret, Tools,
+policies, namespace and Orka installation are not retired.
+
+Only an Agent and its bundle-rendered Provider with this bundle's complete
+ownership markers **and a matching local lift receipt for each live UID**
+qualify. A same-named bundle without that receipt, or a foreign, unmarked,
+incomplete or terminating object, is refused. A partial lift with no receipt
+requires operator inspection; retire cannot prove those objects' provenance.
+An owned object with `kaimahi.dev/origin: created` is deleted; one with
+`origin: adopted` is **released** by removing kmx's ownership annotations,
+leaving its spec and other metadata intact. That means four annotations on a
+newly lifted object, or three on a legacy object without an origin annotation.
+Objects lifted before origin was recorded are released, never assumed to have
+been created. If the Agent survives a release, its rendered Provider is also
+released even if marked `created`, so the Agent's dependency remains available.
+`--delete-adopted` explicitly opts into deleting adopted and legacy owned
+objects. The plan identifies each object's origin case. Origin is a live
+Kubernetes annotation, not a tamper-proof provenance record: an operator with
+permission to hand-edit it to `created` can cause retire to delete an object
+that would otherwise have been released. Treat that as the same trust level as
+kubectl write access to the object.
+
+Before either action, kmx lists Tasks, GatewayBindings, RepositoryScans,
+RepositoryMonitors and other Agents across namespaces. Pending, Scheduled,
+Running and Finalizing Tasks (including Tasks with no reported phase), any
+GatewayBinding or repository resource referencing the Agent, and another
+Agent's `coordination.allowedAgents` block retirement. When the Provider would
+be deleted, other Agents using it as their primary or fallback Provider, and
+active Tasks referring directly to it, also block. Execution repeats the
+inventory after remote-context confirmation, before mutation. If an inventory
+cannot be completed, retire names the resource and makes no changes. It names
+the required cluster-wide `list` permission only on an actual authorization
+refusal; size and timeout failures are reported separately. Orka v0.2.0's
+Agent deletion handler deletes the Agent only; Task deletion and its associated
+result/event cleanup occur on the Task deletion path, not on Agent deletion.
+Task records and history therefore remain, although an in-flight Task may fail
+if its Agent is removed. See Orka v0.2.0
+[`internal/api/handlers.go`](https://github.com/orka-agents/orka/blob/v0.2.0/internal/api/handlers.go)
+and [`internal/controller/task_controller.go`](https://github.com/orka-agents/orka/blob/v0.2.0/internal/controller/task_controller.go).
+
+Retire records UID-bound decisions in `receipts/retire-<target>.json` before
+mutation, marks it complete only after both resources have been retired, retains
+the lift receipt as history, and forgets the remembered target once complete.
+Status shows `not deployed`; after a release it also notes that an unmanaged
+Agent of the same name remains and a later lift would adopt it if its rendered
+fields still match. A repeat retire of the same objects is a no-op. A failure
+after the first mutation can leave a partial retirement: inspect the target,
+resolve the blocker, then rerun retire to complete it. The console has
+no retire action; adding one is a separate follow-up.
 ## Checking deployed status
 
 ```console

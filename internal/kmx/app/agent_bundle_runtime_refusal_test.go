@@ -77,6 +77,17 @@ func TestEvaluateBundleRefusesKagentBeforeClusterReads(t *testing.T) {
 	requireNoNewBundleKubectlCalls(t, f.dir, before)
 }
 
+func TestRetireBundleRefusesKagentBeforeClusterReads(t *testing.T) {
+	a, opt, dir, _ := liftBundleFixture(t)
+	replaceBundleAgentWithKagent(t, opt.BundleDir)
+	before := len(orkaCalls(t, dir))
+
+	requireKagentOrkaOnlyError(t, a.RetireAgentBundle(RetireAgentBundleOptions{
+		BundleDir: opt.BundleDir, ToContext: opt.ToContext,
+	}))
+	requireNoNewBundleKubectlCalls(t, dir, before)
+}
+
 func TestConsoleBundleComparisonRefusesKagentBeforeClusterReads(t *testing.T) {
 	a, root, bundle, dir, name, _, _ := consoleBundleFixture(t)
 	replaceBundleAgentWithKagent(t, bundle)

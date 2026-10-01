@@ -135,8 +135,9 @@ the portable digest. Rendering combines the portable revision with explicit
 target bindings; the resulting resources and rendered digest do reflect them.
 
 For Orka, later lift obtains another target's bindings from its flags and local
-state. Kagent bundles currently have no lift consumer: lift, status, evaluate,
-console bundle operations, and interactive `/lift` intentionally refuse them.
+state. Kagent bundles currently have no lifecycle consumer beyond create: lift,
+retire, status, evaluate, console bundle operations, and interactive `/lift`
+intentionally refuse them.
 Kagent create also omits `eval/example.yaml`. Its rendered artifact contains a
 review-only Secret skeleton followed by ModelConfig and Agent and must not be
 bulk-applied. A successful online create writes a private mode-0600 receipt with

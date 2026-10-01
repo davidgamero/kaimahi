@@ -312,10 +312,11 @@ func loadBundleReceiptTargets(bundle string) ([]bundleStatusTarget, error) {
 	}
 	var targets []bundleStatusTarget
 	for _, entry := range entries {
-		// Evaluation and create-only receipts share the directory but record no
-		// Orka lift target.
+		// Evaluation, retirement and create-only receipts share the directory but
+		// record no Orka lift target.
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") ||
-			strings.HasPrefix(entry.Name(), "eval-") || strings.HasPrefix(entry.Name(), "create-") {
+			strings.HasPrefix(entry.Name(), "eval-") || strings.HasPrefix(entry.Name(), "retire-") ||
+			strings.HasPrefix(entry.Name(), "create-") {
 			continue
 		}
 		raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
@@ -429,6 +430,13 @@ func (a *App) observeBundleTarget(ctx context.Context, bundle, name, portableDig
 		return result
 	}
 	if (result.Provider.Found && !result.Provider.Marked) || (result.Agent.Found && !result.Agent.Marked) {
+		if retiredReleasedResourcesMatch(bundle, target, uid, name, result) {
+			result.State = bundleStateNotDeployed
+			if result.Agent.Found && !result.Agent.Marked {
+				result.Detail = "unmanaged Agent of that name still exists; a later lift would adopt it if its rendered fields remain identical"
+			}
+			return result
+		}
 		result.State = bundleStateUnknown
 		result.Detail = "missing ownership marker"
 		return result
@@ -497,6 +505,46 @@ func (a *App) observeBundleTarget(ctx context.Context, bundle, name, portableDig
 		result.Detail = result.GitNote
 	}
 	return result
+}
+
+// retiredReleasedResourcesMatch recognizes only the exact objects released by
+// this bundle on this physical cluster. A later, unrelated unmarked Agent with
+// the same name must keep the ordinary unknown/missing-marker status.
+func retiredReleasedResourcesMatch(bundle string, target bundleStatusTarget, clusterUID, name string, observed bundleTargetStatus) bool {
+	raw, err := os.ReadFile(bundleRetireReceiptPath(bundle, target.Context, target.Namespace, clusterUID))
+	if err != nil {
+		return false
+	}
+	var receipt bundleRetireReceipt
+	if json.Unmarshal(raw, &receipt) != nil || !receipt.Complete || receipt.Bundle != name || receipt.At.IsZero() ||
+		receipt.Target.Context != target.Context || receipt.Target.Namespace != target.Namespace ||
+		receipt.Target.ClusterUID != clusterUID || receipt.Target.Agent != name {
+		return false
+	}
+	for _, resource := range []struct {
+		kind string
+		live bundleResourceStatus
+	}{
+		{"Agent", observed.Agent}, {"Provider", observed.Provider},
+	} {
+		if !resource.live.Found {
+			continue
+		}
+		if resource.live.Marked || resource.live.UID == "" {
+			return false
+		}
+		matched := false
+		for _, retired := range receipt.Resources {
+			if retired.Kind == resource.kind && retired.Name == name && retired.UID == resource.live.UID && retired.Action == "release" {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
 }
 
 // describeOrkaResource reads UID, generation, readiness and the ownership
