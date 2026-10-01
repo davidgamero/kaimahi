@@ -1,5 +1,5 @@
 {
-  "why": "The closed boundary around explicit Kagent v0.10.2 create support. scoped_support names the only production, test, current-doc, and CI-workflow files that may use approved Kagent vocabulary; scripts/check-legacy-runtime.py independently pins the same paths and the exact rule classes they waive. Non-waivable operation rules also scan bounded multiline compounds, while exact historical, teardown, refusal, absence, and external test-fixture exemptions remain original physical lines. A stale line, widened path, widened rule, or widened compound window is a failure.",
+  "why": "The closed boundary around explicit Kagent v0.10.2 create support. scoped_support names the only production, test, bundle-fixture, current-doc, and CI-workflow files that may use approved Kagent vocabulary; scripts/check-legacy-runtime.py independently pins the same paths and the exact rule classes they waive. Non-waivable operation rules also scan bounded multiline compounds, while exact historical, teardown, refusal, absence, and external test-fixture exemptions remain original physical lines. A stale line, widened path, widened rule, or widened compound window is a failure.",
   "historical_files": [
     "CHANGELOG.md",
     "docs/reviews/"
@@ -24,17 +24,24 @@
         "internal/kmx/app/runtime_kagent_lifecycle.go",
         "internal/kmx/runtime/kagent_bindings.go",
         "internal/kmx/runtime/portable.go",
+        "internal/kmx/runtime/prepared.go",
         "internal/kmx/runtime/runtime.go",
         "internal/kmx/scaffold/kagent.go"
       ],
       "test": [
         "cmd/kmx/agent_create_test.go",
         "internal/kmx/app/agent_bundle_runtime_refusal_test.go",
+        "internal/kmx/app/bundle_format_compat_test.go",
         "internal/kmx/app/create_kagent_test.go",
         "internal/kmx/runtime/kagent_bindings_test.go",
+        "internal/kmx/runtime/lifecycle_test.go",
         "internal/kmx/runtime/portable_secretshapes_test.go",
         "internal/kmx/runtime/portable_test.go",
         "internal/kmx/scaffold/kagent_test.go"
+      ],
+      "bundle-fixture": [
+        "internal/kmx/app/testdata/bundle-format/kagent/agent.yaml",
+        "internal/kmx/app/testdata/bundle-format/kagent/bindings.yaml"
       ],
       "current-doc": [
         "CONTRIBUTING.md",
@@ -43,6 +50,7 @@
         "docs/README.md",
         "docs/agent-lift.md",
         "docs/aks.md",
+        "docs/bundle-format.md",
         "docs/development.md",
         "docs/entry-point-principles.md",
         "docs/getting-started.md",
