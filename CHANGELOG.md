@@ -72,6 +72,10 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 - `kmx agent lift --override-gate "reason"` bypasses only an evaluation gate with an explicit explanation; the reason and bypassed condition are printed to stderr and stored in the local destination lift receipt until the next lift overwrites it. Interactive `/lift` and console use the shared read-only gate check: a passing gate appears in the review plan, while a refusal stops before deployment review; neither silently bypasses it.
 - `kmx agent retire <bundle-dir> [--to-context <ctx>] [--to-namespace <ns>] [--plan] [--delete-adopted]` inspects cross-namespace Agent dependents before retiring a bundle's owned Agent and rendered Provider. Lift now records each object's original `created` or `adopted` origin on the live object; retire deletes created objects and releases adopted or legacy objects by default (`--delete-adopted` opts into deletion). Retirement writes a per-target receipt and forgets its remembered destination; status reports released Agents as not deployed. The selected Provider, its Secret and existing Tasks remain untouched.
 
+### Fixed
+
+- The quickstart Orka Kubernetes Tool now grants named-policy `get` only to the AI worker configured by the installed v0.2.0 chart, including stock Helm `orka` releases. Installation and Agent lift refuse missing or ambiguous worker identity and ineffective policy authorization even when a Tool reports Available. Console Prepare can reapply the scoped grant; see [repair instructions](docs/orka-k8s-tool.md#repair-a-missing-policy-reader-grant). CI proves both chart variants with a succeeded health Task and metadata-only Tool-call events instead of worker logs or printed answers.
+
 ## v0.4.1 — 2026-09-30
 
 ### Changed
