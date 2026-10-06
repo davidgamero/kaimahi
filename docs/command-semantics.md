@@ -27,6 +27,18 @@ command the caller actually supplied to preserve its exact arguments.
 
 ## Vocabulary
 
+**Decided: keep Create → Prove → Lift.** Lift is the chosen lifecycle verb for
+the local-to-remote journey: create an agent locally, prove it with a real
+answer, then lift it to a remote environment. Retain `kmx agent lift` and
+interactive `/lift`; use **Lift** consistently in help, menu labels and the
+product narrative. Do not rename the agent command to `deploy`. “Deployment”
+remains useful technical language for the resulting resources and receipts.
+
+The current bare `kmx lift` spelling is the deprecated AKS provisioning route,
+not a shorthand for `kmx agent lift`. This vocabulary decision does not change
+that route's arguments or behavior; any reassignment needs an explicit
+compatibility transition coordinated with #223.
+
 - **Context:** a kubeconfig access selection; not a durable cluster identity.
 - **Target:** selected runtime, cluster identity, namespace and deployment
   destination, following [#238](https://github.com/kaimahi-agents/kaimahi/issues/238).
@@ -99,8 +111,10 @@ and compatibility over these operations, not parallel implementations.
 | `backup`, `restore`, `metrics` | `plane backup/restore/metrics` |
 
 Interactive controls should share resource/action names: `/agent show`,
-`/agent chat`, `/agent use`, `/agent lift`, `/agent tools configure`,
+`/agent chat`, `/agent use`, `/agent tools configure`,
 `/agent inference configure`, and console `/context use local|remote <context>`.
+Preserve `/lift` and Lift labels for the local-to-remote journey; any future
+grouped `/agent lift` spelling must preserve that entry point.
 Use `/inference use cluster|host-copilot|host-foundry` to distinguish execution
 routes, `/exit` with `/quit` compatibility, and `/verbose on|off` coordinated
 with #292. Retain keyboard shortcuts and advertise only supported controls.
@@ -112,26 +126,23 @@ and `--bundles-dir`, and `--output jsonl` for activity watch. Keep report
 
 ## Remaining decisions
 
-1. **Lift vs deploy:** #238 questions the implied state transfer; the maintainer
-   response in #248 supports Create → Prove → Lift. Keep `agent lift` pending
-   agreement.
-2. **Infrastructure hierarchy:** #223 owns the long-term Azure interface;
+1. **Infrastructure hierarchy:** #223 owns the long-term Azure interface;
    `target aks` is not the chosen final shape. Keep `aks up/down` for now.
-3. **Runtime setup:** retain `orka install/status` pending agreement on a
+2. **Runtime setup:** retain `orka install/status` pending agreement on a
    generic runtime setup family; a name cannot imply installer support.
-4. **Capability view:** #289 explicitly asks to reconcile `capabilities` with
+3. **Capability view:** #289 explicitly asks to reconcile `capabilities` with
    `targets`; choose one operation/name with that issue.
-5. **Authoring/execution verbs:** reconcile applying `create` with offline
+4. **Authoring/execution verbs:** reconcile applying `create` with offline
    `new`, `evaluate` with `test`, and `agent run` with canvas-service `run start`
    through #276 and its authoring/execution work. Their scopes differ.
-6. **Runtime selection:** settle operator/saved configuration versus public
+5. **Runtime selection:** settle operator/saved configuration versus public
    selection through #224/#238; retain current capabilities in rename slices.
-7. **Target flags:** decide `--to-*` versus `--context/--namespace` with bundle
+6. **Target flags:** decide `--to-*` versus `--context/--namespace` with bundle
    defaults, multi-target status, namespace ambiguity and alias conflicts.
-8. **Preview terms:** distinguish artifact rendering, no-write planning and
+7. **Preview terms:** distinguish artifact rendering, no-write planning and
    server validation, including downloads/cache/local files and which resources
    admission actually checks. Do not mechanically alias `--no-apply` modes.
-9. **Removal timing:** announce a breaking minor release before removing
+8. **Removal timing:** announce a breaking minor release before removing
    compatibility routes. No date/version is selected by this slice.
 
 ## Keeping future work aligned

@@ -15,6 +15,12 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
   `kmx local up/down`. The old `ctx`, `up`, and `down` spellings are compatibility
   routes. Current agent deployment remains `kmx agent lift`; current cloud and
   runtime setup remain `kmx aks up/down` and `kmx orka install/status`.
+- Keep **Create → Prove → Lift** as the local-to-remote story. **Lift** is the
+  chosen agent lifecycle verb: retain `kmx agent lift` and interactive `/lift`,
+  and use Lift in corresponding help and menu labels rather than renaming the
+  operation to deploy. Deployment remains a technical description of its effect.
+  Bare `kmx lift` is still the deprecated AKS compatibility route; changing its
+  meaning requires a separate compatibility decision.
 - Prefer singular resource/domain groups and explicit actions. Avoid introducing
   another synonym for an existing operation. CLI, chat and console should use
   the same operation vocabulary where their scopes match.
