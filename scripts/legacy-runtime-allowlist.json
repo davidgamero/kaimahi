@@ -617,7 +617,7 @@
     },
     {
       "path": "internal/kmx/app/lift.go",
-      "text": "return nil, nil, fmt.Errorf(\"kmx lift: %s/%s was lifted onto with --payload kagent, which is retired.\\n\"+",
+      "text": "return nil, nil, fmt.Errorf(\"kmx aks up: %s/%s was provisioned with --payload kagent, which is retired.\\n\"+",
       "category": "retirement",
       "why": "The resume refusal for a record that landed the retired payload, naming the payload the operator's script still passes."
     },
@@ -1067,7 +1067,7 @@
     },
     {
       "path": "internal/kmx/lift/plan.go",
-      "text": "return errors.New(\"kmx lift: --payload kagent is retired — the legacy kagent runtime has been\\n\" +",
+      "text": "return errors.New(\"kmx aks up: --payload kagent is retired — the legacy kagent runtime has been\\n\" +",
       "category": "retirement",
       "why": "The lift payload's refusal. `--payload <name>` is what an operator TYPED, so the refusal has to spell it back or it refuses nothing they can recognise; PayloadKagent is the historical teardown sentinel a pre-retirement record decodes to."
     },

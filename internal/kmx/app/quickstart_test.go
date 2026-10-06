@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -15,6 +16,21 @@ import (
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/run"
 )
+
+func TestLocalRecoveryCommandsPreserveShellSelectors(t *testing.T) {
+	a := &App{Cfg: &config.Config{KindCluster: "demo '$(false)", KubeContext: "kind-demo '$(false)", ContainerEngine: "podman"}}
+	for _, action := range []string{"up", "down"} {
+		command := a.operationCommand("local", action)
+		out, err := exec.Command("/bin/sh", "-c", `kmx() { printf '%s\000' "$KIND_CLUSTER" "$CONTAINER_ENGINE" "$@"; }; `+command).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{a.Cfg.KindCluster, "podman", "--context", a.Cfg.KubeContext, "local", action}
+		if got := strings.Split(strings.TrimSuffix(string(out), "\x00"), "\x00"); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: argv/env=%q want %q", command, got, want)
+		}
+	}
+}
 
 // An unrecognised --output is refused BEFORE a cluster is created. Being told
 // "unknown output" four minutes into a bring-up would be the worst possible

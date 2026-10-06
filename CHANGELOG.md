@@ -91,6 +91,14 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 ### Fixed
 
+- Generated local setup/teardown commands preserve the context, kind cluster
+  and container engine under the `local` group. AKS recovery uses `aks up/down`
+  with the effective phase, payload, configuration and ownership selectors;
+  AKS diagnostics now name infrastructure preparation/teardown rather than
+  agent Lift. Embedded scripts no longer suggest deleted `make aks-down` or
+  `make up` targets. Standalone AKS scripts retain shell-quoted script recovery
+  because they do not create KMX ownership records. Teardown behavior is unchanged.
+
 - The quickstart Orka Kubernetes Tool now grants named-policy `get` only to the AI worker configured by the installed v0.2.0 chart, including stock Helm `orka` releases. Installation and Agent lift refuse missing or ambiguous worker identity and ineffective policy authorization even when a Tool reports Available. Console Prepare can reapply the scoped grant; see [repair instructions](docs/orka-k8s-tool.md#repair-a-missing-policy-reader-grant). CI proves both chart variants with a succeeded health Task and metadata-only Tool-call events instead of worker logs or printed answers.
 
 ## v0.4.1 — 2026-09-30

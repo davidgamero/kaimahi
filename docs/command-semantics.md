@@ -25,6 +25,14 @@ command. Generated selection and local teardown instructions use the canonical
 spellings. Invocation-specific confirmation may repeat the compatibility
 command the caller actually supplied to preserve its exact arguments.
 
+Generated local commands preserve `KIND_CLUSTER`, `CONTAINER_ENGINE` and
+`--context`. AKS retry/teardown instructions use the common effective-option
+renderer, including `--byo` only for the existing ownership mode; Azure setup
+and cleanup diagnostics say AKS rather than agent Lift. The carried scripts
+use these native instructions when invoked by KMX. Standalone script use has
+no KMX ownership receipt, so its fallback names the actual script with quoted
+arguments instead of a deleted Make target or an invented BYO recovery route.
+
 ## Vocabulary
 
 **Decided: keep Create → Prove → Lift.** Lift is the chosen lifecycle verb for
