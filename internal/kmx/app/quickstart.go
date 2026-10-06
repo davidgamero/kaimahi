@@ -299,7 +299,7 @@ func (a *App) quickstartFollowups() []string {
 }
 
 func (a *App) quickstartNext(ui cliui.Output, result QuickstartResult) {
-	down := a.operationCommand("down")
+	down := a.operationCommand("local", "down")
 	if ui.Rich() {
 		a.notef("\n%s", ui.Actions("Next", []cliui.Action{
 			{Label: "Ask another question", Command: result.Next[0]},

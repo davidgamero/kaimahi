@@ -24,6 +24,11 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 ### Added
 
+- `kmx context show` and `kmx context use <context>` make context inspection
+  and saved selection explicit. `kmx local up/down` scope the existing local
+  kind setup and deletion operations. These unreleased names use the same
+  settings, guards and operation handlers as their compatibility routes.
+
 - AX preview activity source includes a bounded, allowlisted OpenCode child-event projector with synthetic failure and replay tests. It does not include a command wrapper, signed image or AX lifting yet.
 
 - Portable agents can declare `spec.coordination.allowedAgents` as a nonempty, explicit helper allowlist. Orka renders it as enabled named delegation; Kagent refuses unsupported core delegation. Legacy Orka coordination and existing bundle digests/rendering remain unchanged. Older kmx readers refuse the new field; upgrade before reading migrated bundles. This does not add an AX adapter.
@@ -64,6 +69,13 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 ### Changed
 
 - `kmx aks` is hidden from root help and shell completion as a temporary compatibility route; direct `kmx aks up` and `kmx aks down` invocation keeps unchanged flags and behavior.
+- `kmx ctx`, `kmx up` and `kmx down` remain callable compatibility routes,
+  with notices only on stderr. Root help and completion advertise `context`
+  and `local`. Existing operation arguments, saved selection, stdout and exit
+  contracts remain; the context report retains the `kmx ctx` source label.
+  Generated selection and local teardown hints use canonical names. No removal
+  release is scheduled; v0.4.1 users should keep using the old spellings.
+
 - Kagent bundles are explicitly refused by the currently Orka-only lift,
   status, evaluate, console bundle, and interactive `/lift` paths. No Kagent
   chat, list, show, status, lift, evaluate, console, quickstart, `up`, installer,
