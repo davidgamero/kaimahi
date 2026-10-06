@@ -148,7 +148,7 @@ func TestValidatePathAllowsOnePinnedToolVariantToBeReusedByTwoAgents(t *testing.
 			Instructions: FileRef{Path: instructionPath, Digest: digestBytes(instructions)},
 			Model:        ModelRequirement{Protocol: "openai-compatible", Model: "example-model"},
 			Tools: []ToolRequirement{{
-				ID: "reader", Version: "1.2.3", ExecutionMode: ExecutionInAgentSandbox,
+				ID: "reader", Version: "1.2.3", ExecutionMode: ExecutionSharedSandbox,
 			}},
 			Invokes: []AgentInvoke{}, Extensions: []Extension{},
 		}
@@ -159,7 +159,7 @@ func TestValidatePathAllowsOnePinnedToolVariantToBeReusedByTwoAgents(t *testing.
 			Platform: Platform{OS: "linux", Architecture: "amd64"}, BuildProfile: "default",
 			Tools: []ResolvedTool{{
 				ID: "reader", Version: "1.2.3", ManifestDigest: toolDigest,
-				VariantDigest: variant.VariantDigest, ExecutionMode: ExecutionInAgentSandbox,
+				VariantDigest: variant.VariantDigest, ExecutionMode: ExecutionSharedSandbox,
 			}},
 		}
 		compositionPath := "compositions/" + id + "-linux-amd64.json"
@@ -245,6 +245,35 @@ func TestEmptyOCIConfigIsExact(t *testing.T) {
 		if err := validateEmptyConfig(value); err == nil {
 			t.Errorf("validateEmptyConfig(%q) succeeded", value)
 		}
+	}
+}
+
+func TestCompositionToolsMustBeSortedByIdentity(t *testing.T) {
+	composition := Composition{
+		SchemaVersion: SpecVersion,
+		MediaType:     MediaTypeComposition,
+		Agent:         "writer",
+		Platform:      Platform{OS: "linux", Architecture: "amd64"},
+		BuildProfile:  "default",
+		Tools: []ResolvedTool{
+			{
+				ID:             "source-control",
+				Version:        "1.0.0",
+				ManifestDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				VariantDigest:  "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+				ExecutionMode:  ExecutionSharedSandbox,
+			},
+			{
+				ID:             "datetime",
+				Version:        "1.0.0",
+				ManifestDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				VariantDigest:  "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+				ExecutionMode:  ExecutionSharedSandbox,
+			},
+		},
+	}
+	if err := validateComposition(composition); err == nil || !strings.Contains(err.Error(), "sorted by id and version") {
+		t.Fatalf("expected tool ordering error, got %v", err)
 	}
 }
 
@@ -466,6 +495,63 @@ func TestVariantAllowsWritableSymlinkMode(t *testing.T) {
 	}
 }
 
+func TestVariantRejectsSchemaConstrainedFields(t *testing.T) {
+	payload := []byte("x")
+	digest := digestBytes(payload)
+	base := func() ToolVariant {
+		return ToolVariant{
+			Platform:      Platform{OS: "linux", Architecture: "amd64"},
+			VariantDigest: digest,
+			InstallRoot:   "/opt/tool",
+			PayloadRoot:   "payload",
+			Entrypoint:    "/opt/tool/bin/tool",
+			Runtime:       RuntimeRequirement{ABI: "static", CPUBaseline: "x86-64-v1"},
+			Files: []InventoryEntry{{
+				Path: "bin/tool", Type: "file", Mode: 0o755, Size: 1, Digest: digest,
+			}},
+		}
+	}
+	content := &contentSet{entries: map[string]contentEntry{
+		"payload/bin/tool": {Path: "payload/bin/tool", Type: "file", Mode: 0o755, Size: 1, Digest: digest},
+	}}
+	tests := []struct {
+		name    string
+		mutate  func(*ToolVariant)
+		message string
+	}{
+		{
+			name: "relative search path",
+			mutate: func(variant *ToolVariant) {
+				variant.SearchPath = []string{"bin"}
+			},
+			message: "searchPath",
+		},
+		{
+			name: "invalid network port",
+			mutate: func(variant *ToolVariant) {
+				variant.Network = []NetworkAccess{{Scheme: "https", Host: "example.com", Port: 0}}
+			},
+			message: "network access",
+		},
+		{
+			name: "invalid sbom descriptor",
+			mutate: func(variant *ToolVariant) {
+				variant.SBOM = &Descriptor{MediaType: "application/spdx+json", Digest: "invalid", Size: 1}
+			},
+			message: "sbom descriptor",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			variant := base()
+			test.mutate(&variant)
+			if err := validateVariant(variant, digest, content); err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("validateVariant() error = %v, want %q", err, test.message)
+			}
+		})
+	}
+}
+
 func TestVariantRejectsPayloadOwnerMismatch(t *testing.T) {
 	payload := []byte("x")
 	digest := digestBytes(payload)
@@ -485,6 +571,88 @@ func TestVariantRejectsPayloadOwnerMismatch(t *testing.T) {
 	}}
 	if err := validateVariant(variant, digest, content); err == nil || !strings.Contains(err.Error(), "payload metadata") {
 		t.Fatalf("owner mismatch error = %v", err)
+	}
+}
+
+func TestBundleClosureTraversesDependenciesAndChecksTheirCollisions(t *testing.T) {
+	platform := Platform{OS: "linux", Architecture: "amd64"}
+	variant := func(digest, installRoot, fileDigest string, dependencies ...BundleDependency) ToolVariant {
+		return ToolVariant{
+			Platform:      platform,
+			VariantDigest: digest,
+			InstallRoot:   installRoot,
+			Files: []InventoryEntry{{
+				Path: "bin/tool", Type: "file", Mode: 0o755, UID: 0, GID: 0, Size: 1, Digest: fileDigest,
+			}},
+			Dependencies: dependencies,
+		}
+	}
+	runtimeVariant := variant(
+		"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		"/opt/shared",
+		"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+	)
+	bridgeVariant := variant(
+		"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"/opt/bridge",
+		"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		BundleDependency{ID: "runtime", Version: "1.0.0", VariantDigest: runtimeVariant.VariantDigest},
+	)
+	rootVariant := variant(
+		"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"/opt/root",
+		"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+		BundleDependency{ID: "bridge", Version: "1.0.0", VariantDigest: bridgeVariant.VariantDigest},
+	)
+	tools := map[string]Tool{
+		"bridge@1.0.0":  {ID: "bridge", Version: "1.0.0", Variants: []ToolVariant{bridgeVariant}},
+		"runtime@1.0.0": {ID: "runtime", Version: "1.0.0", Variants: []ToolVariant{runtimeVariant}},
+	}
+
+	closure, err := bundleClosure("root@1.0.0", rootVariant, tools)
+	if err != nil {
+		t.Fatalf("bundleClosure() error = %v", err)
+	}
+	if len(closure) != 3 || closure[1].toolKey != "bridge@1.0.0" || closure[2].toolKey != "runtime@1.0.0" {
+		t.Fatalf("bundleClosure() = %+v, want root and transitive dependencies", closure)
+	}
+
+	destinations := map[string]InventoryEntry{}
+	for _, bundle := range closure {
+		if err := addVariantDestinations(destinations, bundle.variant); err != nil {
+			t.Fatalf("addVariantDestinations() error = %v", err)
+		}
+	}
+	conflicting := variant(
+		"sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		"/opt/shared",
+		"sha256:2222222222222222222222222222222222222222222222222222222222222222",
+	)
+	if err := addVariantDestinations(destinations, conflicting); err == nil ||
+		!strings.Contains(err.Error(), "/opt/shared/bin/tool") {
+		t.Fatalf("dependency collision error = %v", err)
+	}
+}
+
+func TestBundleClosureRejectsTransitiveCycle(t *testing.T) {
+	platform := Platform{OS: "linux", Architecture: "amd64"}
+	aDigest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	bDigest := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	a := ToolVariant{
+		Platform: platform, VariantDigest: aDigest,
+		Dependencies: []BundleDependency{{ID: "b", Version: "1.0.0", VariantDigest: bDigest}},
+	}
+	b := ToolVariant{
+		Platform: platform, VariantDigest: bDigest,
+		Dependencies: []BundleDependency{{ID: "a", Version: "1.0.0", VariantDigest: aDigest}},
+	}
+	tools := map[string]Tool{
+		"a@1.0.0": {ID: "a", Version: "1.0.0", Variants: []ToolVariant{a}},
+		"b@1.0.0": {ID: "b", Version: "1.0.0", Variants: []ToolVariant{b}},
+	}
+	if _, err := bundleClosure("a@1.0.0", a, tools); err == nil ||
+		!strings.Contains(err.Error(), "dependency cycle") {
+		t.Fatalf("cycle error = %v", err)
 	}
 }
 
@@ -563,8 +731,8 @@ func TestRawVariantDigestsPreserveExplicitZeroValues(t *testing.T) {
 
 func TestDeclaredCapabilitiesMustAlreadyBeSortedAndUnique(t *testing.T) {
 	v := &validator{
-		suite:        Suite{Capabilities: []string{"remote-streamable-http-mcp", "remote-streamable-http-mcp"}},
-		tools:        map[string]Tool{"remote@1.0.0": {Remote: &RemoteMCP{}}},
+		suite:        Suite{Capabilities: []string{"bundled-stdio-mcp", "bundled-stdio-mcp"}},
+		tools:        map[string]Tool{"reader@1.0.0": {Variants: []ToolVariant{{}}}},
 		agents:       map[string]Agent{},
 		compositions: map[string]Composition{},
 	}
