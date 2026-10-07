@@ -228,16 +228,16 @@ func newAgentSuiteSource(
 		t.Fatal(err)
 	}
 	suite := agentsuite.Suite{
-		SchemaVersion:    agentsuite.SpecVersion,
-		MediaType:        agentsuite.MediaTypeSuite,
-		Name:             name,
-		Agents:           fixture.Agents,
-		ToolCatalog:      fixture.ToolCatalog,
-		ToolCompositions: fixture.ToolCompositions,
-		Compositions:     fixture.Compositions,
-		BuildProfiles:    fixture.BuildProfiles,
-		Capabilities:     fixture.Capabilities,
-		Extensions:       fixture.Extensions,
+		SchemaVersion:            agentsuite.SpecVersion,
+		MediaType:                agentsuite.MediaTypeSuite,
+		Name:                     name,
+		Agents:                   fixture.Agents,
+		ToolProviderCatalog:      fixture.ToolProviderCatalog,
+		ToolProviderCompositions: fixture.ToolProviderCompositions,
+		Compositions:             fixture.Compositions,
+		BuildProfiles:            fixture.BuildProfiles,
+		Capabilities:             fixture.Capabilities,
+		Extensions:               fixture.Extensions,
 	}
 
 	contentRoot := t.TempDir()
