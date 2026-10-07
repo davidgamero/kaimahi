@@ -50,35 +50,10 @@ The hierarchy is **AgentSuite → ToolProvider → Tool**:
   **ToolProvider composition** selects exact build inputs for a
   **ToolProvider Sandbox Image**. These names do not include a protocol name.
 
-The terminology is protocol-neutral so that other provider mechanisms can use
-the same abstraction. This draft's executable contract still supports MCP
+The terminology is protocol-neutral. This draft's executable contract supports MCP
 only; CLI binaries are implementation details behind an MCP adapter. Naming a
 provider does not imply that its implementation is a network server or that it
 has already been deployed. An inference provider is a separate concept.
-
-### 1.2 Draft terminology migration
-
-This revision replaces the earlier draft's provider-level `Tool` with
-`ToolProvider` and its callable `Operation` with `Tool`. The wire format changes:
-
-| Earlier draft | This revision |
-|---|---|
-| `toolCatalog` | `toolProviderCatalog` |
-| `toolCompositions` | `toolProviderCompositions` |
-| Agent, catalog, and composition `tools` | `toolProviders` |
-| Provider manifest `provider.protocol` / `provider.revision` | Top-level `protocol` / `revision` |
-| Provider manifest `provider.operations` | Top-level `tools` |
-| `application/vnd.agentsuite.tool.v1+json` | `application/vnd.agentsuite.tool.provider.v1+json` |
-| `application/vnd.agentsuite.tool.catalog.v1+json` | `application/vnd.agentsuite.tool.provider.catalog.v1+json` |
-| `application/vnd.agentsuite.tool.composition.v1+json` | `application/vnd.agentsuite.tool.provider.composition.v1+json` |
-| `/.agentsuite/tool-composition.json` | `/.agentsuite/tool-provider-composition.json` |
-| `org.agentsuite.tool-composition.digest` | `org.agentsuite.tool-provider-composition.digest` |
-
-The draft version remains `1.0.0-draft`; old field names and media types are
-not compatibility aliases and MUST be rejected. Producers migrating artifacts
-must recompute affected manifest, catalog, composition, and suite digests, and
-variant digests when payload/install paths change. The CLI report counts
-`toolProviders` and `toolProviderCompositions`, not callable tools.
 
 ## 2. Scope
 
@@ -1101,6 +1076,10 @@ A suite validator MUST accept either an extracted content directory or an OCI
 image-layout directory. Validation MUST operate offline after the referenced
 blobs are present and MUST NOT require a runtime or orchestration control
 plane.
+
+The CLI validation report counts `toolProviders` and
+`toolProviderCompositions`. These counts describe provider manifests and
+standalone provider compositions, respectively; they do not count callable tools.
 
 ### 15.2 Sandbox image validator
 
