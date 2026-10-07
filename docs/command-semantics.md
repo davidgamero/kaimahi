@@ -69,9 +69,11 @@ The guided live-copy fallback is explicitly untracked, not a bundle deployment.
 The original source/help audit at `9ebc27b` found 37 visible executable leaves,
 two deprecated AKS spellings, three retirement stubs, 12 advertised chat
 controls (plus `/quit`), and seven console slash controls plus menu/key actions.
-Upstream `a3d809b` adds `suite validate`. This slice adds one executable leaf by
-splitting context show/use, for 39 visible leaves, and retains old entry points
-as compatibility routes. Cobra help/internal completion are excluded.
+Upstream `a3d809b` adds `suite validate`; current main hides the two AKS leaves
+from root discovery while preserving direct invocation. This slice adds one
+executable leaf by splitting context show/use, for 37 root-discoverable leaves,
+and retains old entry points as compatibility routes. Cobra help/internal
+completion are excluded.
 
 Sources: command constructors and completion in [`cmd/kmx`](../cmd/kmx), chat
 registry/dispatch in [`chat_slash.go`](../internal/kmx/app/chat_slash.go) and
@@ -135,7 +137,8 @@ and `--bundles-dir`, and `--output jsonl` for activity watch. Keep report
 ## Remaining decisions
 
 1. **Infrastructure hierarchy:** #223 owns the long-term Azure interface;
-   `target aks` is not the chosen final shape. Keep `aks up/down` for now.
+   `target aks` is not the chosen final shape. `aks up/down` remain callable
+   compatibility routes, hidden from root help and completion.
 2. **Runtime setup:** retain `orka install/status` pending agreement on a
    generic runtime setup family; a name cannot imply installer support.
 3. **Capability view:** #289 explicitly asks to reconcile `capabilities` with

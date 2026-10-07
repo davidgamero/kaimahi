@@ -15,6 +15,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
   `kmx local up/down`. The old `ctx`, `up`, and `down` spellings are compatibility
   routes. Current agent deployment remains `kmx agent lift`; current cloud and
   runtime setup remain `kmx aks up/down` and `kmx orka install/status`.
+  The AKS group is a hidden compatibility route, not a public root domain.
 - Keep **Create → Prove → Lift** as the local-to-remote story. **Lift** is the
   chosen agent lifecycle verb: retain `kmx agent lift` and interactive `/lift`,
   and use Lift in corresponding help and menu labels rather than renaming the
