@@ -1,8 +1,20 @@
 # AgentSuite image lift
 
-Status: experimental implementation based on the earlier #339 head `3db1583`.
-The subsequently merged buildx backend and #357/#360 archive/attestation updates
-still need integration with this branch's model-independent build path.
+Status: experimental implementation rebased onto main through #340, incorporating
+the merged #339 buildx backend and #357/#360 archive/attestation updates.
+
+Builds use the selected Docker buildx builder (`--builder`) and request SBOM and
+max-mode provenance by default. `--require-attestations` requires both; an explicit
+`--attestations=false` opts out. These options are shared by `suite build`,
+`suite publish` and `console --workspace`. KMX does not start or manage a builder.
+The mounted-configuration profile uses a no-RUN Dockerfile over its pinned harness,
+without linking AgentKit/BuildKit Go clients or baking selected model settings.
+
+Archive inspection checks content digests and attestation subjects before output
+publication. Registry publication preserves the root index and attestation graph;
+deployment pins the runnable platform manifest. Local publication records retain
+both identities. Attestations remain unsigned and are not sandbox conformance or
+signer-policy evidence. The image-set/registry policy contract remains open.
 
 ## Build once, select inference at deployment
 
@@ -29,14 +41,14 @@ mkdir -p suites
 kmx suite create suites/hello-world \
   --instructions 'Answer greetings briefly. Identify yourself as the AgentSuite sample.'
 kmx suite publish hello-world --workspace suites \
-  --registry "$REGISTRY/agent-demo"
+  --registry "$REGISTRY/agent-demo" --builder "$BUILDX_BUILDER"
 kmx suite deploy hello-world --workspace suites --environment local.json --plan
 KAIMAHI_CONFIRM=kind-dev kmx suite deploy hello-world \
   --workspace suites --environment local.json
 kmx suite run hello-world --workspace suites --deployment local-demo \
   --member hello-world --prompt Hello
 
-kmx console --workspace suites --registry "$REGISTRY/agent-demo"
+kmx console --workspace suites --registry "$REGISTRY/agent-demo" --builder "$BUILDX_BUILDER"
 ```
 
 In the workspace console: `n` creates local source; `b` builds/publishes all

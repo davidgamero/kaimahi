@@ -17,9 +17,10 @@ above the common transport. See the
 [registry strategy boundary](agentsuite-image-lift.md#container-registry-integration);
 provider setup ownership remains with #223, not the suite or deployment identity.
 
-Sequencing: this branch includes the earlier #339 implementation at `3db1583`
-plus the merged lifecycle contracts. #339 subsequently merged with a buildx
-backend; integration with that backend and #357/#360 remains pending here.
+Sequencing: this branch is rebased onto main through #340 and includes the merged
+#339 buildx backend, #357 cancellation/harness checks and #360 archive inspection,
+SBOM/provenance and distinct runnable-image/index identities. Image publication
+preserves the attestation-bearing graph; deployment uses the platform digest.
 The implementation uses a narrow inline execution profile and experimental image
 declaration; the five broader extensions below remain proposed follow-up design.
 

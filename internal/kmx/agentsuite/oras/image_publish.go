@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -14,6 +15,18 @@ import (
 // PushImage publishes an already-built OCI archive unchanged. Image and suite
 // publishing are distinct: this never repackages an image as suite content.
 func PushImage(ctx context.Context, archive, reference string, platform agentsuite.Platform, plainHTTP bool) (string, error) {
+	file, err := os.Open(archive)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if _, err := agentsuite.InspectImageArchive(ctx, file, info.Size(), platform, false, false); err != nil {
+		return "", err
+	}
 	source, err := oci.NewFromTar(ctx, archive)
 	if err != nil {
 		return "", err
@@ -49,7 +62,9 @@ func PushImage(ctx context.Context, archive, reference string, platform agentsui
 	if err != nil {
 		return "", err
 	}
-	if _, err := NewPusher(target).Push(ctx, source, selected.Descriptor, tag); err != nil {
+	// Publish the root graph, including attestation siblings, while returning the
+	// runnable platform digest for deployment. Publishing only selected drops evidence.
+	if _, err := NewPusher(target).Push(ctx, source, roots[0], tag); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("%s/%s@%s", parsed.Registry, parsed.Repository, selected.Descriptor.Digest), nil

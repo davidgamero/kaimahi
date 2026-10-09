@@ -1,16 +1,14 @@
 package agentkit
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func TestMountedImageOmitsSelectedModelAndUsesRuntimeConfigABI(t *testing.T) {
@@ -27,27 +25,48 @@ func TestMountedImageOmitsSelectedModelAndUsesRuntimeConfigABI(t *testing.T) {
 	if _, err := builder.Build(context.Background(), *plan, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if !captured.MountedConfig || captured.Agent.Model.Name != "" || captured.Agent.Model.BaseURL != "" {
+	if !captured.MountedConfig || strings.Contains(string(captured.AgentkitFile), "baseURL") {
 		t.Fatal("model selection entered build")
 	}
-	definition, raw, err := agentBuildDefinition(context.Background(), captured, &ocispec.Platform{OS: "linux", Architecture: "amd64"})
-	if err != nil {
+	if !strings.Contains(string(captured.AgentkitFile), `CMD ["--config","/run/agentsuite/agent.json","--protocol","openai"]`) || strings.Contains(string(captured.AgentkitFile), "/agent/agent.yaml") || strings.Contains(string(captured.AgentkitFile), "RUN ") {
+		t.Fatal("unexpected build recipe")
+	}
+	if string(captured.Instructions) != "immutable instructions" {
+		t.Fatal("instructions changed")
+	}
+	runner := mountedBuildRunner{t: t}
+	if _, err := (buildxExporter{runner: runner, builder: "selected-builder", requireAttestations: true}).ExportOCI(t.Context(), captured, io.Discard); err != nil {
 		t.Fatal(err)
-	}
-	var image ocispec.Image
-	if err := json.Unmarshal(raw, &image); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(image.Config.Cmd, " ") != "--config /run/agentsuite/agent.json --protocol openai" {
-		t.Fatal(image.Config.Cmd)
-	}
-	for _, op := range definition.Def {
-		if bytes.Contains(op, []byte("/agent/agent.yaml")) {
-			t.Fatal("baked model ABI generated")
-		}
 	}
 	builder.options.ModelBaseURL = "https://model.example/v1"
 	if _, err := builder.Build(context.Background(), *plan, io.Discard); err == nil {
 		t.Fatal("model build override accepted")
 	}
+}
+
+type mountedBuildRunner struct{ t *testing.T }
+
+func (r mountedBuildRunner) Run(_ context.Context, _ io.Writer, _ io.Writer, name string, args ...string) error {
+	if len(args) == 2 && args[1] == "version" {
+		return nil
+	}
+	command := strings.Join(args, " ")
+	for _, want := range []string{"--builder selected-builder", "--sbom=true", "--provenance=mode=max"} {
+		if !strings.Contains(command, want) {
+			r.t.Fatalf("missing %s: %s", want, command)
+		}
+	}
+	root := args[len(args)-1]
+	data, err := os.ReadFile(filepath.Join(root, "instructions.txt"))
+	if err != nil || string(data) != "immutable instructions" {
+		r.t.Fatalf("build input: %q %v", data, err)
+	}
+	data, err = os.ReadFile(filepath.Join(root, "Dockerfile"))
+	if err != nil || !strings.Contains(string(data), agentsuite.AgentKitConfigPath) {
+		r.t.Fatalf("configuration ABI recipe: %v", err)
+	}
+	if _, err = os.Stat(filepath.Join(root, "agentkitfile.yaml")); !os.IsNotExist(err) {
+		r.t.Fatal("mounted build also supplied legacy config")
+	}
+	return nil
 }

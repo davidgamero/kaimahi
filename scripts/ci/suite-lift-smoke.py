@@ -24,6 +24,8 @@ p.add_argument("--plain-http", action="store_true")
 p.add_argument("--kind-name", help="local kind preload; avoids node-to-host registry routing")
 p.add_argument("--confirm-context", required=True)
 p.add_argument("--workspace", help="retain source, image association and deployment records for console verification")
+p.add_argument("--builder", help="Docker buildx builder with OCI export support")
+p.add_argument("--require-attestations", action="store_true")
 p.add_argument("--acr-pull-credentials", help="ACR name: provision a namespace-scoped pull Secret using the current Azure login (for local kind)")
 a = p.parse_args()
 if a.confirm_context != a.context:
@@ -36,6 +38,7 @@ repo = Path(__file__).resolve().parents[2]
 kmx = str(Path(a.kmx).resolve())
 kube = ["kubectl", "--context", a.context, "--request-timeout=30s"]
 transport = ["--plain-http"] if a.plain_http else []
+build_options = (["--builder", a.builder] if a.builder else []) + (["--require-attestations"] if a.require_attestations else [])
 
 
 def run(args, data=None):
@@ -90,11 +93,11 @@ with tempfile.TemporaryDirectory(prefix="kmx-suite-smoke-") as work:
         run([kmx, "suite", "create", suite, "--instructions",
              "Answer greetings briefly. Identify yourself as the AgentSuite sample."])
     publication = json.loads(run([kmx, "suite", "publish", "hello-world", "--workspace", str(workspace),
-                                  "--registry", a.registry] + transport))
+                                  "--registry", a.registry] + transport + build_options))
     suite_ref, image_ref = publication["suite"], publication["images"]["hello-world"]
     if a.kind_name:
         run([kmx, "suite", "build", suite, "--agent", "hello-world", "--platform", "linux/amd64",
-             "--suite-ref", suite_ref, "--output", archive] + transport)
+             "--suite-ref", suite_ref, "--output", archive] + transport + build_options)
         # Assert the newly built manifest matches the published image before preload.
         rebuilt = run([kmx, "suite", "push-image", archive, a.registry.rstrip("/") + "/hello-world:rebuild"] + transport)
         assert rebuilt == image_ref, (rebuilt, image_ref)

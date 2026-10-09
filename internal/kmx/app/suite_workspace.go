@@ -21,6 +21,8 @@ import (
 // SuitePublication associates an exact published suite with its built members.
 // This local workspace record is experimental, not a standardized OCI referrer.
 type SuitePublication struct {
+	Indexes       map[string]string   `json:"indexes,omitempty"`
+	Attested      map[string]bool     `json:"attested,omitempty"`
 	Suite         string              `json:"suite"`
 	LogicalDigest string              `json:"logicalDigest"`
 	Images        map[string]string   `json:"images"`
@@ -97,8 +99,17 @@ func saveWorkspaceRecord(path string, value any) error {
 
 // PublishSuiteWorkspace builds every member before recording a complete image
 // set. Model/endpoint bindings never enter the build request or its cache key.
-func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository string, plainHTTP bool) (SuitePublication, error) {
+type SuiteBuildOptions struct {
+	Builder             string
+	DisableAttestations bool
+	RequireAttestations bool
+}
+
+func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository string, plainHTTP bool, options SuiteBuildOptions) (SuitePublication, error) {
 	var result SuitePublication
+	if options.RequireAttestations && options.DisableAttestations {
+		return result, errors.New("required attestations cannot be disabled")
+	}
 	path, err := workspaceRecord(root, name, "-images")
 	if err != nil {
 		return result, err
@@ -122,11 +133,24 @@ func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository 
 		return result, err
 	}
 	result = SuitePublication{Suite: repository + "/source@" + pushed.Descriptor.Digest.String(), LogicalDigest: suite.LogicalDigest(), Platform: platform, Images: map[string]string{}}
+	result.Indexes = map[string]string{}
+	result.Attested = map[string]bool{}
 	if old, err := ReadSuitePublication(root, name); err == nil && old.Suite == result.Suite && old.LogicalDigest == result.LogicalDigest && len(old.Images) == len(suite.Members()) {
 		// Verify the recorded graph is still reachable rather than trusting a cache
 		// flag after registry pruning or a failed earlier upload.
 		complete := true
 		for _, member := range suite.Members() {
+			if !options.DisableAttestations && !old.Attested[member.Agent.ID] {
+				complete = false
+				break
+			}
+			if old.Attested[member.Agent.ID] {
+				indexed, err := suiteoras.ResolveImageRegistryTransport(ctx, old.Indexes[member.Agent.ID], platform, plainHTTP)
+				if err != nil || indexed.Reference != old.Images[member.Agent.ID] {
+					complete = false
+					break
+				}
+			}
 			image, err := suiteoras.ResolveImageRegistryTransport(ctx, old.Images[member.Agent.ID], platform, plainHTTP)
 			if err != nil || image.Deployment.SuiteDigest != pushed.Descriptor.Digest.String() || image.Deployment.Agent != member.Agent.ID {
 				complete = false
@@ -143,7 +167,9 @@ func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository 
 			}
 			return old, nil
 		}
-		return result, errors.New("recorded image set could not be checked; inspect registry access/content before explicitly rebuilding")
+		if options.DisableAttestations || len(old.Attested) > 0 {
+			return result, errors.New("recorded image set could not be checked; inspect registry access/content before explicitly rebuilding")
+		}
 	}
 	work, err := os.MkdirTemp("", "kmx-workspace-build-*")
 	if err != nil {
@@ -165,8 +191,9 @@ func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository 
 	}
 	for _, member := range suite.Members() {
 		archive := filepath.Join(work, member.Agent.ID+".oci.tar")
-		builder := agentkit.New(agentkit.Options{SuiteReference: result.Suite, SuiteDigest: pushed.Descriptor.Digest.String(), Progress: a.Err})
-		if _, err := a.BuildSuite(ctx, pulled.Path, archive, agentsuite.BuildSelection{Agent: member.Agent.ID, Platform: platform.String()}, builder); err != nil {
+		builder := agentkit.New(agentkit.Options{SuiteReference: result.Suite, SuiteDigest: pushed.Descriptor.Digest.String(), Progress: a.Err, Builder: options.Builder, DisableAttestations: options.DisableAttestations, RequireAttestations: options.RequireAttestations})
+		built, err := a.BuildSuite(ctx, pulled.Path, archive, agentsuite.BuildSelection{Agent: member.Agent.ID, Platform: platform.String()}, builder)
+		if err != nil {
 			return result, err
 		}
 		ref, err := suiteoras.PushImage(ctx, archive, repository+"/"+member.Agent.ID+":"+tag, platform, plainHTTP)
@@ -174,6 +201,8 @@ func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository 
 			return result, err
 		}
 		result.Images[member.Agent.ID] = ref
+		result.Indexes[member.Agent.ID] = repository + "/" + member.Agent.ID + "@" + built.IndexDigest
+		result.Attested[member.Agent.ID] = built.HasAttestations
 	}
 	return result, saveWorkspaceRecord(path, result)
 }

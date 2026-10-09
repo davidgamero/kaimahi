@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/app"
@@ -25,13 +27,21 @@ func addSuiteWorkspaceCommands(group *cobra.Command, state *commandState) {
 	}
 	var workspace, registry string
 	var plain bool
+	var buildOptions app.SuiteBuildOptions
+	var attestations bool
 	publish := &cobra.Command{Use: "publish <name>", Short: "Build and publish every workspace suite member, reusing matching images", Args: cobra.ExactArgs(1)}
 	publish.Flags().StringVar(&workspace, "workspace", "suites", "source workspace directory")
 	publish.Flags().StringVar(&registry, "registry", "", "container registry/repository prefix")
 	publish.Flags().BoolVar(&plain, "plain-http", false, "anonymous local-development registry HTTP")
+	publish.Flags().StringVar(&buildOptions.Builder, "builder", "", "Docker buildx builder")
+	publish.Flags().BoolVar(&attestations, "attestations", true, "request SBOM and provenance")
+	publish.Flags().BoolVar(&buildOptions.RequireAttestations, "require-attestations", false, "require SBOM and provenance")
 	_ = publish.MarkFlagRequired("registry")
 	publish.RunE = appRun(state, func(a *app.App) error {
-		value, err := a.PublishSuiteWorkspace(publish.Context(), workspace, publish.Flags().Args()[0], registry, plain)
+		ctx, stop := signal.NotifyContext(publish.Context(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		buildOptions.DisableAttestations = !attestations
+		value, err := a.PublishSuiteWorkspace(ctx, workspace, publish.Flags().Args()[0], registry, plain, buildOptions)
 		if err != nil {
 			return err
 		}

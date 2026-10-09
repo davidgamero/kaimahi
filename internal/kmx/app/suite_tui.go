@@ -20,6 +20,7 @@ import (
 )
 
 type SuiteConsoleOptions struct {
+	Build               SuiteBuildOptions
 	Workspace, Registry string
 	PlainHTTP           bool
 }
@@ -196,7 +197,7 @@ func (m suiteConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.plan = nil
 			return m, m.work("Building/publishing suite; checking existing images for reuse…", func(ctx context.Context) suiteConsoleResult {
-				pub, err := m.app.PublishSuiteWorkspace(ctx, m.opt.Workspace, entry.Name, m.opt.Registry, m.opt.PlainHTTP)
+				pub, err := m.app.PublishSuiteWorkspace(ctx, m.opt.Workspace, entry.Name, m.opt.Registry, m.opt.PlainHTTP, m.opt.Build)
 				entries, _ := ListSuiteWorkspace(m.opt.Workspace)
 				return suiteConsoleResult{entries: entries, err: err, message: "Published: " + DescribePublication(pub) + "\nPress l to bind inference and lift."}
 			})
