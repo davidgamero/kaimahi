@@ -67,6 +67,15 @@ func (a *App) LiftAgentImage(ctx context.Context, reference, environment string,
 	if err := agentsuite.ValidateImageSource(pulled.Path, image.Deployment); err != nil {
 		return err
 	}
+	resolved, err := agentsuite.ResolveDeploymentSuite(pulled.Path, env.Platform)
+	if err != nil {
+		return err
+	}
+	for _, member := range resolved.Members() {
+		if member.Agent.ID == image.Deployment.Agent {
+			env.Instructions = string(member.Instructions)
+		}
+	}
 	plan, err := imagelift.Render(image.Reference, image.Deployment, env)
 	if err != nil {
 		return err
@@ -91,60 +100,8 @@ func (a *App) LiftAgentImage(ctx context.Context, reference, environment string,
 }
 
 func (a *App) liftSuiteImages(ctx context.Context, reference string, env imagelift.Environment, planOnly bool) error {
-	if env.PlainHTTP && !strings.HasPrefix(env.Context, "kind-") {
-		return errors.New("plain HTTP image transport is restricted to explicit local kind environments")
-	}
-	root, err := os.MkdirTemp("", "kmx-suite-lift-*")
+	prepared, err := a.PrepareSuiteLift(ctx, reference, env)
 	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(root)
-	pulled, err := suiteoras.PullRegistry(ctx, reference, filepath.Join(root, "suite"), env.PlainHTTP)
-	if err != nil {
-		return err
-	}
-	suite, err := agentsuite.ResolveDeploymentSuite(pulled.Path, env.Platform)
-	if err != nil {
-		return err
-	}
-	members := suite.Members()
-	if len(members) != len(env.Members) {
-		return errors.New("environment must bind every suite member exactly once")
-	}
-	plans := map[string]imagelift.Plan{}
-	bindings := map[string]agentruntime.SuiteMemberBinding{}
-	for _, member := range members {
-		binding, ok := env.Members[member.Agent.ID]
-		if !ok {
-			return fmt.Errorf("missing member binding: %s", member.Agent.ID)
-		}
-		image, err := suiteoras.ResolveImageRegistryTransport(ctx, binding.Image, env.Platform, env.PlainHTTP)
-		if err != nil {
-			return err
-		}
-		if image.Deployment.SuiteDigest != pulled.Descriptor.Digest.String() || image.Deployment.Agent != member.Agent.ID {
-			return errors.New("member image does not belong to selected suite and agent")
-		}
-		if err := agentsuite.ValidateImageSource(pulled.Path, image.Deployment); err != nil {
-			return err
-		}
-		child := env
-		child.Members = nil
-		child.Name = binding.Name
-		child.Inputs = binding.Inputs
-		plan, err := imagelift.Render(image.Reference, image.Deployment, child)
-		if err != nil {
-			return err
-		}
-		plans[member.Agent.ID] = plan
-		bindings[member.Agent.ID] = agentruntime.SuiteMemberBinding{Name: plan.Name, Image: plan.Image}
-	}
-	request := agentruntime.SuiteDeployRequest{Suite: suite, ArtifactDigest: pulled.Descriptor.Digest.String(), Instance: env.Name, Target: agentruntime.SuiteTarget{Context: env.Context, ClusterUID: env.ClusterUID, Namespace: env.Namespace, Runtime: agentruntime.ID(env.Adapter)}, Bindings: bindings, Reconcile: true}
-	prepared, err := agentruntime.PrepareSuiteDeployment(ctx, request, imagelift.SuiteAdapter{Cluster: imageLiftCluster{app: a}, Plans: plans})
-	if err != nil {
-		return err
-	}
-	if err := prepared.Inspect(ctx); err != nil {
 		return err
 	}
 	if planOnly {
@@ -155,6 +112,81 @@ func (a *App) liftSuiteImages(ctx context.Context, reference string, env imageli
 		return a.guardWith("lift AgentSuite", "kmx lift <suite-reference> --environment <file>", env.Namespace, true, false)
 	})
 	return errors.Join(deployErr, json.NewEncoder(a.Out).Encode(receipt))
+}
+
+// PrepareSuiteLift is the typed registry-to-plan operation shared by CLI and TUI.
+// The returned plan retains its exact target and rechecks observations on deploy.
+func (a *App) PrepareSuiteLift(ctx context.Context, reference string, env imagelift.Environment) (*agentruntime.PreparedSuiteDeployment, error) {
+	if err := env.Validate(); err != nil {
+		return nil, err
+	}
+	worker := *a.withRunContext(ctx)
+	cfg := *a.Cfg
+	cfg.KubeContext, cfg.ContextSource = env.Context, config.SourceFlag
+	worker.Cfg = &cfg
+	return worker.prepareSuiteLift(ctx, reference, env)
+}
+
+func (a *App) prepareSuiteLift(ctx context.Context, reference string, env imagelift.Environment) (*agentruntime.PreparedSuiteDeployment, error) {
+	if env.PlainHTTP && !strings.HasPrefix(env.Context, "kind-") {
+		return nil, errors.New("plain HTTP image transport is restricted to explicit local kind environments")
+	}
+	root, err := os.MkdirTemp("", "kmx-suite-lift-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(root)
+	pulled, err := suiteoras.PullRegistry(ctx, reference, filepath.Join(root, "suite"), env.PlainHTTP)
+	if err != nil {
+		return nil, err
+	}
+	suite, err := agentsuite.ResolveDeploymentSuite(pulled.Path, env.Platform)
+	if err != nil {
+		return nil, err
+	}
+	members := suite.Members()
+	if len(members) != len(env.Members) {
+		return nil, errors.New("environment must bind every suite member exactly once")
+	}
+	plans := map[string]imagelift.Plan{}
+	bindings := map[string]agentruntime.SuiteMemberBinding{}
+	for _, member := range members {
+		binding, ok := env.Members[member.Agent.ID]
+		if !ok {
+			return nil, fmt.Errorf("missing member binding: %s", member.Agent.ID)
+		}
+		image, err := suiteoras.ResolveImageRegistryTransport(ctx, binding.Image, env.Platform, env.PlainHTTP)
+		if err != nil {
+			return nil, err
+		}
+		if image.Deployment.SuiteDigest != pulled.Descriptor.Digest.String() || image.Deployment.Agent != member.Agent.ID {
+			return nil, errors.New("member image does not belong to selected suite and agent")
+		}
+		if err := agentsuite.ValidateImageSource(pulled.Path, image.Deployment); err != nil {
+			return nil, err
+		}
+		child := env
+		child.Members = nil
+		child.Name = binding.Name
+		child.Inputs = binding.Inputs
+		child.Inference = binding.Inference
+		child.Instructions = string(member.Instructions)
+		plan, err := imagelift.Render(image.Reference, image.Deployment, child)
+		if err != nil {
+			return nil, err
+		}
+		plans[member.Agent.ID] = plan
+		bindings[member.Agent.ID] = agentruntime.SuiteMemberBinding{Name: plan.Name, Image: plan.Image}
+	}
+	request := agentruntime.SuiteDeployRequest{Suite: suite, ArtifactDigest: pulled.Descriptor.Digest.String(), Instance: env.Name, Target: agentruntime.SuiteTarget{Context: env.Context, ClusterUID: env.ClusterUID, Namespace: env.Namespace, Runtime: agentruntime.ID(env.Adapter)}, Bindings: bindings, Reconcile: true}
+	prepared, err := agentruntime.PrepareSuiteDeployment(ctx, request, imagelift.SuiteAdapter{Cluster: imageLiftCluster{app: a}, Plans: plans})
+	if err != nil {
+		return nil, err
+	}
+	if err := prepared.Inspect(ctx); err != nil {
+		return nil, err
+	}
+	return prepared, nil
 }
 
 type imageLiftCluster struct{ app *App }

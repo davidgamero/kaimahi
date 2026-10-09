@@ -14,7 +14,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Authorization") != "Bearer " + os.environ["MODEL_TOKEN"]:
             self.send_error(401)
             return
-        if request.get("model") != "sample-model":
+        if request.get("model") not in {"sample-model", "sample-model-b"}:
             self.send_error(400)
             return
         expected = "Answer greetings briefly. Identify yourself as the AgentSuite sample.\n"
@@ -23,9 +23,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         body = json.dumps({
             "id": "sample-response", "object": "chat.completion", "created": 1,
-            "model": "sample-model",
+            "model": request["model"],
             "choices": [{"index": 0, "message": {
-                "role": "assistant", "content": "Hello from the AgentSuite sample."
+                "role": "assistant", "content": "Hello from the AgentSuite sample. Model: " + request["model"]
             }, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 8, "total_tokens": 18}
         }).encode()

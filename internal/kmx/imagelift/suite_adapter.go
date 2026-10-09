@@ -28,7 +28,15 @@ func (a SuiteAdapter) Prepare(_ context.Context, member agentsuite.DeploymentMem
 	if len(member.Agent.Invokes) != 0 || len(member.Agent.ToolProviders) != 0 {
 		return agentruntime.SuiteMemberPlan{}, errors.New("HTTP adapter cannot enforce delegation or install ToolProviders")
 	}
-	return agentruntime.SuiteMemberPlan{Agent: member.Agent.ID, Name: plan.Name, Digest: plan.Digest, Resources: []string{plan.Namespace + "/Deployment/" + plan.Name, plan.Namespace + "/Service/" + plan.Name}, Payload: plan}, nil
+	var resources []string
+	configurationDigest := ""
+	for _, object := range plan.Objects {
+		resources = append(resources, plan.Namespace+"/"+object["kind"].(string)+"/"+plan.Name)
+		if object["kind"] == "ConfigMap" {
+			configurationDigest = fmt.Sprintf("%x", sha256.Sum256([]byte(object["data"].(Object)["agent.json"].(string))))
+		}
+	}
+	return agentruntime.SuiteMemberPlan{Agent: member.Agent.ID, Name: plan.Name, Digest: plan.Digest, ConfigurationDigest: configurationDigest, Resources: resources, Payload: plan}, nil
 }
 
 func (a SuiteAdapter) Inspect(ctx context.Context, member agentruntime.SuiteMemberPlan) (string, error) {

@@ -2,6 +2,140 @@
 
 Status: experimental implementation branch stacked on #339 at `3db1583`.
 
+## Build once, select inference at deployment
+
+The workspace path declares inference **capabilities**, not a model name, in the
+AgentSuite. The selected model, endpoint and credential references belong to the
+deployment environment. The pinned Pydantic AI harness reads its existing v0 ABI
+from a read-only ConfigMap at `/run/agentsuite/agent.json` through `--config`.
+The capability-based builder writes instructions, but no generated model config,
+into its image layers. The same suite/image digest can serve different model
+bindings. A binding change changes the plan and pod-template configuration digest
+and rolls the workload without rebuilding the image.
+
+This is the experimental `agentkit-v0-mounted-v1` mapping, qualified only for the
+checked-in Pydantic AI harness digest, HTTP port 8080 and `/healthz`. The existing
+exact-model builder route remains experimental and bakes its model settings.
+Full inventory/sandbox-binding conformance remains open; the image-deployment
+label is a publisher declaration. Contract follow-up:
+[#356](https://github.com/kaimahi-agents/kaimahi/issues/356).
+
+### CLI and terminal workspace
+
+```sh
+mkdir -p suites
+kmx suite create suites/hello-world \
+  --instructions 'Answer greetings briefly. Identify yourself as the AgentSuite sample.'
+kmx suite publish hello-world --workspace suites \
+  --registry example.azurecr.io/agent-demo
+kmx suite deploy hello-world --workspace suites --environment local.json --plan
+KAIMAHI_CONFIRM=kind-dev kmx suite deploy hello-world \
+  --workspace suites --environment local.json
+kmx suite run hello-world --workspace suites --deployment local-demo \
+  --member hello-world --prompt Hello
+
+kmx console --workspace suites --registry example.azurecr.io/agent-demo
+```
+
+In the workspace console: `n` creates local source; `b` builds/publishes all
+members or reuses matching published images after checking their source linkage;
+`l` reads an environment file and opens a typed plan; Enter applies it and Esc
+cancels. `s` reads deployment status, `d` selects a recorded deployment, and `c`
+sends an authenticated request to a single-member deployment. Multi-member runs
+use `suite run --member`. Each chat request is independent; conversation history
+and streaming chat are not implemented here. PgUp/PgDn scroll the result pane.
+
+Source appears without a live Orka Agent. The existing console without
+`--workspace` retains its native Orka experience. The workspace UI currently
+collects name, instructions and token requirements; target/model configuration
+uses the explicit environment file below rather than an inference-discovery form.
+
+### Deployment environment
+
+Both kind and AKS use this format, differing in context, cluster UID, namespace,
+inference endpoint and credential references. The namespace, model endpoint and
+Secrets must already exist. `suite deploy` fills omitted member image references
+from the publication record; explicit conflicting images are refused.
+
+```json
+{
+  "apiVersion": "kaimahi.dev/lift/v1alpha1",
+  "name": "local-demo",
+  "context": "kind-dev",
+  "clusterUID": "<kube-system namespace UID>",
+  "namespace": "agents",
+  "adapter": "kubernetes-http-v1",
+  "platform": {"os": "linux", "architecture": "amd64"},
+  "members": {
+    "hello-world": {
+      "name": "hello-world",
+      "inference": {
+        "model": "model-a",
+        "endpoint": "http://model.agents.svc.cluster.local:8000/v1",
+        "credential": {"name": "model-key", "key": "token"},
+        "capabilities": {
+          "api": "openai-chat-completions-v1",
+          "contextTokens": 8192,
+          "outputTokens": 1024,
+          "streaming": false,
+          "toolCalling": false
+        },
+        "evidence": "operator-declared"
+      },
+      "inputs": {
+        "agent-auth": {"secretRef": {"name": "agent-auth", "key": "token"}},
+        "listen": {"value": "0.0.0.0"}
+      }
+    }
+  }
+}
+```
+
+Capability claims are explicitly operator-declared, not inferred from a model
+name or `/models`. Context means total token window; output means supported
+maximum output tokens. These fields are compatibility requirements, not request
+token-budget enforcement. Streaming describes inference API support, not the
+agent-facing chat transport. Unknown/insufficient required capabilities fail
+planning. ToolProviders and invocation edges remain refused by this adapter.
+
+Publication and deployment inputs/results are saved privately under
+`<workspace>/.kmx/`, outside suite content. They allow a later CLI/TUI process to
+locate deployments. They contain connection settings and Secret references, not
+credential values or chat payloads. These are experimental local records, not a
+portable image-set artifact, immutable release history or operation-ID recovery
+store. Concurrent writers and recovery after an interrupted mutation remain
+follow-ups under #346/#356. Keep `.kmx/` out of source publication/version control.
+
+### ACR and local-to-remote testing
+
+Authenticate publication through the Docker credential store (`az acr login`).
+AKS nodes need their own ACR pull access; a successful workstation login does not
+grant it. Local kind can use namespace-scoped `imagePullSecrets`. Reusing an
+image in another environment requires only another environment file and lift.
+
+The smoke runner now exercises two model bindings and the CLI deployment
+connection, and can retain its workspace for the TUI:
+
+```sh
+python3 scripts/ci/suite-lift-smoke.py --kmx ./bin/kmx \
+  --context aks-demo --confirm-context aks-demo \
+  --registry example.azurecr.io/agent-demo \
+  --namespace suite-remote-demo --workspace /tmp/suite-demo
+```
+
+For local kind pulling from that same ACR, use the local context and a fresh
+namespace, the same workspace/registry, and `--acr-pull-credentials <acr-name>`.
+That option creates a namespace pull Secret from the current Azure login; its
+token expires and is for the smoke only. Omit `--kind-name` for an actual registry
+pull test. The alternate localhost-registry mode below still preloads images.
+
+Testing on kind and private ACR/AKS used the same suite and image digest with two
+model names, authenticated model/agent requests and repeated lift preserving
+resource UIDs. Actual pseudo-terminal runs exercised workspace build/reuse,
+review/apply, status and chat on both targets. The controlled model checks the
+selected name, credential and instruction text; this is not external-model
+evaluation, capability discovery or native agent-platform registration.
+
 ## Implemented build-to-lift path
 
 The branch now consumes #339's actual AgentKit builder. `suite build --suite-ref`
@@ -43,7 +177,7 @@ the experimental label must not be presented as verified build provenance.
 
 The generator [sample-suite.py](../scripts/sample-suite.py) creates a tool-free
 sample with exact graph digests from the pinned #339 harness/base fixture.
-The opt-in [smoke runner](../scripts/ci/suite-lift-smoke.py) builds and publishes
+The opt-in [smoke runner](../scripts/ci/suite-lift-smoke.py) uses `suite create`, builds and publishes
 the sample, deploys it through the real lift command, checks an authenticated
 answer and verifies repeated deployment preserves resource UIDs.
 Its [controlled model](../scripts/ci/suite-model.py) checks model, credential and
@@ -154,7 +288,7 @@ combinations are qualified.
 
 ## UI audit and suite-centered experience
 
-The current console is live-agent-centric, not suite-centric. The target UX is
+The existing native Orka console is live-agent-centric. The broader target UX is
 one suite workspace with member details and deployment comparisons underneath:
 
 ```text
@@ -173,7 +307,8 @@ Actions
   Member run/chat and suite evaluation use the selected deployment's adapter
 ```
 
-This is a proposed layout, not an implemented console feature. Local/remote
+This is a proposed expanded layout; the implemented `--workspace` mode above is
+the initial source/build/lift/status/chat slice. Local/remote
 columns can remain useful comparison views, but a live local agent must not be
 required to discover, build, publish or lift an OCI suite.
 

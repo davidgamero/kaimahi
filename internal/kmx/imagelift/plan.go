@@ -50,9 +50,26 @@ func Render(image string, record agentsuite.ImageDeployment, env Environment) (P
 	}
 	var variables []any
 	var secrets []agentsuite.SecretKeyRef
+	var config []byte
+	if record.Execution.Configuration == agentsuite.AgentKitMountedConfig {
+		var err error
+		config, err = runtimeConfig(record, env)
+		if err != nil {
+			return Plan{}, err
+		}
+		if env.Inference.Credential != nil {
+			variables = append(variables, Object{"name": "KMX_INFERENCE_KEY", "valueFrom": Object{"secretKeyRef": env.Inference.Credential}})
+			secrets = append(secrets, *env.Inference.Credential)
+		}
+	} else if env.Inference != nil {
+		return Plan{}, errors.New("image does not support deployment-time inference configuration")
+	}
 	inputs := append([]agentsuite.ExecutionInput(nil), record.Execution.Inputs...)
 	sort.Slice(inputs, func(i, j int) bool { return inputs[i].Name < inputs[j].Name })
 	for _, input := range inputs {
+		if input.Environment == "KMX_INFERENCE_KEY" {
+			return Plan{}, errors.New("execution input collides with inference credential")
+		}
 		binding, ok := env.Inputs[input.Name]
 		if !ok {
 			return Plan{}, fmt.Errorf("missing binding for input %q", input.Name)
@@ -96,6 +113,11 @@ func Render(image string, record agentsuite.ImageDeployment, env Environment) (P
 			"resources":       Object{"requests": Object{"cpu": "100m", "memory": "128Mi"}, "limits": Object{"cpu": "1", "memory": "1Gi"}},
 		}},
 	}
+	if config != nil {
+		pod["volumes"] = append(pod["volumes"].([]any), Object{"name": "agent-config", "configMap": Object{"name": env.Name}})
+		container := pod["containers"].([]any)[0].(Object)
+		container["volumeMounts"] = append(container["volumeMounts"].([]any), Object{"name": "agent-config", "mountPath": "/run/agentsuite", "readOnly": true})
+	}
 	if len(pulls) > 0 {
 		pod["imagePullSecrets"] = pulls
 	}
@@ -107,11 +129,18 @@ func Render(image string, record agentsuite.ImageDeployment, env Environment) (P
 		"type": "ClusterIP", "selector": labels, "ports": []any{Object{"name": "http", "port": 80, "targetPort": "http"}},
 	}}
 	plan := Plan{Name: env.Name, Context: env.Context, ClusterUID: env.ClusterUID, Namespace: env.Namespace, Image: image, SuiteDigest: record.SuiteDigest, Objects: []Object{deployment, service}, Secrets: secrets, Platform: env.Platform}
+	if config != nil {
+		// Configuration changes belong on the pod template, not immutable selectors.
+		sum := sha256.Sum256(config)
+		deployment["spec"].(Object)["template"].(Object)["metadata"].(Object)["annotations"] = Object{"kaimahi.dev/config": fmt.Sprintf("%x", sum)}
+		plan.Objects = append([]Object{{"apiVersion": "v1", "kind": "ConfigMap", "metadata": metadata(), "data": Object{"agent.json": string(config)}}}, plan.Objects...)
+	}
 	// Include the complete declaration, even when fields do not render as resources.
 	data, err := json.Marshal(struct {
-		Plan   Plan
-		Record agentsuite.ImageDeployment
-	}{plan, record})
+		Plan      Plan
+		Record    agentsuite.ImageDeployment
+		Inference *InferenceBinding
+	}{plan, record, env.Inference})
 	if err != nil {
 		return Plan{}, err
 	}

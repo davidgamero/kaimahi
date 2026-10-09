@@ -14,16 +14,19 @@ const (
 	ExecutionHTTPV1          = "kubernetes-http-v1"
 	ImageDeploymentLabel     = "org.agentsuite.image-deployment"
 	ImageDeploymentMediaType = "application/vnd.agentsuite.image.deployment.v1+json"
+	AgentKitMountedConfig    = "agentkit-v0-mounted-v1"
+	AgentKitConfigPath       = "/run/agentsuite/agent.json"
 )
 
 // ExecutionContract describes the versioned interface a built agent exposes.
 // Environment values are supplied through named slots, not arbitrary overrides.
 type ExecutionContract struct {
-	Kind       string           `json:"kind"`
-	Protocol   string           `json:"protocol"`
-	Port       int              `json:"port"`
-	HealthPath string           `json:"healthPath"`
-	Inputs     []ExecutionInput `json:"inputs"`
+	Configuration string           `json:"configuration,omitempty"`
+	Kind          string           `json:"kind"`
+	Protocol      string           `json:"protocol"`
+	Port          int              `json:"port"`
+	HealthPath    string           `json:"healthPath"`
+	Inputs        []ExecutionInput `json:"inputs"`
 }
 
 type ExecutionInput struct {
@@ -35,18 +38,25 @@ type ExecutionInput struct {
 // ImageDeployment is embedded in the digest-bound OCI image config label.
 // It declares source identity, not filesystem conformance or publisher trust.
 type ImageDeployment struct {
-	SchemaVersion     string            `json:"schemaVersion"`
-	MediaType         string            `json:"mediaType"`
-	SuiteReference    string            `json:"suiteReference"`
-	SuiteDigest       string            `json:"suiteDigest"`
-	Agent             string            `json:"agent"`
-	Platform          Platform          `json:"platform"`
-	CompositionDigest string            `json:"compositionDigest"`
-	BuildProfile      string            `json:"buildProfile"`
-	Execution         ExecutionContract `json:"execution"`
+	Inference         *InferenceRequirements `json:"inference,omitempty"`
+	SchemaVersion     string                 `json:"schemaVersion"`
+	MediaType         string                 `json:"mediaType"`
+	SuiteReference    string                 `json:"suiteReference"`
+	SuiteDigest       string                 `json:"suiteDigest"`
+	Agent             string                 `json:"agent"`
+	Platform          Platform               `json:"platform"`
+	CompositionDigest string                 `json:"compositionDigest"`
+	BuildProfile      string                 `json:"buildProfile"`
+	Execution         ExecutionContract      `json:"execution"`
 }
 
 func ValidateExecutionContract(contract ExecutionContract) error {
+	if contract.Configuration != "" && contract.Configuration != AgentKitMountedConfig {
+		return errors.New("unsupported execution configuration ABI")
+	}
+	if contract.Configuration == AgentKitMountedConfig && (contract.Port != 8080 || contract.HealthPath != "/healthz") {
+		return errors.New("mounted AgentKit HTTP configuration requires port 8080 and /healthz")
+	}
 	if contract.Kind != ExecutionHTTPV1 {
 		return fmt.Errorf("unsupported execution contract %q", contract.Kind)
 	}
@@ -89,6 +99,14 @@ func DecodeImageDeployment(data []byte) (*ImageDeployment, error) {
 	if err := ValidateExecutionContract(record.Execution); err != nil {
 		return nil, err
 	}
+	if (record.Inference != nil) != (record.Execution.Configuration == AgentKitMountedConfig) {
+		return nil, errors.New("mounted configuration requires inference capabilities")
+	}
+	if record.Inference != nil {
+		if err := record.Inference.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	return &record, nil
 }
 
@@ -130,6 +148,9 @@ func ValidateImageSource(root string, record ImageDeployment) error {
 	}
 	if !found {
 		return errors.New("image references an absent suite agent")
+	}
+	if (agent.Model.Capabilities == nil) != (record.Inference == nil) || record.Inference != nil && *record.Inference != *agent.Model.Capabilities {
+		return errors.New("image inference requirements differ from suite")
 	}
 	if len(agent.ToolProviders) != 0 || len(agent.Invokes) != 0 {
 		return errors.New("kubernetes-http-v1 does not support ToolProviders or invocation edges")
@@ -182,7 +203,7 @@ func ValidateImageSource(root string, record ImageDeployment) error {
 		if err := decodeStrict(raw, &profile); err != nil {
 			return err
 		}
-		if profile.Execution == nil || profile.Execution.Kind != record.Execution.Kind || profile.Execution.Protocol != record.Execution.Protocol || profile.Execution.Port != record.Execution.Port || profile.Execution.HealthPath != record.Execution.HealthPath || !slices.Equal(profile.Execution.Inputs, record.Execution.Inputs) {
+		if profile.Execution == nil || profile.Execution.Configuration != record.Execution.Configuration || profile.Execution.Kind != record.Execution.Kind || profile.Execution.Protocol != record.Execution.Protocol || profile.Execution.Port != record.Execution.Port || profile.Execution.HealthPath != record.Execution.HealthPath || !slices.Equal(profile.Execution.Inputs, record.Execution.Inputs) {
 			return errors.New("image execution contract differs from build profile")
 		}
 		return nil

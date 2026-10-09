@@ -118,6 +118,11 @@ func ResolveImage(ctx context.Context, source agentsuite.ReadOnlyTarget, referen
 	if len(config.Config.Entrypoint) == 0 {
 		return ResolvedImage{}, errors.New("agent image requires an explicit entrypoint")
 	}
+	if record.Execution.Configuration == agentsuite.AgentKitMountedConfig {
+		if len(config.Config.Cmd) != 4 || config.Config.Cmd[0] != "--config" || config.Config.Cmd[1] != agentsuite.AgentKitConfigPath || config.Config.Cmd[2] != "--protocol" || config.Config.Cmd[3] != "openai" {
+			return ResolvedImage{}, errors.New("image does not activate the declared mounted configuration ABI")
+		}
+	}
 	user, _, _ := strings.Cut(config.Config.User, ":")
 	uid, err := strconv.ParseUint(user, 10, 32)
 	if err != nil || uid == 0 {

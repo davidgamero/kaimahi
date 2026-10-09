@@ -23,6 +23,7 @@ func newSuiteCommand(state *commandState) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
+	addSuiteWorkspaceCommands(group, state)
 	var output string
 	validate := &cobra.Command{
 		Use:   "validate <path>",
@@ -68,7 +69,6 @@ func newSuiteCommand(state *commandState) *cobra.Command {
 	build.Flags().BoolVar(&buildAttestations, "attestations", true, "request SBOM and max-mode provenance; use --attestations=false to opt out")
 	build.Flags().BoolVar(&buildRequireAttestations, "require-attestations", false, "fail if the builder cannot attest or the archive lacks verified SBOM and provenance")
 	_ = build.MarkFlagRequired("output")
-	_ = build.MarkFlagRequired("model-base-url")
 	_ = build.MarkFlagFilename("output")
 	_ = build.RegisterFlagCompletionFunc("platform", staticCompletion([]string{"linux/amd64", "linux/arm64"}))
 	build.RunE = func(cmd *cobra.Command, args []string) error {

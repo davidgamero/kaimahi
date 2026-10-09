@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "required": ["schemaVersion", "mediaType", "suiteReference", "suiteDigest", "agent", "platform", "compositionDigest", "buildProfile", "execution"],
   "properties": {
+    "inference": {"$ref": "inference.schema.json"},
     "schemaVersion": {"const": "1.0.0-draft"},
     "mediaType": {"const": "application/vnd.agentsuite.image.deployment.v1+json"},
     "suiteReference": {"type": "string", "pattern": "^[^@]+@sha256:[a-f0-9]{64}$"},

@@ -3,6 +3,14 @@
 Status: internal contract proposal with an experimental image-build and suite-lift
 implementation. See [the executable workflow](agentsuite-image-lift.md).
 
+The current update adds capability-based inference with deployment-mounted
+configuration, a local source workspace and shared CLI/TUI publication, lift,
+status and image-backed invocation. ACR pulls and two-model image reuse were
+exercised on kind and AKS. Open deployment-contract questions and existing issue
+owners are tracked in [#356](https://github.com/kaimahi-agents/kaimahi/issues/356).
+The local image association/placement records are experimental implementation
+data, not the proposed portable association schema or durable operation API.
+
 Sequencing: this branch includes #339 at `3db1583` plus current main's lifecycle
 contracts. Until #339 merges, its builder commits are included in the PR diff.
 The implementation uses a narrow inline execution profile and experimental image

@@ -938,6 +938,19 @@ deploy the resulting image.
 
 ## 11. Build profiles
 
+The experimental workspace path additionally accepts a model `capabilities`
+record instead of an exact `model` name. Its closed
+[inference schema](../internal/kmx/agentsuite/schema/inference.schema.json) declares
+API type, total context and maximum output token requirements, inference streaming
+and tool-calling requirements. Exact `model` and `capabilities` are mutually
+exclusive. Endpoint and credential selection are deployment bindings for this
+path. Operator-declared capabilities are not runtime conformance evidence.
+
+An execution `configuration` of `agentkit-v0-mounted-v1` selects the experimental
+read-only deployment-mounted AgentKit configuration described in
+[image lift](agentsuite-image-lift.md#build-once-select-inference-at-deployment).
+This extension does not complete the sandbox-image conformance requirements below.
+
 An optional `execution` object declares the built image's invocation contract
 and named runtime inputs. The experimental `kubernetes-http-v1` contract is
 defined in [AgentSuite image lift](agentsuite-image-lift.md#execution-and-image-contract)

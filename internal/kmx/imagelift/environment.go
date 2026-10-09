@@ -19,6 +19,8 @@ var keyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,253}$`)
 
 // Environment maps declared image inputs to one explicit, identity-pinned target.
 type Environment struct {
+	Inference        *InferenceBinding            `json:"inference,omitempty"`
+	Instructions     string                       `json:"-"`
 	Members          map[string]MemberEnvironment `json:"members,omitempty"`
 	PlainHTTP        bool                         `json:"plainHTTP,omitempty"`
 	APIVersion       string                       `json:"apiVersion"`
@@ -33,9 +35,10 @@ type Environment struct {
 }
 
 type MemberEnvironment struct {
-	Name   string                  `json:"name"`
-	Image  string                  `json:"image"`
-	Inputs map[string]InputBinding `json:"inputs"`
+	Inference *InferenceBinding       `json:"inference,omitempty"`
+	Name      string                  `json:"name"`
+	Image     string                  `json:"image"`
+	Inputs    map[string]InputBinding `json:"inputs"`
 }
 
 type InputBinding struct {
@@ -80,7 +83,10 @@ func exactEnvironmentFields(raw []byte, target reflect.Type) error {
 		known := map[string]reflect.Type{}
 		for i := 0; i < target.NumField(); i++ {
 			field := target.Field(i)
-			known[strings.Split(field.Tag.Get("json"), ",")[0]] = field.Type
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if name != "-" {
+				known[name] = field.Type
+			}
 		}
 		for name, value := range fields {
 			field, ok := known[name]
@@ -173,22 +179,28 @@ func (e Environment) Validate() error {
 		return errors.New("environment platform must be linux/amd64 or linux/arm64")
 	}
 	if len(e.Members) > 0 {
-		if len(e.Inputs) != 0 {
+		if len(e.Inputs) != 0 || e.Inference != nil {
 			return errors.New("suite environment uses member inputs, not top-level inputs")
 		}
 		names := map[string]bool{}
 		for id, member := range e.Members {
-			if id == "" || !namePattern.MatchString(member.Name) || names[member.Name] || member.Image == "" {
-				return errors.New("suite members require image references and unique deployment names")
+			if id == "" || !namePattern.MatchString(member.Name) || names[member.Name] {
+				return errors.New("suite members require identifiers and unique deployment names")
 			}
 			names[member.Name] = true
 			child := e
 			child.Members = nil
 			child.Name = member.Name
 			child.Inputs = member.Inputs
+			child.Inference = member.Inference
 			if err := child.Validate(); err != nil {
 				return fmt.Errorf("member %s: %w", id, err)
 			}
+		}
+	}
+	if e.Inference != nil {
+		if err := e.Inference.Validate(); err != nil {
+			return err
 		}
 	}
 	for name, binding := range e.Inputs {

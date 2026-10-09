@@ -103,10 +103,11 @@ type FileRef struct {
 }
 
 type ModelRequirement struct {
-	Protocol    string   `json:"protocol"`
-	Model       string   `json:"model"`
-	EndpointEnv string   `json:"endpointEnv,omitempty"`
-	SecretRefs  []string `json:"secretRefs,omitempty"`
+	Protocol     string                 `json:"protocol"`
+	Model        string                 `json:"model,omitempty"`
+	Capabilities *InferenceRequirements `json:"capabilities,omitempty"`
+	EndpointEnv  string                 `json:"endpointEnv,omitempty"`
+	SecretRefs   []string               `json:"secretRefs,omitempty"`
 }
 
 type ToolProviderRequirement struct {

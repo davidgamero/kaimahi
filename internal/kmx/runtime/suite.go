@@ -43,11 +43,12 @@ type SuiteDeployRequest struct {
 // SuiteMemberPlan is held privately by PreparedSuiteDeployment. The adapter
 // carries the exact native payload; public summaries contain identities only.
 type SuiteMemberPlan struct {
-	Agent     string
-	Name      string
-	Digest    string
-	Resources []string
-	Payload   any
+	ConfigurationDigest string
+	Agent               string
+	Name                string
+	Digest              string
+	Resources           []string
+	Payload             any
 }
 
 type SuiteMemberOutcome struct {
@@ -85,10 +86,11 @@ type SuitePlanSummary struct {
 	Members        []SuiteMemberSummary `json:"members"`
 }
 type SuiteMemberSummary struct {
-	Agent     string   `json:"agent"`
-	Name      string   `json:"name"`
-	Digest    string   `json:"digest"`
-	Resources []string `json:"resources"`
+	ConfigurationDigest string   `json:"configurationDigest,omitempty"`
+	Agent               string   `json:"agent"`
+	Name                string   `json:"name"`
+	Digest              string   `json:"digest"`
+	Resources           []string `json:"resources"`
 }
 type SuiteDeploymentReceipt struct {
 	Plan    SuitePlanSummary     `json:"plan"`
@@ -161,7 +163,7 @@ func PrepareSuiteDeployment(ctx context.Context, request SuiteDeployRequest, ada
 func (p *PreparedSuiteDeployment) Summary() SuitePlanSummary {
 	out := SuitePlanSummary{Instance: p.request.Instance, Suite: p.request.Suite.Name(), LogicalDigest: p.request.Suite.LogicalDigest(), ArtifactDigest: p.request.ArtifactDigest, PlanDigest: p.digest, Target: p.request.Target}
 	for _, member := range p.members {
-		out.Members = append(out.Members, SuiteMemberSummary{Agent: member.Agent, Name: member.Name, Digest: member.Digest, Resources: append([]string(nil), member.Resources...)})
+		out.Members = append(out.Members, SuiteMemberSummary{Agent: member.Agent, Name: member.Name, Digest: member.Digest, ConfigurationDigest: member.ConfigurationDigest, Resources: append([]string(nil), member.Resources...)})
 	}
 	return out
 }

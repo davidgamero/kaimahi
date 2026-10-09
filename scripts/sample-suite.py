@@ -24,7 +24,9 @@ suite["name"] = "hello-world"
 agent = json.loads((source / suite["agents"][0]["path"]).read_text())
 agent["id"] = "hello-world"
 agent["description"] = "AgentSuite image lift sample"
-agent["model"]["model"] = "sample-model"
+agent["model"] = {"protocol": "openai-compatible", "capabilities": {
+    "api": "openai-chat-completions-v1", "contextTokens": 8192,
+    "outputTokens": 1024, "streaming": False, "toolCalling": False}}
 instructions = b"Answer greetings briefly. Identify yourself as the AgentSuite sample.\n"
 (root / "instructions").mkdir(parents=True)
 (root / "instructions/hello-world.md").write_bytes(instructions)
@@ -32,9 +34,9 @@ agent["instructions"] = {"path": "instructions/hello-world.md", "digest": "sha25
 suite["agents"] = [{"id": "hello-world", "path": "agents/hello-world.json", "digest": write("agents/hello-world.json", agent)}]
 profile = json.loads((source / suite["buildProfiles"][0]["path"]).read_text())
 profile["execution"] = {
+    "configuration": "agentkit-v0-mounted-v1",
     "kind": "kubernetes-http-v1", "protocol": "openai-chat-v1", "port": 8080, "healthPath": "/healthz",
     "inputs": [
-        {"name": "model-key", "environment": "MODEL_API_KEY", "secret": True},
         {"name": "agent-auth", "environment": "AGENTKIT_AUTH_TOKEN", "secret": True},
         {"name": "listen", "environment": "AGENTKIT_BIND", "secret": False},
     ],
