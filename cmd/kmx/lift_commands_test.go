@@ -198,9 +198,9 @@ func TestTheLocalBringUpHasNoCloudFlag(t *testing.T) {
 
 func TestImageLiftRejectsMixedRoutesBeforeConfiguration(t *testing.T) {
 	for _, args := range [][]string{
-		{"lift", "myregistry.azurecr.io/hello-world:v1"},
-		{"lift", "myregistry.azurecr.io/hello-world:v1", "--environment", "prod.json", "--byo"},
-		{"lift", "myregistry.azurecr.io/hello-world:v1", "--environment", "prod.json", "--payload", "orka"},
+		{"lift", "registry.example/hello-world:v1"},
+		{"lift", "registry.example/hello-world:v1", "--environment", "prod.json", "--byo"},
+		{"lift", "registry.example/hello-world:v1", "--environment", "prod.json", "--payload", "orka"},
 		{"lift", "--environment", "prod.json"},
 	} {
 		var out, diagnostics bytes.Buffer

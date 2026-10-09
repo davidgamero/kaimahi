@@ -11,8 +11,15 @@ owners are tracked in [#356](https://github.com/kaimahi-agents/kaimahi/issues/35
 The local image association/placement records are experimental implementation
 data, not the proposed portable association schema or durable operation API.
 
-Sequencing: this branch includes #339 at `3db1583` plus current main's lifecycle
-contracts. Until #339 merges, its builder commits are included in the PR diff.
+Container registry operations remain OCI/vendor-neutral. ACR is a tested registry
+integration, with Azure-specific publisher login and workload pull-access setup
+above the common transport. See the
+[registry strategy boundary](agentsuite-image-lift.md#container-registry-integration);
+provider setup ownership remains with #223, not the suite or deployment identity.
+
+Sequencing: this branch includes the earlier #339 implementation at `3db1583`
+plus the merged lifecycle contracts. #339 subsequently merged with a buildx
+backend; integration with that backend and #357/#360 remains pending here.
 The implementation uses a narrow inline execution profile and experimental image
 declaration; the five broader extensions below remain proposed follow-up design.
 

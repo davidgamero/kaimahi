@@ -1,6 +1,8 @@
 # AgentSuite image lift
 
-Status: experimental implementation branch stacked on #339 at `3db1583`.
+Status: experimental implementation based on the earlier #339 head `3db1583`.
+The subsequently merged buildx backend and #357/#360 archive/attestation updates
+still need integration with this branch's model-independent build path.
 
 ## Build once, select inference at deployment
 
@@ -27,14 +29,14 @@ mkdir -p suites
 kmx suite create suites/hello-world \
   --instructions 'Answer greetings briefly. Identify yourself as the AgentSuite sample.'
 kmx suite publish hello-world --workspace suites \
-  --registry example.azurecr.io/agent-demo
+  --registry "$REGISTRY/agent-demo"
 kmx suite deploy hello-world --workspace suites --environment local.json --plan
 KAIMAHI_CONFIRM=kind-dev kmx suite deploy hello-world \
   --workspace suites --environment local.json
 kmx suite run hello-world --workspace suites --deployment local-demo \
   --member hello-world --prompt Hello
 
-kmx console --workspace suites --registry example.azurecr.io/agent-demo
+kmx console --workspace suites --registry "$REGISTRY/agent-demo"
 ```
 
 In the workspace console: `n` creates local source; `b` builds/publishes all
@@ -106,7 +108,37 @@ portable image-set artifact, immutable release history or operation-ID recovery
 store. Concurrent writers and recovery after an interrupted mutation remain
 follow-ups under #346/#356. Keep `.kmx/` out of source publication/version control.
 
-### ACR and local-to-remote testing
+### Container registry integration
+
+KMX consumes ordinary OCI container registry references. Suite/image publication,
+digest resolution and pulls use the shared ORAS transport and Docker credential
+store; neither the artifact nor the lift environment selects an Azure registry
+type. `--registry` means a container registry/repository prefix. Set `REGISTRY`
+to the login server of your selected registry before running the examples.
+
+Registry-specific integration belongs above this transport as an explicitly
+selected access/setup strategy. The proposed separation is:
+
+- **Registry transport:** OCI push/pull, descriptors, authentication challenges,
+  TLS and credential forwarding rules. Reused for all compatible registries.
+- **Publisher access strategy:** default Docker credential store/helper; an ACR
+  strategy may use Azure login to prepare credentials for that same transport.
+- **Workload pull-access strategy:** existing node identity or namespace-scoped
+  image-pull Secret references; an ACR/AKS strategy may inspect or explicitly
+  configure Azure role assignments through the Azure-owned infrastructure layer.
+
+Publishing and workload pulls use separate identities. Provider setup must not
+be triggered by read-only lift planning or inferred merely from a hostname.
+Return typed access requirements/results to the UI without adding Azure IDs,
+tokens or ACR-specific fields to portable suite/image identities. Authentication
+strategy failure must not silently downgrade to anonymous access.
+
+Today core uses the default credential-store path and explicit pull Secret
+references. Azure-specific setup is external (`az acr login`, prepared node
+permissions) or in the opt-in smoke helper; a built-in ACR strategy is proposed,
+not implemented. #223 owns Azure setup and #356 tracks the deployment handoff.
+
+### ACR local-to-remote test case
 
 Authenticate publication through the Docker credential store (`az acr login`).
 AKS nodes need their own ACR pull access; a successful workstation login does not
@@ -119,7 +151,7 @@ connection, and can retain its workspace for the TUI:
 ```sh
 python3 scripts/ci/suite-lift-smoke.py --kmx ./bin/kmx \
   --context aks-demo --confirm-context aks-demo \
-  --registry example.azurecr.io/agent-demo \
+  --registry "$REGISTRY/agent-demo" \
   --namespace suite-remote-demo --workspace /tmp/suite-demo
 ```
 
@@ -454,8 +486,8 @@ not used. The environment name identifies this installation and its owned
 Deployment/Service. It is independent of the agent identifier inside the suite.
 
 ```sh
-kmx lift myregistry.azurecr.io/hello-world:v1 --environment production.json --plan
-kmx lift myregistry.azurecr.io/hello-world:v1 --environment production.json
+kmx lift "$REGISTRY/hello-world:v1" --environment production.json --plan
+kmx lift "$REGISTRY/hello-world:v1" --environment production.json
 ```
 
 The existing remote-context confirmation applies to execution. `--plan` performs

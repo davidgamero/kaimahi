@@ -1,7 +1,7 @@
 # Interactive agent console
 
 For local AgentSuite source creation, image publication and registry-backed lift,
-use `kmx console --workspace suites --registry example.azurecr.io/agent-demo`.
+use `kmx console --workspace suites --registry "$REGISTRY/agent-demo"`.
 The [AgentSuite workspace guide](agentsuite-image-lift.md#cli-and-terminal-workspace)
 covers capability-based inference, local/remote deployment and image-backed chat.
 The native Orka console described below remains available without `--workspace`.

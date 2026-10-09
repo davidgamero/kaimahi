@@ -27,7 +27,7 @@ func addSuiteWorkspaceCommands(group *cobra.Command, state *commandState) {
 	var plain bool
 	publish := &cobra.Command{Use: "publish <name>", Short: "Build and publish every workspace suite member, reusing matching images", Args: cobra.ExactArgs(1)}
 	publish.Flags().StringVar(&workspace, "workspace", "suites", "source workspace directory")
-	publish.Flags().StringVar(&registry, "registry", "", "registry/repository prefix, including private ACR")
+	publish.Flags().StringVar(&registry, "registry", "", "container registry/repository prefix")
 	publish.Flags().BoolVar(&plain, "plain-http", false, "anonymous local-development registry HTTP")
 	_ = publish.MarkFlagRequired("registry")
 	publish.RunE = appRun(state, func(a *app.App) error {

@@ -18,8 +18,8 @@ func newLiftCommand(state *commandState) *cobra.Command {
 	legacyRun := cmd.RunE
 	cmd.Use = "lift [image-reference]"
 	cmd.Short = "Lift a built AgentSuite image to a prepared Kubernetes target"
-	cmd.Long = "Lift a built AgentSuite image from an OCI registry, including ACR, using an explicit deployment environment.\n\nWith no image reference, the deprecated managed-cluster route is retained; use kmx aks up for infrastructure preparation."
-	cmd.Example = "  kmx lift myregistry.azurecr.io/hello-world:v1 --environment ./production.json --plan"
+	cmd.Long = "Lift a built AgentSuite image from an OCI registry, using an explicit deployment environment.\n\nWith no image reference, the deprecated managed-cluster route is retained; use kmx aks up for infrastructure preparation."
+	cmd.Example = "  kmx lift registry.example/hello-world:v1 --environment ./production.json --plan"
 	var environment string
 	cmd.Flags().StringVar(&environment, "environment", "", "deployment environment JSON file for image lift")
 	_ = cmd.MarkFlagFilename("environment", "json")
