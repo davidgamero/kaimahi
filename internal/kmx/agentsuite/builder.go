@@ -44,10 +44,20 @@ type SandboxPlan struct {
 	ToolProviders     []SelectedToolProvider
 }
 
-// BuildResult describes the image archive emitted by a SandboxBuilder.
+// BuildResult describes archive emission and its inspection policy. Streaming
+// builders leave digest metadata unset; InspectImageArchive populates verified
+// identities before BuildSuite publishes the archive.
 type BuildResult struct {
 	MediaType string
-	Warnings  []string
+	// Digest is the runnable image manifest, never the attestation-inclusive index.
+	Digest string
+	// IndexDigest includes attestations when present and can vary between builds.
+	IndexDigest           string
+	SBOMDigest            string
+	HasAttestations       bool
+	AttestationsRequested bool
+	RequireAttestations   bool
+	Warnings              []string
 }
 
 // SandboxBuilder turns one resolved plan into an image archive.

@@ -21,7 +21,7 @@ func TestBuildxExporterWritesOCIArchive(t *testing.T) {
 	runner := &fakeBuildxRunner{stdout: "oci archive"}
 	exporter := buildxExporter{runner: runner}
 	var output bytes.Buffer
-	err := exporter.ExportOCI(t.Context(), agentImage{
+	_, err := exporter.ExportOCI(t.Context(), agentImage{
 		AgentkitFile: []byte("#syntax=frontend\n{}"),
 		Name:         "writer",
 		AdapterRef:   "registry.example/harness@" + testDigest,
@@ -41,7 +41,8 @@ func TestBuildxExporterWritesOCIArchive(t *testing.T) {
 		"--build-arg adapter=registry.example/harness@" + testDigest,
 		"--build-arg SOURCE_DATE_EPOCH=1790388400",
 		"--output type=oci,dest=-,rewrite-timestamp=true",
-		"--provenance=false",
+		"--sbom=true",
+		"--provenance=mode=max",
 		"--progress quiet",
 		"--tag writer:latest",
 	} {
@@ -62,7 +63,7 @@ func TestBuildxExporterReportsDockerErrors(t *testing.T) {
 		stderr: "pull access denied for private.example/harness",
 		err:    errors.New("exit status 1"),
 	}
-	err := (buildxExporter{runner: runner}).ExportOCI(t.Context(), agentImage{
+	_, err := (buildxExporter{runner: runner}).ExportOCI(t.Context(), agentImage{
 		AgentkitFile: []byte("{}"), Name: "writer", AdapterRef: "private.example/harness@" + testDigest,
 		Platform: "linux/amd64", SourceEpoch: 1,
 	}, io.Discard)
@@ -76,7 +77,7 @@ func TestBuildxExporterRequiresDockerBuildx(t *testing.T) {
 		versionStderr: "docker: 'buildx' is not a docker command",
 		versionErr:    errors.New("exit status 1"),
 	}
-	err := (buildxExporter{runner: runner}).ExportOCI(t.Context(), agentImage{}, io.Discard)
+	_, err := (buildxExporter{runner: runner}).ExportOCI(t.Context(), agentImage{}, io.Discard)
 	if err == nil ||
 		!strings.Contains(err.Error(), "Docker with the buildx plugin is required") ||
 		!strings.Contains(err.Error(), "not a docker command") {
@@ -90,7 +91,7 @@ func TestBuildxExporterRequiresDockerBuildx(t *testing.T) {
 func TestBuildxExporterStreamsVerboseProgress(t *testing.T) {
 	runner := &fakeBuildxRunner{stderr: "build progress"}
 	var progress bytes.Buffer
-	err := (buildxExporter{runner: runner, verbose: true, progress: &progress}).ExportOCI(
+	_, err := (buildxExporter{runner: runner, verbose: true, progress: &progress}).ExportOCI(
 		t.Context(),
 		agentImage{
 			AgentkitFile: []byte("{}"), Name: "writer",
@@ -108,11 +109,132 @@ func TestBuildxExporterStreamsVerboseProgress(t *testing.T) {
 	}
 }
 
+const testBuildxDiagnosticLimit = 64 * 1024
+
+func TestBuildxExporterBoundsFailureDiagnostics(t *testing.T) {
+	const finalError = "ERROR: failed to build: pull access denied\n"
+	log := "earlier diagnostics\n" + strings.Repeat("#1 build progress\n", 32*1024) + finalError
+	wantTail := strings.TrimSpace(log[len(log)-testBuildxDiagnosticLimit:])
+	for _, mode := range []string{"version", "quiet", "verbose"} {
+		t.Run(mode, func(t *testing.T) {
+			runner := &fakeBuildxRunner{stderr: log, err: errors.New("exit status 1")}
+			if mode == "version" {
+				runner.versionStderr, runner.versionErr = log, runner.err
+			}
+			var progress bytes.Buffer
+			_, err := (buildxExporter{runner: runner, verbose: mode == "verbose", progress: &progress}).ExportOCI(
+				t.Context(), agentImage{}, io.Discard,
+			)
+			if err == nil {
+				t.Fatal("ExportOCI() succeeded, want build failure")
+			}
+			detail := err.Error()
+			if !strings.Contains(detail, "earlier diagnostics truncated") {
+				t.Errorf("failure diagnostics omit truncation notice (length %d)", len(detail))
+			}
+			if !strings.HasSuffix(detail, wantTail) || strings.Contains(detail, "earlier diagnostics\n") {
+				t.Errorf("failure diagnostics did not retain only the exact final tail (length %d)", len(detail))
+			}
+			if len(detail) > testBuildxDiagnosticLimit+256 {
+				t.Errorf("failure diagnostics length = %d, want bounded tail plus error context", len(detail))
+			}
+			if mode == "verbose" && progress.String() != log {
+				t.Errorf("verbose progress length = %d, want all %d bytes", progress.Len(), len(log))
+			}
+			if mode != "verbose" && progress.Len() != 0 {
+				t.Error("non-verbose exporter wrote progress")
+			}
+		})
+	}
+}
+
+func TestBuildxDiagnosticTailWrites(t *testing.T) {
+	quarter := testBuildxDiagnosticLimit / 4
+	a, b := strings.Repeat("a", quarter), strings.Repeat("b", quarter)
+	c, d := strings.Repeat("c", quarter), strings.Repeat("d", quarter)
+	tail := a + b + c + d
+	for _, tc := range []struct {
+		name      string
+		writes    []string
+		want      string
+		truncated bool
+	}{
+		{name: "empty", writes: []string{""}},
+		{name: "partial", writes: []string{"first", " second"}, want: "first second"},
+		{name: "exact limit", writes: []string{tail}, want: tail},
+		{name: "single large write", writes: []string{strings.Repeat("discard", testBuildxDiagnosticLimit) + tail}, want: tail, truncated: true},
+		{name: "multiple writes", writes: []string{a, b, c, d, "last"}, want: a[4:] + b + c + d + "last", truncated: true},
+		{name: "full replacement", writes: []string{"discard", tail}, want: tail, truncated: true},
+		{name: "chunked overflow", writes: []string{"discard", a, b, c, d}, want: tail, truncated: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var diagnostics buildxDiagnosticTail
+			for _, text := range tc.writes {
+				input := []byte(text)
+				n, err := diagnostics.Write(input)
+				if n != len(input) || err != nil {
+					t.Fatalf("Write()=(%d, %v), want (%d, nil)", n, err, len(input))
+				}
+				// The tail must own its bytes, not retain the caller's large input.
+				clear(input)
+			}
+			if got := diagnostics.String(); got != tc.want {
+				t.Errorf("retained tail differs: length=%d, want %d", len(got), len(tc.want))
+			}
+			if diagnostics.size > testBuildxDiagnosticLimit || len(diagnostics.data) > testBuildxDiagnosticLimit {
+				t.Error("retained diagnostic storage exceeds limit")
+			}
+			if got := strings.Contains(diagnostics.detail(), "earlier diagnostics truncated"); got != tc.truncated {
+				t.Errorf("truncation notice=%v, want %v", got, tc.truncated)
+			}
+		})
+	}
+}
+
+func TestBuildxDiagnosticTailDoesNotAllocateForLargeWrites(t *testing.T) {
+	input := bytes.Repeat([]byte("progress\n"), testBuildxDiagnosticLimit)
+	var diagnostics buildxDiagnosticTail
+	if allocations := testing.AllocsPerRun(5, func() {
+		diagnostics.Reset()
+		_, _ = diagnostics.Write(input)
+	}); allocations != 0 {
+		t.Fatalf("large Write allocations=%v, want no input-sized temporary allocation", allocations)
+	}
+}
+
+func TestBuildxDiagnosticTailReset(t *testing.T) {
+	var diagnostics buildxDiagnosticTail
+	_, _ = diagnostics.Write(bytes.Repeat([]byte("x"), testBuildxDiagnosticLimit+1))
+	diagnostics.Reset()
+	if diagnostics.String() != "" || diagnostics.detail() != "" || diagnostics.truncated || diagnostics.startsMidLine {
+		t.Fatal("Reset() retains diagnostics or truncation state")
+	}
+	_, _ = diagnostics.Write([]byte("new attempt"))
+	if diagnostics.String() != "new attempt" || diagnostics.detail() != "new attempt" {
+		t.Fatal("Write() after Reset() retains earlier diagnostics")
+	}
+}
+
+func TestBuildxExporterResetsVersionDiagnostics(t *testing.T) {
+	runner := &fakeBuildxRunner{
+		versionStderr: strings.Repeat("version output\n", 32*1024),
+		stderr:        "pull access denied",
+		err:           errors.New("exit status 1"),
+	}
+	_, err := (buildxExporter{runner: runner}).ExportOCI(t.Context(), agentImage{}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "pull access denied") {
+		t.Fatalf("error=%v, want build failure", err)
+	}
+	if strings.Contains(err.Error(), "earlier diagnostics truncated") || strings.Contains(err.Error(), "version output") {
+		t.Fatal("build failure retains prerequisite diagnostics or truncation state")
+	}
+}
+
 func TestBuildxExporterReportsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	runner := &fakeBuildxRunner{err: context.Canceled}
-	err := (buildxExporter{runner: runner}).ExportOCI(ctx, agentImage{
+	_, err := (buildxExporter{runner: runner}).ExportOCI(ctx, agentImage{
 		AgentkitFile: []byte("{}"), Name: "writer",
 		AdapterRef: "registry.example/harness@" + testDigest,
 		Platform:   "linux/amd64", SourceEpoch: 1,

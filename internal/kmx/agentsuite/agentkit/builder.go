@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	OCIArchiveMediaType = "application/vnd.oci.image.layout.v1.tar"
+	OCIArchiveMediaType = agentsuite.OCIArchiveMediaType
 	agentKitFrontend    = "ghcr.io/orka-agents/agentkit/agentkit@sha256:8899d3ab38bdd8020b4ab21de128002bbc66ffd65111d7097daa8f8fd21805d9"
 	// TODO: Source the harness runtime from AgentSuite once its portable contract represents it.
 	agentKitRuntime = "pydantic-ai"
@@ -35,11 +35,14 @@ func ValidateModelAPIKeyEnv(value string) error {
 
 // Options bind the provider-neutral build plan to AgentKit and Docker buildx.
 type Options struct {
-	ModelBaseURL   string
-	ModelAPIKeyEnv string
-	Verbose        bool
-	Progress       io.Writer
-	exporter       ociExporter
+	ModelBaseURL        string
+	ModelAPIKeyEnv      string
+	Verbose             bool
+	Progress            io.Writer
+	Builder             string
+	DisableAttestations bool
+	RequireAttestations bool
+	exporter            ociExporter
 }
 
 // Builder uses AgentKit's current monolithic adapter image. It is explicitly
@@ -55,8 +58,11 @@ var _ agentsuite.SandboxBuilder = (*Builder)(nil)
 func New(options Options) *Builder {
 	if options.exporter == nil {
 		options.exporter = buildxExporter{
-			verbose:  options.Verbose,
-			progress: options.Progress,
+			verbose:             options.Verbose,
+			progress:            options.Progress,
+			builder:             options.Builder,
+			disableAttestations: options.DisableAttestations,
+			requireAttestations: options.RequireAttestations,
 		}
 	}
 	return &Builder{options: options}
@@ -81,26 +87,33 @@ func (b *Builder) Build(
 	if err != nil {
 		return agentsuite.BuildResult{}, fmt.Errorf("render AgentKit build input: %w", err)
 	}
+	// The caller owns staging and inspection before publishing identities.
 	platform := plan.Composition.Platform
-	if err := b.options.exporter.ExportOCI(ctx, agentImage{
+	exported, err := b.options.exporter.ExportOCI(ctx, agentImage{
 		AgentkitFile: agentkitFile,
 		Name:         plan.Agent.ID,
 		AdapterRef:   plan.Harness.ImageRef,
 		Platform:     platform.String(),
 		SourceEpoch:  plan.BuildProfile.SourceEpoch,
-	}, dst); err != nil {
+	}, dst)
+	if err != nil {
 		return agentsuite.BuildResult{}, fmt.Errorf("build experimental AgentKit image: %w", err)
 	}
-	return agentsuite.BuildResult{
-		MediaType: OCIArchiveMediaType,
-		Warnings: []string{
-			"experimental AgentKit output is not AgentSuite-conformant: the harness image is treated as a monolithic AgentKit adapter and the runtime-base image is not composed",
-		},
-	}, nil
+	result := agentsuite.BuildResult{
+		MediaType:             OCIArchiveMediaType,
+		AttestationsRequested: exported.AttestationsRequested,
+		RequireAttestations:   b.options.RequireAttestations,
+		Warnings:              exported.Warnings,
+	}
+	result.Warnings = append(result.Warnings, "experimental AgentKit output is not AgentSuite-conformant: the harness image is treated as a monolithic AgentKit adapter and the runtime-base image is not composed")
+	return result, nil
 }
 
 func (b *Builder) validate(plan agentsuite.SandboxPlan) error {
 	var errs []error
+	if b.options.DisableAttestations && b.options.RequireAttestations {
+		errs = append(errs, errors.New("--require-attestations cannot be used with --attestations=false"))
+	}
 	if err := ValidateModelAPIKeyEnv(b.options.ModelAPIKeyEnv); err != nil {
 		errs = append(errs, err)
 	}

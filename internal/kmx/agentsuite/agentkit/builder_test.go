@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -18,7 +20,7 @@ func TestBuildEmitsArchiveThroughBuildxExporter(t *testing.T) {
 	var exported agentImage
 	exporter := ociExporterFunc(func(_ context.Context, image agentImage, dst io.Writer) error {
 		exported = image
-		_, err := io.WriteString(dst, "oci archive")
+		_, err := dst.Write(testOCIArchive(t))
 		return err
 	})
 	builder := New(Options{
@@ -31,7 +33,7 @@ func TestBuildEmitsArchiveThroughBuildxExporter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	if output.String() != "oci archive" || result.MediaType != OCIArchiveMediaType {
+	if !bytes.Equal(output.Bytes(), testOCIArchive(t)) || result.MediaType != OCIArchiveMediaType {
 		t.Fatalf("unexpected result: output=%q result=%+v", output.String(), result)
 	}
 	if exported.Name != "writer" ||
@@ -49,6 +51,51 @@ func TestBuildEmitsArchiveThroughBuildxExporter(t *testing.T) {
 	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "not AgentSuite-conformant") {
 		t.Fatalf("warnings = %v", result.Warnings)
 	}
+}
+
+func TestBuildStreamsIntoCallerStage(t *testing.T) {
+	archive := testOCIArchive(t)
+	stage, err := os.Create(filepath.Join(t.TempDir(), "stage.oci.tar"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := stage.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	builder := New(Options{
+		ModelBaseURL:        "https://models.example/v1",
+		RequireAttestations: true,
+		exporter: policyExporterFunc(func(_ context.Context, _ agentImage, dst io.Writer) (exportResult, error) {
+			if _, err := dst.Write(archive); err != nil {
+				return exportResult{}, err
+			}
+			// The destination must receive bytes during export, not through a
+			// second full-size archive copied after export finishes.
+			got := make([]byte, len(archive))
+			if _, err := stage.ReadAt(got, 0); err != nil || !bytes.Equal(got, archive) {
+				t.Fatalf("caller stage not populated during export: %v", err)
+			}
+			return exportResult{AttestationsRequested: true, Warnings: []string{"export warning"}}, nil
+		}),
+	})
+	result, err := builder.Build(t.Context(), minimalPlan(), stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.AttestationsRequested || !result.RequireAttestations {
+		t.Fatalf("inspection policy not propagated: %+v", result)
+	}
+	if len(result.Warnings) != 2 || result.Warnings[0] != "export warning" {
+		t.Fatalf("warnings = %v", result.Warnings)
+	}
+}
+
+type policyExporterFunc func(context.Context, agentImage, io.Writer) (exportResult, error)
+
+func (f policyExporterFunc) ExportOCI(ctx context.Context, image agentImage, dst io.Writer) (exportResult, error) {
+	return f(ctx, image, dst)
 }
 
 func TestAgentkitFileMapsResolvedPlan(t *testing.T) {
@@ -109,13 +156,13 @@ func TestBuildValidatesModelAPIKeyEnvironmentName(t *testing.T) {
 					if got := decodeAgentkitFile(t, image.AgentkitFile).Model.APIKeyEnv; got != tc.name {
 						t.Errorf("apiKeyEnv = %q, want environment name %q", got, tc.name)
 					}
-					_, err := io.WriteString(dst, "oci archive")
+					_, err := dst.Write(testOCIArchive(t))
 					return err
 				}),
 			})
 			_, err := builder.Build(t.Context(), minimalPlan(), &output)
 			if tc.valid {
-				if err != nil || !exported || output.String() != "oci archive" {
+				if err != nil || !exported || !bytes.Equal(output.Bytes(), testOCIArchive(t)) {
 					t.Fatalf("valid environment name: error=%v exported=%v output=%q", err, exported, output.String())
 				}
 				return
@@ -170,14 +217,14 @@ func TestBuildRequiresPydanticAIHarnessRepository(t *testing.T) {
 					if image.AdapterRef != tc.image {
 						t.Errorf("adapter reference changed: %q", image.AdapterRef)
 					}
-					_, err := io.WriteString(dst, "oci archive")
+					_, err := dst.Write(testOCIArchive(t))
 					return err
 				}),
 			})
 			var output bytes.Buffer
 			_, err := builder.Build(t.Context(), plan, &output)
 			if tc.valid {
-				if err != nil || !exported || output.String() != "oci archive" {
+				if err != nil || !exported || !bytes.Equal(output.Bytes(), testOCIArchive(t)) {
 					t.Fatalf("supported harness: error=%v exported=%v output=%q", err, exported, output.String())
 				}
 				return
@@ -373,6 +420,6 @@ func minimalPlan() agentsuite.SandboxPlan {
 
 type ociExporterFunc func(context.Context, agentImage, io.Writer) error
 
-func (f ociExporterFunc) ExportOCI(ctx context.Context, image agentImage, dst io.Writer) error {
-	return f(ctx, image, dst)
+func (f ociExporterFunc) ExportOCI(ctx context.Context, image agentImage, dst io.Writer) (exportResult, error) {
+	return exportResult{}, f(ctx, image, dst)
 }
