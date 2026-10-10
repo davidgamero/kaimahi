@@ -31,10 +31,9 @@ var UpDefaultSteps = []string{"cluster", "ollama", "model", "orka"}
 
 // Up runs the whole journey, or the single named step.
 //
-// On kind this IS the journey: `make up` is one line delegating here, so the
-// sequence CI runs is the sequence this function implements rather than a
-// list of targets that could drift from it. RUNTIME ONLY: `kmx up` does not
-// deploy a model plane. Agents use native Orka Providers directly.
+// On kind, runtime setup and quickstart share the cluster, Ollama, model and
+// Orka phases. RUNTIME ONLY: `kmx local up` does not deploy an agent or a
+// model plane. Agents use native Orka Providers directly.
 func (a *App) Up(step string) error {
 	started := a.timeNow()
 	steps := UpDefaultSteps

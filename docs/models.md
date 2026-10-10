@@ -67,7 +67,7 @@ supported tools, per-turn limits and authentication boundaries.
 
 A full `kmx local up` first probes the host's loopback Ollama API. It offers reuse
 only when `/api/tags` reports at least one installed model. Reuse is opt-in;
-KMX's bundled model remains the default. `--output json`, redirected sessions,
+KMX's bundled model remains the default. Redirected sessions,
 `kmx local up --step ...`, and an explicit `MODEL` never probe or prompt.
 
 `kmx quickstart` never probes or prompts at all. It is deterministic and
