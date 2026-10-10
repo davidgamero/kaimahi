@@ -10,12 +10,9 @@ upstream installs a Helm chart and generates its own encryption key and webhook
 certificate. kmx fetches the pinned release chart rather than requiring an
 Orka checkout or a manually created wrapper credential.
 
-**Installing Orka governs nothing.** That sentence is printed by the command
-itself. Authoring a native Orka Agent is now [`kmx agent create`](kmx.md#kmx-agent-create);
-putting an existing application's model traffic on the governed seam is
-[`kmx migrate`](migrate.md), one owned Deployment at a time. Migration does not
-translate a legacy BYO definition or create Tasks; install, create and migrate
-are deliberately separate commands.
+Installation does not author an Agent or run a Task. Author a native Orka Agent with
+[`kmx agent create`](kmx.md#kmx-agent-create) and prove an answer with a Task.
+Installation and authoring are deliberately separate operations.
 
 ## The command
 
@@ -128,16 +125,14 @@ it never adopts or updates the installer's shared Provider `local`. This is a
 new Agent/Task example, not a continuation command for an Agent you already
 created. Choose unused names and output paths; creation refuses collisions.
 
-Task execution requires an existing result account, and the runtime step owns
-it. `kmx local up --step orka` provisions exactly this account, Role and
-RoleBinding, and so does every run that includes that step — a bare `kmx local up`
-and `kmx quickstart`. A standalone `kmx orka install` does **not**: it
-installs the release and wires the keyless Provider, and nothing more.
-`agent create` never does either: it only NAMES an account, so authoring an
-agent cannot mint a grant nobody read as a grant. On a cluster whose Orka
-arrived another way — including one where only `kmx orka install` has run —
-an operator with RBAC creation permission can provision the same account
-separately; these commands contain names only, not token values:
+Task execution requires an existing result account. `kmx orka install`
+provisions the account, Role and RoleBinding below; so does
+`kmx local up --step orka` and every run that includes that step — a bare
+`kmx local up` and `kmx quickstart`. `agent create` only NAMES an account and
+never provisions RBAC. On a cluster whose Orka arrived through upstream tools,
+an operator with RBAC creation permission can provision the account separately.
+Skip these three RBAC creation commands if KMX already provisioned it; they
+contain names only, not token values:
 
 ```bash
 kubectl --context kind-kaimahi-p1 -n orka-system create serviceaccount orka-result-reader
@@ -185,10 +180,10 @@ authentication. Dry-run does not test access or execution.
 used through the interactive chat:
 
 ```bash
-kmx agent chat --interactive --namespace <ns> <name>
+kmx agent chat --namespace <ns> <name>
 ```
 
-Orka chat is a session, so a non-interactive invocation is refused. Use
+Orka chat is always a session; a message after the name is its first turn. Use
 `kmx agent run --agent <name> --prompt-file -` for a one-shot Task, and
 `kmx task result <task> --wait 5m` to retrieve a later answer. A live Agent is
 edited with `kubectl edit agents.core.orka.ai` and read back with
@@ -198,14 +193,12 @@ or governance is added here.
 ## The whole journey, from nothing
 
 ```console
-$ kmx local up                              # a cluster, a model, and the Orka runtime
-$ kmx plane                                 # the model-traffic bridge
-$ kmx migrate concierge --namespace demo --model local/qwen2.5:3b
+$ kmx quickstart                            # a cluster, model, Orka Agent and fresh Task answer
 ```
 
-The third command is the one that governs anything. The first two are the
-front door — `kmx local up` installs Orka itself, so there is no separate
-`kmx orka install` on this path.
+Use `kmx local up` instead to install the runtime without creating an Agent, then
+follow the [native create guide](#author-an-orka-agent-and-get-an-answer).
+Both setup paths install Orka, so neither needs a separate `kmx orka install`.
 
 ## Authoring an agent for Orka
 
@@ -228,13 +221,8 @@ the Provider and its named credential Secret, not just the Agent; an accepted
 Agent manifest alone does not prove it can reach its model.
 
 For an application image you already operate, keep its Deployment under your
-own management. [`kmx migrate`](migrate.md) describes the model-traffic path
-for supported applications. That path does not register the application as
-an Orka `Agent` or turn its requests into Orka `Task` resources. The migration
-guide records the exercised behavior and its limits. A legacy BYO definition
-is not an input to `kmx migrate`: the application must already have a
-Deployment it owns. Model-traffic migration is a separate boundary, not BYO
-Agent conversion.
+own management. KMX does not convert it into an Orka Agent or redirect its model
+traffic. Configure its runtime and model access through the upstream interfaces.
 
 ## Limits, stated
 
@@ -281,8 +269,8 @@ Agent conversion.
 - **Local kind replacement loses data.** If replacing an old local install,
   first export anything you need; `kmx local down` deletes the named kind cluster,
   including Orka Tasks, custom resources, Secrets, SQLite volumes, snapshots,
-  model data and the plane ledger. Only then run `kmx local up` for a new v0.2.0
-  installation. This is not a migration and does not restore the deleted data.
+  model data and any historical database still present. Only then run `kmx local up`
+  for a new v0.2.0 installation. This is not a migration and does not restore the deleted data.
 - **AKS replacement is operator-managed.** Before retiring v0.1.3, make and
   verify backups of the existing controller data volumes, Orka resources/Secrets
   and any owner workloads. Preserve a snapshot-key Secret if the existing
@@ -298,14 +286,10 @@ Agent conversion.
   while deleting CRDs deletes their custom resources.
 - **Uninstall is not implemented in kmx.** Orka's chart manages persistent
   state; removal is an explicit data-retention decision.
-- **The model seam has no per-credential allowlist**, so every credential the
-  plane has issued can reach the `orka` upstream — a property of the seam,
-  described in [migrate.md](migrate.md#8-limits-stated).
 - **Not run on AKS.** Measured on kind only.
 
 ## See also
 
 - [kmx agent create](kmx.md#kmx-agent-create) — native Orka authoring and Task result contract
-- [migrate.md](migrate.md) — putting an application's model traffic on the seam
 - [the Orka composition report](reviews/2026-09-09-orka-composition.md) — what
   each project has, measured rather than compared

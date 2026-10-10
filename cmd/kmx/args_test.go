@@ -54,7 +54,7 @@ func TestBareUsageNamesEveryTopLevelCommand(t *testing.T) {
 		if child.Hidden {
 			// Retirement stubs and compatibility routes remain parseable but
 			// are not advertised alongside canonical commands.
-			if child.Name() != "govern" && child.Name() != "use" && child.Name() != "aks" && child.Name() != "ctx" && child.Name() != "up" && child.Name() != "down" {
+			if child.Name() != "quickstart-wizard" && child.Name() != "aks" && child.Name() != "ctx" && child.Name() != "up" && child.Name() != "down" {
 				t.Errorf("command %q is unexpectedly hidden", child.Name())
 			}
 			continue
@@ -68,8 +68,9 @@ func TestBareUsageNamesEveryTopLevelCommand(t *testing.T) {
 		}
 		named++
 	}
-	// An empty tree would satisfy every check above without naming anything.
-	if named < 20 {
-		t.Fatalf("usage page named only %d commands; the tree should have far more", named)
+	// The behavioral front-door checks pin the retained surface independently;
+	// this guard keeps the derived help check from passing on an empty tree.
+	if named == 0 || !strings.Contains(out.String(), "quickstart ") || !strings.Contains(out.String(), "agent ") {
+		t.Fatalf("usage page lost its native front door (%d commands):\n%s", named, out.String())
 	}
 }

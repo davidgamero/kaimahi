@@ -1,8 +1,9 @@
 # Command alignment
 
 Tracking issue: [#301](https://github.com/kaimahi-agents/kaimahi/issues/301).
-The [CLI reference](kmx.md) documents the implemented interface. This page
-distinguishes the first implementation slice from proposed follow-ups.
+The [CLI reference](kmx.md) documents the implemented interface and the
+[command conventions](command-conventions.md) govern future changes. This page
+distinguishes implemented alignment from proposed follow-ups.
 
 ## Implemented entry-point alignment (unreleased)
 
@@ -66,14 +67,19 @@ The guided live-copy fallback is explicitly untracked, not a bundle deployment.
 
 ## Audit and existing work
 
-The original source/help audit at `9ebc27b` found 37 visible executable leaves,
-two deprecated AKS spellings, three retirement stubs, 12 advertised chat
-controls (plus `/quit`), and seven console slash controls plus menu/key actions.
-Upstream `a3d809b` adds `suite validate`; current main hides the two AKS leaves
-from root discovery while preserving direct invocation. This slice adds one
-executable leaf by splitting context show/use, for 37 root-discoverable leaves,
-and retains old entry points as compatibility routes. Cobra help/internal
-completion are excluded.
+The command inventory is pinned by the command-tree and entry-point tests in
+[`cmd/kmx`](../cmd/kmx). Context show/use split read and selection operations;
+local up/down scope the existing kind operations. Root discovery hides the AKS
+compatibility group and the old context/local spellings, while direct invocation
+remains available. Help and internal completion are not operational leaves.
+
+Other implemented alignment in development builds includes
+`quickstart --interactive` (`-i`) and intrinsically interactive `agent chat`.
+`quickstart-wizard` is a retirement stub, and chat no longer accepts
+`--interactive`; tagged v0.4.1 still uses those older forms. `kmx targets` is the
+read-only runtime capability view. Plane commands, administration, migration,
+model overlays and the hello-to-governed demo are removed, not candidates for
+regrouping. Current native setup does not deploy a model plane.
 
 Sources: command constructors and completion in [`cmd/kmx`](../cmd/kmx), chat
 registry/dispatch in [`chat_slash.go`](../internal/kmx/app/chat_slash.go) and
@@ -95,9 +101,9 @@ These are tracked in #301 rather than silently treated as part of this slice.
 | [#223](https://github.com/kaimahi-agents/kaimahi/issues/223) | Cloud extraction, infrastructure ownership, recovery and teardown. |
 | [#224](https://github.com/kaimahi-agents/kaimahi/issues/224), [draft #225](https://github.com/kaimahi-agents/kaimahi/pull/225) | Target identity, runtime selection, lifecycle contracts and extensions. |
 | [#238](https://github.com/kaimahi-agents/kaimahi/issues/238), [#294](https://github.com/kaimahi-agents/kaimahi/issues/294) | Runtime qualification and supported operations. |
-| [#289](https://github.com/kaimahi-agents/kaimahi/issues/289) | Capability reporting; coordinate its public name. |
+| [#289](https://github.com/kaimahi-agents/kaimahi/issues/289) | Read-only capability reporting, implemented as `kmx targets`. |
 | [#276](https://github.com/kaimahi-agents/kaimahi/issues/276), [#286](https://github.com/kaimahi-agents/kaimahi/issues/286) | Shared operations and authoring/execution/adapter/UI extraction. |
-| [#284](https://github.com/kaimahi-agents/kaimahi/issues/284) | Model-plane implementation separation. |
+| [#284](https://github.com/kaimahi-agents/kaimahi/issues/284) | Historical model-plane work; the plane is now removed. |
 | [#292](https://github.com/kaimahi-agents/kaimahi/issues/292) | Verbosity levels and redaction. |
 | [#299](https://github.com/kaimahi-agents/kaimahi/issues/299), [#300](https://github.com/kaimahi-agents/kaimahi/pull/300) | AgentSuite artifact and validation contracts; `suite validate` remains. |
 
@@ -106,19 +112,6 @@ for separating AKS provisioning from agent lift. #301 owns command consistency
 and compatibility over these operations, not parallel implementations.
 
 ## Proposed follow-ups — not current syntax
-
-| Existing command | Proposed alignment |
-|---|---|
-| `quickstart-wizard` | `quickstart --interactive`, with mode-specific flag validation; bare quickstart remains deterministic. |
-| `agent chat --interactive <name>` | Intrinsically interactive `agent chat <name>`, preserving initial-message compatibility. |
-| `plane` | `plane deploy`; preserve bare invocation during transition. |
-| `migrate` | `plane migrate` |
-| `models add` | `plane upstream add` |
-| `models credential copilot` | `plane upstream login copilot` |
-| `credentials`, `credential issue/renew` | `plane credential list/issue/renew` |
-| `budget` | Explicit `plane budget set/clear <credential>`; old bare budget clears caps and needs a compatibility wrapper. |
-| `ledger`, `flow`, `watch` | `plane ledger show`, `plane activity list/watch` |
-| `backup`, `restore`, `metrics` | `plane backup/restore/metrics` |
 
 Interactive controls should share resource/action names: `/agent show`,
 `/agent chat`, `/agent use`, `/agent tools configure`,
@@ -131,8 +124,8 @@ with #292. Retain keyboard shortcuts and advertise only supported controls.
 
 Proposed flag alignment: `--prompt`/`--prompt-file` instead of `--task`,
 `--instructions-file` instead of file-valued `--instructions`, `--bundle-dir`
-and `--bundles-dir`, and `--output jsonl` for activity watch. Keep report
-`--output` separate from artifact `--out`; preserve raw and answer-only stdout.
+and `--bundles-dir`. Keep report `--output` separate from artifact `--out`;
+preserve raw and answer-only stdout.
 
 ## Remaining decisions
 
@@ -141,8 +134,8 @@ and `--bundles-dir`, and `--output jsonl` for activity watch. Keep report
    compatibility routes, hidden from root help and completion.
 2. **Runtime setup:** retain `orka install/status` pending agreement on a
    generic runtime setup family; a name cannot imply installer support.
-3. **Capability view:** #289 explicitly asks to reconcile `capabilities` with
-   `targets`; choose one operation/name with that issue.
+3. **Capability view:** `kmx targets` is implemented for #289; retain that
+   spelling and its read-only/offline-default contract rather than adding synonyms.
 4. **Authoring/execution verbs:** reconcile applying `create` with offline
    `new`, `evaluate` with `test`, and `agent run` with canvas-service `run start`
    through #276 and its authoring/execution work. Their scopes differ.
@@ -158,7 +151,8 @@ and `--bundles-dir`, and `--output jsonl` for activity watch. Keep report
 
 ## Keeping future work aligned
 
-[`AGENTS.md`](../AGENTS.md) records the contributor rules. For each implemented
+[`AGENTS.md`](../AGENTS.md) records the contributor rules alongside the
+[command conventions](command-conventions.md). For each implemented
 slice, update command registration, help, completion, interactive labels where
 applicable, generated next/recovery commands, primary docs, compatibility tests
 and CHANGELOG together. Use existing operation handlers. Keep historical records

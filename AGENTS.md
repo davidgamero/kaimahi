@@ -6,7 +6,8 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
 
 ## Command consistency
 
-- Use the implemented interface in [docs/kmx.md](docs/kmx.md) and the
+- Follow the [command conventions](docs/command-conventions.md), the implemented
+  interface in [docs/kmx.md](docs/kmx.md) and the
   [command alignment record](docs/command-semantics.md). Track outstanding
   renames and decisions in [#301](https://github.com/kaimahi-agents/kaimahi/issues/301).
   Proposed spellings are not implemented capabilities.
@@ -16,6 +17,11 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
   routes. Current agent deployment remains `kmx agent lift`; current cloud and
   runtime setup remain `kmx aks up/down` and `kmx orka install/status`.
   The AKS group is a hidden compatibility route, not a public root domain.
+  Guided quickstart is `kmx quickstart --interactive` (`-i`); the old wizard
+  command is a retirement stub. `kmx agent chat` is always interactive and no
+  longer accepts `--interactive`. `kmx targets` is the read-only capability view.
+  Plane administration, model overlays, migration and their demo are removed;
+  do not restore or regroup their commands.
 - Keep **Create → Prove → Lift** as the local-to-remote story. **Lift** is the
   chosen agent lifecycle verb: retain `kmx agent lift` and interactive `/lift`,
   and use Lift in corresponding help and menu labels rather than renaming the

@@ -21,13 +21,21 @@ var (
 )
 
 type Report struct {
-	Name                     string          `json:"name"`
-	Agents                   int             `json:"agents"`
-	ToolProviders            int             `json:"toolProviders"`
-	ToolProviderCompositions int             `json:"toolProviderCompositions"`
-	Compositions             int             `json:"compositions"`
-	Capabilities             []string        `json:"capabilities"`
-	AgentPlatforms           []AgentPlatform `json:"agentPlatforms"`
+	Name                     string                 `json:"name"`
+	Agents                   int                    `json:"agents"`
+	ToolProviders            int                    `json:"toolProviders"`
+	ToolProviderCompositions int                    `json:"toolProviderCompositions"`
+	Compositions             int                    `json:"compositions"`
+	Capabilities             []string               `json:"capabilities"`
+	AgentPlatforms           []AgentPlatform        `json:"agentPlatforms"`
+	CompositionSelections    []CompositionSelection `json:"compositionSelections"`
+}
+
+type CompositionSelection struct {
+	Agent        string   `json:"agent"`
+	Platform     Platform `json:"platform"`
+	BuildProfile string   `json:"buildProfile"`
+	Digest       string   `json:"digest"`
 }
 
 type validator struct {
@@ -42,13 +50,18 @@ type validator struct {
 }
 
 func validateContent(content *contentSet) (*Report, error) {
+	_, report, err := validateContentGraph(content)
+	return report, err
+}
+
+func validateContentGraph(content *contentSet) (*validator, *Report, error) {
 	rawSuite, err := content.data("agentsuite.json")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var suite Suite
 	if err := decodeStrict(rawSuite, &suite); err != nil {
-		return nil, fmt.Errorf("agentsuite.json: %w", err)
+		return nil, nil, fmt.Errorf("agentsuite.json: %w", err)
 	}
 	v := &validator{
 		content:                  content,
@@ -69,7 +82,7 @@ func validateContent(content *contentSet) (*Report, error) {
 	errs = append(errs, v.loadCompositions())
 	errs = append(errs, v.validateReferences())
 	if err := errors.Join(errs...); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	capabilities := derivedCapabilities(v.toolProviders)
 	agentPlatforms := make([]AgentPlatform, 0, len(v.agents))
@@ -88,7 +101,25 @@ func validateContent(content *contentSet) (*Report, error) {
 	slices.SortFunc(agentPlatforms, func(a, b AgentPlatform) int {
 		return strings.Compare(a.ID, b.ID)
 	})
-	return &Report{
+	selections := make([]CompositionSelection, 0, len(v.suite.Compositions))
+	for _, ref := range v.suite.Compositions {
+		key := ref.Agent + "@" + ref.Platform.String()
+		composition, ok := v.compositions[key]
+		if !ok {
+			continue
+		}
+		selections = append(selections, CompositionSelection{
+			Agent: ref.Agent, Platform: ref.Platform,
+			BuildProfile: composition.BuildProfile, Digest: ref.Digest,
+		})
+	}
+	slices.SortFunc(selections, func(a, b CompositionSelection) int {
+		return strings.Compare(
+			a.Agent+"@"+a.Platform.String()+"@"+a.BuildProfile,
+			b.Agent+"@"+b.Platform.String()+"@"+b.BuildProfile,
+		)
+	})
+	report := &Report{
 		Name:                     suite.Name,
 		Agents:                   len(v.agents),
 		ToolProviders:            len(v.toolProviders),
@@ -96,7 +127,9 @@ func validateContent(content *contentSet) (*Report, error) {
 		Compositions:             len(v.compositions),
 		Capabilities:             capabilities,
 		AgentPlatforms:           agentPlatforms,
-	}, nil
+		CompositionSelections:    selections,
+	}
+	return v, report, nil
 }
 
 func (v *validator) validateSuite() error {
@@ -1004,6 +1037,11 @@ func validatePlatformImages(name string, images []PlatformImage) error {
 			errs = append(errs, fmt.Errorf("%s contains duplicate platform %s", name, key))
 		}
 		seen[key] = true
+		if err := ValidateImageReference(image.ImageRef); err != nil {
+			errs = append(errs, fmt.Errorf("%s %s imageRef must be a registry-qualified, digest-addressed OCI image reference", name, key))
+		} else if !strings.HasSuffix(image.ImageRef, "@"+image.Image.Digest) {
+			errs = append(errs, fmt.Errorf("%s %s imageRef digest must match image descriptor", name, key))
+		}
 		if image.Image.MediaType != ociManifestMediaType || !validDigest(image.Image.Digest) || image.Image.Size <= 0 {
 			errs = append(errs, fmt.Errorf("%s %s image descriptor must pin an OCI image manifest", name, key))
 		}
