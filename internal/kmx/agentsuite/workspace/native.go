@@ -20,6 +20,17 @@ import (
 
 const rendererVersion = "kmx.native-orka/v1"
 const nativePath = "metadata/kmx/native-orka.json"
+const imagePath = "metadata/kmx/image-http.json"
+const imageRendererVersion = "kmx.image-http/v1"
+
+func imageProfile() ([]byte, error) {
+	var p spec.BuildProfile
+	if err := spec.Unmarshal(defaultProfile, &p); err != nil {
+		return nil, err
+	}
+	p.Execution = &spec.ExecutionContract{Configuration: spec.AgentKitMountedConfig, Kind: spec.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []spec.ExecutionInput{{Name: "agent-auth", Environment: "AGENTKIT_AUTH_TOKEN", Secret: true}, {Name: "listen", Environment: "AGENTKIT_BIND"}}}
+	return spec.Marshal(p)
+}
 
 type caseRef struct {
 	Path   string `json:"path"`
@@ -190,6 +201,15 @@ func resolve(name string, m sourceMember, instructions, profile []byte, cases ma
 	if err := spec.Unmarshal(defaultProfile, &approved); err != nil {
 		return nil, err
 	}
+	if m.Execution == ImageExecution {
+		raw, err := imageProfile()
+		if err != nil {
+			return nil, err
+		}
+		if err := spec.Unmarshal(raw, &approved); err != nil {
+			return nil, err
+		}
+	}
 	bpBytes, err := spec.Marshal(bp)
 	if err != nil {
 		return nil, err
@@ -216,7 +236,7 @@ func resolve(name string, m sourceMember, instructions, profile []byte, cases ma
 		return nil, err
 	}
 	agentPath := "agents/" + m.ID + ".json"
-	agentDigest, err := put(agentPath, spec.Agent{SchemaVersion: spec.SpecVersion, MediaType: spec.MediaTypeAgent, ID: m.ID, Description: m.Description, Instructions: spec.FileRef{Path: "instructions/" + m.ID + ".md", Digest: godigest.FromBytes(instructions).String()}, Model: spec.ModelRequirement{Protocol: m.Model.Protocol, Model: m.Model.Model}})
+	agentDigest, err := put(agentPath, spec.Agent{SchemaVersion: spec.SpecVersion, MediaType: spec.MediaTypeAgent, ID: m.ID, Description: m.Description, Instructions: spec.FileRef{Path: "instructions/" + m.ID + ".md", Digest: godigest.FromBytes(instructions).String()}, Model: spec.ModelRequirement{Protocol: m.Model.Protocol, Model: m.Model.Model, Capabilities: m.Model.Capabilities.portable()}})
 	if err != nil {
 		return nil, err
 	}
@@ -238,6 +258,13 @@ func resolve(name string, m sourceMember, instructions, profile []byte, cases ma
 		return nil, errors.New("one to 128 authored cases are required")
 	}
 	record := nativeRecord{1, "native-orka", m.ID, rendererVersion, []string{}, []caseRef{}}
+	metadataPath := nativePath
+	if m.Execution == ImageExecution {
+		record.ExecutionMode = ImageExecution
+		record.RendererVersion = imageRendererVersion
+		record.RequiredImages = []string{m.ID + "@linux/amd64"}
+		metadataPath = imagePath
+	}
 	ids := map[string]bool{}
 	for _, name := range slices.Sorted(maps.Keys(cases)) {
 		if !caseName(name) {
@@ -255,7 +282,7 @@ func resolve(name string, m sourceMember, instructions, profile []byte, cases ma
 		files[p] = cases[name]
 		record.Cases = append(record.Cases, caseRef{p, godigest.FromBytes(cases[name]).String()})
 	}
-	_, err = put(nativePath, record)
+	_, err = put(metadataPath, record)
 	return files, err
 }
 
@@ -267,11 +294,20 @@ func validateNative(files map[string][]byte) (string, error) {
 		return "", err
 	}
 	var record nativeRecord
-	if err := spec.Unmarshal(files[nativePath], &record); err != nil {
+	metadataPath := nativePath
+	mode, renderer := NativeExecution, rendererVersion
+	if _, ok := files[imagePath]; ok {
+		metadataPath = imagePath
+		mode, renderer = ImageExecution, imageRendererVersion
+	}
+	if err := spec.Unmarshal(files[metadataPath], &record); err != nil {
 		return "", err
 	}
-	if record.SchemaVersion != 1 || record.ExecutionMode != "native-orka" || record.RendererVersion != rendererVersion || record.RequiredImages == nil || len(record.RequiredImages) != 0 {
+	if record.SchemaVersion != 1 || record.ExecutionMode != mode || record.RendererVersion != renderer || record.RequiredImages == nil {
 		return "", errors.New("unsupported native metadata or required images")
+	}
+	if mode == NativeExecution && len(record.RequiredImages) != 0 || mode == ImageExecution && (len(record.RequiredImages) != 1 || record.RequiredImages[0] != record.Member+"@linux/amd64") {
+		return "", errors.New("execution image requirements differ")
 	}
 	var agent spec.Agent
 	if err := spec.Unmarshal(files["agents/"+record.Member+".json"], &agent); err != nil {
@@ -279,6 +315,12 @@ func validateNative(files map[string][]byte) (string, error) {
 	}
 	m := sourceMember{ID: agent.ID, Description: agent.Description}
 	m.Model.Protocol, m.Model.Model = agent.Model.Protocol, agent.Model.Model
+	if mode == ImageExecution {
+		m.Execution = mode
+		if c := agent.Model.Capabilities; c != nil {
+			m.Model.Capabilities = &sourceInference{c.API, c.ContextTokens, c.OutputTokens, c.Streaming, c.ToolCalling}
+		}
+	}
 	cases := map[string][]byte{}
 	for _, c := range record.Cases {
 		name := strings.TrimPrefix(c.Path, "metadata/kmx/eval/")

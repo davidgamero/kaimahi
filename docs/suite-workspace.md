@@ -1,5 +1,10 @@
 # Author and publish a one-member native-Orka suite
 
+The same workspace format also supports an explicit experimental `image-http`
+member; see [image execution](suite-image-workspace.md). `suite push` with a single
+destination discovers the nearest ancestor `workspace.yaml` when `--workspace`
+is omitted. Native model identity and zero-member-image behavior remain unchanged.
+
 A workspace is editable source. Its prepared AgentSuite is an immutable OCI
 artifact, identified by its manifest digest. The native-Orka execution profile
 requires no member images; authoring and publication do not contact Kubernetes,

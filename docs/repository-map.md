@@ -56,7 +56,7 @@ examples or fabricated callers are needed to preserve mechanical coverage.
 
 | Path | Class | Evidence |
 |---|---|---|
-| `cmd/kmx` (44 files) | **Installed** | Native agent/workspace lifecycle, runtime targets, registry/artifact operations and experimental image-suite create/publish/lift/run and console. Existing context/local, bounded kagent and evaluation command contracts remain. |
+| `cmd/kmx` (45 files) | **Installed** | Native agent/workspace lifecycle, runtime targets, registry/artifact operations, shared workspace discovery and agent release lift, image invocation and console. Existing bounded kagent and evaluation contracts remain. |
 
 ## `agentsuite/` — public specification package
 
@@ -110,14 +110,14 @@ files or judge cases in the live CLI agent fixture.
 
 | Package or data directory | Non-test files | Class | What it is |
 |---|---|---|---|
-| `kmx/app` | 112 | Installed | Native workspace and agent lifecycle, evaluation/evidence, runtime adapters and console, plus experimental image-suite workspace, registry lift, status and authenticated invocation. The eight kagent non-test files are `create_kagent.go`, `kagent_create_online.go`, `runtime_kagent_lifecycle.go`, `kagent_profile.go` and the four `kagent_bundle_{lift,deploy,receipt,status}.go` files. |
+| `kmx/app` | 113 | Installed | Native workspace and agent lifecycle, evaluation/evidence, runtime adapters and console, image publication and shared release-lift boundary, status and authenticated invocation. The eight kagent non-test files are `create_kagent.go`, `kagent_create_online.go`, `runtime_kagent_lifecycle.go`, `kagent_profile.go` and the four `kagent_bundle_{lift,deploy,receipt,status}.go` files. |
 | `kmx/agentsessions` | 6 | Installed | Read-only bounded Sessions availability probe, Sessions gRPC evaluation and read-only replay adapters, verified remote TLS transport and syntactic destination comparison, per-case chat execution, journal evidence projection, ephemeral invocation name/count correlation (20,000 records, 64 MiB, 256 pending calls) and bounded offline reference-chat reconstruction, strict single-read reference extraction/resolution without source payload persistence. Correlation is not tool capability: production tool assertions always remain unknown. No daemon startup, tool enablement, host implementation attestation, descriptor discovery or lift-gate integration. |
-| `kmx/agentsuite` | 11 | Installed | Builder bindings, image declarations, archive inspection, packing/transfer and sandbox planning, plus experimental image-source generation and complete deployment projections using public validation. |
+| `kmx/agentsuite` | 10 | Installed | Builder bindings, image declarations, archive inspection, packing/transfer and sandbox planning, plus complete deployment projections using public validation. |
 | `kmx/imagelift` | 6 | Installed | Image-only deployment environment, inference binding, deterministic HTTP rendering, target preflight and resource reconciliation. |
 | `kmx/suitedeploy` | 2 | Scaffolding | Carried full-suite contract proposal and immutable plan sketches; not the executable deployment path. |
 | `kmx/agentsuite/agentkit` | 2 | Installed | Experimental AgentKit adapter for the provider-neutral sandbox builder contract; generates input for a digest-pinned AgentKit frontend, invokes the selected Docker buildx builder with the monolithic harness adapter, requests SBOM/provenance attestations where supported, and streams an OCI image-layout tar to App for inspection before publication while explicitly reporting that the runtime base is not composed. |
 | `kmx/agentsuite/oras` | 11 | Installed | Suite provenance and prepared graph transfer, image metadata resolution and attestation-preserving image publication, OCI packing/extraction and Docker-credential registry transport. |
-| `kmx/agentsuite/workspace` | 5 | Installed | Closed one-member native-Orka authoring, confined snapshots, prepared OCI graphs and packaged native input loading. No inference or cluster operations. |
+| `kmx/agentsuite/workspace` | 6 | Installed | Shared one-member native/image authoring, ancestor workspace discovery, confined snapshots, prepared OCI graphs, closed execution-profile validation and packaged native input loading. No inference or cluster operations. |
 | `kmx/agentsuite/schema` | 2 | Checkout | Builder-owned sandbox binding and experimental image-deployment declaration schemas. |
 | `kmx/agentsuite/testdata/incident-analyst` | 1 | Scaffolding | Internal builder-owned realistic, buildable incident-response example with real digest-pinned Linux amd64 image inputs; not a portable conformance fixture. |
 | `kmx/agentsuite/testdata/incident-analyst/agents` | 1 | Scaffolding | Tool-free incident analyst targeting an Azure OpenAI deployment named gpt-5-mini. |

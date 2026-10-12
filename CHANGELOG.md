@@ -24,6 +24,18 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 ### Added
 
+- Image-backed members share workspace.yaml authoring/preparation and suite push.
+  Ancestor discovery finds the nearest workspace, with explicit override support.
+  Image release placement uses `agent lift --release <digest>` without local source.
+
+### Breaking
+
+- The draft image-only `suite create/publish/lift` commands and generated-source
+  directory layout are replaced by shared workspace operations. Old draft data is
+  not rewritten; create a workspace explicitly. Placement records use KMX state.
+
+### Changed
+
 - Draft image-suite lift and console workflow with deployment-bound inference,
   typed review and image-backed status/invocation. This experimental path is
   separate from native workspace evaluation/promotion; see the

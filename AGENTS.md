@@ -25,8 +25,9 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
 - Opt-in `agent create --workspace` authors one tool-free native-Orka suite member
   offline; `suite push --workspace` copies its exact prepared OCI graph and authored
   cases. The native member image requirement is empty. Neither command evaluates,
-  deploys, builds images or loads cluster settings. Workspace evaluation/release
-  lift are not implemented. Preserve default create, PortableAgent formats and
+  deploys, builds images or loads cluster settings for the native profile. Native
+  workspace evaluation/release lift are not implemented; the experimental image
+  profile uses the release entry point described below. Preserve PortableAgent formats and
   old extracted-directory suite transfer; do not treat public graph validation
   as native execution-profile validation. Registry workspace publication shares
   unsigned suite provenance defaults/flags and records Git source only from
@@ -79,12 +80,14 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
 
 ## Verification
 
-Draft image-suite integration adds `suite create/publish/lift/run` and
-`console --workspace` for the HTTP image prototype. It does not change the native
-workspace source format or reassign root `lift`. Keep this path explicitly
-experimental until it converges with #437/#442 and #404; see
-`docs/suite-image-workspace.md`. Inference is deployment-bound, and image-only
-completeness must not become a rule for native suites requiring zero images.
+Image execution extends the shared workspace with `execution: image-http` and
+capability-based inference; native exact-model members remain native. Use
+`agent create --workspace --execution image-http`, `suite push`, and the single
+`agent lift --release <digest> --environment <file>` entry point. Workspace
+discovery walks ancestors to workspace.yaml; explicit --workspace never falls
+back. Release lift is deploy-only and workspace-independent. Root lift is unchanged.
+Do not restore suite create/publish/lift or source-local .kmx placement storage.
+Image execution remains experimental, without promotion/evaluation gate claims.
 
 The experimental `suite build --suite-ref` mode checks a digest-pinned published
 source and emits image execution metadata. Capability-based sources bind models

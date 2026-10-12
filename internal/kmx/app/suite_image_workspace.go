@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/workspace"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
 	"io"
+	"oras.land/oras-go/v2/registry"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +24,7 @@ import (
 // SuitePublication associates an exact published suite with its built members.
 // This local workspace record is experimental, not a standardized OCI referrer.
 type SuitePublication struct {
+	Fingerprint   string              `json:"fingerprint"`
 	Indexes       map[string]string   `json:"indexes,omitempty"`
 	Attested      map[string]bool     `json:"attested,omitempty"`
 	Suite         string              `json:"suite"`
@@ -37,36 +41,42 @@ type SuiteWorkspaceEntry struct {
 }
 
 func ListSuiteWorkspace(root string) ([]SuiteWorkspaceEntry, error) {
-	dirs, err := os.ReadDir(root)
+	summary, err := workspace.Describe(root)
 	if err != nil {
 		return nil, err
 	}
-	entries := []SuiteWorkspaceEntry{}
-	for _, dir := range dirs {
-		if !dir.IsDir() || strings.HasPrefix(dir.Name(), ".") {
-			continue
-		}
-		source := filepath.Join(root, dir.Name())
-		if _, err := os.Stat(filepath.Join(source, "agentsuite.json")); os.IsNotExist(err) {
-			continue
-		}
-		entry := SuiteWorkspaceEntry{Name: dir.Name(), Source: source}
-		pub, err := ReadSuitePublication(root, dir.Name())
-		if err == nil {
-			entry.Publication = &pub
-		} else if !os.IsNotExist(err) {
-			entry.Error = err.Error()
-		}
-		entries = append(entries, entry)
+	entry := SuiteWorkspaceEntry{Name: summary.Name, Source: root}
+	pub, err := ReadSuitePublication(root, summary.Name)
+	if err == nil {
+		entry.Publication = &pub
+	} else if !os.IsNotExist(err) {
+		entry.Error = err.Error()
 	}
-	return entries, nil
+	return []SuiteWorkspaceEntry{entry}, nil
+}
+
+func workspaceState(root string) (string, error) {
+	abs, err := workspace.Discover(root, root)
+	if err != nil {
+		return "", err
+	}
+	state, err := config.StateDir()
+	if err != nil {
+		return "", err
+	}
+	key := fmt.Sprintf("%x", sha256.Sum256([]byte(abs)))
+	return filepath.Join(state, "suite-images", key), nil
 }
 
 func workspaceRecord(root, name, suffix string) (string, error) {
 	if name == "" || filepath.Base(name) != name || name == "." || name == ".." || strings.ContainsAny(name, "/\\") {
 		return "", errors.New("invalid workspace name")
 	}
-	return filepath.Join(root, ".kmx", name+suffix+".json"), nil
+	state, err := workspaceState(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(state, name+suffix+".json"), nil
 }
 
 func ReadSuitePublication(root, name string) (SuitePublication, error) {
@@ -103,6 +113,8 @@ type SuiteBuildOptions struct {
 	Builder             string
 	DisableAttestations bool
 	RequireAttestations bool
+	Provenance          SuitePushProvenance
+	Force               bool
 }
 
 func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository string, plainHTTP bool, options SuiteBuildOptions) (SuitePublication, error) {
@@ -114,7 +126,31 @@ func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository 
 	if err != nil {
 		return result, err
 	}
-	source := filepath.Join(root, name)
+	summary, err := workspace.Describe(root)
+	if err != nil {
+		return result, err
+	}
+	if summary.Name != name || summary.Execution != workspace.ImageExecution {
+		return result, errors.New("image publication requires the selected image-http workspace")
+	}
+	state, err := config.StateDir()
+	if err != nil {
+		return result, err
+	}
+	prepared, err := workspace.Prepare(ctx, root, filepath.Join(state, "suites"))
+	if err != nil {
+		return result, err
+	}
+	work, err := os.MkdirTemp("", "kmx-workspace-build-*")
+	if err != nil {
+		return result, err
+	}
+	defer os.RemoveAll(work)
+	pulled, err := suiteoras.Pull(ctx, prepared.Path, prepared.Descriptor.Digest.String(), filepath.Join(work, "source"))
+	if err != nil {
+		return result, err
+	}
+	source := pulled.Path
 	platform := agentsuite.Platform{OS: "linux", Architecture: "amd64"}
 	suite, err := agentsuite.ResolveDeploymentSuite(source, platform)
 	if err != nil {
@@ -125,14 +161,31 @@ func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository 
 			return result, errors.New("workspace builds require capability-based inference")
 		}
 	}
-	repository = strings.TrimSuffix(repository, "/")
-	// Content-derived tags avoid silently overwriting another source publication.
-	tag := strings.TrimPrefix(suite.LogicalDigest(), "sha256:")
-	pushed, err := a.PushSuiteRegistry(ctx, source, repository+"/source:"+tag, plainHTTP, false, SuitePushProvenance{Enabled: true})
+	parsed, err := registry.ParseReference(repository)
 	if err != nil {
 		return result, err
 	}
-	result = SuitePublication{Suite: repository + "/source@" + pushed.Descriptor.Digest.String(), LogicalDigest: suite.LogicalDigest(), Platform: platform, Images: map[string]string{}}
+	if err := parsed.ValidateReferenceAsTag(); err != nil {
+		return result, err
+	}
+	repo := parsed.Registry + "/" + parsed.Repository
+	tag := prepared.Descriptor.Digest.Encoded()
+	var pushOptions suiteoras.PushOptions
+	if options.Provenance.Enabled {
+		inputs, err := workspace.SourceFiles(ctx, root, prepared)
+		if err != nil {
+			return result, err
+		}
+		pushOptions, _ = suitePushOptions(ctx, root, options.Provenance, inputs)
+	}
+	if err := workspace.CheckCurrent(ctx, root, prepared); err != nil {
+		return result, err
+	}
+	pushed, err := suiteoras.PushLayoutRegistry(ctx, prepared.Path, repository, plainHTTP, options.Force, prepared.Descriptor, pushOptions)
+	if err != nil {
+		return result, err
+	}
+	result = SuitePublication{Fingerprint: prepared.Fingerprint, Suite: repo + "@" + pushed.Descriptor.Digest.String(), LogicalDigest: suite.LogicalDigest(), Platform: platform, Images: map[string]string{}}
 	result.Indexes = map[string]string{}
 	result.Attested = map[string]bool{}
 	if old, err := ReadSuitePublication(root, name); err == nil && old.Suite == result.Suite && old.LogicalDigest == result.LogicalDigest && len(old.Images) == len(suite.Members()) {
@@ -171,17 +224,6 @@ func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository 
 			return result, errors.New("recorded image set could not be checked; inspect registry access/content before explicitly rebuilding")
 		}
 	}
-	work, err := os.MkdirTemp("", "kmx-workspace-build-*")
-	if err != nil {
-		return result, err
-	}
-	defer os.RemoveAll(work)
-	// Build the pulled snapshot, not a mutable directory that may be edited while
-	// the registry operation or subsequent build is running.
-	pulled, err := suiteoras.PullRegistry(ctx, result.Suite, filepath.Join(work, "source"), plainHTTP)
-	if err != nil {
-		return result, err
-	}
 	snapshot, err := agentsuite.ResolveDeploymentSuite(pulled.Path, platform)
 	if err != nil {
 		return result, err
@@ -196,12 +238,12 @@ func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository 
 		if err != nil {
 			return result, err
 		}
-		ref, err := suiteoras.PushImage(ctx, archive, repository+"/"+member.Agent.ID+":"+tag, platform, plainHTTP)
+		ref, err := suiteoras.PushImage(ctx, archive, repo+"/"+member.Agent.ID+":"+tag, platform, plainHTTP)
 		if err != nil {
 			return result, err
 		}
 		result.Images[member.Agent.ID] = ref
-		result.Indexes[member.Agent.ID] = repository + "/" + member.Agent.ID + "@" + built.IndexDigest
+		result.Indexes[member.Agent.ID] = repo + "/" + member.Agent.ID + "@" + built.IndexDigest
 		result.Attested[member.Agent.ID] = built.HasAttestations
 	}
 	return result, saveWorkspaceRecord(path, result)
@@ -213,11 +255,16 @@ func CheckWorkspacePublication(root, name string, publication SuitePublication) 
 	if _, err := workspaceRecord(root, name, "-images"); err != nil {
 		return err
 	}
-	suite, err := agentsuite.ResolveDeploymentSuite(filepath.Join(root, name), publication.Platform)
+	state, err := config.StateDir()
 	if err != nil {
 		return err
 	}
-	if suite.LogicalDigest() != publication.LogicalDigest {
+	prepared, err := workspace.Prepare(context.Background(), root, filepath.Join(state, "suites"))
+	if err != nil {
+		return err
+	}
+	_, digest, _ := strings.Cut(publication.Suite, "@")
+	if prepared.Name != name || prepared.Descriptor.Digest.String() != digest {
 		return errors.New("local source differs from publication; build/publish the updated suite before lift")
 	}
 	return nil
@@ -261,75 +308,10 @@ type WorkspaceDeployment struct {
 }
 
 func (a *App) ApplyWorkspaceLift(ctx context.Context, root, name string, pub SuitePublication, env imagelift.Environment, prepared *agentruntime.PreparedSuiteDeployment, reviewed string) (agentruntime.SuiteDeploymentReceipt, error) {
-	var receipt agentruntime.SuiteDeploymentReceipt
-	if prepared == nil || prepared.Summary().PlanDigest != reviewed {
-		return receipt, errors.New("reviewed plan identity differs")
-	}
 	if err := CheckWorkspacePublication(root, name, pub); err != nil {
-		return receipt, err
+		return agentruntime.SuiteDeploymentReceipt{}, err
 	}
-	if err := env.Validate(); err != nil {
-		return receipt, err
-	}
-	_, suiteDigest, pinned := strings.Cut(pub.Suite, "@")
-	if !pinned || prepared.Summary().Instance != env.Name || prepared.Summary().ArtifactDigest != suiteDigest {
-		return receipt, errors.New("publication or instance differs from reviewed plan")
-	}
-	if len(prepared.Summary().Members) != len(env.Members) {
-		return receipt, errors.New("member bindings differ from reviewed plan")
-	}
-	// Reconstruct only the pure configuration projection to ensure the private
-	// record stores the same inputs as the retained reviewed plan.
-	source, err := agentsuite.ResolveDeploymentSuite(filepath.Join(root, name), pub.Platform)
-	if err != nil {
-		return receipt, err
-	}
-	projections := map[string]agentsuite.DeploymentMember{}
-	for _, member := range source.Members() {
-		projections[member.Agent.ID] = member
-	}
-	for _, member := range prepared.Summary().Members {
-		binding, ok := env.Members[member.Agent]
-		if !ok || binding.Name != member.Name || binding.Image != pub.Images[member.Agent] {
-			return receipt, errors.New("member selection differs from publication or reviewed plan")
-		}
-		projection, ok := projections[member.Agent]
-		if !ok || projection.BuildProfile.Execution == nil {
-			return receipt, errors.New("reviewed member source missing")
-		}
-		child := env
-		child.Members = nil
-		child.Name = binding.Name
-		child.Inputs = binding.Inputs
-		child.Inference = binding.Inference
-		child.Instructions = projection.Instructions
-		record := agentsuite.ImageDeployment{SchemaVersion: agentsuite.SpecVersion, MediaType: agentsuite.ImageDeploymentMediaType, SuiteReference: pub.Suite, SuiteDigest: suiteDigest, Agent: member.Agent, Platform: pub.Platform, CompositionDigest: projection.CompositionDigest, BuildProfile: projection.BuildProfile.ID, Execution: *projection.BuildProfile.Execution, Inference: projection.Agent.Model.Capabilities}
-		rendered, err := imagelift.Render(binding.Image, record, child)
-		if err != nil {
-			return receipt, err
-		}
-		if rendered.Digest != member.Digest {
-			return receipt, errors.New("deployment bindings changed after plan review")
-		}
-	}
-	// Distinguish deployments with the same friendly name on different targets.
-	key := fmt.Sprintf("%x", sha256.Sum256([]byte(env.ClusterUID+"\x00"+env.Namespace+"\x00"+env.Name)))[:16]
-	path, err := workspaceRecord(root, name, "-"+env.Name+"-"+key+"-deployment")
-	if err != nil {
-		return receipt, err
-	}
-	record := WorkspaceDeployment{WorkspaceName: name, Environment: env, Publication: pub}
-	if err := saveWorkspaceRecord(path, record); err != nil {
-		return receipt, err
-	}
-	receipt, deployErr := prepared.Deploy(ctx, func(summary agentruntime.SuitePlanSummary) error {
-		if summary.PlanDigest != reviewed || summary.Target.ClusterUID != env.ClusterUID || summary.Target.Context != env.Context || summary.Target.Namespace != env.Namespace {
-			return errors.New("deployment target differs from reviewed plan")
-		}
-		return nil
-	})
-	record.Receipt = receipt
-	return receipt, errors.Join(deployErr, saveWorkspaceRecord(path, record))
+	return a.ApplyReleaseLift(ctx, pub.Suite, env, prepared, reviewed)
 }
 
 func DescribePublication(pub SuitePublication) string {

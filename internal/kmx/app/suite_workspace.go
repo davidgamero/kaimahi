@@ -17,7 +17,11 @@ func (a *App) CreateSuiteMember(ctx context.Context, root string, opt workspace.
 	if err := workspace.Create(ctx, root, opt); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(a.Out, "Created native-Orka AgentSuite workspace %s with member %s (not deployed)\n", root, opt.Name)
+	mode := opt.Execution
+	if mode == "" {
+		mode = workspace.NativeExecution
+	}
+	_, err := fmt.Fprintf(a.Out, "Created %s AgentSuite workspace %s with member %s (not deployed)\n", mode, root, opt.Name)
 	return err
 }
 

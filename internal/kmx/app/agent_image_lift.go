@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"oras.land/oras-go/v2/registry"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,6 +118,13 @@ func (a *App) liftSuiteImages(ctx context.Context, reference string, env imageli
 // PrepareSuiteLift is the typed registry-to-plan operation shared by CLI and TUI.
 // The returned plan retains its exact target and rechecks observations on deploy.
 func (a *App) PrepareSuiteLift(ctx context.Context, reference string, env imagelift.Environment) (*agentruntime.PreparedSuiteDeployment, error) {
+	ref, err := registry.ParseReference(reference)
+	if err != nil {
+		return nil, err
+	}
+	if err := ref.ValidateReferenceAsDigest(); err != nil || !strings.Contains(reference, "@sha256:") {
+		return nil, errors.New("release lift requires an immutable SHA256 registry reference")
+	}
 	if err := env.Validate(); err != nil {
 		return nil, err
 	}
@@ -138,6 +146,9 @@ func (a *App) prepareSuiteLift(ctx context.Context, reference string, env imagel
 	defer os.RemoveAll(root)
 	pulled, err := suiteoras.PullRegistry(ctx, reference, filepath.Join(root, "suite"), env.PlainHTTP)
 	if err != nil {
+		return nil, err
+	}
+	if err := CheckImageExecution(ctx, pulled.Path); err != nil {
 		return nil, err
 	}
 	suite, err := agentsuite.ResolveDeploymentSuite(pulled.Path, env.Platform)

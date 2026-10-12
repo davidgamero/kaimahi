@@ -14,7 +14,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/workspace"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/imagelift"
 	agentruntime "github.com/kaimahi-agents/kaimahi/internal/kmx/runtime"
 )
@@ -192,12 +192,14 @@ func (m suiteConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "b":
 			if m.opt.Registry == "" {
-				m.output.SetContent("Supply --registry <registry/repository> to build and publish.")
+				m.output.SetContent("Supply --registry <registry/repository:tag> to build and publish.")
 				return m, nil
 			}
 			m.plan = nil
 			return m, m.work("Building/publishing suite; checking existing images for reuse…", func(ctx context.Context) suiteConsoleResult {
-				pub, err := m.app.PublishSuiteWorkspace(ctx, m.opt.Workspace, entry.Name, m.opt.Registry, m.opt.PlainHTTP, m.opt.Build)
+				options := m.opt.Build
+				options.Provenance = SuitePushProvenance{Enabled: true}
+				pub, err := m.app.PublishSuiteWorkspace(ctx, m.opt.Workspace, entry.Name, m.opt.Registry, m.opt.PlainHTTP, options)
 				entries, _ := ListSuiteWorkspace(m.opt.Workspace)
 				return suiteConsoleResult{entries: entries, err: err, message: "Published: " + DescribePublication(pub) + "\nPress l to bind inference and lift."}
 			})
@@ -274,7 +276,7 @@ func (m suiteConsole) submitForm() (tea.Model, tea.Cmd) {
 		}
 		m.form = ""
 		values := append([]string(nil), m.values...)
-		return m, m.work("Creating local source…", func(context.Context) suiteConsoleResult {
+		return m, m.work("Creating local source…", func(ctx context.Context) suiteConsoleResult {
 			contextTokens, e1 := strconv.Atoi(values[2])
 			outputTokens, e2 := strconv.Atoi(values[3])
 			if e1 != nil || e2 != nil {
@@ -283,7 +285,17 @@ func (m suiteConsole) submitForm() (tea.Model, tea.Cmd) {
 			if filepath.Base(values[0]) != values[0] || strings.ContainsAny(values[0], "/\\") {
 				return suiteConsoleResult{err: errors.New("invalid source name")}
 			}
-			err := agentsuite.CreateHTTPSource(filepath.Join(m.opt.Workspace, values[0]), agentsuite.CreateRequest{Name: values[0], Instructions: values[1], Inference: agentsuite.InferenceRequirements{API: "openai-chat-completions-v1", ContextTokens: contextTokens, OutputTokens: outputTokens}})
+			file, err := os.CreateTemp("", "kmx-instructions-*")
+			if err != nil {
+				return suiteConsoleResult{err: err}
+			}
+			defer os.Remove(file.Name())
+			_, err = file.WriteString(values[1])
+			closeErr := file.Close()
+			if err != nil || closeErr != nil {
+				return suiteConsoleResult{err: errors.Join(err, closeErr)}
+			}
+			err = workspace.Create(ctx, m.opt.Workspace, workspace.CreateOptions{Name: values[0], InstructionsFile: file.Name(), Execution: workspace.ImageExecution, ContextTokens: contextTokens, OutputTokens: outputTokens})
 			entries, _ := ListSuiteWorkspace(m.opt.Workspace)
 			return suiteConsoleResult{entries: entries, err: err, message: "Local source created. Press b to build and publish; l to lift."}
 		})
@@ -307,7 +319,7 @@ func (m suiteConsole) submitForm() (tea.Model, tea.Cmd) {
 			if err != nil {
 				return suiteConsoleResult{err: err}
 			}
-			prepared, err := m.app.PrepareSuiteLift(ctx, pub.Suite, env)
+			prepared, err := m.app.PrepareReleaseLift(ctx, pub.Suite, env)
 			if err != nil {
 				return suiteConsoleResult{err: err}
 			}
@@ -320,7 +332,7 @@ func (m suiteConsole) submitForm() (tea.Model, tea.Cmd) {
 					fmt.Fprintf(&text, "Model: %s\nEndpoint: %s\nCapabilities: operator-declared\n", binding.Inference.Model, binding.Inference.Endpoint)
 				}
 			}
-			text.WriteString("\nEnter deploys this exact plan. Esc cancels. PgUp/PgDn scroll.")
+			text.WriteString("\nagent lift --release " + pub.Suite + " --environment " + value + "\nEnter applies this exact plan. Esc cancels. PgUp/PgDn scroll.")
 			return suiteConsoleResult{plan: prepared, pub: pub, env: env, message: text.String()}
 		})
 	}
@@ -380,9 +392,15 @@ func (a *App) SuiteConsole(opt SuiteConsoleOptions) error {
 	if a.Stdin == nil || !isTerminalFile(a.Stdin) || !isInteractiveTerminal(a.Out) {
 		return errors.New("suite console requires an interactive terminal")
 	}
-	if err := os.MkdirAll(opt.Workspace, 0755); err != nil {
+	cwd, err := os.Getwd()
+	if err != nil {
 		return err
 	}
+	root, err := workspace.Discover(cwd, opt.Workspace)
+	if err != nil {
+		return err
+	}
+	opt.Workspace = root
 	worker := *a
 	worker.Err = io.Discard
 	m := newSuiteConsole(&worker, opt)
@@ -392,6 +410,6 @@ func (a *App) SuiteConsole(opt SuiteConsoleOptions) error {
 		}
 		return msg
 	}
-	_, err := tea.NewProgram(m, tea.WithInput(a.Stdin), tea.WithOutput(a.Out), tea.WithFilter(filter)).Run()
+	_, err = tea.NewProgram(m, tea.WithInput(a.Stdin), tea.WithOutput(a.Out), tea.WithFilter(filter)).Run()
 	return err
 }

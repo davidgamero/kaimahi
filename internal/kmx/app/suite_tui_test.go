@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"io"
-	"path/filepath"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -28,7 +27,7 @@ func TestSuiteConsoleCreatesLocalSourceWithoutCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Source != filepath.Join(root, "hello") {
+	if len(entries) != 1 || entries[0].Source != root {
 		t.Fatal(entries)
 	}
 	if m.busy || m.form != "" {

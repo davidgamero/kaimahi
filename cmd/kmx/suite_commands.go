@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 	agentsuitecore "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
 	agentkitbuilder "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/agentkit"
 	agentsuite "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/oras"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/workspace"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/app"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/version"
 )
@@ -179,11 +181,13 @@ func newSuiteCommand(state *commandState) *cobra.Command {
 
 	var target, pushWorkspace string
 	var pushPlainHTTP, pushForce, pushProvenance, pushRequireProvenance bool
+	var pushBuild app.SuiteBuildOptions
+	var pushAttestations bool
 	push := &cobra.Command{
 		Use:   "push <directory> <reference>",
 		Short: "Push an extracted AgentSuite to an OCI layout or registry",
 		Long: "Push an extracted AgentSuite to an OCI registry, or use --to-layout for a local OCI image layout.\n\n" +
-			"With --workspace <directory>, prepare one native-Orka member and its authored cases, then copy that exact OCI graph. Pass only the destination reference as a positional argument. No member images are required; this does not deploy or evaluate an Agent.\n\n" +
+			"With --workspace <directory>, or one reference inside a workspace.yaml ancestor, prepare the member and authored cases and copy the exact OCI graph. Native members require no images; image-http members build/publish their required image. This does not deploy or evaluate an Agent.\n\n" +
 			"Local OCI layout publication refuses competing KMX writers before opening the destination. After an interrupted publication, inspect any reported writer lock and remove it only when no publisher is running.\n\n" +
 			"Registry authentication is read from the standard Docker credential store for HTTPS and loopback HTTP.\n" +
 			"With --plain-http, non-loopback registries are unauthenticated; auth challenges are refused.\n" +
@@ -199,7 +203,20 @@ func newSuiteCommand(state *commandState) *cobra.Command {
 		Example: "  kmx suite push ./suite registry.example.com/team:v1\n" +
 			"  kmx suite push ./suite --to-layout ./layout agentsuites/team:v1",
 		Args: func(cmd *cobra.Command, args []string) error {
-			if cmd.Flags().Changed("workspace") {
+			if !cmd.Flags().Changed("workspace") {
+				pushWorkspace = ""
+			}
+			if !cmd.Flags().Changed("workspace") && len(args) == 1 {
+				cwd, err := os.Getwd()
+				if err != nil {
+					return err
+				}
+				pushWorkspace, err = workspace.Discover(cwd, "")
+				if err != nil {
+					return err
+				}
+			}
+			if cmd.Flags().Changed("workspace") || pushWorkspace != "" {
 				if strings.TrimSpace(pushWorkspace) == "" || len(args) != 1 {
 					return fmt.Errorf("workspace push requires non-empty --workspace and exactly one destination reference")
 				}
@@ -214,7 +231,10 @@ func newSuiteCommand(state *commandState) *cobra.Command {
 			return usageArgs(2, 2, "kmx suite push <directory> [--to-layout <layout>] [--plain-http] [--force] [--provenance=false] [--require-provenance] <reference>")(cmd, args)
 		},
 	}
-	push.Flags().StringVar(&pushWorkspace, "workspace", "", "prepare and publish the exact native-Orka suite from this workspace")
+	push.Flags().StringVar(&pushWorkspace, "workspace", "", "workspace root (default: nearest workspace.yaml ancestor for one-reference push)")
+	push.Flags().StringVar(&pushBuild.Builder, "builder", "", "buildx builder for image-http members")
+	push.Flags().BoolVar(&pushAttestations, "attestations", true, "request image SBOM and provenance")
+	push.Flags().BoolVar(&pushBuild.RequireAttestations, "require-attestations", false, "require image attestations")
 	_ = push.MarkFlagDirname("workspace")
 	push.Flags().StringVar(&target, "to-layout", "", "local OCI image-layout target directory")
 	push.Flags().BoolVar(&pushPlainHTTP, "plain-http", false, "use HTTP instead of HTTPS for a registry target")
@@ -223,7 +243,7 @@ func newSuiteCommand(state *commandState) *cobra.Command {
 	push.Flags().BoolVar(&pushRequireProvenance, "require-provenance", false, "fail without moving the tag if provenance cannot be attached")
 	_ = push.MarkFlagDirname("to-layout")
 	push.RunE = func(cmd *cobra.Command, args []string) error {
-		a := &app.App{Out: cmd.OutOrStdout()}
+		a := &app.App{Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr()}
 		var result agentsuite.PushResult
 		var err error
 		if pushRequireProvenance && !pushProvenance {
@@ -250,8 +270,41 @@ func newSuiteCommand(state *commandState) *cobra.Command {
 				return fmt.Errorf("--provenance and --require-provenance cannot be used with --to-layout")
 			}
 		}
-		if cmd.Flags().Changed("workspace") {
-			result, err := a.PushSuiteWorkspace(cmd.Context(), pushWorkspace, args[0], target, pushPlainHTTP, pushForce, provenance)
+		if cmd.Flags().Changed("workspace") || pushWorkspace != "" {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			root, err := workspace.Discover(cwd, pushWorkspace)
+			if err != nil {
+				return err
+			}
+			summary, err := workspace.Describe(root)
+			if err != nil {
+				return err
+			}
+			if summary.Execution == workspace.ImageExecution {
+				if target != "" {
+					return fmt.Errorf("image workspace publication currently requires a container registry")
+				}
+				pushBuild.DisableAttestations = !pushAttestations
+				pushBuild.Provenance = provenance
+				pushBuild.Force = pushForce
+				ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+				defer stop()
+				pub, err := a.PublishSuiteWorkspace(ctx, root, summary.Name, args[0], pushPlainHTTP, pushBuild)
+				if err != nil {
+					return &suiteDiagnosticError{err}
+				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "Workspace: %s\nSuite: %s\n", root, pub.Suite)
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(pub)
+			}
+			for _, flag := range []string{"builder", "attestations", "require-attestations"} {
+				if cmd.Flags().Changed(flag) {
+					return fmt.Errorf("--%s requires an image-http member", flag)
+				}
+			}
+			result, err := a.PushSuiteWorkspace(cmd.Context(), root, args[0], target, pushPlainHTTP, pushForce, provenance)
 			if err != nil {
 				return &suiteDiagnosticError{err}
 			}
@@ -259,6 +312,11 @@ func newSuiteCommand(state *commandState) *cobra.Command {
 				return printPushedProvenance(cmd, result)
 			}
 			return nil
+		}
+		for _, flag := range []string{"builder", "attestations", "require-attestations"} {
+			if cmd.Flags().Changed(flag) {
+				return fmt.Errorf("--%s requires an image-http workspace", flag)
+			}
 		}
 		if cmd.Flags().Changed("to-layout") {
 			result, err = a.PushSuite(cmd.Context(), args[0], target, args[1])

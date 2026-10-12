@@ -88,14 +88,18 @@ run(kube + ["-n", a.namespace, "rollout", "status", "deployment/kmx-lift-model",
 with tempfile.TemporaryDirectory(prefix="kmx-suite-smoke-") as work:
     workspace = Path(a.workspace or work)
     workspace.mkdir(parents=True, exist_ok=True)
-    suite, archive, envfile = [str(workspace / name) for name in ["hello-world", "agent.oci.tar", a.namespace + "-environment.json"]]
-    if not Path(suite).exists():
-        run([kmx, "suite", "create", suite, "--instructions",
-             "Answer greetings briefly. Identify yourself as the AgentSuite sample."])
-    publication = json.loads(run([kmx, "suite", "publish", "hello-world", "--workspace", str(workspace),
-                                  "--registry", a.registry] + transport + build_options))
+    archive, envfile = [str(Path(work) / name) for name in ["agent.oci.tar", "environment.json"]]
+    if not (workspace / "workspace.yaml").exists():
+        instructions = Path(work) / "instructions.md"
+        instructions.write_text("Answer greetings briefly. Identify yourself as the AgentSuite sample.")
+        run([kmx, "agent", "create", "hello-world", "--workspace", str(workspace),
+             "--execution", "image-http", "--instructions", str(instructions)])
+    publication = json.loads(run([kmx, "suite", "push", "--workspace", str(workspace),
+                                  a.registry.rstrip("/") + ":smoke"] + transport + build_options))
     suite_ref, image_ref = publication["suite"], publication["images"]["hello-world"]
     if a.kind_name:
+        suite = str(Path(work) / "source")
+        run([kmx, "suite", "pull", suite_ref, "--output", suite] + transport)
         run([kmx, "suite", "build", suite, "--agent", "hello-world", "--platform", "linux/amd64",
              "--suite-ref", suite_ref, "--output", archive] + transport + build_options)
         # Assert the newly built manifest matches the published image before preload.
@@ -121,7 +125,7 @@ with tempfile.TemporaryDirectory(prefix="kmx-suite-smoke-") as work:
     if a.acr_pull_credentials:
         environment["imagePullSecrets"] = ["registry-pull"]
         Path(envfile).write_text(json.dumps(environment))
-    command = [kmx, "suite", "lift", "hello-world", "--workspace", str(workspace), "--environment", envfile]
+    command = [kmx, "agent", "lift", "--release", suite_ref, "--environment", envfile]
     # Preserve the repository's existing explicit remote-context guard contract.
     os.environ["KAIMAHI_CONFIRM"] = a.context
     plan = json.loads(run(command + ["--plan"]))
@@ -141,7 +145,7 @@ print('authenticated agent response verified')'''
     changed = json.loads(run(command))
     assert changed["state"] == "ready" and changed["plan"]["planDigest"] != plan["planDigest"]
     assert [r["UID"] for r in receipt["members"][0]["resources"]] == [r["UID"] for r in changed["members"][0]["resources"]]
-    answer = run([kmx, "suite", "run", "hello-world", "--workspace", str(workspace),
+    answer = run([kmx, "suite", "run", "--workspace", str(workspace),
                   "--deployment", a.namespace, "--member", "hello-world", "--prompt", "Hello"])
     assert answer == "Hello from the AgentSuite sample. Model: sample-model-b", answer
     current_image = run(kube + ["-n", a.namespace, "get", "deployment", "hello-world", "-o",

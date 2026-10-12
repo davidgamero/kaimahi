@@ -18,13 +18,26 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/workspace"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/imagelift"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/portforward"
 )
 
 func ReadWorkspaceDeployments(root, name string) ([]WorkspaceDeployment, error) {
-	dirs, err := os.ReadDir(filepath.Join(root, ".kmx"))
+	summary, err := workspace.Describe(root)
+	if err != nil {
+		return nil, err
+	}
+	if summary.Name != name {
+		return nil, errors.New("workspace selection changed")
+	}
+	base, err := config.StateDir()
+	if err != nil {
+		return nil, err
+	}
+	state := filepath.Join(base, "suite-placements")
+	dirs, err := os.ReadDir(state)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -33,10 +46,10 @@ func ReadWorkspaceDeployments(root, name string) ([]WorkspaceDeployment, error) 
 	}
 	out := []WorkspaceDeployment{}
 	for _, file := range dirs {
-		if file.IsDir() || !strings.HasPrefix(file.Name(), name+"-") || !strings.HasSuffix(file.Name(), "-deployment.json") {
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".json") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(root, ".kmx", file.Name()))
+		data, err := os.ReadFile(filepath.Join(state, file.Name()))
 		if err != nil {
 			return nil, err
 		}

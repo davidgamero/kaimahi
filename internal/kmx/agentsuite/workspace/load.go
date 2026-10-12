@@ -50,6 +50,9 @@ func Load(ctx context.Context, p *Prepared) (*NativeSuite, error) {
 		return nil, errors.New("invalid packaged suite manifest")
 	}
 	var native nativeRecord
+	if files[nativePath] == nil {
+		return nil, errors.New("native evaluation requires a native-orka workspace; image execution cannot substitute it")
+	}
 	if err := spec.Unmarshal(files[nativePath], &native); err != nil {
 		return nil, errors.New("invalid packaged native metadata")
 	}

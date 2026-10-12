@@ -30,7 +30,7 @@ type Environment struct {
 	Namespace        string                       `json:"namespace"`
 	Adapter          string                       `json:"adapter"`
 	Platform         agentsuite.Platform          `json:"platform"`
-	Inputs           map[string]InputBinding      `json:"inputs"`
+	Inputs           map[string]InputBinding      `json:"inputs,omitempty"`
 	ImagePullSecrets []string                     `json:"imagePullSecrets,omitempty"`
 }
 
