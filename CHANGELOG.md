@@ -24,6 +24,11 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 ### Added
 
+- Draft image-suite lift and console workflow with deployment-bound inference,
+  typed review and image-backed status/invocation. This experimental path is
+  separate from native workspace evaluation/promotion; see the
+  [image workspace guide](docs/suite-image-workspace.md).
+
 - Experimental inference capability/execution records, source-linked image builds
   with deployment-time model configuration, and `suite push-image` publication
   preserving the index and attestations. Native workspace behavior is unchanged.

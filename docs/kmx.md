@@ -1,5 +1,8 @@
 # `kmx` — agent tooling with Orka as the default
 
+The draft [image workspace](suite-image-workspace.md) adds source/build/lift and
+console operations for standalone HTTP images. It is not native suite promotion.
+
 Experimental image preparation also supports `suite build --suite-ref
 <registry/repository@sha256:...>` and `suite push-image <archive> <reference>`.
 The former compares the source graph with its published snapshot and embeds a

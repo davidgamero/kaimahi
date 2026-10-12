@@ -79,6 +79,13 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
 
 ## Verification
 
+Draft image-suite integration adds `suite create/publish/lift/run` and
+`console --workspace` for the HTTP image prototype. It does not change the native
+workspace source format or reassign root `lift`. Keep this path explicitly
+experimental until it converges with #437/#442 and #404; see
+`docs/suite-image-workspace.md`. Inference is deployment-bound, and image-only
+completeness must not become a rule for native suites requiring zero images.
+
 The experimental `suite build --suite-ref` mode checks a digest-pinned published
 source and emits image execution metadata. Capability-based sources bind models
 at deployment, so omit model build flags. `suite push-image` publishes the full

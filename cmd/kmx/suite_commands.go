@@ -28,6 +28,7 @@ func newSuiteCommand(state *commandState) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
+	addSuiteWorkspaceCommands(group, state)
 	var output string
 	validate := &cobra.Command{
 		Use:   "validate <path>",
