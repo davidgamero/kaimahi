@@ -79,6 +79,12 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
 
 ## Verification
 
+The experimental `suite build --suite-ref` mode checks a digest-pinned published
+source and emits image execution metadata. Capability-based sources bind models
+at deployment, so omit model build flags. `suite push-image` publishes the full
+image index/attestation graph and prints the runnable platform digest. These
+image operations do not alter native workspace authoring or add lift support.
+
 Run checks appropriate to the changed paths as described in CONTRIBUTING.md.
 Command changes normally require `go test ./cmd/kmx`, affected operation-package
 tests, documentation links, repository-map and legacy-runtime checks. These

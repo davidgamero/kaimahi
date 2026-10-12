@@ -24,6 +24,10 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 ### Added
 
+- Experimental inference capability/execution records, source-linked image builds
+  with deployment-time model configuration, and `suite push-image` publication
+  preserving the index and attestations. Native workspace behavior is unchanged.
+
 - `kmx agent create --workspace` authors one native-Orka AgentSuite member offline.
   `kmx suite push --workspace` prepares and publishes its exact OCI graph, including
   authored cases, with no member image build or cluster access. Existing bundle

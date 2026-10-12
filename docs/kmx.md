@@ -1,5 +1,15 @@
 # `kmx` — agent tooling with Orka as the default
 
+Experimental image preparation also supports `suite build --suite-ref
+<registry/repository@sha256:...>` and `suite push-image <archive> <reference>`.
+The former compares the source graph with its published snapshot and embeds a
+publisher execution declaration. The latter copies the image index and its
+attestations while returning the runnable platform digest. Capability-based
+agents omit `--model-base-url` and `--model-api-key-env`; selected inference is
+supplied by a deployment adapter through the declared mounted configuration ABI.
+This slice adds no image lift, TUI or promotion workflow. Container registry
+transport and credentials follow the existing registry policy below.
+
 [Orka](orka.md) remains the first-class platform and the default for every
 existing workflow. Kaimahi's front door is `kmx orka` for installation/status
 and `kmx agent create` for native Provider + Agent authoring. The selected

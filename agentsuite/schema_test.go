@@ -2,6 +2,8 @@ package agentsuite
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -245,7 +247,19 @@ func compileReferenceSchema(t *testing.T, name string) *jsonschema.Resolved {
 	if err := json.Unmarshal(data, &schema); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := schema.Resolve(nil)
+	resolved, err := schema.Resolve(&jsonschema.ResolveOptions{Loader: func(uri *url.URL) (*jsonschema.Schema, error) {
+		name := filepath.Base(uri.Path)
+		if uri.String() != "https://kaimahi.dev/schemas/agentsuite/v1/"+name || name != "inference.schema.json" && name != "execution.schema.json" {
+			return nil, fmt.Errorf("unsupported schema reference")
+		}
+		data, err := os.ReadFile(filepath.Join("schema", name))
+		if err != nil {
+			return nil, err
+		}
+		var referenced jsonschema.Schema
+		err = json.Unmarshal(data, &referenced)
+		return &referenced, err
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
