@@ -10,10 +10,11 @@ import (
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/app"
 )
 
-func newAgentCommand(state *commandState) *cobra.Command {
-	group := &cobra.Command{Use: "agent", Short: "Create agents; inspect and chat with Orka agents", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() }}
-	group.AddCommand(newAgentListCommand(state), newAgentShowCommand(state), newAgentCreateCommand(state), newAgentLiftCommand(state), newAgentRetireCommand(state), newAgentStatusCommand(state), newAgentEvaluateCommand(state), newAgentEvalCommand(), newAgentVerifyCommand(), newAgentRunCommand(state), newAgentChatCommand(state),
-		retiredCommand("edit", "kubectl --context <ctx> -n <namespace> edit agents.core.orka.ai <name>; inspect with kmx --context <ctx> agent show <name> --namespace <namespace>"))
+func newBundleCommand(state *commandState) *cobra.Command {
+	// Hidden: legacy agent.yaml bundles are removed once digest lift and the
+	// quickstart/console callers reach suite-path parity.
+	group := &cobra.Command{Use: "bundle", Short: "Legacy agent.yaml bundles (being removed)", Hidden: true, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() }}
+	group.AddCommand(newAgentLiftCommand(state), newAgentRetireCommand(state), newAgentStatusCommand(state), newAgentEvaluateCommand(state), newAgentVerifyCommand())
 	return group
 }
 
@@ -29,7 +30,7 @@ func newAgentShowCommand(state *commandState) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show <name>",
 		Short: "Show an Orka Agent and the chain it depends on",
-		Args:  usageArgs(1, 1, "kmx agent show <name> --namespace <namespace>"),
+		Args:  usageArgs(1, 1, "kmx orka show <name> --namespace <namespace>"),
 	}
 	cmd.Flags().StringVar(&opt.Namespace, "namespace", "", "namespace the Orka controller watches (required)")
 	cmd.Flags().StringVarP(&opt.Output, "output", "o", "table", "output: table|json")
@@ -46,11 +47,11 @@ func newAgentListCommand(state *commandState) *cobra.Command {
 		Short: "List the Orka Agents in a namespace",
 		Long: `List Orka Agent resources.
 
-These are the agents kmx agent create writes and kmx agent show inspects.
+These are the live agents kmx create --live writes and kmx orka show inspects.
 
 --namespace selects the namespace the Orka controller watches. It defaults to
-the namespace the pinned installer uses, which is the same default kmx agent
-chat resolves against.`,
+the namespace the pinned installer uses, which is the same default kmx chat
+resolves against.`,
 		Args: cobra.NoArgs,
 	}
 	cmd.Flags().StringVarP(&output, "output", "o", "table", "output: table|json|yaml")
@@ -62,26 +63,37 @@ chat resolves against.`,
 
 func newAgentCreateCommand(state *commandState) *cobra.Command {
 	var opt app.CreateOptions
-	var workspaceRoot string
+	var workspaceRoot, workspaceVersion string
+	var workspaceRuntime workspace.RuntimeProfile
+	var live bool
 	cmd := &cobra.Command{
 		Use:   "create [name]",
-		Short: "Create an Orka or kagent declarative Agent",
-		Long: `Create an Orka or kagent Agent as reviewable Kubernetes YAML.
+		Short: "Author an offline workspace member, or create live Orka or kagent agents",
+		Long: `Create one native workspace member offline by default.
+Orka is the default runtime; --runtime kagent authors exact v0.10.3 Go
+private metadata. --runtime-version may explicitly select only v0.10.3.
+This does not enable suite kagent placement or evaluation.
 
-Named creation applies to the selected cluster by default. Use --no-apply to
+A name, exact --model and file-valued --instructions are required; --description
+is optional. Discover the nearest ancestor workspace.yaml. An existing workspace
+has a one-member limit: use a new --workspace directory for another member.
+Without a workspace, a visible terminal can confirm initialization in the current
+directory. Scripts must pass --workspace <directory> to initialize explicitly.
+No cluster settings are loaded, no image is built and no Agent is deployed.
+Workspace evaluation and release lift are not yet available.
+
+Use --live for direct Orka or kagent resources, including bundle/YAML previews.
+It bypasses workspace discovery and conflicts with --workspace. All live-only
+flags require --live; --runtime kagent never selects live mode implicitly.
+Live named creation applies to the selected cluster by default. Use --no-apply to
 validate and write local artifacts without applying, or --dry-run for server
 validation and local artifacts. --out - writes YAML to stdout without applying.
 With --out -, explicitly set --bundle-path to also write an authored bundle.
-Omit the name for guided Orka creation in a terminal; kagent creation requires a name.
+With --live, omit the name for guided Orka creation in a terminal; kagent creation requires a name.
 Select explicitly the namespace the runtime controller watches. Provider type, model
 identifier and a separately provisioned Secret are required.
-With --workspace <directory>, named creation instead authors one native-Orka suite
-member offline. Only --model, --instructions (file) and --description are accepted;
-no cluster settings are loaded, no image is built and no Agent is deployed.
-Workspace evaluation and release lift are not yet available.
-
 This command does not build or deploy application images. Keep your Deployment
-or chart. Interactive agent chat and kmx agent list are Orka-only.
+or chart. Interactive kmx chat and kmx orka list are Orka-only.
 
 Orka creation:
 The generated resources include a Provider and Agent. Model identifiers include
@@ -110,30 +122,36 @@ loopback HTTP through a context-pinned port-forward. Fresh names and UID checks
 do not bind returned result bytes to a UID. Dry-run tests neither access nor execution.
 
 kagent creation:
-With --runtime kagent, create targets a preinstalled exact kagent v0.10.2 and
+With --live --runtime kagent, create targets a preinstalled exact kagent v0.10.2 and
 requires a name and --description. --kagent-runtime selects go or python. kagent tools use exactly
 one server:tool1,tool2 binding; its Secret skeleton is review-only, and online
 deployment creates ModelConfig then Agent without adoption or rollback. With
 --task, kagent stores the full task prompt, history, and answer in its database;
 default upstream session retention is unlimited. Kubernetes audit policy may
 also capture Service-proxy request and response bodies.`,
-		Example: `  # Guided Orka creation (terminal required)
-  kmx agent create
+		Example: `  # Offline workspace member; explicit initialization needs no terminal
+  kmx create greeter --workspace ./greeter --model qwen-3.5-2b --instructions instructions.md
+
+  # Guided live Orka creation (terminal required)
+  kmx create --live
 
   # Offline YAML preview; no cluster access
-  kmx agent create preview --namespace orka-system \
+  kmx create --live preview --namespace orka-system \
     --provider-type openai --model qwen2.5:3b --secret local-provider-key \
     --base-url http://ollama.ollama.svc.cluster.local:11434/v1 --out -
 
   # Also persist the authored bundle
-  kmx agent create preview --namespace orka-system \
+  kmx create --live preview --namespace orka-system \
     --provider-type openai --model qwen2.5:3b --secret local-provider-key \
     --base-url http://ollama.ollama.svc.cluster.local:11434/v1 --out - --bundle-path agents/preview`,
 	}
-	cmd.Flags().StringVar(&workspaceRoot, "workspace", "", "author one native-Orka suite member in this workspace, offline")
+	cmd.Flags().BoolVar(&live, "live", false, "create live Orka or kagent resources or legacy bundle/YAML previews")
+	cmd.Flags().StringVar(&workspaceRoot, "workspace", "", "select an exact workspace directory (initialize without prompting if absent)")
 	_ = cmd.MarkFlagDirname("workspace")
 	cmd.Flags().StringVar(&opt.Runtime, "runtime", "orka", "agent runtime: orka or kagent")
-	cmd.Flags().StringVar(&opt.KagentRuntime, "kagent-runtime", "go", "kagent declarative runtime: go or python")
+	cmd.Flags().StringVar(&opt.KagentRuntime, "kagent-runtime", "go", "kagent declarative runtime (workspace: Go only; live create: go or python)")
+	cmd.Flags().StringVar(&workspaceVersion, "runtime-version", "v0.10.3", "workspace-only runtime profile (kagent: v0.10.3)")
+	_ = cmd.RegisterFlagCompletionFunc("runtime-version", staticCompletion([]string{"v0.10.3"}))
 	cmd.Flags().StringVar(&opt.Namespace, "namespace", "", "explicit target namespace; the selected runtime controller must watch it (required)")
 	cmd.Flags().StringVar(&opt.Description, "description", "", "one-line description")
 	cmd.Flags().StringVar(&opt.ProviderType, "provider-type", "", "Provider type: openai, anthropic or azure-openai (required)")
@@ -167,17 +185,35 @@ also capture Service-proxy request and response bodies.`,
 	_ = cmd.RegisterFlagCompletionFunc("provider-type", staticCompletion([]string{"openai", "anthropic", "azure-openai"}))
 	_ = cmd.RegisterFlagCompletionFunc("schema-target", staticCompletion([]string{"v0.2.0", "v0.1.3", "main"}))
 	cmd.Args = func(cmd *cobra.Command, args []string) error {
-		if cmd.Flags().Changed("workspace") {
-			if strings.TrimSpace(workspaceRoot) == "" || len(args) != 1 {
-				return fmt.Errorf("workspace creation requires a name and non-empty --workspace directory")
-			}
+		if cmd.Flags().Changed("workspace") && strings.TrimSpace(workspaceRoot) == "" {
+			return fmt.Errorf("workspace creation requires a non-empty --workspace directory")
+		}
+		if live && cmd.Flags().Changed("workspace") {
+			return fmt.Errorf("--live cannot be used with --workspace")
+		}
+		if !live {
 			if err := validateWorkspaceCreateFlags(cmd, state); err != nil {
 				return err
+			}
+			if len(args) != 1 {
+				return fmt.Errorf("workspace creation requires a name: kmx create <name> --model <model> --instructions <file>; use kmx create --live for guided Orka creation")
+			}
+			workspaceRuntime = workspace.RuntimeProfile{ID: opt.Runtime}
+			if opt.Runtime == "kagent" {
+				if workspaceVersion != "v0.10.3" || opt.KagentRuntime != "go" {
+					return fmt.Errorf("workspace kagent supports only --runtime-version v0.10.3 and --kagent-runtime go")
+				}
+				workspaceRuntime.Version, workspaceRuntime.Engine = workspaceVersion, opt.KagentRuntime
+			} else if opt.Runtime != "orka" || cmd.Flags().Changed("runtime-version") || cmd.Flags().Changed("kagent-runtime") {
+				return fmt.Errorf("workspace --runtime must be orka without version/engine or exact kagent v0.10.3 go")
 			}
 			if strings.TrimSpace(opt.Model) == "" || strings.TrimSpace(opt.Instructions) == "" {
 				return fmt.Errorf("workspace creation requires --model and --instructions <file>")
 			}
 			return nil
+		}
+		if cmd.Flags().Changed("runtime-version") {
+			return fmt.Errorf("--runtime-version is only for offline authoring; live kagent create remains v0.10.2")
 		}
 		if strings.TrimSpace(opt.Runtime) != opt.Runtime {
 			return fmt.Errorf("--runtime must be exactly orka or kagent")
@@ -186,10 +222,10 @@ also capture Service-proxy request and response bodies.`,
 			return fmt.Errorf("unsupported agent runtime; use orka or kagent")
 		}
 		if opt.Runtime == "kagent" && len(args) != 1 {
-			return fmt.Errorf("usage: kmx agent create <name> --runtime kagent [flags]")
+			return fmt.Errorf("usage: kmx create --live <name> --runtime kagent [flags]")
 		}
 		if len(args) > 1 {
-			return fmt.Errorf("usage: kmx agent create [<name>] [flags]")
+			return fmt.Errorf("usage: kmx create --live [<name>] [flags]")
 		}
 		if opt.Runtime != "kagent" && cmd.Flags().Changed("kagent-runtime") {
 			return fmt.Errorf("--kagent-runtime requires --runtime kagent")
@@ -218,10 +254,10 @@ also capture Service-proxy request and response bodies.`,
 		return a.CreateAgent(opt)
 	})
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		if cmd.Flags().Changed("workspace") {
-			a := &app.App{Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr()}
+		if !live {
+			a := &app.App{Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr(), Stdin: state.deps.stdin}
 			return a.CreateSuiteMember(cmd.Context(), workspaceRoot, workspace.CreateOptions{
-				Name: args[0], Description: opt.Description, Model: opt.Model, InstructionsFile: opt.Instructions,
+				Name: args[0], Description: opt.Description, Model: opt.Model, InstructionsFile: opt.Instructions, Runtime: workspaceRuntime,
 			})
 		}
 		return runNative(cmd, args)
@@ -232,8 +268,8 @@ also capture Service-proxy request and response bodies.`,
 func newAgentChatCommand(state *commandState) *cobra.Command {
 	var verbose bool
 	var runtime, namespace, azureDiscovery, bundles string
-	usage := "kmx agent chat [--namespace <namespace>] <name> [message]"
-	cmd := &cobra.Command{Use: "chat <name> [message...]", Short: "Chat with an Orka Agent", Long: "Open an interactive chat session with an Orka Agent. An optional message is sent as the first turn; for a one-shot Task use kmx agent run.", Args: usageArgs(1, -1, usage)}
+	usage := "kmx chat [--namespace <namespace>] <name> [message]"
+	cmd := &cobra.Command{Use: "chat <name> [message...]", Short: "Chat with an Orka Agent", Long: "Open an interactive chat session with an Orka Agent. An optional message is sent as the first turn; for a one-shot Task use kmx run.", Args: usageArgs(1, -1, usage)}
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "show chat WORKING and TIMING details")
 	cmd.Flags().StringVar(&runtime, "runtime", "auto", "agent runtime: auto (detect the Orka Agent) or orka")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Orka Agent namespace (default: "+app.OrkaNamespace+")")
@@ -248,10 +284,10 @@ func newAgentChatCommand(state *commandState) *cobra.Command {
 	cmd.ValidArgsFunction = completeLiveAgents
 	cmd.Args = func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("session") {
-			return fmt.Errorf("--session is retired: Orka chat has no resumable server-side session; use kmx agent chat --namespace <ns> <name>")
+			return fmt.Errorf("--session is retired: Orka chat has no resumable server-side session; use kmx chat --namespace <ns> <name>")
 		}
 		if cmd.Flags().Changed("json") {
-			return fmt.Errorf("--json is retired: there is no raw A2A JSON equivalent for an existing Agent; use kmx agent chat --namespace <ns> <name> for interactive chat")
+			return fmt.Errorf("--json is retired: there is no raw A2A JSON equivalent for an existing Agent; use kmx chat --namespace <ns> <name> for interactive chat")
 		}
 		return usageArgs(1, -1, usage)(cmd, args)
 	}

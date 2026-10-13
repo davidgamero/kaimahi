@@ -94,7 +94,7 @@ func (a *App) guardOrkaMutation(ctx context.Context, opt CreateOptions, reconcil
 	}
 	command := a.InvocationCommand
 	if command == "" {
-		command = a.operationCommand("agent", "create", opt.Name)
+		command = a.operationCommand("create", "--live", opt.Name)
 	}
 	action := "create Orka Provider and Agent in " + opt.Namespace
 	if opt.Task != "" && !opt.DryRun {
@@ -154,6 +154,11 @@ type orkaStagedResource struct {
 // It returns the Agent's identity so a lifecycle Deploy can name it. A
 // --dry-run create writes nothing and returns a zero identity.
 func (a *App) createOrkaStaged(ctx context.Context, opt CreateOptions, bundle *scaffold.OrkaBundle, artifact func(provenance string) (string, error), resources *[]orkaStagedResource, reconcile *agentruntime.RenderedBundle) (agent orkaIdentity, err error) {
+	for _, doc := range []map[string]any{bundle.Provider, bundle.Agent} {
+		if err := refuseOrkaSuiteDocument(doc); err != nil {
+			return orkaIdentity{}, err
+		}
+	}
 	stage := "Validate schemas and prerequisites"
 	report := func(status string, err error) {
 		if a.operationProgress != nil {
@@ -451,21 +456,28 @@ type orkaObject struct {
 }
 
 func (a *App) createOrkaObject(ctx context.Context, namespace string, doc map[string]any) (orkaIdentity, error) {
+	id, _, err := a.createOrkaObjectObserved(ctx, namespace, doc)
+	return id, err
+}
+
+// Keep the CREATE observation available to callers that bind admitted behavior.
+// A failed or ambiguous create is never followed by a recovery read.
+func (a *App) createOrkaObjectObserved(ctx context.Context, namespace string, doc map[string]any) (orkaIdentity, []byte, error) {
 	id := orkaIdentity{Kind: doc["kind"].(string), Name: orkaObjectName(doc)}
 	body, err := json.Marshal(doc)
 	if err != nil {
-		return id, err
+		return id, nil, err
 	}
 	raw, err := a.orkaCapture(ctx, body, "-n", namespace, "create", "--validate=strict", "-f", "-", "-o", "json")
 	if err != nil {
-		return id, fmt.Errorf("create %s/%s failed or was ambiguous; it may exist or be running. No execution retry, adoption or cleanup: %w", id.Kind, id.Name, err)
+		return id, nil, fmt.Errorf("create %s/%s failed or was ambiguous; it may exist or be running. No execution retry, adoption or cleanup: %w", id.Kind, id.Name, err)
 	}
 	var object orkaObject
 	if err := json.Unmarshal(raw, &object); err != nil || object.Kind != id.Kind || object.Metadata.Name != id.Name || object.Metadata.Namespace != namespace || object.Metadata.UID == "" || object.Metadata.Generation < 1 {
-		return id, fmt.Errorf("create %s/%s returned no valid identity; it may exist or be running. No retry", id.Kind, id.Name)
+		return id, nil, fmt.Errorf("create %s/%s returned no valid identity; it may exist or be running. No retry", id.Kind, id.Name)
 	}
 	id.UID, id.Generation = object.Metadata.UID, object.Metadata.Generation
-	return id, nil
+	return id, raw, nil
 }
 
 func (a *App) readOrkaObject(ctx context.Context, namespace string, id orkaIdentity) (*orkaObject, error) {

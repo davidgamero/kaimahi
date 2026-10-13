@@ -55,8 +55,9 @@ looking for a spelling instead of a replacement. An existing legacy lift can
 still be inspected and torn down with `kmx aks down`; what is refused is
 creating or resuming one.
 
-The deprecated `kmx lift` still requires `--payload` so existing scripts cannot
-silently change platform. Both names use the same run records and teardown.
+Root `lift` and `lift down` aliases are removed outright. Use `kmx aks up`
+and `kmx aks down`; existing run records and historical ownership teardown
+remain unchanged.
 
 **This is a fresh-install path, not a version upgrade.** An existing v0.1.3
 manifest installation or foreign Helm release is refused. On an existing AKS
@@ -80,7 +81,7 @@ exists, so the phase installs the platform and names the step that is yours:
 ```bash
 printf %s "$ORKA_API_KEY" | kubectl --context <cluster> -n orka-system \
   create secret generic <name> --from-file=api-key=/dev/stdin
-kmx --context <cluster> agent create <agent> --namespace orka-system \
+kmx --context <cluster> create --live <agent> --namespace orka-system \
   --provider-type openai --model <model> --secret <name> --base-url <endpoint>
 ```
 
@@ -94,7 +95,7 @@ and a newline there corrupts the Authorization header on every request. See
 [models](models.md) for the same approach.
 
 The endpoint is your model backend, not the Kaimahi model seam. To lift a
-bundle onto an existing Ready Provider, use [`kmx agent lift`](agent-lift.md)
+bundle onto an existing Ready Provider, use [`kmx bundle lift`](agent-lift.md)
 with `--inference provider:<name>`.
 
 The banner names the account, subscription name and destination. `--plan` stops

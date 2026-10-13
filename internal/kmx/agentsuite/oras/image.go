@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -21,6 +24,46 @@ type ResolvedImage struct {
 	Reference  string
 	Descriptor ocispec.Descriptor
 	Deployment agentsuite.ImageDeployment
+}
+
+// PrepareImageBuildSource reads the exact published artifact and checks every
+// packaged file against the local directory, including supplemental metadata and
+// cases. The build consumes the published bytes, never a second read of source.
+// Output must be a new directory inside a caller-owned temporary parent.
+func PrepareImageBuildSource(ctx context.Context, source, reference, output string, plainHTTP bool) error {
+	remote, err := ReadArtifactRegistry(ctx, reference, plainHTTP)
+	if err != nil {
+		return err
+	}
+	stage, store, packed, err := packDirectory(ctx, source)
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stage)
+	local, err := readArtifact(ctx, store, packed.Descriptor, packed.Descriptor.Digest.String())
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(local.files, remote.files) {
+		return errors.New("local and published suite content differs, including supplemental metadata and cases")
+	}
+	if err := os.Mkdir(output, 0o700); err != nil {
+		return err
+	}
+	for name, data := range remote.files {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// The artifact reader has already confined and validated every path.
+		path := filepath.Join(output, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
 }
 
 // ResolveImageRegistry reads verified manifests and config without extracting or

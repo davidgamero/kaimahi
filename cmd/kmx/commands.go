@@ -10,19 +10,6 @@ import (
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
 )
 
-func newCtxCommand(state *commandState) *cobra.Command {
-	cmd := &cobra.Command{Use: "ctx [context]", Short: "Show or select the Kubernetes context", Args: usageArgs(0, 1, "kmx ctx [<context>]")}
-	cmd.RunE = appRun(state, func(a *app.App) error {
-		value := ""
-		if len(cmd.Flags().Args()) == 1 {
-			value = cmd.Flags().Arg(0)
-		}
-		return a.Ctx(value)
-	})
-	cmd.ValidArgsFunction = completeContexts
-	return cmd
-}
-
 func newContextCommand(state *commandState) *cobra.Command {
 	group := &cobra.Command{Use: "context", Short: "Show or select KMX's Kubernetes access context", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() }}
@@ -99,8 +86,8 @@ not run for an existing Agent. The first Task uses the Agent's deployed Provider
 	flags.StringVarP(&opt.Output, "output", "o", "text", "output: text|json (not with --interactive)")
 	// No --agent flag: quickstart deploys the hello-world manifest kmx
 	// carries, so a flag naming a different agent would deploy one thing and
-	// question another. Your own agent is --interactive or `kmx agent create`,
-	// and asking any agent anything is `kmx agent chat`.
+	// question another. Your own live agent is --interactive or `kmx create --live`,
+	// and asking any agent anything is `kmx chat`.
 	flags.StringVar(&opt.Task, "task", config.DefaultTask, "fixed-mode question; with --interactive, optional first Orka Task for a new Agent only (fixed default ignored)")
 	flags.StringVar(&wizard.Create.Instructions, "instructions", "", "file containing the system message (--interactive only)")
 	flags.StringVar(&wizard.Create.Tools, "tools", "", "comma-separated Orka tool names (--interactive only; default: k8s-get-resources)")

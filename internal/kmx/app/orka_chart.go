@@ -13,7 +13,7 @@ import (
 
 const (
 	orkaRelease    = "orka"
-	orkaChartLabel = "kmx.kaimahi.ai/installed"
+	orkaChartLabel = "kmx.kaimahi.dev/installed"
 	// Digests are from v0.2.0 candidate.json, not tag-to-digest guesses.
 	orkaControllerDigest    = "sha256:7c1727f92d5c0cf05d464c6eb9e70b8342cb5a7a87c2e35338f051d7b85aa370"
 	orkaAIWorkerDigest      = "sha256:814d7149308e62730df59759c5137667cad04520c94cc50ff56e5028fdc8bcd4"
@@ -53,7 +53,7 @@ type orkaHelmValues struct {
 }
 
 // Installation refusals remain actionable without modifying cluster state.
-// `down` is for a disposable local kind cluster, never a production shortcut.
+// `local down` is for a disposable local kind cluster, never a production shortcut.
 func (a *App) orkaInstallRecovery() string {
 	return "Local kind cluster you own: `" + a.operationCommand("local", "down") + "` then `" + a.operationCommand("local", "up") + "` replaces it and loses Tasks, Secrets, PVC-backed volumes, model data and the plane ledger. " +
 		"AKS: back up Orka resources, Secrets, volumes/PVCs and any snapshot key without printing it; verify the recovery plan before an operator-managed fresh install (docs/orka.md)."
@@ -255,7 +255,7 @@ func (a *App) applyOrkaChart(chart []byte) error {
 	if err := quiet.Run("helm", "install", orkaRelease, file.Name(), "-n", OrkaNamespace,
 		"--kube-context", a.Cfg.KubeContext, "--create-namespace", "--wait", "--timeout", "10m",
 		"--set", "controller.mode=harness-v2", "--set", "fullnameOverride=orka-api",
-		"--set-string", "labels.kmx\\.kaimahi\\.ai/installed=true",
+		"--set-string", "labels.kmx\\.kaimahi\\.dev/installed=true",
 		"--set-string", "controller.image.digest="+orkaControllerDigest,
 		"--set-string", "workers.ai.image.digest="+orkaAIWorkerDigest,
 		"--set-string", "workers.general.image.digest="+orkaGeneralWorkerDigest,

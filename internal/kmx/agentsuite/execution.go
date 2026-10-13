@@ -17,16 +17,19 @@ const (
 // ImageDeployment is a digest-bound publisher declaration, not a conformant
 // sandbox binding, filesystem inventory or signed build provenance.
 type ImageDeployment struct {
-	Inference         *spec.InferenceRequirements `json:"inference,omitempty"`
-	SchemaVersion     string                      `json:"schemaVersion"`
-	MediaType         string                      `json:"mediaType"`
-	SuiteReference    string                      `json:"suiteReference"`
-	SuiteDigest       string                      `json:"suiteDigest"`
-	Agent             string                      `json:"agent"`
-	Platform          spec.Platform               `json:"platform"`
-	CompositionDigest string                      `json:"compositionDigest"`
-	BuildProfile      string                      `json:"buildProfile"`
-	Execution         spec.ExecutionContract      `json:"execution"`
+	Inference     *spec.InferenceRequirements `json:"inference,omitempty"`
+	SchemaVersion string                      `json:"schemaVersion"`
+	MediaType     string                      `json:"mediaType"`
+	// SuiteReference is an optional legacy retrieval hint, never source identity.
+	// New builds omit it so copying a suite repository does not change the image.
+	SuiteReference     string                 `json:"suiteReference,omitempty"`
+	SuiteDigest        string                 `json:"suiteDigest"`
+	Agent              string                 `json:"agent"`
+	Platform           spec.Platform          `json:"platform"`
+	CompositionDigest  string                 `json:"compositionDigest"`
+	BuildProfile       string                 `json:"buildProfile"`
+	BuildProfileDigest string                 `json:"buildProfileDigest"`
+	Execution          spec.ExecutionContract `json:"execution"`
 }
 
 func DecodeImageDeployment(data []byte) (*ImageDeployment, error) {
@@ -37,14 +40,16 @@ func DecodeImageDeployment(data []byte) (*ImageDeployment, error) {
 	if err := spec.Unmarshal(data, &r); err != nil {
 		return nil, err
 	}
-	if r.SchemaVersion != spec.SpecVersion || r.MediaType != ImageDeploymentMediaType || !spec.IsValidDigest(r.SuiteDigest) || !spec.IsValidDigest(r.CompositionDigest) || !builderIdentifierPattern.MatchString(r.Agent) || !builderIdentifierPattern.MatchString(r.BuildProfile) {
+	if r.SchemaVersion != spec.SpecVersion || r.MediaType != ImageDeploymentMediaType || !spec.IsValidDigest(r.SuiteDigest) || !spec.IsValidDigest(r.CompositionDigest) || !spec.IsValidDigest(r.BuildProfileDigest) || !builderIdentifierPattern.MatchString(r.Agent) || !builderIdentifierPattern.MatchString(r.BuildProfile) {
 		return nil, errors.New("invalid image deployment identity")
 	}
-	if !strings.HasSuffix(r.SuiteReference, "@"+r.SuiteDigest) {
-		return nil, errors.New("suiteReference must pin suiteDigest")
-	}
-	if err := spec.ValidateImageReference(r.SuiteReference); err != nil {
-		return nil, err
+	if r.SuiteReference != "" {
+		if !strings.HasSuffix(r.SuiteReference, "@"+r.SuiteDigest) {
+			return nil, errors.New("suiteReference must pin suiteDigest")
+		}
+		if err := spec.ValidateImageReference(r.SuiteReference); err != nil {
+			return nil, err
+		}
 	}
 	if err := validateBindingPlatform(r.Platform); err != nil {
 		return nil, err
@@ -84,7 +89,7 @@ func ValidateImageSource(root string, r ImageDeployment) error {
 	if err != nil {
 		return err
 	}
-	if plan.CompositionDigest != r.CompositionDigest || plan.BuildProfile.ID != r.BuildProfile {
+	if plan.CompositionDigest != r.CompositionDigest || plan.BuildProfile.ID != r.BuildProfile || plan.BuildProfileDigest != r.BuildProfileDigest {
 		return errors.New("image composition/profile differs from suite")
 	}
 	if !reflect.DeepEqual(plan.Agent.Model.Capabilities, r.Inference) || plan.BuildProfile.Execution == nil || !reflect.DeepEqual(*plan.BuildProfile.Execution, r.Execution) {

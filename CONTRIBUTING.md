@@ -17,17 +17,30 @@ the pull request, explain why configuration, integration or an upstream
 contribution cannot provide the requested behavior. Runtimes and harnesses own
 execution, enforcement and model access; KMX should not duplicate them.
 
+Root `kmx create <name>` authors one native-Orka workspace member offline by
+default, requiring an exact model and an instructions file. Create and push
+share current-directory workspace discovery; scripts can initialize an exact
+root with `--workspace DIR`. Existing one-member workspaces refuse a second
+create without modifying source. Resource/bundle creation and previews require
+`--live` for both runtimes; `--runtime kagent` alone never selects live mode.
+Quickstart, console and direct App.CreateAgent callers stay live. See the
+[workspace guide](docs/suite-workspace.md) for prompting and failure boundaries.
+
 kagent support is intentionally version-bounded: explicit
-`kmx agent create --runtime kagent <name>` targets preinstalled exact v0.10.2;
-explicit bundle lift/status with `--runtime kagent --runtime-version v0.10.3`
+`kmx create --live --runtime kagent <name>` targets preinstalled exact v0.10.2;
+explicit Go bundle lift/status/evaluate with `--runtime kagent --runtime-version v0.10.3`
 targets preinstalled exact v0.10.3. Lift creates new Go declarative resources or
 reuses a complete matching UID-bound deployment; it does not adopt or update.
+Evaluation requires a complete matching saved placement, desired bindings and
+explicit `--to-context`; unsecure only, trusted-proxy refused before any send.
 Deployment receipts prove readiness, not execution success. Dedicated CI now
-continuously qualifies Go v0.10.3 plan/lift/repeat/status/conflicts and a separate
-one-shot native A2A answer using a keyless model/MCP fixture. Do not infer or add an installer, upgrade path,
-auto-detection, chat, list/show, evaluation, retirement, console, quickstart,
-`up`, or AKS payload from those capabilities. Preserve Orka defaults and
-v0.10.2 create; runtime choice remains distinct from model-provider choice.
+continuously qualifies Go v0.10.3 plan/lift/repeat/status/conflicts, receipt-bound
+evaluation and a separate one-shot native A2A answer using a keyless model/MCP
+fixture. Python remains render-only; promotion gates are unsupported. Do not
+infer or add an installer, upgrade path, auto-detection, standalone chat/run,
+list/show, retirement, console, quickstart, `up`, or AKS payload from those
+capabilities. Preserve Orka defaults and v0.10.2 create; runtime choice remains
+distinct from model-provider choice.
 Wider cross-runtime lifecycle remains unsupported.
 
 New to the codebase? [`docs/development.md`](docs/development.md) covers the
@@ -63,6 +76,7 @@ python3 scripts/test_kagent_lift_qualification.py -v
 python3 scripts/test_kagent_lift_audit.py -v
 python3 scripts/test_kagent_lift_qualify.py -v
 python3 scripts/test_kagent_lift_ci.py -v
+python3 scripts/test_suite_native.py -v
 shellcheck scripts/ci/kagent-lift.sh
 actionlint .github/workflows/ci.yml
 ```
@@ -96,7 +110,7 @@ One Go module contains the root CLI (`cmd/kmx`, `internal/kmx`), the public
 AgentSuite format package (`agentsuite`), and the application interface
 (`pkg/kmx`). AgentSuite does not have a separate module or version pin; root
 `go test ./...` tests it alongside the CLI, including first-class Orka paths
-and bounded kagent v0.10.2 create/v0.10.3 bundle lift/status.
+and bounded kagent v0.10.2 create/v0.10.3 Go bundle lift/status/evaluate.
 Plane commands, administration, the source module (including checked-in SQL),
 build helper, embedded assets and plane-only scripts/fixtures are removed.
 Historical source remains in Git history. This cleanup deletes no deployed
@@ -132,6 +146,19 @@ saved shell stderr; bootstrap and tool output remain private.
 The `e2e-kagent-lift` shard runs for relevant or unknown PR changes and always
 on main pushes, nightly and manual runs. Its required aggregator accepts only
 intentional skipped outcomes, never failed or cancelled shards.
+
+The existing `e2e-orka-runtime` shard also runs
+`python3 scripts/ci/suite-native.py kind-kmx-orka "$RUNNER_TEMP/kmx-suite-native"`
+after its legacy Ollama answer proof. The checkout-only qualifier requires the
+shard's exclusive cluster-creation flag and a matching `KIND_CLUSTER`, refuses
+existing work/model fixtures, and uses a fresh private KMX home. It adds the pinned
+CPU AIKit model inside that owned cluster, warms it, then attempts one native
+full-workspace evaluation without retry. Independent live identities/specs,
+result hashes, exact local-layout transfer and refusal audits gate its metadata
+artifacts. Only `artifacts/passing.json` and scalar `artifacts/qualification.json`
+are uploaded on success; raw captures are private. Existing cluster deletion owns
+all runtime/model cleanup. A successful run qualifies this fixed two-case
+native workspace scenario. Harness tests alone are not evidence of real execution.
 
 ## Comments
 

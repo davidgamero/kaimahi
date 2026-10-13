@@ -16,6 +16,7 @@ func TestMountedImageOmitsSelectedModelAndUsesRuntimeConfigABI(t *testing.T) {
 	plan := minimalPlan()
 	plan.CompositionDigest = testDigest
 	plan.BuildProfile.ID = "default"
+	plan.BuildProfileDigest = testDigest
 	plan.Agent.Model.Model = ""
 	plan.Agent.Model.Capabilities = &spec.InferenceRequirements{API: "openai-chat-completions-v1", ContextTokens: 8192, OutputTokens: 1024}
 	plan.Instructions = []byte("immutable instructions")
@@ -34,6 +35,14 @@ func TestMountedImageOmitsSelectedModelAndUsesRuntimeConfigABI(t *testing.T) {
 	}
 	if string(captured.Instructions) != "immutable instructions" {
 		t.Fatal("instructions changed")
+	}
+	first := string(captured.AgentkitFile)
+	builder.options.SuiteReference = "other.example/copied-source@" + testDigest
+	if _, err := builder.Build(t.Context(), plan, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if first != string(captured.AgentkitFile) || strings.Contains(first, "registry.example") || strings.Contains(first, "other.example") {
+		t.Fatal("retrieval location changed build content")
 	}
 	runner := mountedBuildRunner{t: t}
 	if _, err := (buildxExporter{runner: runner, builder: "selected-builder", requireAttestations: true}).ExportOCI(t.Context(), captured, io.Discard); err != nil {

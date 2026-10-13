@@ -7,24 +7,26 @@ distinguishes implemented alignment from proposed follow-ups.
 
 ## Implemented entry-point alignment (unreleased)
 
-| Canonical command | Compatibility input | Contract |
-|---|---|---|
-| `kmx context show` | `kmx ctx` | Read the effective context, selection source and posture. |
-| `kmx context use <context>` | `kmx ctx <context>` | Remember KMX's access selection after the existing context guard; never change kubectl current-context. |
-| `kmx local up` | `kmx up` | Provision the local kind environment, model and Orka; no agent. The existing `--step` choices remain. |
-| `kmx local down` | `kmx down` | Delete the named local kind cluster, including its data, under the existing context/container-engine guard. |
+| Command | Contract |
+|---|---|
+| `kmx context show` | Read the effective context, selection source and posture. |
+| `kmx context use <context>` | Remember KMX's access selection after the existing context guard; never change kubectl current-context. |
+| `kmx local up` | Provision the local kind environment, model and Orka; no agent. The existing `--step` choices remain. |
+| `kmx local down` | Delete the named local kind cluster, including its data, under the existing context/container-engine guard. |
+| `kmx aks up/down` | Retain the guarded AKS provisioning/teardown operations and historical ownership records; hidden from root help and completion. |
 
 Bare `context` and `local` display help. Canonical commands use the existing
-operations, settings, saved-selection file and guards. Old spellings remain
-callable and emit deprecation notices only on stderr; help and completion lead
-with the canonical names. No removal release has been scheduled. Tagged v0.4.1
-uses the compatibility spellings; the canonical names require a newer build.
+operations, settings, saved-selection file and guards. Root `ctx`, `up`, `down`,
+the AKS `lift` alias and `lift down` are removed outright, with no compatibility aliases or
+retirement stubs. Use `context show/use`, `local up/down` and `aks up/down`
+respectively. Tagged v0.4.1 used the old context/local spellings; the grouped
+commands require a newer build.
 
 The redirected context report retains its `source: kmx ctx` provenance label
 for saved selections as a compatibility format. That label is not a next-step
 command. Generated selection and local teardown instructions use the canonical
-spellings. Invocation-specific confirmation may repeat the compatibility
-command the caller actually supplied to preserve its exact arguments.
+spellings. Invocation-specific confirmation preserves the caller's selectors
+and exact arguments.
 
 Generated local commands preserve `KIND_CLUSTER`, `CONTAINER_ENGINE` and
 `--context`. AKS retry/teardown instructions use the common effective-option
@@ -34,9 +36,37 @@ use these native instructions when invoked by KMX. Standalone script use has
 no KMX ownership receipt, so its fallback names the actual script with quoted
 arguments instead of a deleted Make target or an invented BYO recovery route.
 
+## Implemented workflow command mapping (unreleased)
+
+| Previous route | Current route | Contract |
+|---|---|---|
+| `agent create [name]` | `create --live [name]` | Preserve resource/bundle creation with explicit `--live` for both runtimes; exact kagent v0.10.2 stays opt-in. Default `create <name>` now authors one native-Orka workspace member offline. |
+| `agent chat <name> [message...]` | `chat <name> [message...]` | Interactive Orka session, not workspace execution. |
+| `agent run [<bundle-dir>]` | `run [<bundle-dir>]` | One Task; retain `--agent` selection, answer-only stdout and pending/result contracts. |
+| `agent show <name>` / `agent list` | `orka show <name>` / `orka list` | Live Orka detail/inventory, not workspace inspection. Show still requires namespace. |
+| `agent evaluate/lift/retire/status <bundle-dir>` | `bundle evaluate/lift/retire/status <bundle-dir>` | Existing PortableAgent lifecycle, selectors and evidence; exact kagent v0.10.3 supports explicit Go lift/status and receipt-bound evaluation with desired bindings and explicit `--to-context`. Evaluation is unsecure-only; trusted-proxy is refused. Python remains render-only; promotion gates, standalone chat/run, installation and retirement remain unsupported. |
+| `agent verify <sessions-receipt.json>` | `bundle verify <sessions-receipt.json>` | Local reference replay only, not packaged-suite verification. |
+| `agent eval diff <before.json> <after.json>` | `eval diff <before.json> <after.json>` | Offline receipt comparison, not evaluation execution. |
+| `agent eval from-sessions <session-uid>...` | `eval from-sessions <session-uid>...` | Private reference-case preparation, not execution. |
+| `suite push --workspace DIR REF` / `suite push REF` | `push [--workspace DIR] REF` | Exact prepared workspace graph publication; discovers the nearest ancestor `workspace.yaml`, or selects an exact root without fallback with `--workspace`. |
+
+The entire `kmx agent` group is removed, including its hidden edit stub, with no
+aliases or retirement stubs. Use kubectl to edit live Orka resources. Root
+`status` and `orka status` retain the same table-only Orka runtime report;
+`bundle status <bundle-dir>` is separate. There is no root bundle status or suite
+observer. Root `eval` executes a full native workspace inventory with explicit
+inference/target/output selection and retains its helpers. Standalone packaged
+evaluation remains unimplemented. Root digest `lift` deploys a packaged native
+suite with explicit private evidence, GET-only `--plan`, strict guarded apply and
+explicit source-only `--promote`; no model/runtime override, update or adoption. `task result` and
+`suite push DIRECTORY REFERENCE`, `suite build/diff/pull/validate` are unchanged.
+These spellings require a current development build; tagged v0.5.1 retains the
+`agent` routes. Workspace authoring/publication are unreleased. Existing operation handlers, arguments, applicable flags,
+stdout and exit contracts are preserved; this is not a receipt or bundle migration.
+
 ## Evaluation judge selectors (unreleased)
 
-`kmx agent evaluate` accepts `--judge-base-url <url>` and optional
+`kmx bundle evaluate` accepts `--judge-base-url <url>` and optional
 `--judge-key-env <env-name>` on both Orka and sessions paths. They select only
 judge transport and the credential's environment-variable name, never a secret
 value, judge model or version. Model/version, rubric and integer `minScore`
@@ -49,20 +79,21 @@ Existing destination selectors stay unchanged: `--to-context` or a remembered
 Orka target, versus explicit `--sessions`; sessions still conflicts with
 `--to-context` and Orka-only `--result-port`. Judging shares the case deadline
 and never retries or reruns the agent. Safe reasoning goes to terminal stdout,
-not receipts, and may contain answer text. Offline `agent eval diff` and
-`agent verify` do not select a judge endpoint or call a judge; replay explicitly
+not receipts, and may contain answer text. Offline `eval diff` and
+`bundle verify` do not select a judge endpoint or call a judge; replay explicitly
 reports judge assertions not verified. See [judge behavior and disclosure](agent-lift.md#explicit-llm-judge).
 
 ## Recorded-session selectors (unreleased)
 
-`kmx agent eval from-sessions <session-uid>... --sessions <source>
+`kmx eval from-sessions <session-uid>... --sessions <source>
 --assertions <case.yaml> --out <manifest.json>` reads source journals without
 inference. An existing output manifest means atomic append, never overwrite;
 duplicates refuse the whole operation. Assertions are authored without `input`.
-The `agent eval` group holds case preparation and offline diff, while execution
-remains `agent evaluate`; no new top-level verb or workspace model is introduced.
+These helpers stay cluster-independent. Recorded-session execution remains
+`bundle evaluate`; root `eval` separately executes full native workspace cases.
+Standalone packaged evaluation is not implemented.
 
-`agent evaluate --from-sessions <manifest> --source-sessions <source>
+`bundle evaluate --from-sessions <manifest> --source-sessions <source>
 --sessions <candidate>` requires both explicit source and candidate selection,
 bypasses Kubernetes configuration, and refuses Orka-only selectors. Source CA
 uses `--source-sessions-ca`; candidate CA retains `--sessions-ca`. `--show-content`
@@ -82,32 +113,57 @@ or no complete observed case identity in either receipt remains incompatible.
 
 ## Offline suite workspace
 
-`agent create <name> --workspace <directory> --model <model> --instructions <file>`
-authors one tool-free native-Orka member offline. It accepts optional description,
-refuses live-create selectors and leaves default create/bundle output unchanged.
-No Kubernetes configuration, builder or model call is needed.
+`create <name> --model <model> --instructions <file> [--workspace <directory>]`
+authors one tool-free native-Orka member offline by default. Model and an
+instructions file are required; description is optional. Create and push share
+nearest-ancestor workspace discovery. An exact `--workspace` override initializes
+a missing workspace without a prompt. Without a workspace, terminal create asks
+`Start one here? [Y/n]`; nonterminal or redirected use refuses with an explicit
+`--workspace` hint. Invalid nearest markers refuse without fallback; an existing
+one-member workspace refuses a second member without changing source.
 
-`suite push --workspace <directory> <reference>` prepares that member and its
-shareable authored cases as an ordinary AgentSuite, then copies the exact OCI
-manifest/blob graph. Native member image requirements are empty. Registry auth,
-plain-HTTP and non-atomic tag replacement remain as documented. Old
-`suite push <directory> <reference>` retains extracted-artifact transfer behavior.
-Workspace evaluation and reference lift are not implemented; these commands
-create no evaluation or promotion evidence. See [suite workspace](suite-workspace.md).
+`create --live` preserves the resource/bundle path and no-name Orka wizard,
+including native `--no-apply`, `--dry-run` and `--out -` previews. Both runtimes
+require `--live`; `--runtime kagent` alone is not a compatibility route. Live-only
+flags refuse before configuration/writes, and `--workspace` conflicts with
+`--live`. Live mode bypasses discovery; quickstart and console remain live.
+Help/completion does not resolve, prompt, mutate or load operational configuration.
+Default authoring needs no Kubernetes configuration, builder or model call.
+
+`push <reference>` discovers the nearest ancestor `workspace.yaml`;
+`--workspace <directory>` instead selects that exact directory, without fallback.
+Missing, invalid or unreadable workspace selection refuses. The command prepares
+that member and its shareable authored cases as an ordinary AgentSuite, then
+copies the exact OCI manifest/blob graph. A single stderr line names the absolute
+workspace and prepared OCI manifest digest; result stdout is unchanged. Native
+member image requirements are empty. Registry auth, plain-HTTP and non-atomic tag
+replacement remain as documented. Old `suite push <directory> <reference>` retains
+extracted-artifact transfer behavior without workspace discovery; suite push no
+longer accepts `--workspace` or one positional reference. Root push refuses two
+positional arguments.
+Root `eval --to-context CTX --inference provider:NAME --out FILE` performs offline
+workspace/inventory/output preparation before configuration, then one guarded
+owned native placement and one fresh Task per ordered case. Only full passing
+metadata is exported once to a private file outside workspace/cache; failure,
+unknown, drift, cancellation or output error stops later sends. No package
+reference, subset, judge or content output is accepted. `push --evaluation FILE`
+checks strict private receipt coherence and exact manifest S before publication;
+ordinary push is unevaluated. Receipts are unsigned observations, not policy gates.
+Hermetic command/Task tests do not qualify real native CLI execution. Reference
+lift remains unavailable. See [suite workspace](suite-workspace.md).
 
 ## Vocabulary
 
 **Decided: keep Create → Prove → Lift.** Lift is the chosen lifecycle verb for
 the local-to-remote journey: create an agent locally, prove it with a real
-answer, then lift it to a remote environment. Retain `kmx agent lift` and
+answer, then lift it to a remote environment. Retain `kmx bundle lift` and
 interactive `/lift`; use **Lift** consistently in help, menu labels and the
 product narrative. Do not rename the agent command to `deploy`. “Deployment”
 remains useful technical language for the resulting resources and receipts.
 
-The current bare `kmx lift` spelling is the deprecated AKS provisioning route,
-not a shorthand for `kmx agent lift`. This vocabulary decision does not change
-that route's arguments or behavior; any reassignment needs an explicit
-compatibility transition coordinated with #223.
+Root `lift <ref>@<digest>` is deploy-only suite lift. `kmx bundle lift` remains
+the PortableAgent operation, and `kmx aks up/down` remains the AKS route. Removal does
+not change AKS arguments, ownership records, recovery or teardown behavior.
 
 - **Context:** a kubeconfig access selection; not a durable cluster identity.
 - **Target:** selected runtime, cluster identity, namespace and deployment
@@ -131,11 +187,12 @@ The guided live-copy fallback is explicitly untracked, not a bundle deployment.
 The command inventory is pinned by the command-tree and entry-point tests in
 [`cmd/kmx`](../cmd/kmx). Context show/use split read and selection operations;
 local up/down scope the existing kind operations. Root discovery hides the AKS
-compatibility group and the old context/local spellings, while direct invocation
-remains available. Help and internal completion are not operational leaves.
+compatibility group, which remains directly callable. Removed root aliases are
+neither registered nor suggested by help or completion. Help and internal
+completion are not operational leaves.
 
 Other implemented alignment in development builds includes
-`quickstart --interactive` (`-i`) and intrinsically interactive `agent chat`.
+`quickstart --interactive` (`-i`) and intrinsically interactive root `chat`.
 `quickstart-wizard` is a retirement stub, and chat no longer accepts
 `--interactive`; tagged v0.4.1 still uses those older forms. `kmx targets` is the
 read-only runtime capability view. Plane commands, administration, migration,
@@ -197,9 +254,10 @@ preserve raw and answer-only stdout.
    generic runtime setup family; a name cannot imply installer support.
 3. **Capability view:** `kmx targets` is implemented for #289; retain that
    spelling and its read-only/offline-default contract rather than adding synonyms.
-4. **Authoring/execution verbs:** reconcile applying `create` with offline
-   `new`, `evaluate` with `test`, and `agent run` with canvas-service `run start`
-   through #276 and its authoring/execution work. Their scopes differ.
+4. **Authoring/execution verbs:** default `create` now authors offline;
+   `create --live` retains applying creation. Reconcile `evaluate` with `test`
+   and root `run` with canvas-service `run start` through #276 and its
+   authoring/execution work. Their scopes differ.
 5. **Runtime selection:** settle operator/saved configuration versus public
    selection through #224/#238; retain current capabilities in rename slices.
 6. **Target flags:** decide `--to-*` versus `--context/--namespace` with bundle
@@ -207,8 +265,9 @@ preserve raw and answer-only stdout.
 7. **Preview terms:** distinguish artifact rendering, no-write planning and
    server validation, including downloads/cache/local files and which resources
    admission actually checks. Do not mechanically alias `--no-apply` modes.
-8. **Removal timing:** announce a breaking minor release before removing
-   compatibility routes. No date/version is selected by this slice.
+8. **Remaining compatibility routes:** follow the announced breaking-release
+   policy for future removals. The root context/local/AKS aliases are already
+   removed outright; no retirement stubs remain. The hidden AKS group is retained.
 
 ## Keeping future work aligned
 

@@ -15,7 +15,7 @@ published tag, not the tip of `main`.
 
 No. Installation creates platform resources and, by default, a local Provider.
 It does not adopt an existing application or redirect its traffic. Author an
-Agent with [`kmx agent create`](kmx.md#kmx-agent-create); use a Task to prove an
+Agent with [`kmx create --live`](kmx.md#default-orka-contract); use a Task to prove an
 answer. Execution and enforcement belong to the selected runtime.
 
 ## Why does status show a version different from the pin?
@@ -28,8 +28,11 @@ inspection, no-write planning, dry-run and upgrade limits.
 ## What kagent support exists now?
 
 Orka remains the default. The exact-v0.10.2 create profile is explicit
-`kmx agent create --runtime kagent <name>` against an already-installed exact
-v0.10.2. KMX never installs or upgrades it. This path renders a review artifact
+`kmx create --live --runtime kagent <name>` against an already-installed exact
+v0.10.2. `--live` is required even for offline previews; the runtime flag alone
+does not select live creation. Default create authors an
+[offline workspace member](suite-workspace.md). KMX never installs or upgrades
+kagent. This live path renders a review artifact
 and portable bundle; `--out -` omits the bundle unless `--bundle-path` is set.
 Offline rendering needs neither an installation nor a cluster Secret. Online
 creation requires both and can create a new ModelConfig then a new Agent; it
@@ -43,7 +46,7 @@ or reuses a complete matching UID-bound deployment, never adopts or updates.
 Readiness receipts do not prove an answer. Dedicated CI continuously qualifies
 Go lift/status and a separate one-shot native A2A tool answer. See [exact-version placement](agent-lift.md#exact-v0103-declarative-bundle-placement).
 Standalone chat/run/eval, list/show, console, interactive `/lift`, quickstart,
-`up`, installer and AKS payload remain unsupported. Historical AKS lift records
+`local up`, installer and AKS payload remain unsupported. Historical AKS lift records
 remain teardown-only. See the [create contract](kmx.md#explicit-kagent-v0102-create).
 
 There is still no supported translation from Kagent YAML into an Orka Agent or
@@ -102,6 +105,6 @@ command arguments or committed YAML.
 ### A local model disappeared after a restart
 
 The local Ollama model cache is an `emptyDir`; a pod restart may require another
-model pull. Pod restarts are not cluster deletion. `kmx down` removes the whole
+model pull. Pod restarts are not cluster deletion. `kmx local down` removes the whole
 named kind cluster and its persistent data. Export needed resources, Secrets and
 volumes before replacing it; see [Orka's data-retention limits](orka.md#limits-stated).

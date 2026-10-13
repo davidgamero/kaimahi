@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/distribution/reference"
 	spec "github.com/kaimahi-agents/kaimahi/agentsuite"
@@ -98,9 +99,9 @@ func (b *Builder) Build(
 		}
 		label, err = agentsuite.EncodeImageDeployment(agentsuite.ImageDeployment{
 			SchemaVersion: spec.SpecVersion, MediaType: agentsuite.ImageDeploymentMediaType,
-			SuiteReference: b.options.SuiteReference, SuiteDigest: b.options.SuiteDigest,
-			Agent: plan.Agent.ID, Platform: plan.Composition.Platform, CompositionDigest: plan.CompositionDigest,
-			BuildProfile: plan.BuildProfile.ID, Execution: *plan.BuildProfile.Execution, Inference: plan.Agent.Model.Capabilities,
+			SuiteDigest: b.options.SuiteDigest,
+			Agent:       plan.Agent.ID, Platform: plan.Composition.Platform, CompositionDigest: plan.CompositionDigest,
+			BuildProfile: plan.BuildProfile.ID, BuildProfileDigest: plan.BuildProfileDigest, Execution: *plan.BuildProfile.Execution, Inference: plan.Agent.Model.Capabilities,
 		})
 		if err != nil {
 			return agentsuite.BuildResult{}, err
@@ -150,6 +151,9 @@ func (b *Builder) Build(
 
 func (b *Builder) validate(plan agentsuite.SandboxPlan) error {
 	var errs []error
+	if b.options.SuiteReference != "" && (spec.ValidateImageReference(b.options.SuiteReference) != nil || !spec.IsValidDigest(b.options.SuiteDigest) || !strings.HasSuffix(b.options.SuiteReference, "@"+b.options.SuiteDigest)) {
+		errs = append(errs, errors.New("published source reference must pin the exact suite manifest digest"))
+	}
 	if b.options.DisableAttestations && b.options.RequireAttestations {
 		errs = append(errs, errors.New("--require-attestations cannot be used with --attestations=false"))
 	}

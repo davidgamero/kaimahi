@@ -360,7 +360,7 @@ func (a *App) quickstartWizardOrka(report func(quickstartSetupEvent)) error {
 		err := a.applySecretIn(OrkaNamespace, body, "kickstart-provider-key")
 		if err == nil {
 			// The runtime's own grant, not a second spelling of it: a wizard
-			// copy would be free to drift from the account `kmx up --step orka`
+			// copy would be free to drift from the account `kmx local up --step orka`
 			// provisions and the one `agent create` names, and a Role that
 			// differs by path is a grant nobody reviews as one.
 			err = a.orkaResultReader()
@@ -748,7 +748,7 @@ func (m quickstartWizardModel) compactQuestion(width, height int) string {
 	switch {
 	case m.agentStep:
 		title = "1/4 · Start with"
-		choices = append(choices, "Create a new agent")
+		choices = append(choices, "Create a new live agent")
 		for _, a := range m.existing {
 			label := "Use existing Agent " + a.Name
 			if width < 60 {
