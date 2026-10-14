@@ -1,6 +1,7 @@
 package oras
 
 import (
+	"archive/tar"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -44,7 +46,7 @@ func PrepareImageBuildSource(ctx context.Context, source, reference, output stri
 	if err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(local.files, remote.files) {
+	if !reflect.DeepEqual(local.files, remote.files) || !reflect.DeepEqual(local.entries, remote.entries) {
 		return errors.New("local and published suite content differs, including supplemental metadata and cases")
 	}
 	if err := os.Mkdir(output, 0o700); err != nil {
@@ -60,6 +62,26 @@ func PrepareImageBuildSource(ctx context.Context, source, reference, output stri
 			return err
 		}
 		if err := os.WriteFile(path, data, 0o600); err != nil {
+			return err
+		}
+		if err := os.Chmod(path, os.FileMode(remote.entries[name].Mode)&0777&^0022); err != nil {
+			return err
+		}
+	}
+	// Apply directory modes last, deepest first, so read-only directories do not
+	// prevent materialization. Preserve explicit empty directories as well.
+	var dirs []string
+	for name, entry := range remote.entries {
+		if entry.Kind == tar.TypeDir {
+			dirs = append(dirs, name)
+			if err := os.MkdirAll(filepath.Join(output, filepath.FromSlash(name)), 0700); err != nil {
+				return err
+			}
+		}
+	}
+	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
+	for _, name := range dirs {
+		if err := os.Chmod(filepath.Join(output, filepath.FromSlash(name)), os.FileMode(remote.entries[name].Mode)&0777&^0022); err != nil {
 			return err
 		}
 	}

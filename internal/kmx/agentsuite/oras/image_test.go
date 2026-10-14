@@ -35,6 +35,13 @@ func TestImageBuildSourceBindsSupplementalContent(t *testing.T) {
 		}
 	}
 	ref := strings.TrimPrefix(server.URL, "http://") + "/team/suite:v1"
+	executable := filepath.Join(source, "metadata", "helper")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(executable, 0755); err != nil {
+		t.Fatal(err)
+	}
 	pushed, err := PushRegistry(t.Context(), source, ref, true, false, PushOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +52,19 @@ func TestImageBuildSourceBindsSupplementalContent(t *testing.T) {
 	reg.mu.RUnlock()
 	output := filepath.Join(t.TempDir(), "build")
 	if err := PrepareImageBuildSource(t.Context(), source, pinned, output, true); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(output, "metadata", "helper"))
+	if err != nil || info.Mode().Perm() != 0755 {
+		t.Fatalf("packaged executable mode was not retained: %v %v", info, err)
+	}
+	if err := os.Chmod(executable, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := PrepareImageBuildSource(t.Context(), source, pinned, filepath.Join(t.TempDir(), "mode-drift"), true); err == nil {
+		t.Fatal("mode-only source drift accepted")
+	}
+	if err := os.Chmod(executable, 0755); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"eval/case.yaml", "metadata/kmx/profile.json"} {
