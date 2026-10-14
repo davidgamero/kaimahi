@@ -388,7 +388,9 @@ attestation layouts, and prints the runnable platform digest. Ordinary build
 output needs no deployment label to be published. Deployment consumers separately
 validate declarations. A different existing tag refuses unless `--force` is
 explicit; same-digest publication is a no-op. The existing non-atomic tag preflight
-and registry authentication policy below apply.
+and registry authentication policy below apply. `--platform` requires nonempty
+`os/architecture` components with exactly one slash; malformed values refuse
+before archive reads.
 
 Image declarations bind the full suite OCI manifest digest (including cases and
 metadata), composition and exact build-profile digests, without embedding the

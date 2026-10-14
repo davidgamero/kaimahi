@@ -32,8 +32,9 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
   zero-image workspaces keep their existing behavior. Target-neutral `http-v1`
   image declarations bind full suite OCI and exact build-profile digests without
   source registry hints. Publication preserves attestations and does not require
-  deployment metadata; replacing a different image tag requires explicit
-  `--force`. The AgentKit adapter refuses serving settings it cannot implement.
+  deployment metadata; replacing a different image tag requires explicit `--force`.
+  Malformed `--platform` values refuse before archive reads.
+  The AgentKit adapter refuses serving settings it cannot implement.
 
 ### Fixed
 
