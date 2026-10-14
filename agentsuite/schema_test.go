@@ -77,6 +77,23 @@ func TestToolProviderSchemaDefinesBundledImplementation(t *testing.T) {
 	validateSchemaJSON(t, schema, withoutFileDigest, false)
 }
 
+func TestExecutionSchemaKeepsServingAndMountedABIConsistent(t *testing.T) {
+	schema := compileReferenceSchema(t, "execution.schema.json")
+	valid := `{"kind":"http-v1","protocol":"openai-chat-v1","port":8080,"healthPath":"/healthz","inputs":[],"configuration":"agentkit-v0-mounted-v1"}`
+	validateSchemaJSON(t, schema, valid, true)
+	for _, invalid := range []string{
+		strings.Replace(valid, `"http-v1"`, `"kubernetes-http-v1"`, 1),
+		strings.Replace(valid, `8080`, `9090`, 1),
+		strings.Replace(valid, `"/healthz"`, `"/ready"`, 1),
+	} {
+		validateSchemaJSON(t, schema, invalid, false)
+		var contract ExecutionContract
+		if err := Unmarshal([]byte(invalid), &contract); err == nil && ValidateExecutionContract(contract) == nil {
+			t.Fatal("semantic validator accepted incompatible serving/configuration contract")
+		}
+	}
+}
+
 func TestToolProviderSchemaAcceptsMultiFileCLIBundles(t *testing.T) {
 	schema := compileReferenceSchema(t, "tool-provider.schema.json")
 	for _, name := range []string{"kubectl-tool-provider.json", "azure-cli-tool-provider.json", "opa-tool-provider.json"} {

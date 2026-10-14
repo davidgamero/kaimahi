@@ -1073,6 +1073,9 @@ named environment inputs and configuration ABI. Its closed schema is
 [execution.schema.json](schema/execution.schema.json). The initial mounted
 configuration mapping is deliberately limited to the pinned AgentKit HTTP profile;
 it does not complete sandbox-image conformance or native runtime registration.
+The `http-v1` kind describes a serving interface, not Kubernetes placement or
+runtime selection. The `agentkit-v0-mounted-v1` configuration value is an explicit
+experimental adapter ABI; it is not a general cross-harness configuration format.
 This record describes a built image interface; it does not select a suite
 member's runtime or make images mandatory for native execution. A consumer's
 versioned execution-profile selection determines whether a member requires an
