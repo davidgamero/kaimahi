@@ -88,15 +88,20 @@ run(kube + ["-n", a.namespace, "rollout", "status", "deployment/kmx-lift-model",
 with tempfile.TemporaryDirectory(prefix="kmx-suite-smoke-") as work:
     workspace = Path(a.workspace or work)
     workspace.mkdir(parents=True, exist_ok=True)
+    evidence_dir = workspace.parent / (workspace.name + "-evidence")
+    evidence_dir.mkdir(mode=0o700, exist_ok=False)
     archive, envfile = [str(Path(work) / name) for name in ["agent.oci.tar", "environment.json"]]
     if not (workspace / "workspace.yaml").exists():
         instructions = Path(work) / "instructions.md"
         instructions.write_text("Answer greetings briefly. Identify yourself as the AgentSuite sample.")
-        run([kmx, "agent", "create", "hello-world", "--workspace", str(workspace),
-             "--execution", "image-http", "--instructions", str(instructions)])
-    publication = json.loads(run([kmx, "suite", "push", "--workspace", str(workspace),
+        run([kmx, "create", "hello-world", "--workspace", str(workspace),
+              "--execution", "image-http", "--instructions", str(instructions)])
+        (workspace / "eval/example.yaml").write_text('id: greeting\ninput: Hello\nexpectContains: ["Hello from the AgentSuite sample."]\n')
+    publication = json.loads(run([kmx, "push", "--workspace", str(workspace),
                                   a.registry.rstrip("/") + ":smoke"] + transport + build_options))
     suite_ref, image_ref = publication["suite"], publication["images"]["hello-world"]
+    release_ref = publication["release"]
+    image_ref = release_ref.split("@", 1)[0] + "@" + image_ref.split("@", 1)[1]
     if a.kind_name:
         suite = str(Path(work) / "source")
         run([kmx, "suite", "pull", suite_ref, "--output", suite] + transport)
@@ -111,7 +116,7 @@ with tempfile.TemporaryDirectory(prefix="kmx-suite-smoke-") as work:
     environment = {
         "apiVersion": "kaimahi.dev/lift/v1alpha1", "name": a.namespace,
         "context": a.context, "clusterUID": uid, "namespace": a.namespace,
-        "adapter": "kubernetes-http-v1", "platform": {"os": "linux", "architecture": "amd64"},
+        "adapter": "http-v1", "platform": {"os": "linux", "architecture": "amd64"},
         "plainHTTP": a.plain_http,
         "members": {"hello-world": {"name": "hello-world", "image": image_ref,
           "inference": {"model": "sample-model", "endpoint": f"http://kmx-lift-model.{a.namespace}.svc.cluster.local:8000/v1",
@@ -125,12 +130,17 @@ with tempfile.TemporaryDirectory(prefix="kmx-suite-smoke-") as work:
     if a.acr_pull_credentials:
         environment["imagePullSecrets"] = ["registry-pull"]
         Path(envfile).write_text(json.dumps(environment))
-    command = [kmx, "agent", "lift", "--release", suite_ref, "--environment", envfile]
+    envfile = str(evidence_dir / "environment.json")
+    Path(envfile).write_text(json.dumps(environment))
+    evidence = str(evidence_dir / "passing.json")
+    command = [kmx, "lift", release_ref, "--to-context", a.context, "--environment", envfile, "--evidence", evidence, "--output", "json"]
     # Preserve the repository's existing explicit remote-context guard contract.
     os.environ["KAIMAHI_CONFIRM"] = a.context
+    run([kmx, "eval", "--release", release_ref, "--to-context", a.context,
+         "--environment", envfile, "--out", evidence] + transport)
     plan = json.loads(run(command + ["--plan"]))
     receipt = json.loads(run(command))
-    assert receipt["state"] == "ready" and receipt["plan"]["planDigest"] == plan["planDigest"]
+    assert receipt["state"] == "ready" and receipt["summary"]["planDigest"] == plan["planDigest"]
     request = '''import os,json,urllib.request
 req=urllib.request.Request('http://hello-world/v1/chat/completions',data=json.dumps({'model':'sample-model','messages':[{'role':'user','content':'Hello'}]}).encode(),headers={'Authorization':'Bearer '+os.environ['AGENT_TOKEN'],'Content-Type':'application/json'})
 body=json.load(urllib.request.urlopen(req,timeout=30))
@@ -139,20 +149,23 @@ print('authenticated agent response verified')'''
     print(run(kube + ["-n", a.namespace, "exec", "-i", "deployment/kmx-lift-model", "--", "python", "-"], request))
     repeated = json.loads(run(command))
     assert repeated["state"] == "ready"
-    assert [r["UID"] for r in receipt["members"][0]["resources"]] == [r["UID"] for r in repeated["members"][0]["resources"]]
+    assert [r["uid"] for r in receipt["resources"]] == [r["uid"] for r in repeated["resources"]]
     environment["members"]["hello-world"]["inference"]["model"] = "sample-model-b"
     Path(envfile).write_text(json.dumps(environment))
-    changed = json.loads(run(command))
-    assert changed["state"] == "ready" and changed["plan"]["planDigest"] != plan["planDigest"]
-    assert [r["UID"] for r in receipt["members"][0]["resources"]] == [r["UID"] for r in changed["members"][0]["resources"]]
-    answer = run([kmx, "suite", "run", "--workspace", str(workspace),
-                  "--deployment", a.namespace, "--member", "hello-world", "--prompt", "Hello"])
-    assert answer == "Hello from the AgentSuite sample. Model: sample-model-b", answer
+    refused = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert refused.returncode != 0, "changed model reused old passing evidence"
+    environment["members"]["hello-world"]["inference"]["model"] = "sample-model"
+    Path(envfile).write_text(json.dumps(environment))
+    answer = run([kmx, "run", "--deployment", receipt["placement"], "--prompt", "Hello"])
+    assert answer == "Hello from the AgentSuite sample. Model: sample-model", answer
+    status = json.loads(run([kmx, "suite", "status", "--deployment", receipt["placement"]]))
+    assert status[0]["ready"]
     current_image = run(kube + ["-n", a.namespace, "get", "deployment", "hello-world", "-o",
                                "jsonpath={.spec.template.spec.containers[0].image}"])
     assert current_image == image_ref
     print(json.dumps({"suite": suite_ref, "image": image_ref, "plan": plan["planDigest"], "context": a.context,
                       "namespace": a.namespace, "repeatPreservedUIDs": True,
-                      "modelChangeReusedImage": True, "deploymentConnectionVerified": True,
-                      "workspace": str(workspace)}, indent=2))
+                       "modelChangeRefusedOldEvidence": True, "deploymentConnectionExercised": True,
+                       "release": release_ref, "placement": receipt["placement"],
+                       "workspace": str(workspace)}, indent=2))
 print("Test resources retained in the dedicated namespace; remove them explicitly when finished.")

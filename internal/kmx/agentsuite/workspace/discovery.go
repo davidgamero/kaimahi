@@ -3,61 +3,14 @@ package workspace
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 )
-
-var ErrNotFound = errors.New("workspace.yaml not found; pass --workspace <directory>")
 
 // Discover selects the nearest workspace.yaml ancestor. An explicit root never
 // falls back to an ancestor; malformed, unreadable or linked markers stop search.
 func Discover(start, override string) (string, error) {
-	if override != "" {
-		start = override
-	}
-	if start == "" {
-		var err error
-		start, err = os.Getwd()
-		if err != nil {
-			return "", err
-		}
-	}
-	root, err := safeAbsolute(start)
-	if err != nil {
-		return "", err
-	}
-	for {
-		info, err := os.Lstat(filepath.Join(root, "workspace.yaml"))
-		if err == nil {
-			if !info.Mode().IsRegular() {
-				return "", errors.New("workspace.yaml must be a regular file")
-			}
-			r, err := os.OpenRoot(root)
-			if err != nil {
-				return "", err
-			}
-			data, err := readBounded(r, "workspace.yaml")
-			r.Close()
-			if err != nil {
-				return "", err
-			}
-			var w sourceWorkspace
-			if strictYAML(data, &w) != nil || w.SchemaVersion != 1 || !namePattern.MatchString(w.Name) || w.Member == "" || w.BuildProfile != "build-profiles/default.json" {
-				return "", fmt.Errorf("invalid workspace.yaml at %s", root)
-			}
-			return root, nil
-		}
-		if !os.IsNotExist(err) {
-			return "", err
-		}
-		parent := filepath.Dir(root)
-		if override != "" || parent == root {
-			return "", ErrNotFound
-		}
-		root = parent
-	}
+	return Resolve(start, override)
 }
 
 type Summary struct{ Name, Member, Execution string }
@@ -92,8 +45,13 @@ func Describe(root string) (Summary, error) {
 	mode := m.Execution
 	if mode == "" {
 		mode = NativeExecution
+		if profile, err := m.Runtime.profile(); err != nil {
+			return Summary{}, err
+		} else if profile.ID == "kagent" {
+			mode = "native-kagent"
+		}
 	}
-	if mode != NativeExecution && mode != ImageExecution {
+	if mode != NativeExecution && mode != "native-kagent" && mode != ImageExecution {
 		return Summary{}, errors.New("unsupported workspace execution profile")
 	}
 	return Summary{w.Name, m.ID, mode}, nil

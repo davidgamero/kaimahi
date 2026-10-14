@@ -951,6 +951,13 @@ named environment inputs and configuration ABI. Its closed schema is
 [execution.schema.json](schema/execution.schema.json). The initial mounted
 configuration mapping is deliberately limited to the pinned AgentKit HTTP profile;
 it does not complete sandbox-image conformance or native runtime registration.
+This record describes a built image interface; it does not select a suite
+member's runtime or make images mandatory for native execution. A consumer's
+versioned execution-profile selection determines whether a member requires an
+image. If it does, the image declaration must agree with the selected build
+profile's serving contract. Native exact-model profiles must not be converted
+to capability-based image execution merely because their declared build inputs
+include a harness or execution record.
 
 A build profile MUST contain non-empty `runtimeBase` and `harness` arrays and
 one positive, profile-wide `sourceEpoch`. Each array contains one image entry

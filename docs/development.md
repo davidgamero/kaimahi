@@ -4,17 +4,32 @@ For work **on** Kaimahi; contribution/PR expectations are in
 [CONTRIBUTING.md](../CONTRIBUTING.md). For use, start with
 [getting started](getting-started.md) and [Orka](orka.md).
 
+New contributors should read the [codebase overview](codebase-overview.md) for
+package boundaries and data flows, then the [interface baseline](interface-baseline.md)
+before changing commands or public contracts. The [repository map](repository-map.md)
+is the mechanical inventory of what is installed, embedded, historical or test
+scaffolding.
+
 ## Direction and current implementation
 
 **Orka remains the first-class/default platform.** Kaimahi tooling helps
-agents get onto it. `kmx agent create` without a runtime flag authors native
-Orka Provider + Agent resources with an optional Task. The explicit kagent
-path is intentionally narrower: create against preinstalled exact v0.10.2,
-and Go declarative bundle lift/status against preinstalled exact v0.10.3.
-There is no installer, upgrade, discovery, standalone chat or evaluation.
+agents get onto it. Default `kmx create <name>` authors one native workspace
+member offline, requiring an exact model and an instructions file; Orka is the
+default, while `--runtime kagent` selects the exact v0.10.3 Go profile.
+Create and push share workspace discovery; exact `--workspace` initializes
+without prompting. Resource/bundle creation, including previews and the no-name
+wizard, requires `kmx create --live`. Quickstart and console stay live.
+The explicit kagent path is intentionally narrower: live create against
+preinstalled exact v0.10.2, and Go declarative legacy bundle
+lift/status/evaluation plus packaged workspace evaluation/evaluated push and
+create-only root digest Lift against
+preinstalled exact v0.10.3. There is no installer, upgrade, discovery,
+standalone chat/run or packaged status/retirement.
 It is not a conversion to Orka; see the
-[safety contract](kmx.md#kmx-agent-create). `orka.harness.v2` is outside the
-direction. Runtimes and harnesses own execution, enforcement and model access.
+[safety contract](kmx.md#kmx-create). KMX installs Orka's chart in
+`harness-v2` controller mode but does not implement the upstream
+`orka.harness.v2` harness ABI. Runtimes and harnesses own execution,
+enforcement and model access.
 
 Plane CLI administration, model overlays, credential exchange and workload
 migration are removed, together with the nested source module, image-build
@@ -24,6 +39,51 @@ not this checkout. No databases, credentials, caches or deployed resources are
 deleted. Cloud ownership/teardown records and their tests remain. The old
 gateway, approvals/grants, workflow runner and connector fixtures remain retired.
 
+Packaged native suites have runtime-specific private App preparation seams. Orka
+observes an explicit target, Ready Provider/Secret binding and pinned runtime,
+then validates one exact unmarked render from `workspace.Load`; placement can
+create or update only same-owner Provider/Agent resources. Kagent snapshots
+author-owned `KagentBindings`, verifies the pinned runtime and creates new
+ModelConfig/Agent resources only; occupied unrecorded or changed targets refuse,
+never update or adopt. Secret reads project metadata and key presence, never
+values. Root workspace evaluation consumes the matching seam. Verification binds
+current ownership, UID, generation, spec and readiness to live snapshots. A late
+failure can leave resources for a later explicit invocation.
+All six native annotation keys reserve objects against legacy adoption, reuse,
+copying, bundle authorization and retirement, even with malformed values. These
+fences do not prohibit generic live-Agent status or execution. Fake readiness is
+not model execution or cluster qualification.
+
+Private full-passing receipts project Task/answer and ordered case/assertion
+identities only, never prompts, answers, operands, reasons or diagnostics. Their
+constructor binds observed raw-case/input frames and successful placement to a
+verified package; execution brackets observations with native verification. The private export preflight retains one private anchored directory
+outside authored workspace/cache trees and publishes complete bytes with an
+exclusive hard link, not history or replacement. The private receipt-file push
+consumer parses before cache writes, compares exact S, and validates packaged
+subject/render/inventory coherence before provenance or transfer. Source
+fingerprint is authored spelling, not a durable publication lock. These unsigned
+observations prove neither authenticity nor cross-object atomicity. Root `eval`
+prepares workspace/inventory/export offline before configuration, then consents
+once to native pair placement and all ordered one-shot Tasks. Only a full pass
+exports privately. `push --evaluation FILE` uses the strict file consumer;
+ordinary push and legacy bundle evaluation remain separate. Hermetic tests cover
+these paths. The existing Orka runtime shard now invokes the bounded
+[suite qualifier](../scripts/ci/suite-native.py) after its legacy model proof.
+It uses the [fixed CPU AIKit workload](../scripts/ci/native-suite-model.yaml),
+existing model configuration and installer Secret reference in the same owned
+cluster. One full-workspace evaluation is followed by independent live readback,
+exact-S local-layout transfer and ownership/unsupported-evaluator refusal audits.
+Private command captures are never artifacts; only passing receipt metadata and
+a scalar qualification report are uploaded. A successful run qualifies the fixed
+two-case native workspace scenario; hermetic tests alone do not establish runtime
+execution. Root digest Lift separately consumes the private passing receipt for
+deploy-only packaged Orka/kagent placement. The fixed Orka qualifier proves exact
+registry/local-layout reuse with source withheld, but not promotion, absent CLI
+creation or partial outcomes. The kagent qualifier proves source-free Lift into a
+fresh namespace and occupied repeat refusal without additional native execution.
+Standalone packaged evaluation is unavailable.
+
 ## Repository layout
 
 Consult the [repository map](repository-map.md) for tracked membership and caller
@@ -32,15 +92,22 @@ classification.
 | Path | Responsibility |
 |---|---|
 | `cmd/kmx/`, `internal/kmx/`, `embed.go` | CLI command tree, Orka and version-bounded kagent lifecycle adapter, portable authoring, shared plumbing and embedded manifests |
-| `pkg/kmx/` | experimental public lifecycle contracts, not wired into the installed CLI |
+| `pkg/kmx/` | experimental public setup-only environment plus suite/deployment contracts, not wired into the installed CLI |
 | `k8s/ollama.yaml`, `k8s/orka-k8s-tool.yaml` | native local model and read-only Kubernetes Tool |
 | `scripts/`, `Makefile` | checks, packaging and repository helpers |
 | `.github/workflows/` | verification jobs and docs-only routing |
 
-The root CLI is the only Go module. Plain `make` builds `bin/kmx` only. The supported
-kagent surface is version-qualified create or declarative bundle lift/status,
-not a general legacy-YAML conversion layer. One production LifecycleAdapter
-owns both profiles; experimental public ports remain unwired.
+The root CLI is the only Go module. Plain `make` builds `bin/kmx` only. The
+supported kagent surface is version-qualified create, declarative legacy bundle
+lift/status/evaluation, and packaged workspace evaluation/evaluated push plus
+create-only digest Lift through private App seams, not a general legacy-YAML conversion layer. One production
+LifecycleAdapter owns the legacy profiles; experimental public ports remain unwired.
+
+For a narrative architecture view, including workspace preparation, native
+evaluation, OCI publication and legacy bundle separation, use the
+[codebase overview](codebase-overview.md). For the current visible and hidden
+command tree plus `pkg/kmx` method sets, use the
+[interface baseline](interface-baseline.md).
 
 ## Build and verify
 
@@ -115,26 +182,29 @@ export KIND_CLUSTER=dev-local
 export KUBE_CTX=kind-dev-local
 bin/kmx quickstart
 bin/kmx status
-bin/kmx agent chat --namespace orka-system hello-world-agent
+bin/kmx chat --namespace orka-system hello-world-agent
 bin/kmx local down
 ```
 
 A bare `bin/kmx local up` installs the runtime without an Agent: kind, Ollama, the
 model and pinned Orka with its keyless `local` Provider. Author your own Agent
-with `bin/kmx agent create`, or use `bin/kmx quickstart --interactive` for guided
+with `bin/kmx create --live`, or use `bin/kmx quickstart --interactive` for guided
 creation. `kmx status` is the Orka-only runtime report; bundle-aware
-`agent status` is a separate command.
+`bundle status <bundle-dir>` is a separate command. `orka status` shares root
+status's table-only runtime contract; no root bundle or suite observer is added.
 
 KMX never installs or upgrades kagent. Explicit create targets exact v0.10.2;
-explicit bundle lift/status uses `--runtime kagent --runtime-version v0.10.3`,
-`--to-context` and validated `KagentBindings`. The normal development loop remains
-Orka; the profiles never fall back between installed runtimes.
+explicit bundle lift/status/evaluation uses `--runtime kagent --runtime-version v0.10.3`,
+`--to-context` and validated `KagentBindings`. Packaged exact-v0.10.3 Go
+workspace evaluation instead uses root `eval --bindings FILE` and can feed
+runtime-matched evaluated push. The normal development loop remains Orka; the
+profiles never fall back between installed runtimes.
 
 Pick a distinct cluster name and explicit context. Keep
 `CONTAINER_ENGINE=podman` consistent if selected; Docker and Podman inventories
-are separate. `down` destroys all data in the named local cluster, including
-any historical database still present; export needed data first. Cloud cleanup
-has different [ownership rules](aks.md#teardown).
+are separate. `kmx local down` destroys all data in the named local cluster,
+including any historical database still present; export needed data first.
+Cloud cleanup has different [ownership rules](aks.md#teardown).
 
 ### What CI proves
 
@@ -159,7 +229,7 @@ cancelled shard is never an intentional skip.
 `e2e-eval-loop` is a required clusterless, secret-free evaluation boundary on
 non-docs-only changes. It runs digest-pinned AIKit Qwen3.5-2B on CPU and builds
 `agentsessionsd` at the module revision pinned by KMX. Through that sessions
-endpoint, `kmx agent evaluate` runs the tiny public bundle in
+endpoint, `kmx bundle evaluate` runs the tiny public bundle in
 `internal/kmx/app/testdata/live-eval-loop`: both cases must pass, containing
 the literal substrings `Paris` and `4` respectively, not exact answer wording.
 The capital case also exercises a Go RE2 pattern and `notContains` assertion.
@@ -182,7 +252,7 @@ happy cases prove general 2B judge quality. The proof prints safely rendered
 public fixture reasoning and saves actual payload-free rows in `judge-proof.json`.
 
 The shard then stops the model provider, keeps the daemon and journal alive, and
-requires `kmx agent verify` to report every case equivalent with zero model
+requires `kmx bundle verify` to report every case equivalent with zero model
 calls through local-reference replay.
 
 The job uses the same [eval action](../.github/actions/kmx-eval/action.yml)
@@ -200,7 +270,7 @@ Hygiene self-tests the evidence/provenance gates and failure diagnostics with
 `scripts/test_eval_runner.py`. This check proves no lift gate, host implementation
 attestation, cluster integration or hosted-model provider behavior.
 
-`e2e-orka-runtime` brings up kind, Ollama and the model with compatibility `kmx up --step`
+`e2e-orka-runtime` brings up kind, Ollama and the model with `kmx local up --step`
 component steps, installs pinned Orka and its keyless Provider, and requires a
 Provider → Agent → Task round trip to return an exact, non-empty local-model
 answer. It applies the committed native Orka
@@ -236,8 +306,13 @@ calls must exit 1 with the exact final ordinary CLI error, not an unrelated fail
 A separate one-shot native A2A message must return the fixture's random MCP sentinel
 with one actual tool call, two model calls and one terminal answer. Only identities,
 counts and hashes enter its private qualification artifact; readiness receipts
-remain separate. Python deployment, managed clusters and hosted providers remain
-unqualified.
+remain separate. A packaged two-case workspace phase separately requires root
+`eval --bindings`, runtime-specific private evidence, self-diff and evaluated
+local-layout push and stale-evidence refusal, then source-free digest Lift into a
+fresh namespace with GET-only planning, ordered creation, ready identity proof
+and occupied repeat refusal without extra native traffic. It emits only
+payload-free `suite-qualification.json`. Python deployment, managed clusters and
+hosted providers remain unqualified.
 
 The checkout-only [qualification shell](../scripts/ci/kagent-lift.sh) defaults to
 `qualify`; build the final Go state with `go build -o bin/kmx ./cmd/kmx`, then
@@ -266,9 +341,9 @@ external boundaries and unrelated failures injected at all five negative calls.
 It creates no cluster. The dedicated shard runs the live qualification.
 
 `kmx-clone-free` runs on main/manual dispatch, not as a required PR shard. It
-checks installation, bare `up` and native Orka creation with an actual Task
-answer. Tags trigger the separate release workflow. None of these proves an
-AKS run: no Azure credentials belong in fork-exposed CI. A docs-only shortcut
+checks installation, `kmx local up` without `--step` and native Orka creation
+with an actual Task answer. Tags trigger the separate release workflow.
+None of these proves an AKS run: no Azure credentials belong in fork-exposed CI. A docs-only shortcut
 is not an end-to-end rerun.
 
 ### CI registry mirrors
@@ -292,9 +367,9 @@ containerd debug logging for the endpoint report.
 Compound quickstart and clone-free journeys use a CI-only Docker-named symlink
 wrapper. It forwards Docker calls unchanged, then hooks a successful kind-node
 creation identified by reserved kind cluster and node-role labels, configuring
-hosts and debug logging before kind returns. This keeps bare `up` and fetched-kind
-proof intact without changing KMX or kind. Clone-free CI fetches only this helper
-at the workflow SHA into `RUNNER_TEMP`; it does not check out the repository.
+hosts and debug logging before kind returns. This keeps full `kmx local up`
+and fetched-kind proof intact without changing KMX or kind. Clone-free CI
+fetches only this helper at the workflow SHA into `RUNNER_TEMP`; it does not check out the repository.
 
 Reports print only successful HTTP 200 endpoint responses: endpoint, image and
 manifest/blob category, without headers, query strings or payloads. A cache hit
@@ -346,6 +421,6 @@ OCI pulls and do not use these mirrors.
   PEP 604 annotations. Ignore rules such as `bin/` match at every depth; verify
   tracked membership and beware newly unignored files entering `stash -u`.
 
-Use `kmx orka status`, `kmx agent status`, Agent/Provider/Task conditions and
+Use `kmx orka status`, `kmx bundle status <bundle-dir>`, Agent/Provider/Task conditions and
 context-pinned controller logs. Never paste live infrastructure IDs into
 evidence: scan shapes and manually redact names too.

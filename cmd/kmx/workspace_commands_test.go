@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/workspace"
+	"oras.land/oras-go/v2/content/oci"
+	"oras.land/oras-go/v2/registry/remote/errcode"
 )
 
 func TestWorkspaceCreateAndPushAreOfflineAndPreserveDigest(t *testing.T) {
@@ -22,7 +26,7 @@ func TestWorkspaceCreateAndPushAreOfflineAndPreserveDigest(t *testing.T) {
 	t.Setenv("CONTAINER_ENGINE", "not-an-engine")
 	var out, diagnostics bytes.Buffer
 	deps, loads := testDependencies(&out, &diagnostics)
-	if err := execute([]string{"agent", "create", "greeter", "--workspace", root, "--instructions", instructions, "--model", "qwen-3.5-2b"}, deps); err != nil {
+	if err := execute([]string{"create", "greeter", "--workspace", root, "--instructions", instructions, "--model", "qwen-3.5-2b"}, deps); err != nil {
 		t.Fatal(err)
 	}
 	if *loads != 0 {
@@ -34,21 +38,60 @@ func TestWorkspaceCreateAndPushAreOfflineAndPreserveDigest(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "workspace.yaml")); err != nil {
 		t.Fatal(err)
 	}
+	nested := filepath.Join(root, "nested", "deep")
+	if err := os.MkdirAll(nested, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(nested)
 	layout := filepath.Join(t.TempDir(), "layout")
 	out.Reset()
-	if err := execute([]string{"suite", "push", "--workspace", root, "--to-layout", layout, "team:v1"}, deps); err != nil {
+	prepared, err := workspace.Prepare(context.Background(), root, filepath.Join(t.TempDir(), "expected-cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An explicit nested root without a marker must not fall back to the valid
+	// ancestor that the following bare push will discover.
+	if err := execute([]string{"push", "--workspace", ".", "--to-layout", layout, "team:v1"}, deps); !errors.Is(err, workspace.ErrNotFound) {
+		t.Fatalf("exact override fell back or lost error identity: %v", err)
+	}
+	if _, err := os.Stat(layout); !os.IsNotExist(err) || *loads != 0 || out.Len() != 0 || diagnostics.Len() != 0 {
+		t.Fatal("missing exact override wrote destination, loaded config or emitted output")
+	}
+	if err := execute([]string{"push", "--to-layout", layout, "team:v1"}, deps); err != nil {
 		t.Fatal(err)
 	}
 	first := out.String()
-	if !strings.Contains(first, "sha256:") {
-		t.Fatalf("publication omitted suite identity: %s", first)
-	}
-	out.Reset()
-	if err := execute([]string{"suite", "push", "--workspace", root, "--to-layout", layout, "team:v1"}, deps); err != nil {
+	store, err := oci.New(layout)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if out.String() != first {
-		t.Fatalf("repeat publication changed result: %q -> %q", first, out.String())
+	descriptor, err := store.Resolve(context.Background(), "team:v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if descriptor.Digest != prepared.Descriptor.Digest {
+		t.Fatalf("publication changed prepared identity: got %s want %s", descriptor.Digest, prepared.Descriptor.Digest)
+	}
+	identity := fmt.Sprintf("Workspace: %q; AgentSuite: %s\n", root, prepared.Descriptor.Digest)
+	if diagnostics.String() != identity {
+		t.Fatalf("workspace diagnostic = %q, want %q", diagnostics.String(), identity)
+	}
+	wantOut := fmt.Sprintf("Pushed native-Orka AgentSuite greeter to %s (%s)\nRequired member images: []\n", layout, prepared.Descriptor.Digest)
+	if first != wantOut {
+		t.Fatalf("workspace result changed: %q, want %q", first, wantOut)
+	}
+	unrelated := t.TempDir()
+	if err := os.WriteFile(filepath.Join(unrelated, "workspace.yaml"), []byte("broken: [\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(unrelated)
+	diagnostics.Reset()
+	out.Reset()
+	if err := execute([]string{"push", "--workspace", root, "--to-layout", layout, "team:v1"}, deps); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != first || diagnostics.String() != identity {
+		t.Fatalf("repeat publication changed result/diagnostic: %q, %q", out.String(), diagnostics.String())
 	}
 	if *loads != 0 {
 		t.Fatal("workspace publication loaded operational configuration")
@@ -67,14 +110,71 @@ func TestWorkspaceCreateAndPushAreOfflineAndPreserveDigest(t *testing.T) {
 	}
 }
 
+func TestCreateWithoutLiveAuthorsKagentMember(t *testing.T) {
+	root, input, layout := t.TempDir(), filepath.Join(t.TempDir(), "input.md"), filepath.Join(t.TempDir(), "layout")
+	if err := os.WriteFile(input, []byte("Exact instructions.\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KMX_HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	var out, diagnostics bytes.Buffer
+	deps, loads := testDependencies(&out, &diagnostics)
+	if err := execute([]string{"create", "greeter", "--workspace", root, "--runtime", "kagent", "--model", "fixture", "--instructions", input}, deps); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := workspace.Prepare(t.Context(), root, filepath.Join(t.TempDir(), "cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	suite, err := workspace.Load(t.Context(), prepared)
+	if err != nil || suite.Runtime != (workspace.RuntimeProfile{ID: "kagent", Version: "v0.10.3", Engine: "go"}) {
+		t.Fatalf("wrong authored runtime: %v, %v", suite, err)
+	}
+	if err = execute([]string{"push", "--workspace", root, "--to-layout", layout, "team:v1"}, deps); err != nil {
+		t.Fatal(err)
+	}
+	store, err := oci.New(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := store.Resolve(t.Context(), "team:v1")
+	if err != nil || descriptor.Digest != prepared.Descriptor.Digest || *loads != 0 || !strings.Contains(out.String(), "native-kagent") || strings.Contains(out.String(), "native-Orka") {
+		t.Fatalf("offline profile/publication changed: %v loads=%d output=%s", err, *loads, &out)
+	}
+}
+
+func TestWorkspaceRuntimeSelectorsRefuseBeforeConfigOrWrites(t *testing.T) {
+	for _, flags := range [][]string{
+		{"--runtime", "kagent", "--runtime-version", "v0.10.2"},
+		{"--runtime", "kagent", "--runtime-version", "v0.10.3", "--kagent-runtime", "python"},
+		{"--runtime", "orka", "--runtime-version", "v0.10.3"}, {"--kagent-runtime", "go"}, {"--runtime-version", ""},
+	} {
+		t.Run(strings.Join(flags, " "), func(t *testing.T) {
+			root := t.TempDir()
+			var out, diagnostics bytes.Buffer
+			deps, loads := testDependencies(&out, &diagnostics)
+			err := execute(append([]string{"create", "greeter", "--workspace", root, "--model", "fixture", "--instructions", "missing-file"}, flags...), deps)
+			entries, readErr := os.ReadDir(root)
+			if err == nil || !strings.Contains(err.Error(), "runtime") || *loads != 0 || readErr != nil || len(entries) != 0 {
+				t.Fatalf("invalid runtime reached authoring: %v", err)
+			}
+		})
+	}
+	var out, diagnostics bytes.Buffer
+	deps, loads := testDependencies(&out, &diagnostics)
+	if err := execute([]string{"create", "--live", "greeter", "--runtime", "kagent", "--runtime-version", "v0.10.3"}, deps); err == nil || !strings.Contains(err.Error(), "offline authoring") || *loads != 0 {
+		t.Fatalf("suite selector changed live create: %v", err)
+	}
+}
+
 func TestWorkspaceCreateRefusesModeConflictsBeforeConfigOrWrites(t *testing.T) {
-	for _, flag := range []string{"namespace", "provider-type", "secret", "base-url", "out", "bundle-path", "tools", "task", "runtime", "no-apply", "dry-run", "context", "container-engine"} {
+	for _, flag := range []string{"namespace", "provider-type", "secret", "base-url", "out", "bundle-path", "tools", "task", "runtime", "no-apply", "dry-run", "context", "container-engine", "live"} {
 		t.Run(flag, func(t *testing.T) {
 			root := t.TempDir()
 			var out, diagnostics bytes.Buffer
 			deps, loads := testDependencies(&out, &diagnostics)
-			args := []string{"agent", "create", "greeter", "--workspace", root, "--model", "qwen-3.5-2b", "--instructions", "missing-file", "--" + flag}
-			if flag != "no-apply" && flag != "dry-run" {
+			args := []string{"create", "greeter", "--workspace", root, "--model", "qwen-3.5-2b", "--instructions", "missing-file", "--" + flag}
+			if flag != "no-apply" && flag != "dry-run" && flag != "live" {
 				args = append(args, "unused")
 			}
 			err := execute(args, deps)
@@ -92,12 +192,49 @@ func TestWorkspaceCreateRefusesModeConflictsBeforeConfigOrWrites(t *testing.T) {
 	}
 }
 
+func TestCreateDefaultModeRefusalsBeforeConfigOrWrites(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"name required", nil, "requires a name"},
+		{"one name", []string{"one", "two"}, "requires a name"},
+		{"invalid name", []string{"Invalid", "--model", "exact", "--instructions", "input"}, "name"},
+		{"required source", []string{"member"}, "--model and --instructions"},
+		{"nonterminal", []string{"member", "--model", "exact", "--instructions", "input"}, "--workspace"},
+		{"kagent requires source", []string{"member", "--runtime", "kagent"}, "--model and --instructions"},
+		{"kagent nonterminal", []string{"member", "--runtime", "kagent", "--model", "exact", "--instructions", "input"}, "--workspace"},
+		{"context", []string{"member", "--context", "unused"}, "--live"},
+		{"false live is offline", []string{"member", "--live=false", "--namespace", "unused"}, "--live"},
+		{"empty workspace", []string{"member", "--workspace="}, "non-empty --workspace"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Chdir(root)
+			if err := os.WriteFile("input", []byte("Answer briefly.\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var out, diagnostics bytes.Buffer
+			deps, loads := testDependencies(&out, &diagnostics)
+			err := execute(append([]string{"create"}, tc.args...), deps)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil || len(entries) != 1 || *loads != 0 || out.Len() != 0 || diagnostics.Len() != 0 {
+				t.Fatalf("refusal wrote files/output or loaded config: %v, %v, %d, %q, %q", entries, err, *loads, &out, &diagnostics)
+			}
+		})
+	}
+}
+
 func TestWorkspaceSelectorsRejectEmptyAndAmbiguousSource(t *testing.T) {
 	for _, args := range [][]string{
-		{"agent", "create", "greeter", "--workspace", ""},
-		{"agent", "create", "--workspace", "."},
-		{"suite", "push", "--workspace", "", "team:v1"},
-		{"suite", "push", "directory", "team:v1", "--workspace", "."},
+		{"create", "greeter", "--workspace", ""},
+		{"create", "--workspace", "."},
+		{"push", "--workspace", "", "team:v1"},
+		{"push", "directory", "team:v1", "--workspace", "."},
 	} {
 		var out, diagnostics bytes.Buffer
 		deps, loads := testDependencies(&out, &diagnostics)
@@ -143,15 +280,27 @@ func TestWorkspaceRegistryPushProvenanceControls(t *testing.T) {
 			}
 			var out, diagnostics bytes.Buffer
 			deps, loads := testDependencies(&out, &diagnostics)
-			args := append([]string{"suite", "push", "--workspace", root, ref, "--plain-http"}, tc.flags...)
+			args := append([]string{"push", "--workspace", root, ref, "--plain-http"}, tc.flags...)
 			err := execute(args, deps)
 			if tc.required {
 				if err == nil || !strings.Contains(err.Error(), "tag was not changed") {
 					t.Fatalf("required attachment failure: %v", err)
 				}
+				var response *errcode.ErrorResponse
+				if !errors.As(err, &response) || response.StatusCode != 405 {
+					t.Fatalf("root push lost registry error identity: %T %v", err, err)
+				}
 			} else {
 				if err != nil {
 					t.Fatal(err)
+				}
+				want := "Pushed native-Orka AgentSuite greeter to " + ref + " (" + prepared.Descriptor.Digest.String() + ")\nRequired member images: []\nPin this AgentSuite: " + strings.TrimSuffix(ref, ":prepared") + "@" + prepared.Descriptor.Digest.String() + "\n"
+				if out.String() != want {
+					t.Fatalf("registry output/identity changed: got %q want %q", &out, want)
+				}
+				identity := fmt.Sprintf("Workspace: %q; AgentSuite: %s\n", root, prepared.Descriptor.Digest)
+				if !strings.HasPrefix(diagnostics.String(), identity) || strings.Count(diagnostics.String(), "Workspace:") != 1 {
+					t.Fatalf("registry workspace identity = %q; want %q once", diagnostics.String(), identity)
 				}
 				if got := strings.Contains(diagnostics.String(), "provenance was not attached"); got != tc.warning {
 					t.Fatalf("default/opt-out warning = %q, want %t", diagnostics.String(), tc.warning)
@@ -174,7 +323,7 @@ func TestWorkspaceProvenanceFlagsRefuseConflictsBeforePreparation(t *testing.T) 
 		t.Setenv("KMX_HOME", state)
 		var out, diagnostics bytes.Buffer
 		deps, loads := testDependencies(&out, &diagnostics)
-		args := append([]string{"suite", "push", "--workspace", "missing-workspace", "team:v1"}, flags...)
+		args := append([]string{"push", "--workspace", "missing-workspace", "team:v1"}, flags...)
 		if err := execute(args, deps); err == nil || !strings.Contains(err.Error(), "provenance") {
 			t.Fatalf("invalid provenance flags: %v", err)
 		}
@@ -201,7 +350,7 @@ func TestWorkspacePathsRefuseCredentialShapesWithoutDisclosure(t *testing.T) {
 			}
 			var out, diagnostics bytes.Buffer
 			deps, loads := testDependencies(&out, &diagnostics)
-			err := execute([]string{"agent", "create", "greeter", "--workspace", root, "--model", "test-model", "--instructions", input}, deps)
+			err := execute([]string{"create", "greeter", "--workspace", root, "--model", "test-model", "--instructions", input}, deps)
 			if err == nil || strings.Contains(err.Error(), credential) || strings.Contains(out.String(), credential) || strings.Contains(diagnostics.String(), credential) {
 				t.Fatal("credential-shaped path was accepted or disclosed")
 			}
@@ -228,14 +377,14 @@ func TestWorkspaceProfileParseErrorsDoNotDiscloseContent(t *testing.T) {
 		t.Setenv("KMX_HOME", t.TempDir())
 		var out, diagnostics bytes.Buffer
 		deps, loads := testDependencies(&out, &diagnostics)
-		if err := execute([]string{"agent", "create", "greeter", "--workspace", root, "--model", "test-model", "--instructions", input}, deps); err != nil {
+		if err := execute([]string{"create", "greeter", "--workspace", root, "--model", "test-model", "--instructions", input}, deps); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(root, "build-profiles/default.json"), []byte(profile), 0600); err != nil {
 			t.Fatal(err)
 		}
 		out.Reset()
-		err := execute([]string{"suite", "push", "--workspace", root, "--to-layout", filepath.Join(t.TempDir(), "published"), "team:v1"}, deps)
+		err := execute([]string{"push", "--workspace", root, "--to-layout", filepath.Join(t.TempDir(), "published"), "team:v1"}, deps)
 		if err == nil || !strings.Contains(err.Error(), "profile") {
 			t.Fatal("invalid profile should refuse with a profile diagnostic")
 		}
@@ -249,10 +398,16 @@ func TestWorkspaceProfileParseErrorsDoNotDiscloseContent(t *testing.T) {
 }
 
 func TestWorkspaceHelpAndCompletionHaveNoOperationalEffects(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	if err := os.WriteFile("workspace.yaml", []byte("broken: [\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	for _, args := range [][]string{
-		{"agent", "create", "--help"}, {"suite", "push", "--help"},
-		{"__complete", "agent", "create", "--workspace", ""},
-		{"__complete", "suite", "push", "--workspace", ""},
+		{"create", "--help"}, {"push", "--help"}, {"suite", "push", "--help"},
+		{"__complete", "create", "--workspace", ""},
+		{"__complete", "create", "--l"},
+		{"__complete", "push", "--workspace", ""},
 	} {
 		var out, diagnostics bytes.Buffer
 		deps, loads := testDependencies(&out, &diagnostics)
@@ -262,5 +417,59 @@ func TestWorkspaceHelpAndCompletionHaveNoOperationalEffects(t *testing.T) {
 		if *loads != 0 {
 			t.Fatal("workspace help/completion loaded operational config")
 		}
+	}
+}
+
+func TestWorkspacePushRoutingAndArity(t *testing.T) {
+	fixture := copySuiteFixture(t, filepath.Join("..", "..", "agentsuite", "testdata", "minimal"))
+	for _, tc := range []struct {
+		name  string
+		route []string
+		args  []string
+		want  string
+	}{
+		{"missing", []string{"push"}, []string{"team:v1"}, "no workspace found"},
+		{"context", []string{"push"}, []string{"team:v1", "--context", "unused"}, "--context"},
+		{"engine", []string{"push"}, []string{"team:v1", "--container-engine", "docker"}, "--container-engine"},
+		{"no destination", []string{"push"}, nil, "exactly one"},
+		{"two positional", []string{"push"}, []string{fixture, "team:v1"}, "exactly one"},
+		{"extra positional", []string{"push"}, []string{"one", "two", "three"}, "exactly one"},
+		{"blank override", []string{"push"}, []string{"team:v1", "--workspace", " "}, "non-empty --workspace"},
+		{"ambiguous override", []string{"push"}, []string{"directory", "team:v1", "--workspace", "."}, "exactly one"},
+		{"suite one positional", []string{"suite", "push"}, []string{"team:v1"}, "usage:"},
+		{"suite workspace removed", []string{"suite", "push"}, []string{"team:v1", "--workspace", "."}, "unknown flag: --workspace"},
+		{"extracted bypass", []string{"suite", "push"}, []string{fixture, "team:v1"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, state := t.TempDir(), t.TempDir()
+			if tc.want == "" {
+				if err := os.WriteFile(filepath.Join(root, "workspace.yaml"), []byte("broken: [\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Chdir(root)
+			t.Setenv("KMX_HOME", state)
+			var out, diagnostics bytes.Buffer
+			deps, loads := testDependencies(&out, &diagnostics)
+			layout := filepath.Join(t.TempDir(), "layout")
+			args := append(append(append([]string(nil), tc.route...), "--to-layout", layout), tc.args...)
+			err := execute(args, deps)
+			if tc.name == "missing" && !errors.Is(err, workspace.ErrNotFound) {
+				t.Fatalf("discovery lost missing-workspace identity: %v", err)
+			}
+			if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("refusal = %v; want %q", err, tc.want)
+			}
+			if tc.want == "" && (err != nil || !strings.Contains(out.String(), "Pushed AgentSuite minimal")) {
+				t.Fatalf("extracted route changed: %q, %v", out.String(), err)
+			}
+			if _, err := os.Stat(layout); tc.want != "" && !os.IsNotExist(err) {
+				t.Fatal("routing refusal wrote destination")
+			}
+			entries, statErr := os.ReadDir(state)
+			if statErr != nil || len(entries) != 0 || *loads != 0 || diagnostics.Len() != 0 || (tc.want != "" && out.Len() != 0) {
+				t.Fatal("routing loaded config, prepared state, or emitted unexpected output", statErr)
+			}
+		})
 	}
 }

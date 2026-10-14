@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,9 +23,12 @@ type EvaluationDiffOptions struct{ Before, After string }
 
 type evaluationDiffIdentity struct {
 	Runtime, Address, Harness, Model, ClusterUID, Namespace, Agent, AgentUID string
+	RuntimeVersion, Engine, ModelConfigUID, SourceCommit                     string
+	ControllerImage, ADKImage                                                kagentEvaluationImage
 }
 
 type normalizedEvaluation struct {
+	SuiteIdentity, SuiteInventory                                 string
 	Version                                                       int
 	RunID, Bundle, PortableDigest, CasesDigest, GitCommit, Result string
 	FullCaseSet, IdentityComplete, IdentityConflict               bool
@@ -129,6 +133,7 @@ func readEvaluationDiffSource(path string) (normalizedEvaluation, error) {
 	// Inspect only the discriminant before choosing a typed receipt. The full
 	// decoder below rejects every field outside that runtime's schema.
 	var target struct {
+		Domain        string `json:"domain"`
 		SchemaVersion int    `json:"schemaVersion"`
 		RunID         string `json:"runID"`
 		Target        struct {
@@ -137,6 +142,17 @@ func readEvaluationDiffSource(path string) (normalizedEvaluation, error) {
 	}
 	if json.Unmarshal(raw, &target) != nil {
 		return invalid()
+	}
+	if target.Domain == "kmx.native-suite.passing/v1" {
+		r, err := readSuitePassingReceipt(context.Background(), absolute)
+		if err != nil {
+			return invalid()
+		}
+		n, ok := normalizeSuitePassingEvaluation(r)
+		if !ok {
+			return invalid()
+		}
+		return n, nil
 	}
 	legacyOrka := target.Target.Runtime == string(agentruntime.Orka) && target.SchemaVersion == 0 && target.RunID == ""
 	if !evaluationReceiptJSONShape(raw, target.SchemaVersion, target.RunID, legacyOrka) {
@@ -152,6 +168,12 @@ func readEvaluationDiffSource(path string) (normalizedEvaluation, error) {
 		return d.Decode(&extra) == io.EOF
 	}
 	switch target.Target.Runtime {
+	case string(agentruntime.Kagent):
+		n, ok := parseKagentEvaluation(raw)
+		if !ok {
+			return invalid()
+		}
+		return n, nil
 	case "agentsessions":
 		var r sessionsEvaluationReceipt
 		if !decode(&r) {
@@ -386,9 +408,17 @@ func normalizeOrkaEvaluation(r bundleEvaluationReceipt) (normalizedEvaluation, b
 func compareEvaluations(before, after normalizedEvaluation) evaluationDiffReport {
 	r := evaluationDiffReport{Before: before, After: after, CaseSetChanged: before.CasesDigest != after.CasesDigest}
 	switch {
+	case (before.SuiteIdentity == "") != (after.SuiteIdentity == ""):
+		r.IncompatibleReason = "different receipt family"
+	case before.SuiteIdentity != "" && before.Identity.Runtime != after.Identity.Runtime:
+		r.IncompatibleReason = "runtime identity differs"
+	case before.SuiteIdentity != "" && before.SuiteIdentity != after.SuiteIdentity:
+		r.IncompatibleReason = "prepared suite subject differs"
+	case before.SuiteIdentity != "" && (before.CasesDigest != after.CasesDigest || before.SuiteInventory != after.SuiteInventory):
+		r.IncompatibleReason = "suite case inventory differs"
 	case before.Bundle != after.Bundle:
 		r.IncompatibleReason = "different bundle"
-	case before.Version != 2 || after.Version != 2:
+	case before.SuiteIdentity == "" && (before.Version != 2 || after.Version != 2):
 		r.IncompatibleReason = "legacy receipt has no assertion evidence"
 	case !before.FullCaseSet || !after.FullCaseSet:
 		r.IncompatibleReason = "partial case set"
@@ -529,6 +559,10 @@ func writeEvaluationDiffReport(out io.Writer, r evaluationDiffReport) error {
 		label string
 		n     normalizedEvaluation
 	}{{"before", r.Before}, {"after", r.After}} {
+		if item.n.SuiteIdentity != "" {
+			fmt.Fprintf(&text, "%s: suite %s runtime %s schema %d run %s\nsuiteDigest: %s\ncasesDigest: %s\nfullCaseSet: %t\n", item.label, item.n.Bundle, item.n.Identity.Runtime, item.n.Version, item.n.RunID, item.n.PortableDigest, item.n.CasesDigest, item.n.FullCaseSet)
+			continue
+		}
 		fmt.Fprintf(&text, "%s: bundle %s runtime %s schema %d run %s\nportableDigest: %s\nGitCommit: %s\ncasesDigest: %s\nfullCaseSet: %t\n", item.label, item.n.Bundle, item.n.Identity.Runtime, item.n.Version, orDash(item.n.RunID), item.n.PortableDigest, item.n.GitCommit, item.n.CasesDigest, item.n.FullCaseSet)
 	}
 	fmt.Fprintf(&text, "caseSetChanged: %t\n", r.CaseSetChanged)

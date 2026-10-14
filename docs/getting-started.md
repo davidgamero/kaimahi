@@ -24,6 +24,10 @@ Put Go's binary directory on PATH. Inspect the effective context with
 `kmx context show` or select one with `kmx context use <context>`.
 See [release upgrades](releases.md#upgrading-kmx) when moving from an older version,
 and [command alignment](command-semantics.md) for compatibility and retirement details.
+The root `create/chat/run/eval/push/lift` and hidden `bundle` commands below require
+a current development build; tagged v0.5.1 still uses `kmx agent` and does not
+provide workspace Create/Eval/Push or packaged-digest Lift.
+See the [exact migration mapping](../CHANGELOG.md#upgrading).
 
 ## Prerequisites
 
@@ -45,8 +49,10 @@ The local quickstart below is the **supported deterministic Orka first-answer
 path**: it ends with a native Orka Agent answering a question. For guided
 custom authoring and a first answer, use the wizard described below.
 kmx does not install or upgrade kagent. Explicit exact-v0.10.2 create and
-exact-v0.10.3 declarative bundle lift/status require an operator-prepared
-installation; see [version-qualified placement](agent-lift.md#exact-v0103-declarative-bundle-placement).
+exact-v0.10.3 declarative legacy bundle lift/status/evaluation require an operator-prepared
+installation. The same exact-v0.10.3 Go runtime supports packaged workspace
+`eval --bindings FILE`, evaluated push and create-only root digest Lift; see [version-qualified
+placement](agent-lift.md#exact-v0103-declarative-bundle-placement).
 
 Choose a local cluster name you own and pin its context:
 
@@ -64,6 +70,13 @@ The local model defaults to `qwen2.5:3b`; `MODEL` can override it.
 
 On an uncached first run, the default model downloads roughly **1.9GB**.
 Startup and first-answer latency depend on your network and host hardware.
+
+New local kind nodes created by `kmx quickstart` or `kmx local up` use a **5s
+kubelet sync frequency** with either Docker or Podman. This default is intended
+to reduce waits for Orka's webhook Secret file projection; it does not fix
+Orka's upstream coupling to projection. The shorter node-wide cadence means
+more periodic reconciliation work. It applies only to future KMX-created local
+nodes: existing or recovered clusters and AKS nodes are not modified.
 
 Quickstart is non-interactive: no model picker or prompt. The same settings select
 the same cluster, Provider and Agent. Reruns reuse an **exact** live-spec match
@@ -100,14 +113,11 @@ kmx quickstart --interactive
 3. After chat connects to the lifted Agent, send a **new message** and check its
    answer. Lift, readiness and connection do not prove that answer.
 
-Setup starts while the form is open. It creates the Task result-reader account
-and RBAC and installs the default read-only Kubernetes inventory tool. Its
-ClusterRole can list the documented resource kinds **across namespaces**.
-Cancelling stops active work but leaves completed resources in place. Review the
-[tool and RBAC boundary](orka-k8s-tool.md) before using a shared cluster.
+Setup waits for a supported local model selection. It creates the Task result-reader account and RBAC, but no longer installs or attaches the Kubernetes inventory tool. Explicit quickstart `--tools` requests refuse; tools return later through suite ToolProviders. Host Foundry/Copilot wizard modes are retired; use an existing Ready destination Orka `openai` Provider serving the suite's exact model for the suite workflow. Cancelling stops active work but leaves completed resources in place.
 
 See [interactive lift](interactive-lift.md) for target discovery and confirmation,
-and [bundle lift](agent-lift.md) for `kmx agent lift` and `kmx agent evaluate`.
+and the [legacy bundle lifecycle](agent-lift.md) for `kmx bundle lift` and
+`kmx bundle evaluate`.
 
 ### The whole runtime
 
@@ -116,8 +126,8 @@ To prepare the runtime without creating an Agent, use `kmx local up` instead of 
 ```bash
 kmx local up
 kmx orka status
-# After quickstart or agent create has created this Agent:
-kmx agent chat --namespace orka-system hello-world-agent
+# After quickstart or create --live has created this Agent:
+kmx chat --namespace orka-system hello-world-agent
 ```
 
 `kmx local up` brings up kind, keyless Ollama with the configured `MODEL`, and pinned
@@ -144,10 +154,36 @@ does not repoint existing tools. Interactive `/help` lists local controls.
 
 ## An agent of your own
 
-For explicit native Orka authoring, preview a Provider + Agent bundle offline:
+Default create authors one native-Orka workspace member offline, not live
+resources or a PortableAgent bundle:
 
 ```bash
-kmx agent create my-agent --namespace orka-system \
+kmx create my-agent --workspace ./my-workspace \
+  --model qwen2.5:3b --instructions ./instructions.md
+```
+
+Provide an instructions **file**, not inline text; model is required and exact.
+Omit `--workspace` to discover the nearest ancestor `workspace.yaml`. If none
+exists, terminal use asks `Start one here? [Y/n]`; nonterminal or redirected use
+requires `--workspace DIR`, which selects/initializes that exact root without a
+prompt. Invalid nearest markers refuse without fallback. An existing one-member
+workspace refuses a second member without changing files; select a new root.
+See [workspace authoring, evaluation, publication and digest Lift](suite-workspace.md).
+Packaged workspace evaluation is implemented for native Orka with `--inference`
+and exact-v0.10.3 Go kagent with `--bindings`; matching full-passing evidence can
+authorize evaluated push. Standalone package evaluation remains unavailable; root
+`kmx lift REF@sha256:DIGEST` instead deploys an exact registry or local-layout
+native package using a separate matching private evidence file and explicit
+target. Orka uses a Ready `openai` inference Provider; kagent uses author-owned
+bindings and refuses any occupied target.
+
+### Live resources and bundles
+
+For explicit native Orka resource/bundle creation, preview a Provider + Agent
+offline with `--live --no-apply`:
+
+```bash
+kmx create --live my-agent --namespace orka-system \
   --provider-type openai --model qwen2.5:3b --secret local-provider-key \
   --base-url http://ollama.ollama.svc.cluster.local:11434/v1 --no-apply
 ```
@@ -159,9 +195,12 @@ and ordered readiness waits. `--dry-run` checks admission, **not execution**.
 Only optional `--task` with an existing result ServiceAccount tests a real answer;
 create does not provision that account or RBAC. Follow the
 [context-pinned first-Task guide](orka.md#author-an-orka-agent-and-get-an-answer)
-and [create safety contract](kmx.md#kmx-agent-create).
-No-name terminal invocation offers a wizard. `agent chat` and `agent list --namespace <ns>`
-are Orka-only; edit a live Agent with `kubectl edit agents.core.orka.ai`.
+and [create safety contract](kmx.md#kmx-create).
+`--live` is mandatory for both runtimes, even with `--no-apply`, `--dry-run` or
+`--out -`; `--runtime kagent` alone never selects live creation. No-name
+`kmx create --live` terminal invocation offers the live Orka wizard. Quickstart
+creation uses a fixed native suite, full eval, exact local publication and gated digest lift before a fresh answer. Console creation selects an authored native-Orka workspace for complete source/case review, execution consent, full eval/publication and a separately reviewed Lift Apply/Verify. `chat` and
+`orka list --namespace <ns>` are Orka-only; edit a live Agent with `kubectl edit agents.core.orka.ai`.
 BYO images, model-preset and MCP conversion are not provided.
 
 For the separate, advanced kagent v0.10.2 create-only path, use the complete
@@ -196,8 +235,9 @@ nodes and checks API/DNS. kmx supplies `KIND_EXPERIMENTAL_PROVIDER=podman` autom
 - `kmx local down` deletes the **whole local cluster
   and its data**, including any historical database. Export needed data first;
   see [Orka backup cautions](orka.md#preserve-the-charts-generated-snapshot-key).
-  For AKS use [lift teardown](aks.md#teardown), not kind down. Azure resources can
+  For AKS use [`kmx aks down`](aks.md#teardown), not kind down. Azure resources can
   remain billable after a failed operation; verify cleanup rather than assuming cancellation deleted them.
 
-Next: [CLI reference](kmx.md), [models and endpoints](models.md) and
-[bundle lifecycle](agent-lift.md).
+Next: [CLI reference](kmx.md), [models and endpoints](models.md),
+[workspace lifecycle](suite-workspace.md), and the
+[legacy bundle lifecycle](agent-lift.md).

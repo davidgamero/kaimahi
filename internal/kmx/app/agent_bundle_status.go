@@ -1,4 +1,4 @@
-// `kmx agent status` dispatches a portable bundle to Orka's known-target report
+// `kmx bundle status` dispatches a portable bundle to Orka's known-target report
 // by default or to explicit Kagent status for one context and KagentBindings
 // namespace. It writes no receipt, remembered selection or cluster resource.
 //
@@ -87,6 +87,7 @@ type bundleStatusTarget struct {
 // exposed for both Provider and Agent so a caller can see whether the two
 // objects agree, not only whether the Agent does.
 type bundleResourceStatus struct {
+	suiteReserved  bool
 	Found          bool   `json:"found"`
 	UID            string `json:"uid,omitempty"`
 	Generation     int64  `json:"generation,omitempty"`
@@ -163,7 +164,7 @@ func bundleStatusFormat(output string) (string, error) {
 		format = "table"
 	}
 	if format != "table" && format != "json" {
-		return "", fmt.Errorf("agent status output %q is not supported — use table or json", output)
+		return "", fmt.Errorf("bundle status output %q is not supported — use table or json", output)
 	}
 	return format, nil
 }
@@ -540,7 +541,7 @@ func retiredReleasedResourcesMatch(bundle string, target bundleStatusTarget, clu
 		if !resource.live.Found {
 			continue
 		}
-		if resource.live.Marked || resource.live.UID == "" {
+		if resource.live.suiteReserved || resource.live.Marked || resource.live.UID == "" {
 			return false
 		}
 		matched := false
@@ -583,6 +584,7 @@ func describeOrkaResource(raw []byte) bundleResourceStatus {
 	}
 	result.UID = doc.Metadata.UID
 	result.Generation = doc.Metadata.Generation
+	result.suiteReserved = hasOrkaSuiteReservation(doc.Metadata.Annotations)
 	if owner, ok := doc.Metadata.Annotations[orkaBundleMarker].(string); ok && owner != "" {
 		result.Marked = true
 		result.MarkerOwner = owner
@@ -600,12 +602,15 @@ func describeOrkaResource(raw []byte) bundleResourceStatus {
 			}
 		}
 	}
+	if result.suiteReserved {
+		result.Marked, result.MarkerOwner, result.PortableDigest, result.RenderedDigest = false, "", "", ""
+	}
 	return result
 }
 
 // bundleFieldDrift renders agent.yaml against the destination's own live
 // Provider bindings and reuses planOrkaReconcile — the exact same read-only
-// comparison `kmx agent lift --plan` uses — to decide whether the live
+// comparison `kmx bundle lift --plan` uses — to decide whether the live
 // objects still match. It is called only once ownership is already
 // confirmed, so a refusal here means the object changed between reads, not a
 // marker problem.

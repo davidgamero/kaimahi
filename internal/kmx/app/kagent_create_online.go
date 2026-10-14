@@ -62,6 +62,8 @@ type kagentControllerService struct {
 	DeploymentName                        string
 	DeploymentUID                         string
 	DeploymentResourceVersion             string
+	DeploymentGeneration                  int64
+	ControllerImages                      []kagentEvaluationImage
 	ControllerServiceAccount              string
 	ConfigMapName                         string
 	ConfigMapUID                          string
@@ -208,7 +210,7 @@ func (a *App) kagentCaptureWithTimeout(ctx context.Context, timeout time.Duratio
 func (a *App) guardKagentCreate(ctx context.Context, opt CreateOptions) error {
 	// Do not reuse InvocationCommand here: it can contain the --task prompt.
 	// The mutation guard must never echo that prompt into diagnostics.
-	command := a.operationCommand("agent", "create", opt.Name, "--runtime", "kagent")
+	command := a.operationCommand("create", "--live", opt.Name, "--runtime", "kagent")
 	action := "create Kagent ModelConfig and Agent in " + opt.Namespace
 	if opt.Task != "" {
 		action += "; send one A2A message; Kagent stores the full task prompt, history, and answer in its database, default upstream session retention is unlimited, and Kubernetes audit policy may capture Service-proxy request and response bodies"
@@ -518,6 +520,9 @@ func kagentWriteDocuments(bundle *scaffold.KagentBundle, rendered agentruntime.R
 	}
 	docs := make([]map[string]any, 0, 2)
 	for _, renderedDoc := range []map[string]any{bundle.ModelConfig, bundle.Agent} {
+		if err := refuseOrkaSuiteDocument(renderedDoc); err != nil {
+			return nil, err
+		}
 		doc, err := cloneOrkaDoc(renderedDoc)
 		if err != nil {
 			return nil, fmt.Errorf("prepare Kagent %s write payload: %w", renderedDoc["kind"], err)
@@ -598,6 +603,7 @@ func (a *App) inspectKagentInstallation(ctx context.Context, runtimeName, target
 	service.DeploymentName = deployment.Metadata.Name
 	service.DeploymentUID = deployment.Metadata.UID
 	service.DeploymentResourceVersion = deployment.Metadata.ResourceVersion
+	service.DeploymentGeneration = deployment.Metadata.Generation
 	service.ControllerServiceAccount = deployment.Spec.Template.Spec.ServiceAccountName
 	if service.ControllerServiceAccount == "" {
 		return kagentControllerService{}, fmt.Errorf("Kagent controller Deployment has no explicit serviceAccountName")
@@ -634,8 +640,8 @@ func (a *App) inspectKagentInstallation(ctx context.Context, runtimeName, target
 	if err := validateKagentWatchNamespaces(configMap.Data["WATCH_NAMESPACES"], targetNamespace); err != nil {
 		return kagentControllerService{}, err
 	}
-	if err := a.verifyKagentDeploymentPods(ctx, service.Namespace, deployment, "controller", controller.Image, kagentControllerImageRepo,
-		profile.ControllerDigests[:]); err != nil {
+	if err := a.observeKagentDeploymentPods(ctx, service.Namespace, deployment, "controller", controller.Image, kagentControllerImageRepo,
+		profile.ControllerDigests[:], &service.ControllerImages); err != nil {
 		return kagentControllerService{}, fmt.Errorf("Kagent controller workload: %w", err)
 	}
 	versionPath := kagentServiceProxyPath(service, "/version")
@@ -669,6 +675,10 @@ func (a *App) inspectKagentInstallation(ctx context.Context, runtimeName, target
 }
 
 func (a *App) reverifyKagentInstallation(ctx context.Context, service kagentControllerService) error {
+	return a.observeKagentInstallationRecheck(ctx, service, nil)
+}
+
+func (a *App) observeKagentInstallationRecheck(ctx context.Context, service kagentControllerService, observed *kagentControllerService) error {
 	current, err := a.inspectKagentInstallation(ctx, service.Runtime, service.TargetNamespace)
 	if err != nil {
 		return err
@@ -681,6 +691,9 @@ func (a *App) reverifyKagentInstallation(ctx context.Context, service kagentCont
 		current.ConfigMapName != service.ConfigMapName || current.ConfigMapUID != service.ConfigMapUID ||
 		current.ConfigMapResourceVersion != service.ConfigMapResourceVersion || current.AuthMode != service.AuthMode {
 		return fmt.Errorf("the exact Kagent controller Service, Deployment, or image ConfigMap changed during preflight")
+	}
+	if observed != nil {
+		*observed = current
 	}
 	return nil
 }
@@ -734,7 +747,11 @@ func (a *App) verifyKagentControllerRBAC(ctx context.Context, service kagentCont
 }
 
 func (a *App) reverifyKagentPlatformAndCluster(ctx context.Context, service kagentControllerService, clusterUID string) error {
-	if err := a.reverifyKagentInstallation(ctx, service); err != nil {
+	return a.observeKagentPlatformAndCluster(ctx, service, clusterUID, nil)
+}
+
+func (a *App) observeKagentPlatformAndCluster(ctx context.Context, service kagentControllerService, clusterUID string, observed *kagentControllerService) error {
+	if err := a.observeKagentInstallationRecheck(ctx, service, observed); err != nil {
 		return err
 	}
 	currentUID, err := a.kagentClusterUID(ctx)
@@ -906,7 +923,7 @@ func (a *App) readKagentControllerConfigMap(ctx context.Context, namespace, name
 	return configMap, nil
 }
 
-func (a *App) verifyKagentDeploymentPods(ctx context.Context, namespace string, deployment kagentDeployment, containerName, image, imageRepo string, digests []string) error {
+func (a *App) observeKagentDeploymentPods(ctx context.Context, namespace string, deployment kagentDeployment, containerName, image, imageRepo string, digests []string, observed *[]kagentEvaluationImage) error {
 	desired := int32(1)
 	if deployment.Spec.Replicas != nil {
 		desired = *deployment.Spec.Replicas
@@ -1004,8 +1021,12 @@ func (a *App) verifyKagentDeploymentPods(ctx context.Context, namespace string, 
 			return kagentFailure("drift", fmt.Errorf("ready pod %s container image identity does not match the published %s digest", containerName, a.selectedKagentProfile().Version))
 		}
 		if a.selectedKagentProfile().StrictPlatform {
-			if err := a.verifyKagentPodPlatform(ctx, pod.Spec.NodeName, image, statuses[0].Image, statuses[0].ImageID, imageRepo, digests); err != nil {
+			var platform kagentEvaluationImage
+			if err := a.observeKagentPodPlatform(ctx, pod.Spec.NodeName, image, statuses[0].Image, statuses[0].ImageID, imageRepo, digests, &platform); err != nil {
 				return err
+			}
+			if observed != nil {
+				*observed = append(*observed, platform)
 			}
 		}
 		readyPods++
@@ -1389,6 +1410,7 @@ type kagentObjectProof struct {
 	APIVersion, Kind, Name, Namespace string
 	Spec                              any
 	Markers                           map[string]string
+	suite                             *suiteKagentOwnership
 }
 
 type kagentObject struct {
@@ -1408,6 +1430,10 @@ func validateKagentAdmission(raw []byte, desired map[string]any, namespace strin
 	if err != nil {
 		return proof, err
 	}
+	return validateKagentAdmissionProof(raw, desired, proof)
+}
+
+func validateKagentAdmissionProof(raw []byte, desired map[string]any, proof kagentObjectProof) (kagentObjectProof, error) {
 	var admitted struct {
 		APIVersion string `json:"apiVersion"`
 		Kind       string `json:"kind"`
@@ -1446,15 +1472,14 @@ func validateKagentAdmission(raw []byte, desired map[string]any, namespace strin
 }
 
 func expectedKagentObjectProof(desired map[string]any, namespace string) (kagentObjectProof, error) {
-	proof := kagentObjectProof{
-		APIVersion: fmt.Sprint(desired["apiVersion"]), Kind: fmt.Sprint(desired["kind"]),
-		Name: kagentObjectName(desired), Namespace: namespace,
+	if err := refuseOrkaSuiteDocument(desired); err != nil {
+		return kagentObjectProof{}, err
 	}
-	metadata, ok := desired["metadata"].(map[string]any)
-	if !ok || metadata["namespace"] != namespace || proof.APIVersion != scaffold.KagentAPIVersion ||
-		(proof.Kind != "ModelConfig" && proof.Kind != "Agent") || proof.Name == "" {
-		return proof, fmt.Errorf("reviewed object has an invalid identity")
+	proof, err := commonKagentObjectProof(desired, namespace)
+	if err != nil {
+		return proof, err
 	}
+	metadata := desired["metadata"].(map[string]any)
 	annotations, err := kagentStringMap(metadata["annotations"])
 	if err != nil {
 		return proof, err
@@ -1472,6 +1497,19 @@ func expectedKagentObjectProof(desired map[string]any, namespace string) (kagent
 			return proof, fmt.Errorf("reviewed runtime version marker is not supported")
 		}
 		proof.Markers[kagentVersionMarker] = version
+	}
+	return proof, nil
+}
+
+func commonKagentObjectProof(desired map[string]any, namespace string) (kagentObjectProof, error) {
+	proof := kagentObjectProof{
+		APIVersion: fmt.Sprint(desired["apiVersion"]), Kind: fmt.Sprint(desired["kind"]),
+		Name: kagentObjectName(desired), Namespace: namespace,
+	}
+	metadata, ok := desired["metadata"].(map[string]any)
+	if !ok || metadata["namespace"] != namespace || proof.APIVersion != scaffold.KagentAPIVersion ||
+		(proof.Kind != "ModelConfig" && proof.Kind != "Agent") || proof.Name == "" {
+		return proof, fmt.Errorf("reviewed object has an invalid identity")
 	}
 	spec, ok := desired["spec"].(map[string]any)
 	if !ok {
@@ -1525,6 +1563,13 @@ func canonicalKagentJSONValue(value any) (any, error) {
 }
 
 func validateKagentProofSpecAndMarkers(rawSpec json.RawMessage, annotations map[string]string, proof kagentObjectProof) error {
+	if proof.suite != nil {
+		if err := proof.suite.check(annotations); err != nil {
+			return err
+		}
+	} else if hasOrkaSuiteReservation(annotations) {
+		return fmt.Errorf("suite reservation blocks legacy Kagent proof")
+	}
 	actual, err := canonicalKagentJSONValue(json.RawMessage(rawSpec))
 	if err != nil || !reflect.DeepEqual(actual, proof.Spec) {
 		version := "v0.10.2"
@@ -1577,13 +1622,15 @@ func (a *App) createKagentObject(ctx context.Context, namespace string, doc map[
 		object.Metadata.Generation < 1 || object.Metadata.DeletionTimestamp != nil {
 		return id, fmt.Errorf("create %s/%s returned no valid identity; it may exist and was not retried", id.Kind, id.Name)
 	}
+	// A valid server identity survives a later proof failure; this does not
+	// authorize reuse or claim readiness of the created object.
+	id.UID, id.Generation = object.Metadata.UID, object.Metadata.Generation
 	if err := validateKagentProofSpecAndMarkers(object.Spec, object.Metadata.Annotations, proof); err != nil {
 		return id, fmt.Errorf("create %s/%s returned a mutated admitted object; it may exist and no task or receipt was attempted: %w", id.Kind, id.Name, err)
 	}
-	if proof.Markers[kagentVersionMarker] != "" && object.Metadata.Labels["app.kubernetes.io/managed-by"] != "kmx" {
+	if (proof.Markers[kagentVersionMarker] != "" || proof.suite != nil) && object.Metadata.Labels["app.kubernetes.io/managed-by"] != "kmx" {
 		return id, fmt.Errorf("Kagent create response changed ownership; no retry or receipt")
 	}
-	id.UID, id.Generation = object.Metadata.UID, object.Metadata.Generation
 	return id, nil
 }
 
@@ -1603,7 +1650,7 @@ func (a *App) readKagentObject(ctx context.Context, namespace string, id kagentI
 	if object.Metadata.DeletionTimestamp != nil {
 		return nil, kagentFailure("drift", fmt.Errorf("%s/%s UID %s is terminating; refusing stale state", id.Kind, id.Name, id.UID))
 	}
-	if id.Proof.Markers[kagentVersionMarker] != "" && object.Metadata.Labels["app.kubernetes.io/managed-by"] != "kmx" {
+	if (id.Proof.Markers[kagentVersionMarker] != "" || id.Proof.suite != nil) && object.Metadata.Labels["app.kubernetes.io/managed-by"] != "kmx" {
 		return nil, kagentFailure("drift", fmt.Errorf("Kagent primary managed-by ownership label changed"))
 	}
 	if err := validateKagentProofSpecAndMarkers(object.Spec, object.Metadata.Annotations, id.Proof); err != nil {
@@ -1648,6 +1695,10 @@ func kagentControllerOwner(metadata kagentMetadata, id kagentIdentity) bool {
 }
 
 func (a *App) verifyKagentAgentWorkload(ctx context.Context, namespace string, id kagentIdentity, runtimeName string, previous *kagentWorkloadIdentity) (kagentWorkloadIdentity, error) {
+	return a.observeKagentAgentWorkload(ctx, namespace, id, runtimeName, previous, nil)
+}
+
+func (a *App) observeKagentAgentWorkload(ctx context.Context, namespace string, id kagentIdentity, runtimeName string, previous *kagentWorkloadIdentity, observed *[]kagentEvaluationImage) (kagentWorkloadIdentity, error) {
 	identity := kagentWorkloadIdentity{}
 	object, err := a.readKagentObject(ctx, namespace, id)
 	if err != nil {
@@ -1679,7 +1730,7 @@ func (a *App) verifyKagentAgentWorkload(ctx context.Context, namespace string, i
 	if err != nil || !a.selectedKagentProfile().imageMatches(container.Image, image, repository, digests) {
 		return identity, kagentFailure("drift", fmt.Errorf("generated Kagent Agent Deployment does not use exactly one kagent container with image %s", image))
 	}
-	if err := a.verifyKagentDeploymentPods(ctx, namespace, deployment, "kagent", container.Image, repository, digests); err != nil {
+	if err := a.observeKagentDeploymentPods(ctx, namespace, deployment, "kagent", container.Image, repository, digests, observed); err != nil {
 		return identity, fmt.Errorf("generated Kagent Agent Deployment is not a proven current rollout: %w", err)
 	}
 	raw, err = a.kagentCapture(ctx, nil, "-n", namespace, "get", "service", id.Name, "-o", "json")

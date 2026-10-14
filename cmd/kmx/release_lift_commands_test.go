@@ -2,57 +2,76 @@ package main
 
 import (
 	"bytes"
-	"context"
-	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/workspace"
-	"os"
-	"path/filepath"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/app"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
 )
 
-func TestReleaseLiftRejectsAmbiguousRoutesBeforeConfiguration(t *testing.T) {
-	ref := "registry.example/team@sha256:" + strings.Repeat("a", 64)
-	for _, args := range [][]string{
-		{"agent", "lift", "--release", "registry.example/team:latest", "--environment", "target.json"},
-		{"agent", "lift", "bundle", "--release", ref, "--environment", "target.json"},
-		{"agent", "lift", "--release", ref},
-		{"agent", "lift", "--release", ref, "--environment", "target.json", "--runtime", "orka"},
-		{"agent", "lift", "--release", ref, "--environment", "target.json", "--require-evaluated", "local"},
-		{"agent", "lift", "--release", ref, "--environment", "target.json", "--context", "other"},
-		{"agent", "lift", "bundle", "--environment", "target.json"},
-	} {
+func TestReleaseLiftHelpAndCompletionAreInert(t *testing.T) {
+	for _, args := range [][]string{{"lift", "--help"}, {"help", "lift"}, {"__complete", "lift", ""}} {
 		var out, diagnostics bytes.Buffer
 		deps, loads := testDependencies(&out, &diagnostics)
-		if err := execute(args, deps); err == nil {
-			t.Fatalf("accepted %v", args)
+		if err := execute(args, deps); err != nil {
+			t.Fatal(err)
 		}
 		if *loads != 0 {
-			t.Fatalf("invalid release route loaded configuration: %v", args)
+			t.Fatal("help loaded configuration")
+		}
+		if args[0] != "__complete" && !strings.Contains(out.String(), "--evidence") {
+			t.Fatal("missing suite lift contract")
 		}
 	}
 }
 
-func TestSuitePushDiscoversWorkspaceFromMemberDirectory(t *testing.T) {
-	root := t.TempDir()
-	input := filepath.Join(t.TempDir(), "instructions.md")
-	if err := os.WriteFile(input, []byte("Hello."), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := workspace.Create(context.Background(), root, workspace.CreateOptions{Name: "hello", Model: "model-a", InstructionsFile: input}); err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(filepath.Join(root, "agents", "hello"))
-	t.Setenv("KMX_HOME", filepath.Join(t.TempDir(), "state"))
+func TestReleaseLiftKagentSelectorReachesOperation(t *testing.T) {
 	var out, diagnostics bytes.Buffer
 	deps, loads := testDependencies(&out, &diagnostics)
-	layout := filepath.Join(t.TempDir(), "layout")
-	if err := execute([]string{"suite", "push", "--to-layout", layout, "suite:v1"}, deps); err != nil {
-		t.Fatal(err)
+	ref := "repo/suite@sha256:" + strings.Repeat("a", 64)
+	err := execute([]string{"lift", ref, "--to-context", "target", "--bindings", "bindings.yaml", "--evidence", "private.json", "--plan"}, deps)
+	if err == nil || *loads != 1 {
+		t.Fatalf("valid kagent selector refused offline: err=%v loads=%d", err, *loads)
 	}
-	if *loads != 0 {
-		t.Fatal("offline workspace push loaded cluster configuration")
+}
+
+func TestReleaseLiftSelectorXORBeforeConfiguration(t *testing.T) {
+	for _, selectors := range [][]string{nil, {"--inference", "provider:inference", "--bindings", "bindings.yaml"}} {
+		var out, diagnostics bytes.Buffer
+		deps, loads := testDependencies(&out, &diagnostics)
+		deps.newApp = func(*config.Config) *app.App {
+			t.Fatal("selector refusal constructed an operational App")
+			return nil
+		}
+		args := []string{"lift", "repo/suite@sha256:" + strings.Repeat("a", 64), "--to-context", "target", "--evidence", "private.json"}
+		err := execute(append(args, selectors...), deps)
+		if !errors.Is(err, app.ErrReleaseLift) || *loads != 0 {
+			t.Fatalf("selectors %v: err=%v loads=%d", selectors, err, *loads)
+		}
 	}
-	if !strings.Contains(out.String(), "Required member images: []") {
-		t.Fatal(out.String())
+}
+
+func TestReleaseLiftRejectsBeforeConfiguration(t *testing.T) {
+	ref := "repo/suite@sha256:" + strings.Repeat("a", 64)
+	base := []string{"lift", ref, "--to-context", "target", "--inference", "provider:inference", "--evidence", "private.json"}
+	for _, args := range [][]string{
+		{"lift"}, {"lift", "down"}, {"lift", "repo:tag"},
+		append(append([]string(nil), base...), "--runtime", "kagent"),
+		append(append([]string(nil), base...), "--model", "other"),
+		append(append([]string(nil), base...), "--override-gate", "why"),
+		append(append([]string(nil), base...), "--workspace", "."),
+		append(append([]string(nil), base...), "--output", "yaml"),
+		append(append([]string(nil), base...), "--from-layout", ".", "--plain-http"),
+		append(append([]string(nil), base...), "--context", "other"),
+		append(append([]string(nil), base...), "--to-context", ""),
+		append(append([]string(nil), base...), "--evidence", ""),
+		append(append([]string(nil), base...), "--inference", "copilot"),
+	} {
+		var out, diagnostics bytes.Buffer
+		deps, loads := testDependencies(&out, &diagnostics)
+		if err := execute(args, deps); err == nil || *loads != 0 {
+			t.Fatalf("%v: err=%v loads=%d", args, err, *loads)
+		}
 	}
 }

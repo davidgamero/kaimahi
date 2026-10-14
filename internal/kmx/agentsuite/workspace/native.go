@@ -32,17 +32,29 @@ func imageProfile() ([]byte, error) {
 	return spec.Marshal(p)
 }
 
+const kagentNativePath = "metadata/kmx/native-kagent.json"
+const kagentRendererVersion = "kmx.native-kagent/v1"
+
+// This immutable ID names the exact v0.10.3 Go contract qualified by
+// app.kagentLiftProfile, scaffold.GenerateKagent's v1alpha2 declarative renderer,
+// and the blocking final-text A2A answer contract. It is limited to tool-free
+// OpenAI-compatible linux/amd64; it is not AgentKit's inert build profile or
+// a claim that suite execution is implemented. Contract changes require a new ID.
+const kagentExecutionProfile = "kmx.kagent-v0.10.3-go-linux-amd64-tool-free-openai/v1"
+
 type caseRef struct {
 	Path   string `json:"path"`
 	Digest string `json:"digest"`
 }
 type nativeRecord struct {
-	SchemaVersion   int       `json:"schemaVersion"`
-	ExecutionMode   string    `json:"executionMode"`
-	Member          string    `json:"member"`
-	RendererVersion string    `json:"rendererVersion"`
-	RequiredImages  []string  `json:"requiredImages"`
-	Cases           []caseRef `json:"cases"`
+	SchemaVersion    int             `json:"schemaVersion"`
+	ExecutionMode    string          `json:"executionMode"`
+	Member           string          `json:"member"`
+	RendererVersion  string          `json:"rendererVersion"`
+	RequiredImages   []string        `json:"requiredImages"`
+	Cases            []caseRef       `json:"cases"`
+	Runtime          *RuntimeProfile `json:"runtime,omitempty"`
+	ExecutionProfile string          `json:"executionProfile,omitempty"`
 }
 type snapshot struct {
 	name, fingerprint string
@@ -103,12 +115,9 @@ func loadSource(ctx context.Context, root string) (*snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	var w sourceWorkspace
-	if err := strictYAML(wb, &w); err != nil {
-		return nil, fmt.Errorf("workspace.yaml: %w", err)
-	}
-	if w.SchemaVersion != 1 || !namePattern.MatchString(w.Name) || w.Name == "." || w.Name == ".." || w.BuildProfile != "build-profiles/default.json" {
-		return nil, errors.New("unsupported workspace schema/name/build profile")
+	w, err := parseSourceWorkspace(wb)
+	if err != nil {
+		return nil, err
 	}
 	mb, err := read(w.Member)
 	if err != nil {
@@ -170,10 +179,24 @@ func loadSource(ctx context.Context, root string) (*snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
+	runtimeProfile, err := m.Runtime.profile()
+	if err != nil {
+		return nil, err
+	}
+	renderer, executionProfile := rendererVersion, ""
+	var declaredRuntime *RuntimeProfile
+	if runtimeProfile.ID == "kagent" {
+		renderer, executionProfile, declaredRuntime = kagentRendererVersion, kagentExecutionProfile, &runtimeProfile
+	}
+	if m.Execution == ImageExecution {
+		renderer = imageRendererVersion
+	}
 	framed, err := spec.Marshal(struct {
-		Renderer string            `json:"renderer"`
-		Files    map[string]string `json:"files"`
-	}{rendererVersion, selected})
+		Renderer         string            `json:"renderer"`
+		Files            map[string]string `json:"files"`
+		Runtime          *RuntimeProfile   `json:"runtime,omitempty"`
+		ExecutionProfile string            `json:"executionProfile,omitempty"`
+	}{renderer, selected, declaredRuntime, executionProfile})
 	if err != nil {
 		return nil, err
 	}
@@ -257,8 +280,17 @@ func resolve(name string, m sourceMember, instructions, profile []byte, cases ma
 	if len(cases) == 0 || len(cases) > 128 {
 		return nil, errors.New("one to 128 authored cases are required")
 	}
-	record := nativeRecord{1, "native-orka", m.ID, rendererVersion, []string{}, []caseRef{}}
+	runtimeProfile, err := m.Runtime.profile()
+	if err != nil {
+		return nil, err
+	}
+	record := nativeRecord{SchemaVersion: 1, ExecutionMode: "native-orka", Member: m.ID, RendererVersion: rendererVersion, RequiredImages: []string{}, Cases: []caseRef{}}
 	metadataPath := nativePath
+	if runtimeProfile.ID == "kagent" {
+		metadataPath = kagentNativePath
+		record.ExecutionMode, record.RendererVersion = "native-kagent", kagentRendererVersion
+		record.Runtime, record.ExecutionProfile = &runtimeProfile, kagentExecutionProfile
+	}
 	if m.Execution == ImageExecution {
 		record.ExecutionMode = ImageExecution
 		record.RendererVersion = imageRendererVersion
@@ -286,6 +318,38 @@ func resolve(name string, m sourceMember, instructions, profile []byte, cases ma
 	return files, err
 }
 
+// nativeProfile dispatches only by one complete private declaration. No target,
+// live defaults or public graph fields can supply a missing kagent runtime.
+func nativeProfile(files map[string][]byte) (nativeRecord, RuntimeProfile, error) {
+	var record nativeRecord
+	_, orka := files[nativePath]
+	_, kagent := files[kagentNativePath]
+	_, image := files[imagePath]
+	if orka == kagent || image {
+		return record, RuntimeProfile{}, errors.New("exactly one native metadata profile is required")
+	}
+	metadataPath, mode, renderer := nativePath, "native-orka", rendererVersion
+	profile := RuntimeProfile{ID: "orka"}
+	if kagent {
+		metadataPath, mode, renderer = kagentNativePath, "native-kagent", kagentRendererVersion
+	}
+	if err := spec.Unmarshal(files[metadataPath], &record); err != nil {
+		return record, RuntimeProfile{}, err
+	}
+	if record.SchemaVersion != 1 || record.ExecutionMode != mode || record.RendererVersion != renderer || record.RequiredImages == nil || len(record.RequiredImages) != 0 {
+		return record, RuntimeProfile{}, errors.New("unsupported native metadata or required images")
+	}
+	if kagent {
+		if record.Runtime == nil || *record.Runtime != (RuntimeProfile{ID: "kagent", Version: "v0.10.3", Engine: "go"}) || record.ExecutionProfile != kagentExecutionProfile {
+			return record, RuntimeProfile{}, errors.New("unsupported kagent execution profile")
+		}
+		profile = *record.Runtime
+	} else if record.Runtime != nil || record.ExecutionProfile != "" {
+		return record, RuntimeProfile{}, errors.New("unsupported Orka metadata")
+	}
+	return record, profile, nil
+}
+
 // validateNative regenerates the supported graph and requires exact, full
 // allowlist coverage, so public-format extensions cannot silently disappear.
 func validateNative(files map[string][]byte) (string, error) {
@@ -293,30 +357,35 @@ func validateNative(files map[string][]byte) (string, error) {
 	if err := spec.Unmarshal(files["agentsuite.json"], &suite); err != nil {
 		return "", err
 	}
-	var record nativeRecord
-	metadataPath := nativePath
-	mode, renderer := NativeExecution, rendererVersion
-	if _, ok := files[imagePath]; ok {
-		metadataPath = imagePath
-		mode, renderer = ImageExecution, imageRendererVersion
+	record, profile, err := nativeProfile(files)
+	_, image := files[imagePath]
+	if image {
+		if _, ok := files[nativePath]; ok {
+			return "", errors.New("ambiguous image/native profiles")
+		}
+		if _, ok := files[kagentNativePath]; ok {
+			return "", errors.New("ambiguous image/native profiles")
+		}
+		err = spec.Unmarshal(files[imagePath], &record)
+		if err == nil && (record.SchemaVersion != 1 || record.ExecutionMode != ImageExecution || record.RendererVersion != imageRendererVersion || len(record.RequiredImages) != 1 || record.RequiredImages[0] != record.Member+"@linux/amd64" || record.Runtime != nil || record.ExecutionProfile != "") {
+			err = errors.New("unsupported image execution profile")
+		}
 	}
-	if err := spec.Unmarshal(files[metadataPath], &record); err != nil {
+	if err != nil {
 		return "", err
-	}
-	if record.SchemaVersion != 1 || record.ExecutionMode != mode || record.RendererVersion != renderer || record.RequiredImages == nil {
-		return "", errors.New("unsupported native metadata or required images")
-	}
-	if mode == NativeExecution && len(record.RequiredImages) != 0 || mode == ImageExecution && (len(record.RequiredImages) != 1 || record.RequiredImages[0] != record.Member+"@linux/amd64") {
-		return "", errors.New("execution image requirements differ")
 	}
 	var agent spec.Agent
 	if err := spec.Unmarshal(files["agents/"+record.Member+".json"], &agent); err != nil {
 		return "", err
 	}
-	m := sourceMember{ID: agent.ID, Description: agent.Description}
+	m := sourceMember{ID: agent.ID, Description: agent.Description, Runtime: &sourceRuntime{ID: profile.ID}}
+	if profile.ID == "kagent" {
+		m.Runtime.Version, m.Runtime.Engine = &profile.Version, &profile.Engine
+	}
 	m.Model.Protocol, m.Model.Model = agent.Model.Protocol, agent.Model.Model
-	if mode == ImageExecution {
-		m.Execution = mode
+	if image {
+		m.Runtime = nil
+		m.Execution = ImageExecution
 		if c := agent.Model.Capabilities; c != nil {
 			m.Model.Capabilities = &sourceInference{c.API, c.ContextTokens, c.OutputTokens, c.Streaming, c.ToolCalling}
 		}

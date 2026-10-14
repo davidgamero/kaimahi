@@ -148,12 +148,20 @@ func readResource(ctx context.Context, cluster Cluster, plan Plan, object Object
 	return &current, nil
 }
 
-// Inspect checks every resource before the first mutation, including server
-// admission in dry-run mode. It never adopts a pre-existing unowned resource.
+// Inspect is GET-only. Server admission is deferred until after apply consent.
 func Inspect(ctx context.Context, cluster Cluster, plan Plan) error {
 	if err := CheckTarget(ctx, cluster, plan); err != nil {
 		return err
 	}
+	for _, object := range plan.Objects {
+		if _, err := readResource(ctx, cluster, plan, object); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func admit(ctx context.Context, cluster Cluster, plan Plan) error {
 	for _, object := range plan.Objects {
 		current, err := readResource(ctx, cluster, plan, object)
 		if err != nil {
@@ -216,6 +224,9 @@ func Deploy(ctx context.Context, cluster Cluster, plan Plan, confirm func() erro
 		return receipt, err
 	}
 	if err := CheckTarget(ctx, cluster, plan); err != nil {
+		return receipt, err
+	}
+	if err := admit(ctx, cluster, plan); err != nil {
 		return receipt, err
 	}
 	for i, obj := range plan.Objects {

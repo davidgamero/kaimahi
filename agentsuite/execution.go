@@ -8,12 +8,13 @@ import (
 )
 
 const (
-	ExecutionHTTPV1       = "kubernetes-http-v1"
+	ExecutionHTTPV1       = "http-v1"
 	AgentKitMountedConfig = "agentkit-v0-mounted-v1"
 )
 
 // ExecutionContract is an experimental declaration of a built image's interface.
 // The configuration name selects exact semantics, not arbitrary process overrides.
+// It does not select a member runtime or require an image for native execution.
 type ExecutionContract struct {
 	Configuration string           `json:"configuration,omitempty"`
 	Kind          string           `json:"kind"`

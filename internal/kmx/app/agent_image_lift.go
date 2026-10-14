@@ -9,6 +9,7 @@ import (
 	"io"
 	"oras.land/oras-go/v2/registry"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -209,7 +210,11 @@ func (c imageLiftCluster) Call(ctx context.Context, input []byte, args ...string
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	execute := worker.captureCommand
+	if execute == nil {
+		execute = func(_ context.Context, cmd *exec.Cmd) error { return cmd.Run() }
+	}
+	if err := execute(ctx, cmd); err != nil {
 		// API errors may echo submitted config; keep literal inputs out of errors.
 		return nil, fmt.Errorf("kubectl operation failed: %w", err)
 	}

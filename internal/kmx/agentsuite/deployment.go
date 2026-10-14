@@ -103,7 +103,7 @@ func ResolveDeploymentSuite(root string, platform spec.Platform) (*DeploymentSui
 		if err != nil {
 			return nil, err
 		}
-		if plan.SuiteManifestHash != digest {
+		if plan.SuiteRootDigest != digest {
 			return nil, os.ErrInvalid
 		}
 		out.members = append(out.members, DeploymentMember{plan.Agent, string(plan.Instructions), plan.Composition, plan.CompositionDigest, plan.BuildProfile})

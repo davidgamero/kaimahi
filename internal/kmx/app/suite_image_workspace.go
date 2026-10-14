@@ -24,6 +24,7 @@ import (
 // SuitePublication associates an exact published suite with its built members.
 // This local workspace record is experimental, not a standardized OCI referrer.
 type SuitePublication struct {
+	Release       string              `json:"release,omitempty"`
 	Fingerprint   string              `json:"fingerprint"`
 	Indexes       map[string]string   `json:"indexes,omitempty"`
 	Attested      map[string]bool     `json:"attested,omitempty"`
@@ -181,11 +182,23 @@ func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository 
 	if err := workspace.CheckCurrent(ctx, root, prepared); err != nil {
 		return result, err
 	}
-	pushed, err := suiteoras.PushLayoutRegistry(ctx, prepared.Path, repository, plainHTTP, options.Force, prepared.Descriptor, pushOptions)
-	if err != nil {
-		return result, err
+	result = SuitePublication{Fingerprint: prepared.Fingerprint, Suite: repo + "@" + prepared.Descriptor.Digest.String(), LogicalDigest: suite.LogicalDigest(), Platform: platform, Images: map[string]string{}}
+	finish := func(pub SuitePublication) (SuitePublication, error) {
+		if err := workspace.CheckCurrent(ctx, root, prepared); err != nil {
+			return pub, err
+		}
+		// A content-addressed source tag is an intermediate upload, not the user
+		// release pointer. Required images are already complete at this point.
+		if _, err := suiteoras.PushLayoutRegistry(ctx, prepared.Path, repo+":source-"+tag, plainHTTP, false, prepared.Descriptor, pushOptions); err != nil {
+			return pub, err
+		}
+		release, err := suiteoras.PublishImageReleaseRegistry(ctx, repository, pub.Suite, pub.Images, pub.Indexes, platform, plainHTTP, options.Force)
+		if err != nil {
+			return pub, err
+		}
+		pub.Release = release
+		return pub, saveWorkspaceRecord(path, pub)
 	}
-	result = SuitePublication{Fingerprint: prepared.Fingerprint, Suite: repo + "@" + pushed.Descriptor.Digest.String(), LogicalDigest: suite.LogicalDigest(), Platform: platform, Images: map[string]string{}}
 	result.Indexes = map[string]string{}
 	result.Attested = map[string]bool{}
 	if old, err := ReadSuitePublication(root, name); err == nil && old.Suite == result.Suite && old.LogicalDigest == result.LogicalDigest && len(old.Images) == len(suite.Members()) {
@@ -205,7 +218,7 @@ func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository 
 				}
 			}
 			image, err := suiteoras.ResolveImageRegistryTransport(ctx, old.Images[member.Agent.ID], platform, plainHTTP)
-			if err != nil || image.Deployment.SuiteDigest != pushed.Descriptor.Digest.String() || image.Deployment.Agent != member.Agent.ID {
+			if err != nil || image.Deployment.SuiteDigest != prepared.Descriptor.Digest.String() || image.Deployment.Agent != member.Agent.ID {
 				complete = false
 				break
 			}
@@ -218,7 +231,7 @@ func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository 
 			if err := CheckWorkspacePublication(root, name, old); err != nil {
 				return result, err
 			}
-			return old, nil
+			return finish(old)
 		}
 		if options.DisableAttestations || len(old.Attested) > 0 {
 			return result, errors.New("recorded image set could not be checked; inspect registry access/content before explicitly rebuilding")
@@ -233,7 +246,7 @@ func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository 
 	}
 	for _, member := range suite.Members() {
 		archive := filepath.Join(work, member.Agent.ID+".oci.tar")
-		builder := agentkit.New(agentkit.Options{SuiteReference: result.Suite, SuiteDigest: pushed.Descriptor.Digest.String(), Progress: a.Err, Builder: options.Builder, DisableAttestations: options.DisableAttestations, RequireAttestations: options.RequireAttestations})
+		builder := agentkit.New(agentkit.Options{SuiteReference: result.Suite, SuiteDigest: prepared.Descriptor.Digest.String(), Progress: a.Err, Builder: options.Builder, DisableAttestations: options.DisableAttestations, RequireAttestations: options.RequireAttestations})
 		built, err := a.BuildSuite(ctx, pulled.Path, archive, agentsuite.BuildSelection{Agent: member.Agent.ID, Platform: platform.String()}, builder)
 		if err != nil {
 			return result, err
@@ -246,7 +259,7 @@ func (a *App) PublishSuiteWorkspace(ctx context.Context, root, name, repository 
 		result.Indexes[member.Agent.ID] = repo + "/" + member.Agent.ID + "@" + built.IndexDigest
 		result.Attested[member.Agent.ID] = built.HasAttestations
 	}
-	return result, saveWorkspaceRecord(path, result)
+	return finish(result)
 }
 
 // CheckWorkspacePublication prevents a source edit from silently lifting an
@@ -307,11 +320,15 @@ type WorkspaceDeployment struct {
 	Receipt       agentruntime.SuiteDeploymentReceipt `json:"receipt"`
 }
 
-func (a *App) ApplyWorkspaceLift(ctx context.Context, root, name string, pub SuitePublication, env imagelift.Environment, prepared *agentruntime.PreparedSuiteDeployment, reviewed string) (agentruntime.SuiteDeploymentReceipt, error) {
+func (a *App) ApplyWorkspaceLift(ctx context.Context, root, name string, pub SuitePublication, prepared *PreparedReleaseLift, reviewed string) (ReleaseLiftResult, error) {
 	if err := CheckWorkspacePublication(root, name, pub); err != nil {
-		return agentruntime.SuiteDeploymentReceipt{}, err
+		return ReleaseLiftResult{}, err
 	}
-	return a.ApplyReleaseLift(ctx, pub.Suite, env, prepared, reviewed)
+	_, digest, pinned := strings.Cut(pub.Suite, "@")
+	if prepared == nil || !pinned || prepared.Summary().SuiteDigest != digest {
+		return ReleaseLiftResult{}, ErrReleaseLiftApply
+	}
+	return a.ApplyReleaseLift(ctx, prepared, reviewed)
 }
 
 func DescribePublication(pub SuitePublication) string {

@@ -1,4 +1,4 @@
-// Package workspace resolves the closed, tool-free native-Orka authoring profile.
+// Package workspace resolves closed, tool-free native authoring profiles.
 // It performs no inference, image building, or cluster operations.
 package workspace
 
@@ -33,8 +33,47 @@ var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 const NativeExecution = "native-orka"
 const ImageExecution = "image-http"
 
+// RuntimeProfile is KMX-private selection metadata, not a public AgentSuite SPI.
+// The zero value is accepted only as the historical Orka authoring default.
+type RuntimeProfile struct {
+	ID      string `json:"id"`
+	Version string `json:"version"`
+	Engine  string `json:"engine"`
+}
+
+type sourceRuntime struct {
+	ID      string  `yaml:"id"`
+	Version *string `yaml:"version,omitempty"`
+	Engine  *string `yaml:"engine,omitempty"`
+}
+
+func (r RuntimeProfile) validate() error {
+	if r == (RuntimeProfile{ID: "orka"}) || r == (RuntimeProfile{ID: "kagent", Version: "v0.10.3", Engine: "go"}) {
+		return nil
+	}
+	return errors.New("runtime must be orka without version/engine or exact kagent v0.10.3 go")
+}
+
+func (r *sourceRuntime) profile() (RuntimeProfile, error) {
+	if r == nil {
+		return RuntimeProfile{ID: "orka"}, nil
+	}
+	profile := RuntimeProfile{ID: r.ID}
+	if r.ID == "orka" && (r.Version != nil || r.Engine != nil) {
+		return profile, errors.New("Orka runtime forbids version and engine fields")
+	}
+	if r.Version != nil {
+		profile.Version = *r.Version
+	}
+	if r.Engine != nil {
+		profile.Engine = *r.Engine
+	}
+	return profile, profile.validate()
+}
+
 type CreateOptions struct {
 	Name, Description, Model, InstructionsFile string
+	Runtime                                    RuntimeProfile
 	Execution                                  string
 	ContextTokens, OutputTokens                int
 }
@@ -54,6 +93,7 @@ type sourceMember struct {
 		Model        string           `yaml:"model,omitempty"`
 		Capabilities *sourceInference `yaml:"capabilities,omitempty"`
 	} `yaml:"model"`
+	Runtime *sourceRuntime `yaml:"runtime,omitempty"`
 }
 
 type sourceInference struct {
@@ -78,6 +118,9 @@ func safeText(value string) error {
 	return nil
 }
 func validateMember(m sourceMember, instructions []byte) error {
+	if _, err := m.Runtime.profile(); err != nil {
+		return err
+	}
 	if err := safeText(m.ID + "\n" + m.Description + "\n" + m.Model.Model + "\n" + string(instructions)); err != nil {
 		return err
 	}
@@ -85,6 +128,9 @@ func validateMember(m sourceMember, instructions []byte) error {
 		return err
 	}
 	if m.Execution == ImageExecution {
+		if m.Runtime != nil {
+			return errors.New("image-http cannot also declare a native runtime")
+		}
 		if m.Model.Protocol != "openai-compatible" || m.Model.Model != "" || m.Model.Capabilities == nil {
 			return errors.New("image-http requires inference capabilities, not an exact model")
 		}
@@ -179,39 +225,79 @@ func readBounded(r *os.Root, name string) ([]byte, error) {
 	return b, nil
 }
 
+// ValidateCreateOptions checks authored inputs without creating any files.
+// Interactive callers use it before offering workspace initialization.
+func ValidateCreateOptions(opt CreateOptions) error {
+	_, _, err := createInput(opt)
+	return err
+}
+
+func createInput(opt CreateOptions) (sourceMember, []byte, error) {
+	profile := opt.Runtime
+	if profile == (RuntimeProfile{}) {
+		profile.ID = "orka"
+	}
+	if err := profile.validate(); err != nil {
+		return sourceMember{}, nil, err
+	}
+	declared := &sourceRuntime{ID: profile.ID}
+	if profile.ID == "kagent" {
+		declared.Version, declared.Engine = &profile.Version, &profile.Engine
+	}
+	m := sourceMember{ID: opt.Name, Description: opt.Description, Instructions: "instructions.md", Runtime: declared}
+	m.Execution = opt.Execution
+	if opt.Execution == ImageExecution {
+		if opt.Runtime != (RuntimeProfile{}) {
+			return m, nil, errors.New("image-http cannot also select a native runtime")
+		}
+		m.Runtime = nil
+		m.Model.Capabilities = &sourceInference{API: "openai-chat-completions-v1", ContextTokens: opt.ContextTokens, OutputTokens: opt.OutputTokens}
+	}
+	if err := safeText(opt.Name); err != nil {
+		return m, nil, err
+	}
+	if err := scaffold.ValidateName(opt.Name); err != nil {
+		return m, nil, err
+	}
+	if opt.Execution != ImageExecution && strings.TrimSpace(opt.Model) == "" || strings.TrimSpace(opt.InstructionsFile) == "" {
+		return m, nil, errors.New("workspace creation requires --model and --instructions <file>")
+	}
+	m.Model.Protocol, m.Model.Model = "openai-compatible", opt.Model
+	input, err := safeAbsolute(opt.InstructionsFile)
+	if err != nil {
+		return m, nil, err
+	}
+	inputRoot, err := os.OpenRoot(filepath.Dir(input))
+	if err != nil {
+		return m, nil, err
+	}
+	instructions, err := readBounded(inputRoot, filepath.Base(input))
+	inputRoot.Close()
+	if err != nil {
+		return m, nil, err
+	}
+	if err := validateMember(m, instructions); err != nil {
+		return m, nil, err
+	}
+	return m, instructions, nil
+}
+
 // Create stages complete files and publishes the descriptor last. Exclusive links
 // refuse overwrites; rollback removes only directories created by this call.
 func Create(ctx context.Context, root string, opt CreateOptions) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	m := sourceMember{ID: opt.Name, Description: opt.Description, Instructions: "instructions.md"}
-	m.Model.Protocol, m.Model.Model = "openai-compatible", opt.Model
-	m.Execution = opt.Execution
+	m, instructions, err := createInput(opt)
+	if err != nil {
+		return err
+	}
 	profile := defaultProfile
 	if opt.Execution == ImageExecution {
-		m.Model.Capabilities = &sourceInference{API: "openai-chat-completions-v1", ContextTokens: opt.ContextTokens, OutputTokens: opt.OutputTokens}
-		var err error
 		profile, err = imageProfile()
 		if err != nil {
 			return err
 		}
-	}
-	input, err := safeAbsolute(opt.InstructionsFile)
-	if err != nil {
-		return err
-	}
-	inputRoot, err := os.OpenRoot(filepath.Dir(input))
-	if err != nil {
-		return err
-	}
-	instructions, err := readBounded(inputRoot, filepath.Base(input))
-	inputRoot.Close()
-	if err != nil {
-		return err
-	}
-	if err := validateMember(m, instructions); err != nil {
-		return err
 	}
 	root, err = safeAbsolute(root)
 	if err != nil {

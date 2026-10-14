@@ -15,7 +15,7 @@ func example(t *testing.T) (Environment, agentsuite.ImageDeployment, Plan) {
 	t.Helper()
 	env := Environment{APIVersion: "kaimahi.dev/lift/v1alpha1", Name: "hello-world", Context: "remote-aks", ClusterUID: "cluster-uid", Namespace: "agents", Adapter: agentsuite.ExecutionHTTPV1, Platform: agentsuite.Platform{OS: "linux", Architecture: "amd64"}, Inputs: map[string]InputBinding{"inference-key": {SecretRef: &agentsuite.SecretKeyRef{Name: "inference", Key: "api-key"}}}}
 	digest := "sha256:" + strings.Repeat("a", 64)
-	record := agentsuite.ImageDeployment{SchemaVersion: agentsuite.SpecVersion, MediaType: agentsuite.ImageDeploymentMediaType, SuiteReference: "registry.example/suite@" + digest, SuiteDigest: digest, Agent: "hello-world", Platform: env.Platform, CompositionDigest: digest, BuildProfile: "default", Execution: agentsuite.ExecutionContract{Kind: env.Adapter, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []agentsuite.ExecutionInput{{Name: "inference-key", Environment: "MODEL_API_KEY", Secret: true}}}}
+	record := agentsuite.ImageDeployment{SchemaVersion: agentsuite.SpecVersion, MediaType: agentsuite.ImageDeploymentMediaType, SuiteReference: "registry.example/suite@" + digest, SuiteDigest: digest, Agent: "hello-world", Platform: env.Platform, CompositionDigest: digest, BuildProfile: "default", BuildProfileDigest: digest, Execution: agentsuite.ExecutionContract{Kind: env.Adapter, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []agentsuite.ExecutionInput{{Name: "inference-key", Environment: "MODEL_API_KEY", Secret: true}}}}
 	plan, err := Render("registry.example/agent@"+digest, record, env)
 	if err != nil {
 		t.Fatal(err)

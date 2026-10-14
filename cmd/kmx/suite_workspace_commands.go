@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,18 @@ import (
 // Image invocation remains a distinct member operation; release lift is shared
 // with the existing agent command and never invokes a builder.
 func addSuiteWorkspaceCommands(group *cobra.Command, state *commandState) {
+	var deploymentID string
+	status := &cobra.Command{Use: "status", Short: "Inspect a retained image-suite placement", Args: cobra.NoArgs}
+	status.Flags().StringVar(&deploymentID, "deployment", "", "placement ID printed by lift")
+	_ = status.MarkFlagRequired("deployment")
+	status.RunE = appRun(state, func(a *app.App) error {
+		rows, err := a.ImagePlacementStatus(status.Context(), deploymentID)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(status.OutOrStdout()).Encode(rows)
+	})
+	group.AddCommand(status)
 	var root, placement, member, prompt, target string
 	run := &cobra.Command{Use: "run", Short: "Invoke a recorded image workspace deployment", Args: cobra.NoArgs}
 	run.Flags().StringVar(&root, "workspace", "", "workspace root (default: nearest workspace.yaml ancestor)")
