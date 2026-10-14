@@ -7,9 +7,12 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	agentsuite "github.com/agent-primitives/suite"
@@ -21,6 +24,63 @@ import (
 	"github.com/spf13/cobra"
 	"oras.land/oras-go/v2/content/oci"
 )
+
+func TestSuitePushImageTagPolicyAndOfflineConfiguration(t *testing.T) {
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+	t.Setenv("KMX_HOME", t.TempDir())
+	archive, image, index, _ := suiteCommandArchive(t, true)
+	file := filepath.Join(t.TempDir(), "image.tar")
+	if err := os.WriteFile(file, archive, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name        string
+		same, force bool
+	}{
+		{"same", true, false}, {"same forced", true, true}, {"different", false, false}, {"different forced", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var beyondPreflight atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/manifests/v1") {
+					digest := index
+					if !tc.same {
+						digest = "sha256:" + strings.Repeat("f", 64)
+					}
+					w.Header().Set("Content-Type", ocispec.MediaTypeImageIndex)
+					w.Header().Set("Content-Length", "1")
+					w.Header().Set("Docker-Content-Digest", digest)
+					return
+				}
+				beyondPreflight.Add(1)
+				w.WriteHeader(http.StatusForbidden)
+			}))
+			defer server.Close()
+			ref := strings.TrimPrefix(server.URL, "http://") + "/image:v1"
+			args := []string{"suite", "push-image", file, ref, "--plain-http"}
+			if tc.force {
+				args = append(args, "--force")
+			}
+			var out, diagnostics bytes.Buffer
+			deps, loads := testDependencies(&out, &diagnostics)
+			err := execute(args, deps)
+			if *loads != 0 {
+				t.Fatal("image publication loaded operational configuration")
+			}
+			if tc.same {
+				if err != nil || out.String() != strings.TrimSuffix(ref, ":v1")+"@"+image+"\n" || beyondPreflight.Load() != 0 {
+					t.Fatalf("same-digest publication: stdout=%q err=%v requests=%d", out.String(), err, beyondPreflight.Load())
+				}
+			} else if !tc.force {
+				if err == nil || !strings.Contains(err.Error(), "--force") || beyondPreflight.Load() != 0 || out.Len() != 0 {
+					t.Fatalf("replacement refusal: %v", err)
+				}
+			} else if err == nil || beyondPreflight.Load() == 0 || out.Len() != 0 {
+				t.Fatalf("force did not reach transfer boundary: %v", err)
+			}
+		})
+	}
+}
 
 func TestSuiteValidateMinimalLayout(t *testing.T) {
 	fixture := copySuiteFixture(t, filepath.Join("..", "..", "testdata", "agentsuite", "minimal"))

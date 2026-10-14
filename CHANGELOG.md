@@ -22,6 +22,19 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 ## Unreleased
 
+### Added
+
+- Experimental inference capability/execution records from the published
+  AgentSuite module, source-linked image builds with deployment-time model
+  configuration, and `suite push-image` publication. Source-linked builds
+  compare all packaged bytes, types and modes against bounded, digest-verified
+  published content, preserving executable modes. Native exact-model,
+  zero-image workspaces keep their existing behavior. Target-neutral `http-v1`
+  image declarations bind full suite OCI and exact build-profile digests without
+  source registry hints. Publication preserves attestations and does not require
+  deployment metadata; replacing a different image tag requires explicit
+  `--force`. The AgentKit adapter refuses serving settings it cannot implement.
+
 ### Fixed
 
 - A private Orka ownership checkpoint could leave visible `4.json` after a
