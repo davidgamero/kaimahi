@@ -123,3 +123,19 @@ Open: review of image promotion/create semantics, native/image common deployment
 handles, live image qualification, evaluation-bound final promotion publication,
 full sandbox inventory/binding (#307) and signer policy (#374). `suitedeploy`
 remains unwired proposal scaffolding.
+
+## Integration and review boundaries
+
+Root commands and shared console review follow current main, including removal
+of legacy bundle/live-create routes and native AgentSessions authoring/evaluation.
+Image lift has no alternative apply engine: the common release guard and
+single-use loop own effects. Ownership labels bind suite digest, member, instance
+and target; occupied resources still require exact receipt UID/spec proof.
+The old name-only image labels are not accepted as that proof.
+
+Cases currently use the existing KMX-private packaged convention. Public optional
+agent-bound definitions are proposed in #497/#492; migration and legacy reading
+belong to #493. No optional-spec change is inferred to disable the current lift
+evidence requirement. Results stay external to source content to avoid digest
+cycles. Descriptor-wide migration (#496) and module extraction (#491) remain
+separate work; the release association already uses OCI byte descriptors.

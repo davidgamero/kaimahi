@@ -142,7 +142,7 @@ func readResource(ctx context.Context, cluster Cluster, plan Plan, object Object
 	if json.Unmarshal(raw, &current) != nil || current.Kind != kind || current.Metadata.Name != plan.Name || current.Metadata.Namespace != plan.Namespace || current.Metadata.UID == "" || current.Metadata.ResourceVersion == "" || current.Metadata.DeletionTimestamp != nil {
 		return nil, errors.New("invalid or terminating destination resource")
 	}
-	if current.Metadata.Labels[OwnerLabel] != plan.Name {
+	if current.Metadata.Labels[OwnerLabel] != plan.Owner || current.Metadata.Annotations[SubjectAnnotation] != plan.Owner {
 		return nil, fmt.Errorf("%s/%s belongs to another deployment", kind, plan.Name)
 	}
 	return &current, nil

@@ -11,6 +11,13 @@ import (
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
 )
 
+// ResourceResult is an image adapter's acknowledged resource outcome.
+type ResourceResult struct {
+	Kind, Name, Namespace, UID string
+	Generation                 int64
+	Outcome                    ResourceOutcome
+}
+
 // SuiteTarget separates placement from the selected agent runtime. Local and
 // remote Kubernetes destinations use the same deployment adapter.
 type SuiteTarget struct {

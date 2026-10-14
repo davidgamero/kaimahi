@@ -83,7 +83,7 @@ func (a *App) evaluateImageRelease(ctx context.Context, opt ReleaseLiftOptions, 
 		r.Resources = append(r.Resources, row)
 	}
 	record := WorkspaceDeployment{WorkspaceName: x.suite.Name, Environment: x.env}
-	record.Receipt.Plan = rt.SuitePlanSummary{Target: rt.SuiteTarget{Context: x.env.Context, ClusterUID: x.env.ClusterUID, Namespace: x.env.Namespace}, Members: []rt.SuiteMemberSummary{{Agent: x.suite.MemberID, Digest: x.plan.Digest, ConfigurationDigest: x.subject.ConfigurationDigest[len("sha256:"):]}}}
+	record.Receipt.Plan = rt.SuitePlanSummary{ArtifactDigest: x.suite.Digest, Target: rt.SuiteTarget{Context: x.env.Context, ClusterUID: x.env.ClusterUID, Namespace: x.env.Namespace}, Members: []rt.SuiteMemberSummary{{Agent: x.suite.MemberID, Digest: x.plan.Digest, ConfigurationDigest: x.subject.ConfigurationDigest[len("sha256:"):]}}}
 	member := rt.SuiteMemberOutcome{Agent: x.suite.MemberID, State: "ready"}
 	for _, resource := range placement.Resources {
 		member.Resources = append(member.Resources, rt.ResourceResult{Kind: resource.Kind, Name: resource.Name, UID: resource.UID, Namespace: x.env.Namespace})

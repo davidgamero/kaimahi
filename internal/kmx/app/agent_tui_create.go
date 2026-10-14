@@ -438,11 +438,8 @@ func (m agentTUIModel) updateCreatePane(msg tea.Msg) (tea.Model, tea.Cmd) {
 					opt.OutputTokens = 1024
 				case "orka":
 					opt.Model = v[3]
-				case "kagent":
-					opt.Model = v[3]
-					opt.Runtime = workspace.RuntimeProfile{ID: "kagent", Version: "v0.10.3", Engine: "go"}
 				default:
-					p.err = fmt.Errorf("profile must be orka, kagent or image-http")
+					p.err = fmt.Errorf("console profile must be orka or image-http; use root create for other runtimes")
 					p.authorValues = nil
 					return m, nil
 				}
@@ -635,7 +632,7 @@ func (m agentTUIModel) creationView() string {
 	rows := []string{fit("CREATE AGENT · SOURCE → EVAL → LIFT · " + p.env.Name), fit("Namespace: " + p.namespace + " · Server: " + valueOr(p.server, "not available (not reloaded)"))}
 	switch {
 	case p.stage == "author":
-		prompts := []string{"Member name:", "Profile: orka / kagent / image-http", "Instructions file path:", "Exact native model, or type capabilities for image-http:"}
+		prompts := []string{"Member name:", "Profile: orka / image-http", "Instructions file path:", "Exact native model, or type capabilities for image-http:"}
 		rows = append(rows, "", fit("Initialize workspace: "+p.authorRoot), fit(prompts[len(p.authorValues)]), fit(p.input.View()), fit("Image defaults: context 8192 / output 1024; edit member.yaml to adjust."), fit("Enter continues · Esc cancels"))
 		if p.err != nil {
 			rows = append(rows, fit(p.err.Error()))

@@ -154,7 +154,8 @@ func (a *App) SuiteDeploymentStatus(ctx context.Context, record WorkspaceDeploym
 				configurationDigest = member.ConfigurationDigest
 			}
 		}
-		if uid == "" || obj.Metadata.UID != uid || obj.Metadata.Labels[imagelift.OwnerLabel] != binding.Name || obj.Metadata.Annotations[imagelift.PlanAnnotation] != digest || len(obj.Spec.Template.Spec.Containers) != 1 || obj.Spec.Template.Spec.Containers[0].Image != binding.Image {
+		owner := imagelift.PlacementOwner(record.Receipt.Plan.ArtifactDigest, id, record.Environment.Context, record.Environment.ClusterUID, record.Environment.Namespace, record.Environment.Name)
+		if uid == "" || obj.Metadata.UID != uid || obj.Metadata.Labels[imagelift.OwnerLabel] != owner || obj.Metadata.Annotations[imagelift.SubjectAnnotation] != owner || obj.Metadata.Annotations[imagelift.PlanAnnotation] != digest || len(obj.Spec.Template.Spec.Containers) != 1 || obj.Spec.Template.Spec.Containers[0].Image != binding.Image {
 			return out, errors.New("deployment identity changed or has no complete receipt; inspect and replan")
 		}
 		if len(obj.Spec.Template.Spec.Containers[0].Command) != 0 || len(obj.Spec.Template.Spec.Containers[0].Args) != 0 {

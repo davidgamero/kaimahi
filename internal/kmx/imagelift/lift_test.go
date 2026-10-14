@@ -49,6 +49,24 @@ func TestRenderPinsImageAndConsumesOnlyDeclaredInputs(t *testing.T) {
 	}
 }
 
+func TestOwnershipSeparatesSuiteInstancesWithSameResourceName(t *testing.T) {
+	env, record, first := example(t)
+	env.Instance = "another-suite-instance"
+	second, err := Render(first.Image, record, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Name != second.Name || first.Owner == second.Owner || first.Digest == second.Digest {
+		t.Fatal("same resource name collapsed placement ownership")
+	}
+	record.SuiteDigest = "sha256:" + strings.Repeat("b", 64)
+	record.SuiteReference = ""
+	third, err := Render(first.Image, record, env)
+	if err != nil || third.Owner == second.Owner {
+		t.Fatal("different suite reused ownership", err)
+	}
+}
+
 func TestEnvironmentRejectsAmbiguousAndUnknownFields(t *testing.T) {
 	env, _, _ := example(t)
 	raw, _ := json.Marshal(env)

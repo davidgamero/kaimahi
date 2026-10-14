@@ -14,10 +14,17 @@ import (
 
 const OwnerLabel = "kaimahi.dev/image-deployment"
 const PlanAnnotation = "kaimahi.dev/image-plan-digest"
+const SubjectAnnotation = "kaimahi.dev/image-placement-subject"
+
+func PlacementOwner(suite, member, context, cluster, namespace, instance string) string {
+	body, _ := json.Marshal(struct{ Suite, Member, Context, Cluster, Namespace, Instance string }{suite, member, context, cluster, namespace, instance})
+	return fmt.Sprintf("%x", sha256.Sum256(body))[:63]
+}
 
 type Object map[string]any
 
 type Plan struct {
+	Owner       string                    `json:"owner"`
 	Name        string                    `json:"name"`
 	Context     string                    `json:"context"`
 	ClusterUID  string                    `json:"clusterUID"`
@@ -92,7 +99,12 @@ func Render(image string, record agentsuite.ImageDeployment, env Environment) (P
 		}
 		variables = append(variables, entry)
 	}
-	labels := Object{OwnerLabel: env.Name}
+	instance := env.Instance
+	if instance == "" {
+		instance = env.Name
+	}
+	owner := PlacementOwner(record.SuiteDigest, record.Agent, env.Context, env.ClusterUID, env.Namespace, instance)
+	labels := Object{OwnerLabel: owner}
 	metadata := func() Object { return Object{"name": env.Name, "namespace": env.Namespace, "labels": labels} }
 	var pulls []any
 	for _, name := range env.ImagePullSecrets {
@@ -129,6 +141,7 @@ func Render(image string, record agentsuite.ImageDeployment, env Environment) (P
 		"type": "ClusterIP", "selector": labels, "ports": []any{Object{"name": "http", "port": 80, "targetPort": "http"}},
 	}}
 	plan := Plan{Name: env.Name, Context: env.Context, ClusterUID: env.ClusterUID, Namespace: env.Namespace, Image: image, SuiteDigest: record.SuiteDigest, Objects: []Object{deployment, service}, Secrets: secrets, Platform: env.Platform}
+	plan.Owner = owner
 	if config != nil {
 		// Configuration changes belong on the pod template, not immutable selectors.
 		sum := sha256.Sum256(config)
@@ -146,7 +159,7 @@ func Render(image string, record agentsuite.ImageDeployment, env Environment) (P
 	}
 	plan.Digest = fmt.Sprintf("sha256:%x", sha256.Sum256(data))
 	for _, obj := range plan.Objects {
-		obj["metadata"].(Object)["annotations"] = Object{PlanAnnotation: plan.Digest, "kaimahi.dev/suite-digest": record.SuiteDigest}
+		obj["metadata"].(Object)["annotations"] = Object{PlanAnnotation: plan.Digest, SubjectAnnotation: owner, "kaimahi.dev/suite-digest": record.SuiteDigest}
 	}
 	return plan, nil
 }

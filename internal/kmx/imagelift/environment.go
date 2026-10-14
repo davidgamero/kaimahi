@@ -21,6 +21,7 @@ var keyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,253}$`)
 type Environment struct {
 	Inference        *InferenceBinding            `json:"inference,omitempty"`
 	Instructions     string                       `json:"-"`
+	Instance         string                       `json:"-"`
 	Members          map[string]MemberEnvironment `json:"members,omitempty"`
 	PlainHTTP        bool                         `json:"plainHTTP,omitempty"`
 	APIVersion       string                       `json:"apiVersion"`

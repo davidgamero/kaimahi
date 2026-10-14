@@ -159,6 +159,7 @@ func (a *App) prepareImageCandidate(ctx context.Context, opt ReleaseLiftOptions)
 		return nil, ErrReleaseLift
 	}
 	child := env
+	child.Instance = env.Name
 	child.Members = nil
 	child.Name = binding.Name
 	child.Inputs = binding.Inputs
@@ -333,7 +334,7 @@ func (a *App) inspectImageReleaseResource(ctx context.Context, x *releaseLiftIma
 	generation, _ := meta["generation"].(float64)
 	ann, _ := meta["annotations"].(map[string]any)
 	labels, _ := meta["labels"].(map[string]any)
-	if live["apiVersion"] != doc["apiVersion"] || live["kind"] != kind || meta["name"] != x.plan.Name || meta["namespace"] != x.env.Namespace || uid == "" || rv == "" || meta["deletionTimestamp"] != nil || ann[imagelift.PlanAnnotation] != x.plan.Digest || labels[imagelift.OwnerLabel] != x.plan.Name {
+	if live["apiVersion"] != doc["apiVersion"] || live["kind"] != kind || meta["name"] != x.plan.Name || meta["namespace"] != x.env.Namespace || uid == "" || rv == "" || meta["deletionTimestamp"] != nil || ann[imagelift.PlanAnnotation] != x.plan.Digest || labels[imagelift.OwnerLabel] != x.plan.Owner || ann[imagelift.SubjectAnnotation] != x.plan.Owner {
 		return row, ErrReleaseLift
 	}
 	d, err := imageObjectDigest(live)

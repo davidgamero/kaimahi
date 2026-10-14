@@ -87,7 +87,7 @@ func (a *App) loadImagePlacement(ctx context.Context, id string) (*releaseLiftIm
 
 func imagePlacementConnection(x *releaseLiftImage) WorkspaceDeployment {
 	record := WorkspaceDeployment{WorkspaceName: x.suite.Name, Environment: x.env}
-	record.Receipt.Plan = rt.SuitePlanSummary{Target: rt.SuiteTarget{Context: x.env.Context, ClusterUID: x.env.ClusterUID, Namespace: x.env.Namespace}, Members: []rt.SuiteMemberSummary{{Agent: x.suite.MemberID, Digest: x.plan.Digest, ConfigurationDigest: strings.TrimPrefix(x.subject.ConfigurationDigest, "sha256:")}}}
+	record.Receipt.Plan = rt.SuitePlanSummary{ArtifactDigest: x.suite.Digest, Target: rt.SuiteTarget{Context: x.env.Context, ClusterUID: x.env.ClusterUID, Namespace: x.env.Namespace}, Members: []rt.SuiteMemberSummary{{Agent: x.suite.MemberID, Digest: x.plan.Digest, ConfigurationDigest: strings.TrimPrefix(x.subject.ConfigurationDigest, "sha256:")}}}
 	member := rt.SuiteMemberOutcome{Agent: x.suite.MemberID, State: "ready"}
 	for _, r := range x.observed {
 		member.Resources = append(member.Resources, rt.ResourceResult{Kind: r.Kind, Name: r.Name, Namespace: x.env.Namespace, UID: r.UID})
