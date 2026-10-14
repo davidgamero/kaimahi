@@ -161,7 +161,7 @@ func newSuiteCommand(state *commandState) *cobra.Command {
 	_ = imagePush.RegisterFlagCompletionFunc("platform", staticCompletion([]string{"linux/amd64", "linux/arm64"}))
 	imagePush.RunE = func(cmd *cobra.Command, args []string) error {
 		osName, arch, ok := strings.Cut(imagePlatform, "/")
-		if !ok {
+		if !ok || osName == "" || arch == "" || strings.Contains(arch, "/") {
 			return fmt.Errorf("platform must be os/architecture")
 		}
 		ref, err := agentsuite.PushImage(cmd.Context(), args[0], args[1], spec.Platform{OS: osName, Architecture: arch}, imagePlainHTTP, imageForce)

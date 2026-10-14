@@ -25,6 +25,44 @@ import (
 	"oras.land/oras-go/v2/content/oci"
 )
 
+func TestSuitePushImagePlatformValidationBeforeArchiveIO(t *testing.T) {
+	t.Setenv("KMX_HOME", t.TempDir())
+	archive := filepath.Join(t.TempDir(), "missing-image.tar")
+	for _, tc := range []struct {
+		platform string
+		valid    bool
+	}{
+		{"", false},
+		{"linux", false},
+		{"/amd64", false},
+		{"linux/", false},
+		{"/", false},
+		{"linux/amd64/v8", false},
+		{"linux/amd64", true},
+		{"linux/arm64", true},
+	} {
+		t.Run(tc.platform, func(t *testing.T) {
+			var out, diagnostics bytes.Buffer
+			deps, loads := testDependencies(&out, &diagnostics)
+			err := execute([]string{"suite", "push-image", archive, "registry.example.com/image:v1", "--platform", tc.platform}, deps)
+			if tc.valid {
+				var pathErr *os.PathError
+				if !errors.Is(err, fs.ErrNotExist) || !errors.As(err, &pathErr) || pathErr.Path != archive {
+					t.Fatalf("valid platform did not reach archive IO: %v", err)
+				}
+			} else if err == nil || err.Error() != "platform must be os/architecture" {
+				t.Fatalf("invalid platform was not refused before archive IO: %v", err)
+			}
+			if *loads != 0 {
+				t.Fatalf("platform validation loaded operational config %d time(s)", *loads)
+			}
+			if out.Len() != 0 || diagnostics.Len() != 0 {
+				t.Fatalf("unexpected output: stdout=%q stderr=%q", out.String(), diagnostics.String())
+			}
+		})
+	}
+}
+
 func TestSuitePushImageTagPolicyAndOfflineConfiguration(t *testing.T) {
 	t.Setenv("DOCKER_CONFIG", t.TempDir())
 	t.Setenv("KMX_HOME", t.TempDir())

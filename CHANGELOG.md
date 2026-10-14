@@ -49,6 +49,7 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
   image declarations bind full suite OCI and exact build-profile digests, without
   source registry hints. Publication preserves attestations and does not require
   deployment metadata; replacing a different image tag requires explicit `--force`.
+  Malformed `--platform` values refuse before archive reads.
   The AgentKit adapter refuses serving settings it cannot implement.
 
 - Named workspace destinations in optional, credential-free `kmx.yaml` supply
