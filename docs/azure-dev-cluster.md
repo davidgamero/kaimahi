@@ -196,6 +196,23 @@ submitted native Task on the lifted member returned `Paris`. That separate answe
 is not destination evaluation or cross-cluster qualification. No TUI, judge,
 private registry, image-backed or kagent flow was qualified by this exercise.
 
+The same cluster was subsequently upgraded through AKS's offered path to
+**1.37.0**. Its single node returned Ready and the Orka/model deployments and
+PVCs remained healthy. With KMX `2238a93`, a fresh native member passed evaluation,
+candidate cleanup, evaluated local publication and digest promotion to Ready.
+The earlier two-case workspace also passed evaluation again after the upgrade.
+
+AgentSessions was checked separately: KMX's pinned `ca85f47` built-in chat host
+ran on the development machine and used the AKS model through a loopback forward;
+two cases and evaluated publication passed. Upstream AgentSessions v0.1.2's
+plain-Kubernetes manifest also ran on 1.37, preserving identical replay output
+across a pod restart and continuing an echo session. These are different host
+versions/paths: they do not qualify KMX lift to AgentSessions or substrate
+micro-VMs. The Sessions API in this reference deployment is unauthenticated and
+was kept behind ClusterIP plus an operator-owned port-forward. See
+[KMX's development-host boundary](suite-workspace.md#agentsessions-development-evaluation)
+and [AgentSessions security](https://github.com/aramase/agentsessions/blob/main/docs/security.md).
+
 - Initial eval attempts reported outcome unknown because another local process
   owned port 19180. Authenticated absent-Task result probing worked; selecting a
   free `--result-port` unblocked evaluation. Inspect the port owner rather than
