@@ -24,7 +24,10 @@ const (
 // The controller's configured worker account is authoritative; matching chart
 // identity and AI trust labels keep an unrelated account from gaining access.
 func (a *App) orkaAIWorkerAccount(ctx context.Context) (string, error) {
-	deployments, err := a.orkaDeployments(ctx)
+	return a.orkaAIWorkerAccountIn(ctx, OrkaNamespace)
+}
+func (a *App) orkaAIWorkerAccountIn(ctx context.Context, namespace string) (string, error) {
+	deployments, err := a.orkaDeploymentsIn(ctx, namespace)
 	if err != nil {
 		return "", err
 	}
@@ -80,7 +83,7 @@ func (a *App) orkaAIWorkerAccount(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("Orka controller has invalid %s account name", flag)
 	}
 
-	data, err := a.orkaCapture(ctx, nil, "-n", OrkaNamespace, "get", "serviceaccounts", "-o", "json")
+	data, err := a.orkaCapture(ctx, nil, "-n", namespace, "get", "serviceaccounts", "-o", "json")
 	if err != nil {
 		return "", fmt.Errorf("cannot list Orka ServiceAccounts in %s: %w", OrkaNamespace, err)
 	}
@@ -117,7 +120,7 @@ func (a *App) orkaAIWorkerAccount(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("Orka worker ServiceAccount %s not found in %s", worker, OrkaNamespace)
 	}
 	switch {
-	case identity.Namespace != OrkaNamespace:
+	case identity.Namespace != namespace:
 		return "", fmt.Errorf("Orka worker ServiceAccount %s has wrong namespace", worker)
 	case identity.Labels["orka.ai/worker"] != "true":
 		return "", fmt.Errorf("Orka worker ServiceAccount %s lacks worker=true label", worker)

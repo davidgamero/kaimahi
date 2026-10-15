@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 
 	agentsuite "github.com/agent-primitives/suite"
@@ -43,6 +44,12 @@ const MaxArtifactFiles = 4 + 5*16 + 128
 type Artifact struct {
 	descriptor ocispec.Descriptor
 	files      map[string][]byte
+	entries    map[string]artifactEntry
+}
+
+type artifactEntry struct {
+	Kind byte
+	Mode int64
 }
 
 func (a *Artifact) Descriptor() ocispec.Descriptor { return a.descriptor }
@@ -193,7 +200,8 @@ func readArtifact(ctx context.Context, src kmxsuite.Fetcher, root ocispec.Descri
 	if err != nil {
 		return nil, err
 	}
-	files, err := artifactFiles(ctx, layer)
+	entries := map[string]artifactEntry{}
+	files, err := artifactFilesWithEntries(ctx, layer, entries)
 	if err != nil {
 		return nil, err
 	}
@@ -226,10 +234,14 @@ func readArtifact(ctx context.Context, src kmxsuite.Fetcher, root ocispec.Descri
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return &Artifact{descriptor: root, files: files}, nil
+	return &Artifact{descriptor: root, files: files, entries: entries}, nil
 }
 
 func artifactFiles(ctx context.Context, compressed []byte) (map[string][]byte, error) {
+	return artifactFilesWithEntries(ctx, compressed, nil)
+}
+
+func artifactFilesWithEntries(ctx context.Context, compressed []byte, metadata map[string]artifactEntry) (map[string][]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -280,6 +292,12 @@ func artifactFiles(ctx context.Context, compressed []byte) (map[string][]byte, e
 			return nil, ErrArtifact
 		}
 		seen[name] = true
+		if h.Mode < 0 || h.Mode & ^int64(0777) != 0 {
+			return nil, ErrArtifact
+		}
+		if metadata != nil {
+			metadata[filepath.ToSlash(name)] = artifactEntry{Kind: h.Typeflag, Mode: h.Mode}
+		}
 		switch h.Typeflag {
 		case tar.TypeDir:
 			if h.Size != 0 {

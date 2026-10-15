@@ -84,6 +84,171 @@ The global flag works before or after a subcommand and overrides
 Docker and Podman have separate kind inventories and can each own a same-named
 cluster, so a silent switch can target the wrong one.
 
+## Experimental suite-centered branch
+
+Background operations display an animated activity label and metadata-only progress
+events, including runtime setup phases. Confirmation instructions are shown in the
+dialog body. Find agents visibly focuses its search field while typing.
+Inspect (`i`) on a live agent opens a read-only configuration modal, including
+suite-owned agents without a retained placement record. Missing retained metadata
+does not mean the agent is absent; it still prevents suite invocation without
+revalidation. Independent chat uses the selected context's access and an available
+loopback result port; connection failures remain visible after returning to console.
+
+Extract (`x`) suggests a new available folder under the current directory, such
+as `agent-copy` or `agent-copy-2`, and shows the full save path. Both path and
+member name remain editable. Availability is observed before review, not reserved;
+the final exclusive save refuses if another process creates the destination.
+
+### Guided console Lift
+
+Environment choices are tagged LOCAL/REMOTE. Model selection identifies the model
+and its inference connection; selecting a connection for authoring does not deploy
+the agent. Lift destinations show indented endpoint and, where exact Azure lookup
+matches, AKS resource-group/subscription details. Failed enrichment keeps the
+original kubeconfig choice available.
+
+Runtime prerequisite warnings appear in red above actions. **Check a separate
+KMX-managed Orka installation** offers a new namespace and separately confirmed
+installation only when existing controllers are Ready pinned v0.2.0 instances with
+namespace isolation, shared CRDs match the pinned schema, and admission scopes and
+rendered chart objects do not overlap. It creates a unique Helm release, a separate
+runtime namespace and result-reader access, then resumes inference selection.
+Old 0.1.3/cluster-wide controllers are incompatible with this route. Shared CRDs
+are never updated; failed partial installs remain for inspection. This is not an
+upgrade or automatic teardown workflow.
+
+`l` selects a known published version, or starts directly for unpublished source.
+The normal flow is destination → namespace/runtime → inference → registry and
+publication if needed → evidence/evaluation → exact plan review → Apply/Verify.
+All resource lists accept fuzzy typing. Destinations come from kubeconfig or AKS
+discovery, without requiring a hand-authored kmx.yaml destination. Ready Providers
+and Foundry setup offer inference connections. Image agents generate private
+environment bindings from selected credentials/capabilities and auth/pull Secrets.
+ACRs are ranked by observed pull-role candidates; HTTPS checks prove reachability
+only. Explicit ACR login refreshes host publication credentials. Repository/version
+defaults derive from the agent name; compatible running buildx builders are listed.
+Publication/evaluation/setup require separate consent. Final Lift still uses the
+shared single-use reviewed plan and never sends a model request. **Advanced** keeps
+offline OCI layouts and externally supplied references/bindings/evidence available.
+No automatic namespace creation, registry role changes or node-pull repair occurs.
+
+Each console pane lists recent edits/creation first and shows numbered agents with
+their inference. **S** selects recent-first, oldest-first or alphabetical order;
+**f** starts fuzzy search across names, models and displayed metadata. Arrows
+navigate results; Enter keeps the filter and Esc clears it while editing search.
+Counts show total rows, or matching/total when filtered. Authored-source timestamps
+exclude caches; live timestamps ignore status-only managed-field updates. Unknown
+times sort last. Missing source paths are reported separately, not shown as agents.
+
+The kind pane defaults to **observed Ready agents in the selected context**.
+Non-Ready/deleting agents and unobserved saved placements are excluded; image
+placements require live revalidation. Orka creates worker Pods per Task, so Ready
+does not imply an always-running worker or a fresh answer. **w** switches between
+the kind inventory and **LOCAL SOURCE FILES**, a separate authoring view. Explicit
+open/create (or `console --workspace`) enters that view; files are never presented
+as deployed just because a kind context is selected.
+
+Console `l` starts with **Published versions**, defaulting to the newest locally
+known publication for the selected agent. Type to fuzzy-search references/digests,
+use arrows or click a version, then continue with bindings/evidence/destination.
+The selected exact digest appears in review instead of requiring copy/paste.
+For opened source with no known publication, Lift starts publication directly and
+continues with the returned exact digest after success; build/push still require
+confirmation. Existing versions use the picker. **Enter reference manually**
+supports packages published elsewhere. Up to 32 console publication records are
+kept per workspace; the image CLI publication cache is also consulted. This is
+local history, not a registry-wide latest-tag lookup. Hints never replace artifact,
+evidence or target validation.
+
+Mouse support includes tabs, pane/agent selection, action menus, filtered pickers,
+Continue/Back/Cancel buttons and wheel scrolling. Review paging and typed execution
+confirmations remain in force. Terminal text selection may require Shift+drag.
+Source/case review temporarily disables application mouse reporting so normal
+dragging selects terminal text for Copy. Use keyboard scrolling/paging while
+reviewing; mouse navigation resumes after closing review. Inspect uses highlighted
+field labels, indented metadata/assertions and multiline instruction/input blocks,
+with readable NO_COLOR output and explicit truncation markers for long content.
+Independent live Orka rows offer `c` / **Chat with agent**; retained suite placements
+and local Copilot workspaces retain their respective chat actions.
+
+Foundry creation review shows distinct field labels/values and **Check / set up
+inference connection**. Choose a target, inspect a matching Provider and its Secret
+reference, or name new resources. Secret discovery reads key names only. A new
+Secret can use an explicitly named host environment variable; its value is passed
+on stdin and never shown. Exact-context confirmation precedes create-only setup.
+Occupied mismatched resources refuse. Setup does not prove credentials work or
+the model is reachable; evaluation checks execution separately.
+
+Empty console panes offer **New agent** directly (Enter). Upper-pane shortcuts
+share the orange shortcut style. `t` opens a fuzzy context picker for the focused
+side: local contexts plus existing kind clusters and **Initialize local environment**;
+remote contexts from kubeconfig plus `n` for AKS discovery in the active Azure
+subscription. Importing kind/AKS access and initializing a local runtime require
+separate confirmation. Retrieved kubeconfigs stay private under KMX state, without
+overwriting the default kubeconfig. Invalid retained placement records remain
+unavailable but do not prevent independent context discovery.
+
+### Local Copilot workspace execution
+
+With a local kind context selected, console creation offers **Local Copilot CLI**.
+Select a model discovered from your installed CLI, then author instructions.
+The local workspace row offers `u` for a confirmed host turn and `c` for shared
+interactive chat, using your existing Copilot login. No Kubernetes Agent or Task
+is created by those turns. No tools or native evaluation evidence are produced.
+After editing source, review with `i` and reconnect with `H` before sending.
+The private preference survives console restart and never enters published content.
+Native eval/Lift remain separate, requiring compatible cluster inference and proof.
+Quickstart's retired Copilot mode is not restored by this console capability.
+
+On `feat/suite-centered-tui`, `console` opens a suite/member overview. Standalone
+Orka Agents are unowned single-member views; extraction never adopts them.
+
+Console `n` offers execution-profile and inference pickers rather than a mixed
+model/profile text prompt. Orka is the default. The flow is **name → model/instructions
+→ Create agent**. The final screen shows **Save to** (defaulting to the agent name)
+and optional **Change location** and **Change execution** actions. Azure subscription selection accepts
+fuzzy typing immediately, shows names and GUIDs, and defaults to the last selected
+subscription when it is still available. Arrows navigate matching rows; Backspace
+edits a nonempty search. Native inference can be selected from Ready cluster
+Providers or discovered Foundry deployments; Foundry cluster credentials/setup
+remain separate. Backspace navigates back from selections or the start of text;
+Alt+Left always goes back. Shortcut labels are orange, with `NO_COLOR` support.
+
+Foundry resources/deployments, Ready Providers and inference-source choices also
+start in fuzzy search across displayed names/details. AKS/ACR and named evaluation/
+Lift destination fields use fuzzy completion: arrows move through results and
+Enter selects the highlighted identity. Empty matches cannot dispatch an action.
+Host-chat Foundry subscriptions share the saved subscription preference and
+display name plus GUID.
+
+Explicit `create --execution image-http` integrates image build/publication,
+full-case `eval --release ... --environment FILE`, and digest Lift through the
+shared operation handlers. The console's `a` discovers AKS contexts by endpoint
+and ACR role candidates; `p` builds/publishes, `e` evaluates, and `l` reviews Lift
+with optional source-only promotion. Author-owned environment bindings select
+inference and Secret references. Native remains the default. Image-http uses
+Kubernetes workloads directly and needs no Orka operator. See the
+[image workspace guide](suite-image-workspace.md) for the exact commands.
+
+| Command | Branch contract |
+|---|---|
+| `suite extract NAME --context CTX --namespace NS --name NEW_NAME --workspace NEW_DIR [--plan]` | Read one representable standalone native Orka Agent into new workspace source; original unchanged. `--plan` writes no files. |
+| `suite show WORKSPACE [-o text\|json]` | Offline native/image workspace/member/case summary; no live or evaluation claim. |
+| `lift … --retain-placement` | After successful native Orka Apply/Verify, save a private rediscovery record and print its ID on stderr. Refuses with `--plan` or other runtimes. |
+| `lift REF@sha256:DIGEST --to-context CTX --check-runtime` | Inspect packaged runtime requirements and observed destination compatibility without evidence, admission, installation or placement. Separate guarded runtime preparation remains `orka install --provider -`. |
+| `suite status --deployment ID [-o text\|json]` | Revalidate artifact/evidence, target/binding and owned resource identity. No placement writes or execution. |
+| `run --deployment ID [--member NAME] --prompt TEXT` | One fresh Task on the verified suite member; answer-only stdout. Live-agent/target/transport override selectors conflict. |
+| `chat --deployment ID [--member NAME]` | Shared interactive chat with placement revalidation before every send; no live-name fallback. |
+| `console [--workspace DIR] [--deployment ID]` | Live local-left/remote-right suite view, source review, per-case progress, publication, reviewed Lift, status and member invocation. Explicit context flags override resolved context selections. No demo mode. |
+
+Private retained state is not evaluation evidence or authority for later Lift
+reuse. Root `status` stays runtime-only. Current independent-agent root commands
+remain; old removed command groups remain removed. See the
+[branch test guide](suite-centered-tui.md#test-this-branch) for keys, prerequisites,
+limitations and verification scope. This is an experimental branch capability,
+not a claim of multi-member or runtime parity.
+
 ## Commands
 
 Use `kmx --help` and `kmx <command> --help` for flags and defaults. The Cobra tree

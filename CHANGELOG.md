@@ -164,6 +164,213 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
   continuity.
 
 ## v0.7.0 — 2026-10-15
+- A content reference whose descriptor binds JCS-canonical identity (agent,
+  tool provider, tool provider catalog, composition, tool provider
+  composition, build profile, evaluation index, and evaluation case
+  manifests) now requires the referenced file to be stored on disk as its
+  exact RFC 8785 JCS canonical bytes. Validation previously accepted any
+  on-disk formatting (for example pretty-printed JSON) as long as `digest`
+  and `size` described the canonical form; it now rejects a stored document
+  whose bytes are not already identical to that canonical re-serialization.
+  Suites with differently formatted but semantically equivalent stored JSON
+  for these references must be re-serialized to canonical bytes; there is no
+  migration path or back-compat reader. ([#496](https://github.com/kaimahi-agents/kaimahi/issues/496))
+
+- Root workspace push requires completed exact-S passing evidence by default.
+  Use --unevaluated to explicitly retain ordinary publication; explicit
+  --evaluation FILE overrides managed lookup without fallback. Extracted-directory
+  suite push is unchanged.
+
+- Judge evidence now binds its request style; older judge receipts without it
+  require fresh evaluation. Text-only receipts remain unchanged.
+
+### Fixed
+
+- Use one modern judge request shape (`max_completion_tokens`, no temperature
+  override), also verified against the pinned AIKit/LocalAI image. No retry,
+  provider inference or request-style flag is added. Returned model identity
+  accepts only the exact authored model or exact model-plus-hyphen-version;
+  evidence records the matching form for each score.
+
+- `kmx local up` works with Helm 4: the Orka release preflight omits the removed
+  `helm list --all` flag on Helm 4+ (which lists every status) and keeps it on
+  Helm 3 or when the version cannot be read. ([#504](https://github.com/kaimahi-agents/kaimahi/issues/504))
+- Fixed invisible live-agent inspection with a read-only modal that explains
+  missing retained placement metadata. Independent console chat preserves the
+  selected access configuration and uses an available result-forward port instead
+  of fixed 19180. Connection errors stay visible. Find agents highlights its input.
+- Background console operations show animated labeled progress and sanitized
+  installer phase events. Runtime setup confirmation is displayed in the modal
+  body so long destination names cannot hide the required action.
+
+- Guided runtime prerequisites show an Okay acknowledgement before setup choices,
+  identifying requirements and destination. New KMX Orka chart installs pass
+  installed/runtime-version annotations alongside existing ownership labels.
+
+- Console extraction suggests an available, editable workspace folder derived
+  from the agent name, with numbered collision handling and a full destination
+  path. Availability is rechecked before review; exclusive save still refuses races.
+
+- Clarified inference/model selection and LOCAL/REMOTE environment labels. Lift
+  destinations use indented multiline details and best-effort Azure resource-group
+  and subscription enrichment. Runtime warnings appear above actions in red.
+- Added confirmed isolated Orka setup from guided runtime recovery: unique release,
+  fresh controller/runtime namespaces, compatible existing v0.2.0 controllers and
+  shared CRDs, collision/admission checks and --skip-crds. Native evaluation/Lift/
+  invocation inspect the selected namespace. Legacy or overlapping controllers
+  refuse; no automatic upgrade, rollback or cleanup. A live dedicated kind test
+  passed second install, full evaluation, evaluated publication, Lift and answer.
+
+- Creation defaults to an Orka AgentSuite without asking how it should run;
+  alternative execution profiles are available through Change execution on final
+  review. Wrapped Provider/context labels use a hanging indent.
+
+- Environment panes show an animated indeterminate loading bar during console
+  startup discovery instead of briefly claiming no contexts or agents exist.
+
+- Added guided console Lift: fuzzy context/AKS, namespace, inference and ACR
+  selection; runtime/setup recovery; explicit registry login and publication;
+  builder discovery; generated private image bindings; full-case evaluation and
+  reviewed shared Apply/Verify. Unpublished source skips the empty version picker.
+  Local OCI directories/manual bindings move to Advanced. Registry checks retain
+  separate reachability, publication authorization and workload pull semantics.
+
+- Lift on unpublished source now enters the confirmed publication flow directly,
+  then continues with the exact returned digest. Removed the redundant empty
+  version-selection step; evaluation proof and reviewed Apply are still required.
+
+- Source/case review supports ordinary terminal drag selection for copying,
+  temporarily yielding application mouse reporting while keyboard paging stays
+  active. Inspect now highlights field labels and sections, indents metadata and
+  assertions, and renders instructions/inputs as readable multiline blocks.
+
+- Removed the inline Source preview from local/remote console lists. The default
+  view uses the available pane height for agents; explicit Inspect still opens
+  source/case review.
+
+- The kind console inventory now shows only observed Ready/non-deleting agents
+  in its selected context and revalidated Ready image placements. Source-only
+  workspaces and stale placement hints no longer appear as cluster agents.
+  `w` opens a separately labeled local source-files view for authoring; explicit
+  open/create enters that view. Inventory errors clear live visibility rather
+  than keeping an unverified running claim.
+
+- Console agent lists default to most recently edited/created first, with per-pane
+  sort selection (S), fuzzy find (f), totals, filtered counts and numbered rows.
+  Rows show inference beside the agent name. Missing source folders remain private
+  catalog hints but are hidden from agent inventory with an aggregate diagnostic;
+  test-created temporary workspaces no longer appear as phantom cluster agents.
+  Action-menu selected rows keep a continuous background around orange shortcuts.
+
+- Console Lift now selects published versions with immediate fuzzy search and
+  keyboard/mouse navigation, defaulting to the newest locally known publication.
+  Keeps up to 32 publication hints per workspace and carries exact digest/layout/
+  evidence hints into the existing review. Unpublished agents offer Publish first;
+  external digest entry is an advanced fallback. Planning still revalidates proof.
+
+- Added suite-console mouse selection, action buttons and wheel scrolling using
+  wrapped/clipped render geometry; existing execution/review confirmations remain.
+  Create review distinguishes field labels from values and offers explicit
+  Foundry connection discovery/setup: reuse matching independent Provider/Secret
+  references or create absent resources using an environment-named credential.
+  Restored interactive chat in independent live Orka agent menus; suite ownership
+  and retained-placement invocation fences remain.
+
+- Simplified empty console panes to No agents or suites and a selectable New
+  agent action; removed repeated lifecycle explanations and colored upper-pane
+  shortcuts orange. Unreadable placement records no longer hide kubeconfig
+  contexts. Focused-side context pickers support fuzzy search, existing kind
+  access and explicit local initialization; remote `n` browses AKS and confirms
+  private credential retrieval without replacing default kubeconfig entries.
+
+- Simplified console creation to name → execution → model/instructions → Create
+  agent. The default source folder is derived from the agent name; final review
+  shows Save to with optional Change location instead of a mandatory workspace
+  question. Authoring and execution remain separate.
+
+- Restored local Copilot CLI creation in the suite console: discovered model
+  selection, private workspace preference and confirmed host run/chat through
+  the existing CLI login. Context/source/model revalidation fences every send;
+  source changes require review/reconnect. No tools, cluster placement, native
+  evaluation evidence or quickstart host mode is implied.
+
+- Aligned console Foundry resource/deployment, Ready Provider and inference-source
+  pickers with immediate fuzzy typing and filtered arrow navigation. AKS/ACR and
+  named-destination completion now select the highlighted fuzzy match on Enter.
+  Host Foundry chat shows subscription GUIDs and shares the last-used selection.
+
+- Console creation starts with the agent name and defaults its editable workspace
+  directory from that name. Azure subscription selection supports immediate fuzzy
+  typing across name/GUID, arrow navigation within results and a persisted
+  last-selected subscription as the first default when still available.
+
+- Console creation separates Native Orka / Container image selection from
+  inference. Ready Provider and Foundry deployment pickers replace the mixed
+  exact-model/profile prompt; advanced manual entry remains available. Discovery
+  does not provision services or credentials. Backspace/Alt+Left preserve drafts
+  when navigating back, and keyboard shortcut labels use orange with NO_COLOR
+  support.
+
+- Suite-centered console integrates experimental image-http creation, reviewed
+  full-case evaluation, image build/publication and digest Lift from #448/#449.
+  Explicit `a` discovery matches AKS endpoints to configured contexts and reports
+  candidate ACR pull roles without treating them as execution proof. Retained
+  image status/run/chat reconnect through the live split-pane console.
+- Orka installation lists explicit Helm release statuses, supporting Helm 3 and
+  Helm 4 without missing failed or pending installations (`--all` was removed
+  by Helm 4). Native quickstart was demonstrated on a fresh owned kind cluster.
+
+### Experimental branch: suite-centered TUI
+
+- Restore full-screen styled suite/member and detail panes, persistent operation
+  progress, focus/scroll navigation, contextual menus, command/destination
+  completion and framed review/form overlays. Local suites remain on the left
+  and remote suites on the right; bounded real inventory refresh replaces demo mode.
+
+- `console` now centers suites and member actions, with explicit standalone-agent
+  wrapper views, source/case review, file editing, named destinations, full eval,
+  exact publication, reviewed digest Lift and incremental case/resource progress.
+- `suite extract` reads a supported tool-free native Orka Agent into a new source
+  workspace without modifying the original; unsupported behavior and suite ownership
+  refuse. `suite show` reads native workspace inventory offline.
+- Optional `lift --retain-placement` and console Apply retain private native Orka
+  rediscovery inputs for `suite status` and root `run/chat --deployment`. Each use
+  rechecks artifact/evidence, target/binding and owned identities. These records
+  are not evaluation proof or Lift-reuse authority. Root runtime status and
+  independent-agent commands remain; other runtime/image/multi-member limits stay.
+- The console resolves two contexts using explicit flags/preferences; remembered
+  workspace paths and placement IDs are private hints. No automatic teardown or
+  migration occurs. See the [branch guide](docs/suite-centered-tui.md).
+- `lift --check-runtime` performs separate artifact-derived, read-only runtime
+  prerequisite inspection. Console runtime installation is a separately confirmed
+  `orka install --provider -` operation; incompatible existing controllers refuse.
+- Experimental image workspace build/publication, full-case evidence and shared
+  root lift now use the current CLI/console lifecycle. Complete OCI release indexes
+  publish last; placement ownership binds suite/member/instance/target. Retained
+  placement status/run/chat and offline console initialization are available.
+  Native AgentSessions support and removal of legacy bundle/live-create remain.
+
+- Root digest `lift` supports packaged kagent v0.10.3 Go/linux-amd64 suites through
+  the existing prepare/apply/verify engine, with runtime-matching full-passing
+  evidence and author-owned `--bindings FILE` (exclusive with Orka `--inference`).
+  Kagent creates only new ModelConfig/Agent objects and refuses occupied primaries
+  or generated children even with matching evaluated UIDs. Explicit source-only
+  promotion keeps package/member/model/profile/provider kind/AuthMode and full
+  controller/Go image digest/platform inventories exact; only approved physical
+  target/binding/installation fields may differ. Unknown fields compare by default.
+  Lift makes no native execution calls; partial outcomes retain acknowledged
+  identities without retry, adoption, updates or cleanup. Orka summaries/digests,
+  receipt-bound reuse remain compatible. Legacy bundle/v0.10.2 live create is
+  removed as described under Breaking.
+
+- Packaged tool-free kagent v0.10.3 Go/linux-amd64 workspaces now evaluate
+  through root `eval --bindings FILE`: one fresh blocking A2A Task per ordered
+  case, unsecure auth only, no retries, answer output or bundle conversion.
+  Strict full-passing suite evidence has a separate typed kagent branch;
+  evaluated push requires exact manifest S and the same packaged runtime.
+  Offline suite receipt diff refuses mixed runtimes. Existing Orka receipt
+  serialization, evaluation and lift remain compatible. Root kagent digest Lift
+  is described above. Unsupported judge/tool assertions still refuse offline.
 
 ### Added
 

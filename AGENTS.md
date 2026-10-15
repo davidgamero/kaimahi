@@ -6,6 +6,123 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
 
 ## Command consistency
 
+- The `feat/suite-centered-tui` branch adds an experimental native-Orka suite
+  console, read-only cluster `suite extract`, offline `suite show`, and private
+  retained-placement `suite status` / root `run/chat --deployment`. Follow
+  [the branch guide](docs/suite-centered-tui.md) for its bounded contract.
+  Independent Agents are presentation wrappers, never automatically owned suites.
+  Extraction writes new source only and preserves the original; unsupported
+  behavior and any suite reservation refuse. Retained placement records are
+  private rediscovery hints, never evaluation/export or Lift-reuse authority.
+  Revalidate package, evidence, target, binding and owned UIDs before observation
+  or member sends. Keep independent-agent refusals and all non-Orka limits.
+  This explicitly adds native member observation/invocation and the console
+  digest-Lift action described below; it does not restore old bundle/live-copy
+  workflows or a retired command group. Root status remains runtime-only.
+
+- This branch integrates #448/#449 image-http source/build/release/evaluation
+  through the same root commands and split-pane console. Native remains default;
+  image-http is explicit and uses Kubernetes workloads, not an Orka operator.
+  Console `a` discovers AKS via exact configured endpoint matches and ACR role
+  candidates; role observations are not network/pull or publisher authorization.
+  Source/case review, explicit image publication/evaluation, reviewed Lift and
+  retained status/run/chat use shared operation handlers. Revalidate private
+  image evidence on reconnect as well as package/bindings/resource identity.
+  Keep Orka installation separate and guarded; existing incompatible controllers
+  are not upgraded. Helm inventory uses explicit status filters for Helm 3/4.
+
+- Console creation separates execution-profile selection from inference.
+  Local Copilot CLI is an explicit console host-execution choice with a selected
+  local kind context, discovered CLI model and existing host login. It authors
+  ordinary native source plus a private digest-bound catalog preference, never
+  a public Copilot runtime or credential. Console run/chat revalidate local
+  context, source and model availability; no cluster Tasks, tools or candidate
+  evaluation proof. Source edits require review and explicit H reconnect.
+  Quickstart host modes remain retired; native eval/Lift still require Provider
+  bindings and runtime evidence. Copilot preferences never authorize deployment.
+  Agent creation defaults to Orka: name → inference/model/instructions → Create
+  agent. Alternative execution profiles are selected through Change execution on
+  final confirmation, not a mandatory initial question.
+  Default the source folder from the name; show Save to on final confirmation
+  with optional Change location, not a mandatory workspace step.
+  Subscription selection starts in fuzzy search, shows name plus GUID,
+  and prefers the last selected available subscription by saved identity.
+  Arrow keys navigate filtered results; typing (including j/k) edits search.
+  Foundry resource/deployment, Ready Provider and inference-source pickers share
+  that immediate fuzzy-search behavior. AKS/ACR and named-destination forms use
+  fuzzy resource completion; Enter resolves the highlighted match, never a query.
+  Host-chat Foundry subscriptions share name/GUID and last-selection preferences.
+  Empty panes offer New agent directly, without lifecycle explanations. Context
+  discovery proceeds despite unavailable private placement records; refusals stay
+  visible and those records never authorize sends. `t` picks the focused side's
+  contexts with fuzzy search. Local offers existing kind access and confirmed
+  initialization via local up; remote `n` discovers AKS under the active Azure
+  subscription and confirms private kubeconfig retrieval. Imported access is
+  separate from agent ownership and does not overwrite the default kubeconfig.
+  Console mouse clicks/wheel use rendered hit regions and shared keyboard actions;
+  overlays block underlying actions and review paging still gates confirmation.
+  Source/case review yields mouse reporting to terminal drag selection; keyboard
+  paging remains gated and mouse navigation resumes on close. Review formatting
+  separates trusted label styles from sanitized, indented authored multiline text.
+  Create review styles labels separately from values. Foundry connection setup
+  discovers matching independent Providers and Secret key names, then explicitly
+  confirms create-only Provider/Secret setup. New keys come from a named host
+  environment variable via stdin, never argv or review/log output. Existing
+  resources are not overwritten; discovery/setup is not model-access proof.
+  Independent live Orka rows offer confirmed shared interactive chat again;
+  suite-owned resources still require retained placement revalidation.
+  Live read-only Inspect is available without retained metadata and checks observed
+  UID/resourceVersion; it never authorizes sends. Independent chat preserves selected
+  kubeconfig/namespace and chooses an available loopback result port. Operation
+  loading is animated/labeled and uses metadata-only progress events, not raw
+  subprocess logs. Runtime confirmation text belongs in the visible dialog body.
+  Console Lift starts with a fuzzy published-version picker, newest known first.
+  Publication history is bounded private retrieval metadata, never evidence or
+  placement authority; selecting older placements does not reorder publication
+  history. Manual digest entry remains advanced. Shared planning revalidates all
+  selected artifacts/evidence; no registry-wide latest-tag guessing.
+  With no known publication for an opened source, console Lift starts explicit
+  publication directly and resumes Lift selectors with its returned exact digest.
+  Build/push consent, evaluation evidence and reviewed deployment stay separate.
+  Guided console Lift selects copied context/namespace/inference values without
+  requiring kmx.yaml. Runtime/Foundry/auth-Secret setup, ACR login, publication,
+  evaluation and Apply each require explicit consent. Image bindings derive from
+  reviewed packaged capabilities and selected Secret references. Registry HTTPS
+  reachability and role observations are not publisher/pull authorization.
+  Shared handlers own effects; no automatic retry of writes/model sends. Offline
+  layouts/manual bindings remain Advanced; no default local OCI directory prompt.
+  Guided runtime recovery may create a separate pinned Orka v0.2.0 release only
+  in new installation/runtime namespaces after compatible shared-CRD, existing
+  controller watch/isolation, admission-scope and rendered-object collision checks.
+  Use unique release/fullname, --skip-crds and namespace-local result-reader RBAC.
+  Legacy/cluster-wide controllers refuse; no CRD upgrade, adoption, rollback or
+  automatic cleanup. Native runtime/worker inspection follows the selected target
+  namespace. Runtime warnings appear above actions, red with NO_COLOR text.
+  Runtime prerequisites first show an Okay acknowledgement; acknowledgement
+  performs no setup. Kagent remains operator-installed. New KMX Orka installs pass
+  installed/runtime-version annotations alongside ownership labels; annotations
+  alone never grant deployment or teardown authority.
+  Environment choices say LOCAL/REMOTE; model choices identify both the model and
+  its inference connection. Lift target details use hanging indentation and may
+  include best-effort exact-endpoint Azure resource-group/subscription metadata.
+  Agent lists default to recent authored-file/non-status resource changes first;
+  unknown timestamps sort last. S selects per-pane sorting; f fuzzy-filters without
+  changing artifact identity. Counts/numbering reflect filtered display order.
+  Missing source hints are reported separately, never represented as live agents.
+  Source-only entries are local authoring files, not ownership of the selected
+  kind cluster. Agent rows display observed/declared inference with the name.
+  The default kind pane lists only Ready, non-deleting Agents observed in its
+  selected context, plus revalidated Ready image placements. Stale/unobserved
+  placement hints and source files never populate that cluster list. `w` toggles
+  a separately labeled source-files view; explicit open/create enters authoring.
+  Orka readiness is not a running worker Pod or a fresh-answer claim.
+  Offer Ready openai Providers and existing Foundry deployments through read-only
+  discovery; manual model entry is an advanced fallback. Discovery is not cluster
+  credential provisioning. Native source pins the selected model; image source
+  keeps capabilities and defers concrete inference to environment bindings.
+  Backspace navigates from pickers/start-of-text, Alt+Left always navigates back,
+  preserving drafts. Shortcut text is orange with readable NO_COLOR output.
+
 - Follow the [command conventions](docs/command-conventions.md), the implemented
   interface in [docs/kmx.md](docs/kmx.md) and the
   [command alignment record](docs/command-semantics.md). Track outstanding
@@ -444,6 +561,13 @@ link, README-front-door and repository-map checks and run
 `npm --prefix docs run docs:check` when they affect the rendered site. The
 current exact alpha framework pin is a draft choice, not approval to publish;
 custom-domain and versioned-site changes require a separate review.
+Image workspaces use explicit `--execution image-http` without native model/runtime
+overrides. Image release indexes carry exact suite and image graphs; publish the
+final pointer only after completeness. Root image eval/lift use separate evidence
+and shared guarded apply, not a parallel reconciler. Retained image placements
+support root run/chat and suite status; shared console uses the same review pane.
+Ownership is suite/member/instance/target-specific plus receipt UID/spec fences.
+Private packaged cases remain until #493 adopts #497; no speculative spec migration.
 
 Run checks appropriate to the changed paths as described in CONTRIBUTING.md.
 Command changes normally require `go test ./cmd/kmx`, affected operation-package

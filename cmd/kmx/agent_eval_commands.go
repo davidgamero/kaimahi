@@ -20,6 +20,7 @@ func newAgentEvalCommand(state *commandState) *cobra.Command {
 	native := app.SuiteWorkspaceEvaluationOptions{ManagedPass: true}
 	var destination string
 	var output string
+	var image app.ReleaseLiftOptions
 	group := &cobra.Command{
 		Use: "eval", Short: "Evaluate a native workspace or export, verify and compare saved evidence",
 		Long: "Evaluate every authored case in one packaged tool-free native Orka or exact v0.10.3 Go kagent workspace, discovered from the nearest ancestor workspace.yaml or selected exactly with --workspace.\n" +
@@ -53,6 +54,22 @@ func newAgentEvalCommand(state *commandState) *cobra.Command {
 			if state.contextFlag != "" || cmd.Flags().Changed("context") {
 				return fmt.Errorf("--context cannot be used with native eval; use --to-context")
 			}
+			if cmd.Flags().Changed("release") || cmd.Flags().Changed("environment") {
+				image.ToContext = native.ToContext
+				image.Evidence = native.Out
+				if cmd.Flags().Changed("to-namespace") {
+					image.ToNamespace = native.ToNamespace
+				}
+				for _, flag := range []string{"to", "workspace", "inference", "bindings", "development-host", "result-port", "case-timeout", "judge-base-url", "judge-key-env"} {
+					if cmd.Flags().Changed(flag) {
+						return fmt.Errorf("--%s is unsupported with image release evaluation", flag)
+					}
+				}
+				return app.ValidateReleaseLiftOptions(image)
+			}
+			if cmd.Flags().Changed("plain-http") {
+				return fmt.Errorf("--plain-http requires image --release evaluation")
+			}
 			if native.DevelopmentHost != "" {
 				for _, name := range []string{"to", "to-context", "to-namespace", "inference", "bindings", "result-port", "container-engine"} {
 					if cmd.Flag(name).Changed {
@@ -73,9 +90,16 @@ func newAgentEvalCommand(state *commandState) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			if err := refuseMultiMemberWorkspace(native.Workspace); err != nil {
-				return err
+			if image.Reference != "" {
+				selected := *state
+				selected.contextFlag = image.ToContext
+				a, err := selected.operationApplication(cmd)
+				if err != nil {
+					return err
+				}
+				return a.EvaluateImageRelease(ctx, image, native.Out)
 			}
+			if err := refuseMultiMemberWorkspace(native.Workspace); err != nil {return err}
 			selectedNative := native
 			selectedNative.JSON = output == "json"
 			if !cmd.Flags().Changed("to-namespace") {
@@ -128,6 +152,9 @@ func newAgentEvalCommand(state *commandState) *cobra.Command {
 	registerDestinationFlag(group, &destination)
 	group.Flags().StringVarP(&output, "output", "o", "text", "output: text|json (JSON: Orka only)")
 	group.Flags().StringVar(&native.Workspace, "workspace", "", "select an exact workspace root instead of nearest-ancestor discovery")
+	group.Flags().StringVar(&image.Reference, "release", "", "exact experimental image-release reference to evaluate")
+	group.Flags().StringVar(&image.Environment, "environment", "", "image evaluation bindings file; requires --release")
+	group.Flags().BoolVar(&image.PlainHTTP, "plain-http", false, "development image registry HTTP")
 	group.Flags().StringVar(&native.ToContext, "to-context", "", "explicit native evaluation context")
 	group.Flags().StringVar(&native.ToNamespace, "to-namespace", app.OrkaNamespace, "native evaluation namespace")
 	group.Flags().StringVar(&native.Inference, "inference", "", "existing inference Provider, as provider:NAME")

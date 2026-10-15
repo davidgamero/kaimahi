@@ -45,7 +45,10 @@ type orkaDeployment struct {
 }
 
 func (a *App) orkaDeployments(ctx context.Context) ([]orkaDeployment, error) {
-	data, err := a.orkaCapture(ctx, nil, "-n", OrkaNamespace, "get", "deploy", "-o", "json")
+	return a.orkaDeploymentsIn(ctx, OrkaNamespace)
+}
+func (a *App) orkaDeploymentsIn(ctx context.Context, namespace string) ([]orkaDeployment, error) {
+	data, err := a.orkaCapture(ctx, nil, "-n", namespace, "get", "deploy", "-o", "json")
 	if err != nil {
 		return nil, fmt.Errorf("cannot list Orka controller Deployments in %s: %w", OrkaNamespace, err)
 	}

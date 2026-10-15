@@ -47,6 +47,7 @@ type SelectedToolProvider struct {
 type SandboxPlan struct {
 	Suite                    agentsuite.Suite
 	SuiteManifestHash        string
+	SuiteRootDigest string
 	Agent                    agentsuite.Agent
 	Instructions             []byte
 	Composition              agentsuite.Composition
@@ -215,6 +216,7 @@ func ResolveSandboxPlan(root string, selection BuildSelection) (*SandboxPlan, er
 	return &SandboxPlan{
 		Suite:                    v.suite,
 		SuiteManifestHash:        suiteHash,
+		SuiteRootDigest: suiteHash,
 		Agent:                    agent,
 		Instructions:             instructions,
 		Composition:              composition,

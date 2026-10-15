@@ -377,10 +377,12 @@ func (a *App) evaluateSuiteWorkspace(ctx context.Context, p *PreparedSuiteWorksp
 		return err
 	}
 	mayHaveChanged = true
+	worker.suiteProgress("evaluation placement", p.suite.MemberID, "running")
 	placement, err := worker.placeSuiteNativeMode(ctx, native, strictReuse)
 	if err != nil {
 		return err
 	}
+	worker.suiteProgress("evaluation placement", p.suite.MemberID, "ready")
 	observations, err := evaluateSuiteRuns(ctx, p.inventory, p.options.CaseTimeout, worker.Out, func(caseCtx context.Context, frame suitePassingInventoryCase) (suitePassingObservation, error) {
 		if err := workspace.CheckCurrent(caseCtx, p.root, p.prepared); err != nil {
 			return suitePassingObservation{}, err
@@ -403,5 +405,6 @@ func (a *App) evaluateSuiteWorkspace(ctx context.Context, p *PreparedSuiteWorksp
 	if err := p.publishPassingReceipt(ctx, receipt); err != nil {
 		return err
 	}
+	worker.suiteProgress("evidence", p.suite.MemberID, "exported")
 	return p.reportPassingReceipt(worker.Out)
 }

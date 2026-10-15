@@ -53,6 +53,7 @@ See [format boundaries](bundle-format.md) and [current CLI contracts](kmx.md).
 - [Charm boundary](charm-ux-followup-plan.md): the implemented creation wizard and its limits.
 - [Interactive agent TUI](interactive-agent-tui-plan.md): two-environment overview, keyboard navigation, slash-command completion and demo mode.
 - [Suite-first lifecycle direction](suite-first-lifecycle.md): workspace, release, deployment and evaluation objects; partly implemented, not an operator recipe.
+- [Suite-centered TUI branch guide](suite-centered-tui.md): live native/image console, non-destructive extraction, retained member operations and kind/ACR/AKS qualification.
 - [KMX lifecycle interface decision](kmx-lifecycle-interfaces.md): rationale for the experimental target, platform, runtime, deployment and receipt boundaries.
 - [KMX application API](kmx-application-api.md): how another Go layer uses AgentEnvironment, AgentSuites and AgentDeployments while management ports remain internal.
 - [KMX public interface summary](kmx-public-interface.md): the current layering, setup-only environment contract and CLI-to-Go mapping; environment recovery and teardown remain deferred.

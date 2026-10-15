@@ -20,6 +20,18 @@ import (
 
 const rendererVersion = "kmx.native-orka/v2"
 const nativePath = "metadata/kmx/native-orka.json"
+const imagePath = "metadata/kmx/image-http.json"
+const imageRendererVersion = "kmx.image-http/v1"
+
+func imageProfile() ([]byte, error) {
+	var p agentsuite.BuildProfile
+	if err := agentsuite.Unmarshal(defaultProfile, &p); err != nil {
+		return nil, err
+	}
+	p.Execution = &agentsuite.ExecutionContract{Configuration: agentsuite.AgentKitMountedConfig, Kind: agentsuite.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []agentsuite.ExecutionInput{{Name: "agent-auth", Environment: "AGENTKIT_AUTH_TOKEN", Secret: true}, {Name: "listen", Environment: "AGENTKIT_BIND"}}}
+	return agentsuite.Marshal(p)
+}
+
 const kagentNativePath = "metadata/kmx/native-kagent.json"
 const kagentRendererVersion = "kmx.native-kagent/v2"
 const agentsessionsNativePath = "metadata/kmx/native-agentsessions.json"
@@ -125,6 +137,7 @@ func loadSource(ctx context.Context, root string) (*snapshot, error) {
 		return nil, err
 	}
 	// Bind the public case layout for every runtime and source schema.
+	if s.workspace.SchemaVersion==1&&s.members[0].member.Execution==ImageExecution{renderer=imageRendererVersion}
 	framed, err := agentsuite.Marshal(struct {
 		Renderer         string            `json:"renderer"`
 		Layout           string            `json:"layout"`
@@ -174,6 +187,15 @@ func resolve(name string, m sourceMember, instructions, profile []byte, cases []
 	}
 	if err := agentsuite.Unmarshal(defaultProfile, &approved); err != nil {
 		return nil, err
+	}
+	if m.Execution == ImageExecution {
+		raw, err := imageProfile()
+		if err != nil {
+			return nil, err
+		}
+		if err := agentsuite.Unmarshal(raw, &approved); err != nil {
+			return nil, err
+		}
 	}
 	bpBytes, err := agentsuite.Marshal(bp)
 	if err != nil {
@@ -228,6 +250,12 @@ func resolve(name string, m sourceMember, instructions, profile []byte, cases []
 		metadataPath = agentsessionsNativePath
 		record.ExecutionMode, record.RendererVersion = "native-agentsessions", agentsessionsRendererVersion
 		record.Runtime, record.ExecutionProfile = &runtimeProfile, agentsessionsExecutionProfile
+	}
+	if m.Execution == ImageExecution {
+		record.ExecutionMode = ImageExecution
+		record.RendererVersion = imageRendererVersion
+		record.RequiredImages = []string{m.ID + "@linux/amd64"}
+		metadataPath = imagePath
 	}
 	_, _, err = put(metadataPath, record)
 	return files, err
@@ -285,7 +313,7 @@ func resolveMemberGraph(m sourceMember, instructions []byte, cases []runtime.Eva
 		return nil, agentsuite.ManifestRef{}, agentsuite.ManifestRef{}, err
 	}
 	agentPath := "agents/" + m.ID + ".json"
-	agentDigest, agentSize, err := put(agentPath, agentsuite.Agent{Policy: policyRef, SchemaVersion: agentsuite.SpecVersion, MediaType: agentsuite.MediaTypeAgent, ID: m.ID, Description: m.Description, Instructions: agentsuite.FileRef{Path: "instructions/" + m.ID + ".md", Descriptor: agentsuite.Descriptor{MediaType: agentsuite.MediaTypeInstructions, Digest: godigest.FromBytes(instructions).String(), Size: int64(len(instructions))}}, Model: agentsuite.ModelRequirement{Protocol: m.Model.Protocol, Model: m.Model.Model}, Evals: []agentsuite.FileRef{{Path: evalIndexPath(m.ID), Descriptor: agentsuite.Descriptor{MediaType: agentsuite.MediaTypeEvaluationIndex, Digest: indexDigest, Size: indexSize}}}})
+	agentDigest, agentSize, err := put(agentPath, agentsuite.Agent{Policy: policyRef, SchemaVersion: agentsuite.SpecVersion, MediaType: agentsuite.MediaTypeAgent, ID: m.ID, Description: m.Description, Instructions: agentsuite.FileRef{Path: "instructions/" + m.ID + ".md", Descriptor: agentsuite.Descriptor{MediaType: agentsuite.MediaTypeInstructions, Digest: godigest.FromBytes(instructions).String(), Size: int64(len(instructions))}}, Model: agentsuite.ModelRequirement{Protocol: m.Model.Protocol, Model: m.Model.Model,Capabilities:m.Model.Capabilities.portable()}, Evals: []agentsuite.FileRef{{Path: evalIndexPath(m.ID), Descriptor: agentsuite.Descriptor{MediaType: agentsuite.MediaTypeEvaluationIndex, Digest: indexDigest, Size: indexSize}}}})
 	if err != nil {
 		return nil, agentsuite.ManifestRef{}, agentsuite.ManifestRef{}, err
 	}
@@ -298,6 +326,7 @@ func nativeProfile(files map[string][]byte) (nativeRecord, RuntimeProfile, error
 	var record nativeRecord
 	_, orka := files[nativePath]
 	_, kagent := files[kagentNativePath]
+	_, image := files[imagePath]
 	_, sessions := files[agentsessionsNativePath]
 	count := 0
 	for _, present := range []bool{orka, kagent, sessions} {
@@ -305,7 +334,7 @@ func nativeProfile(files map[string][]byte) (nativeRecord, RuntimeProfile, error
 			count++
 		}
 	}
-	if count != 1 {
+	if count != 1 || image {
 		return record, RuntimeProfile{}, errors.New("exactly one native metadata profile is required")
 	}
 	metadataPath, mode, renderer := nativePath, "native-orka", rendererVersion
@@ -361,6 +390,19 @@ func validateNative(files map[string][]byte) (string, error) {
 		return "", err
 	}
 	record, profile, err := nativeProfile(files)
+	_, image := files[imagePath]
+	if image {
+		if _, ok := files[nativePath]; ok {
+			return "", errors.New("ambiguous image/native profiles")
+		}
+		if _, ok := files[kagentNativePath]; ok {
+			return "", errors.New("ambiguous image/native profiles")
+		}
+		err = agentsuite.Unmarshal(files[imagePath], &record)
+		if err == nil && (record.SchemaVersion != 1 || record.ExecutionMode != ImageExecution || record.RendererVersion != imageRendererVersion || len(record.RequiredImages) != 1 || record.RequiredImages[0] != record.Member+"@linux/amd64" || record.Runtime != nil || record.ExecutionProfile != "") {
+			err = errors.New("unsupported image execution profile")
+		}
+	}
 	if err != nil {
 		return "", err
 	}
@@ -380,6 +422,13 @@ func validateNative(files map[string][]byte) (string, error) {
 	m.policyBytes, err = readMemberPolicy(files, agent, profile)
 	if err != nil {
 		return "", err
+	}
+	if image {
+		m.Runtime = nil
+		m.Execution = ImageExecution
+		if c := agent.Model.Capabilities; c != nil {
+			m.Model.Capabilities = &sourceInference{c.API, c.ContextTokens, c.OutputTokens, c.Streaming, c.ToolCalling}
+		}
 	}
 	expected, err := resolve(suite.Name, m, files["instructions/"+m.ID+".md"], files["build-profiles/default.json"], cases)
 	if err != nil {

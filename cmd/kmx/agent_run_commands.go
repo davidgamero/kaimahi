@@ -12,6 +12,7 @@ import (
 
 func newAgentRunCommand(state *commandState) *cobra.Command {
 	var opt app.RunAgentOptions
+	var deployment, member string
 	cmd := &cobra.Command{
 		Use: "run", Short: "Run one Task against an existing Orka Agent",
 		Long: "Select a live Orka Agent with --agent.\n" +
@@ -21,6 +22,8 @@ func newAgentRunCommand(state *commandState) *cobra.Command {
 		Args: usageArgs(0, 0, "kmx run --agent <name> --prompt <text>"),
 	}
 	cmd.Flags().StringVar(&opt.Agent, "agent", "", "run this live Orka Agent (required)")
+	cmd.Flags().StringVar(&deployment, "deployment", "", "retained native suite placement ID instead of --agent")
+	cmd.Flags().StringVar(&member, "member", "", "member of the selected deployment")
 	cmd.Flags().StringVar(&opt.Namespace, "namespace", "", "live Agent namespace (default: "+app.OrkaNamespace+")")
 	cmd.Flags().StringVar(&opt.Prompt, "prompt", "", "one-shot Task prompt")
 	cmd.Flags().StringVar(&opt.PromptFile, "prompt-file", "", "read Task prompt from file, or - for stdin")
@@ -39,12 +42,30 @@ func newAgentRunCommand(state *commandState) *cobra.Command {
 		if cmd.Flags().Changed("prompt") && strings.TrimSpace(opt.Prompt) == "" {
 			return fmt.Errorf("--prompt must not be empty")
 		}
+		if deployment != "" {
+			if err := app.ValidateSuiteDeploymentID(deployment); err != nil {
+				return err
+			}
+			if strings.TrimSpace(deployment) == "" {
+				return fmt.Errorf("--deployment must not be blank")
+			}
+			if opt.Agent != "" || state.contextFlag != "" || cmd.Flags().Changed("namespace") || cmd.Flags().Changed("wait") || cmd.Flags().Changed("result-port") {
+				return fmt.Errorf("deployment invocation uses retained target and bounded transport, not live-agent selectors")
+			}
+			return nil
+		}
+		if member != "" {
+			return fmt.Errorf("--member requires --deployment")
+		}
 		if strings.TrimSpace(opt.Agent) == "" {
 			return fmt.Errorf("--agent is required")
 		}
 		return nil
 	}
 	cmd.RunE = appRun(state, func(a *app.App) error {
+		if deployment != "" {
+			return a.RunSuiteMemberWithOptions(cmd.Context(), deployment, member, opt)
+		}
 		return a.RunAgent(opt)
 	})
 	return cmd

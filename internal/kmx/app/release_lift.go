@@ -22,6 +22,7 @@ var ErrReleaseLift = errors.New("release lift planning refused; no native admiss
 // FromLayout uses the digest in Reference; otherwise Reference is a registry ref.
 type ReleaseLiftOptions struct {
 	Reference, FromLayout, ToContext, ToNamespace, Inference, Evidence, Bindings string
+	Environment                                                                  string
 	PlainHTTP, Promote                                                           bool
 	// ExpectedRuntime is checked offline against the loaded package before GETs.
 	ExpectedRuntime string
@@ -74,6 +75,7 @@ type PreparedReleaseLift struct {
 	artifact *suiteoras.Artifact
 	native   *suiteNativePrepared
 	kagent   *releaseLiftKagent
+	image    *releaseLiftImage
 	receipt  *suitePassingReceipt
 	summary  ReleaseLiftSummary
 	started  atomic.Bool
@@ -91,6 +93,11 @@ func (p *PreparedReleaseLift) Summary() ReleaseLiftSummary {
 func (a *App) PrepareReleaseLift(ctx context.Context, opt ReleaseLiftOptions) (plan *PreparedReleaseLift, err error) {
 	defer func() {
 		if err != nil {
+			var prerequisite *suiteRuntimePrerequisiteError
+			if errors.As(err, &prerequisite) {
+				err = errors.Join(prerequisite, ctx.Err())
+				return
+			}
 			cause := ctx.Err()
 			if cause == nil {
 				for _, c := range []error{context.Canceled, context.DeadlineExceeded} {
@@ -109,6 +116,9 @@ func (a *App) PrepareReleaseLift(ctx context.Context, opt ReleaseLiftOptions) (p
 			if errors.Is(err, workspace.ErrPolicyExecutionUnsupported) {
 				cause = errors.Join(cause, workspace.ErrPolicyExecutionUnsupported)
 			}
+			if errors.Is(err, ErrImageReleaseEvidence) {
+				cause = errors.Join(cause, ErrImageReleaseEvidence)
+			}
 			err = errors.Join(ErrReleaseLift, cause)
 		}
 	}()
@@ -119,6 +129,9 @@ func (a *App) PrepareReleaseLift(ctx context.Context, opt ReleaseLiftOptions) (p
 		return nil, ErrReleaseLift
 	}
 	provider := strings.TrimPrefix(opt.Inference, "provider:")
+	if opt.Environment != "" {
+		return a.prepareReleaseLiftImage(ctx, opt)
+	}
 	inputs, err := readReleaseLiftInputs(ctx, opt)
 	if err != nil {
 		return nil, err
@@ -188,9 +201,16 @@ func ValidateReleaseLiftOptions(opt ReleaseLiftOptions) error {
 	if opt.EvaluationName != "" && (len(opt.EvaluationName) > 63 || !verificationIdentity(opt.EvaluationName) || scaffold.RefuseKeyShapes(opt.EvaluationName) != nil) {
 		return ErrReleaseLift
 	}
+	selectors := 0
+	for _, value := range []string{opt.Inference, opt.Bindings, opt.Environment} {
+		if value != "" {
+			selectors++
+		}
+	}
 	if !pinned || !verificationIdentity(ref) || !agentsuite.IsValidDigest(digest) ||
 		!verificationIdentity(opt.ToContext) || scaffold.RefuseKeyShapes(opt.ToContext) != nil ||
-		(opt.Inference == "") == (opt.Bindings == "") ||
+		selectors != 1 ||
+		opt.Environment != "" && strings.TrimSpace(opt.Environment) == "" ||
 		opt.Inference != "" && (!strings.HasPrefix(opt.Inference, "provider:") || scaffold.ValidateObjectName(provider) != nil) ||
 		opt.Bindings != "" && strings.TrimSpace(opt.Bindings) == "" ||
 		opt.ToNamespace != "" && scaffold.ValidateNamespace(opt.ToNamespace) != nil || strings.TrimSpace(opt.Evidence) == "" || opt.FromLayout != "" && opt.PlainHTTP {

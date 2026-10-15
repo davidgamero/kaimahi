@@ -1,5 +1,11 @@
 # Command alignment
 
+Experimental branch additions (`feat/suite-centered-tui`): suite-centered
+`console`, read-only cluster/new-source `suite extract`, offline `suite show`,
+private `suite status --deployment`, root `run/chat --deployment`, and optional
+`lift --retain-placement`. These retain root agent actions and do not restore
+the removed group or bundle lifecycle. See [branch contracts and test steps](suite-centered-tui.md).
+
 Tracking issue: [#301](https://github.com/kaimahi-agents/kaimahi/issues/301).
 The [CLI reference](kmx.md) documents the implemented interface and the
 [command conventions](command-conventions.md) govern future changes. This page
