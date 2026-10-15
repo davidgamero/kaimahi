@@ -6,6 +6,28 @@ The [CLI reference](kmx.md) remains authoritative for implemented commands.
 
 ## Test this branch
 
+### Main reconciliation
+
+Integration branch `feat/suite-centered-tui-main` rebases the preserved console
+checkpoint onto main `2238a93`. New native source now uses the same
+`PrepareWorkspaceLift` / `LiftWorkspace` operation as root workspace Lift after
+guided destination and repository selection. The initial console path uses the
+selected target for evaluation and placement; the backend retains separate
+evaluation/destination support. Native versions use full-S-derived tags, managed
+passing evidence and disposable UID-safe candidate cleanup. The TUI presents the
+backend's frozen effects/target disclosure and returns the typed confirmation to
+the existing guard. Completed stages retain GET-only skip semantics.
+
+An optional retained invocation handoff copies canonical evidence to a private
+immutable file before the pipeline removes its temporary evidence. Completion
+records never authorize Apply or substitute for invocation verification. A repeat
+that only verifies completion does not fabricate a new retained handle. Native
+standalone Prove and Publish also use public candidate evaluation/managed proof.
+Image-http remains a separate profile over shared release Apply/Verify; native
+pipeline semantics are not applied to image or kagent implicitly. Main's Helm
+version detection and descriptor-based artifact contracts supersede the original
+branch implementations. Earlier live qualifications below predate this rebase.
+
 ### Lift interaction audit
 
 **Implemented follow-up:** console Lift now uses a guided destination-first flow

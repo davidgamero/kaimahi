@@ -132,6 +132,10 @@ export default defineConfig({
     'docs/README.md': 'docs/index.md'
   },
   srcExclude: [
+    // Local authored workspaces and other checkout directories are not pages.
+    ...readdirSync(repositoryRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !['docs', 'agentsuite'].includes(entry.name))
+      .map((entry) => `${entry.name}/**`),
     'AGENTS.md',
     'CHANGELOG.md',
     'CODE_OF_CONDUCT.md',

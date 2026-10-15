@@ -51,6 +51,7 @@ type suiteConsoleForm struct {
 	server         string
 }
 type suiteConsoleResult struct {
+	pipelineDone        bool
 	feedback            *suiteFeedback
 	guide               *suiteLiftGuide
 	guideDone           bool
@@ -97,6 +98,8 @@ func suiteConsoleRowsView(rows []string, width, height int, footer string) tea.V
 }
 
 type suiteConsole struct {
+	pipelineRequests                                                      chan suitePipelineConsent
+	pipelineConsent                                                       *suitePipelineConsent
 	feedback                                                              *suiteFeedback
 	loadingLabel                                                          string
 	operationAction                                                       string
@@ -436,6 +439,13 @@ func (m *suiteConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case suiteConsoleTick:
 		m.loadingFrame++
+		select {
+		case request := <-m.pipelineRequests:
+			m.pipelineConsent = &request
+			m.input.SetValue("")
+			m.input.Focus()
+		default:
+		}
 		for {
 			select {
 			case e := <-m.events:
@@ -504,6 +514,10 @@ func (m *suiteConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.azure = v.azure
 		}
 		m.running = false
+		if v.pipelineDone {
+			m.liftGuide = nil
+		}
+		m.pipelineConsent = nil
 		if m.cancel != nil {
 			m.cancel()
 			m.cancel = nil
@@ -575,6 +589,9 @@ func (m *suiteConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Tick(5*time.Second, func(time.Time) tea.Msg { return suiteConsoleRefreshTick{} })
 	case tea.KeyPressMsg:
 		key := v.String()
+		if m.pipelineConsent != nil {
+			return m.updatePipelineConsent(v)
+		}
 		if m.running {
 			if key == "esc" || key == "ctrl+c" {
 				m.cancelling = true
@@ -795,6 +812,10 @@ func (m *suiteConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						e.Reviewed = true
 					}
 					m.review = nil
+					if m.liftGuide != nil && m.liftGuide.stage == "review-pipeline" {
+						m.liftGuide.entry.Reviewed = true
+						return m, m.startNativePipeline()
+					}
 					if m.liftGuide != nil && m.liftGuide.stage == "review-publish" {
 						g := m.liftGuide
 						g.entry.Reviewed = true
@@ -953,7 +974,7 @@ func (m *suiteConsole) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if e.Review != nil && e.Review.image != nil {
 					return m, m.startForm("image-push", []string{"ACR/registry repository:tag", "Buildx builder", "Type publish to build and upload authored source/images"}, []string{m.opt.Suite.Registry, m.opt.Suite.Build.Builder, ""})
 				}
-				return m, m.startForm("push", []string{"Registry reference or local tag", "Local OCI directory (blank for registry)", "Evidence file (blank for ordinary unevaluated push)", "Plain HTTP registry? type yes"}, []string{"", "", e.Evidence, ""})
+				return m, m.startForm("push", []string{"Registry reference or local tag", "Local OCI directory (blank for registry)", "Evidence file (blank selects latest completed proof)", "Plain HTTP registry? type yes"}, []string{"", "", e.Evidence, ""})
 			}
 		case "l":
 			if e != nil {
@@ -1243,7 +1264,7 @@ func (m *suiteConsole) submit(f suiteConsoleForm) tea.Cmd {
 			if err != nil {
 				return suiteConsoleResult{err: err}
 			}
-			p, err := PrepareSuiteWorkspaceEvaluation(ctx, SuiteWorkspaceEvaluationOptions{Workspace: selected.Root, ToContext: d.Context, ToNamespace: d.Namespace, Inference: d.Inference, Out: filepath.Join(dir, "passing.json"), ResultPort: w.quickstartResultPort, JudgeBaseURL: v[2], JudgeKeyEnv: v[3]})
+			p, err := PrepareSuiteWorkspaceEvaluation(ctx, SuiteWorkspaceEvaluationOptions{Workspace: selected.Root, ToContext: d.Context, ToNamespace: d.Namespace, Inference: d.Inference, Out: filepath.Join(dir, "passing.json"), ManagedPass: true, ResultPort: w.quickstartResultPort, JudgeBaseURL: v[2], JudgeKeyEnv: v[3]})
 			if err != nil {
 				return suiteConsoleResult{err: err}
 			}
@@ -1281,11 +1302,7 @@ func (m *suiteConsole) submit(f suiteConsoleForm) tea.Cmd {
 			w.suiteProgress("publication", selected.Name, "running")
 			var r suiteoras.PushResult
 			var err error
-			if v[2] == "" {
-				r, err = w.PushSuiteWorkspace(ctx, selected.Root, v[0], v[1], v[3] == "yes", false, SuitePushProvenance{})
-			} else {
-				r, err = w.PushSuiteWorkspaceEvaluated(ctx, selected.Root, v[0], v[1], v[3] == "yes", false, SuitePushProvenance{}, v[2])
-			}
+			r, err = w.PushSuiteWorkspaceManaged(ctx, SuiteWorkspacePushOptions{Workspace: selected.Root, Reference: v[0], Layout: v[1], PlainHTTP: v[3] == "yes", Evaluation: v[2]})
 			if err != nil {
 				return suiteConsoleResult{err: err}
 			}

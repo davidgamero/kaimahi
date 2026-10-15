@@ -26,6 +26,7 @@ import (
 )
 
 func TestImageEvaluateThenSharedLiftExactReuse(t *testing.T) {
+	t.Setenv("KMX_HOME", t.TempDir())
 	a, _, _, _ := releaseApplyFixture(t, "")
 	root := t.TempDir()
 	input := filepath.Join(t.TempDir(), "instructions.md")

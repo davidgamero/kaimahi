@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
@@ -189,7 +190,7 @@ func (r Request) Validate() error {
 			}
 		case "image":
 			image := selection.Image
-			if image == nil || image.Agent != selection.Agent || image.SuiteManifest != r.Suite.Artifact.Descriptor {
+			if image == nil || image.Agent != selection.Agent || !reflect.DeepEqual(image.SuiteManifest, r.Suite.Artifact.Descriptor) {
 				return errors.New("image must bind the selected suite and agent")
 			}
 			if !validDescriptor(image.Image.Descriptor) || !validDescriptor(image.Composition) || !validDescriptor(image.BuildProfile) || !validDescriptor(image.Binding) || !validDescriptor(image.ExecutionDescriptor) {

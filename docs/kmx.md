@@ -102,6 +102,13 @@ the final exclusive save refuses if another process creates the destination.
 
 ### Guided console Lift
 
+New native source uses the root workspace Lift backend after guided selectors:
+disposable full-suite evaluation/cleanup → managed proof → exact-S-derived registry
+publication → guarded Lift. The shared plan disclosure is confirmed once in the
+console; it is not a separate TUI implementation of those effects. Standalone
+native Publish uses managed passing evidence by default. Existing exact-reference
+Lift and image-specific build/evaluation retain their distinct contracts.
+
 Environment choices are tagged LOCAL/REMOTE. Model selection identifies the model
 and its inference connection; selecting a connection for authoring does not deploy
 the agent. Lift destinations show indented endpoint and, where exact Azure lookup

@@ -29,7 +29,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
   retained status/run/chat use shared operation handlers. Revalidate private
   image evidence on reconnect as well as package/bindings/resource identity.
   Keep Orka installation separate and guarded; existing incompatible controllers
-  are not upgraded. Helm inventory uses explicit status filters for Helm 3/4.
+  are not upgraded. Helm inventory uses main's shared version-aware Helm 3/4 behavior.
 
 - Console creation separates execution-profile selection from inference.
   Local Copilot CLI is an explicit console host-execution choice with a selected
@@ -81,9 +81,11 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
   placement authority; selecting older placements does not reorder publication
   history. Manual digest entry remains advanced. Shared planning revalidates all
   selected artifacts/evidence; no registry-wide latest-tag guessing.
-  With no known publication for an opened source, console Lift starts explicit
-  publication directly and resumes Lift selectors with its returned exact digest.
-  Build/push consent, evaluation evidence and reviewed deployment stay separate.
+  New native source uses main's PrepareWorkspaceLift/LiftWorkspace pipeline after
+  guided target/registry selection. Disposable eval, cleanup, managed proof,
+  exact-S publication and deployment remain shared with CLI. The presentation
+  consent callback returns typed context text; it cannot bypass shared guards.
+  Image builds/publication/evaluation retain their runtime-specific handlers.
   Guided console Lift selects copied context/namespace/inference values without
   requiring kmx.yaml. Runtime/Foundry/auth-Secret setup, ACR login, publication,
   evaluation and Apply each require explicit consent. Image bindings derive from
