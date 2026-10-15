@@ -15,7 +15,7 @@ func TestConsoleHelpAndNonterminal(t *testing.T) {
 	if *loads != 0 {
 		t.Fatal("help loaded operational configuration")
 	}
-	for _, flag := range []string{"--demo", "--local-context", "--remote-context", "--namespace"} {
+	for _, flag := range []string{"--local-context", "--remote-context", "--namespace"} {
 		if !strings.Contains(out.String(), flag) {
 			t.Fatalf("help missing %s", flag)
 		}
@@ -25,7 +25,10 @@ func TestConsoleHelpAndNonterminal(t *testing.T) {
 			t.Fatalf("help omits %q", want)
 		}
 	}
-	if err := execute([]string{"console", "--demo"}, deps); err == nil || !strings.Contains(err.Error(), "interactive terminal") {
+	if err := execute([]string{"console"}, deps); err == nil || !strings.Contains(err.Error(), "interactive terminal") {
 		t.Fatalf("err=%v", err)
+	}
+	if err := execute([]string{"console", "--demo"}, deps); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("demo mode retained: %v", err)
 	}
 }

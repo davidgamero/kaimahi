@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -31,6 +32,19 @@ func (a *App) liftDiscovery(ctx context.Context, command string, args ...string)
 // echoed.
 
 func (a *App) azureCapture(ctx context.Context, timeout time.Duration, command string, args []string, failure string) ([]byte, error) {
+	if a.suiteEvents != nil {
+		label := command
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "-") {
+				break
+			}
+			if len(label) > 60 {
+				break
+			}
+			label += " " + arg
+		}
+		a.suiteProgress(label, "", "running")
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

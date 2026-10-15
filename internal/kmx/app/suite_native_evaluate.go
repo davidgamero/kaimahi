@@ -77,6 +77,8 @@ func suiteEvaluationError(ctx context.Context, err error, mayHaveChanged bool) e
 // The caller supplies a bounded per-case context and has consented to placement
 // and the full ordered inventory. Only the actual native observation is credited.
 func (a *App) evaluateSuiteNative(ctx context.Context, placement *suiteNativePlacement, frame suitePassingInventoryCase, port string, judge agentruntime.EvaluationJudge) (observation suitePassingObservation, err error) {
+	a.suiteProgress("case", frame.Case.ID, "running")
+	defer func() { a.suiteProgress("case", frame.Case.ID, string(observation.Verdict)) }()
 	observation = suitePassingObservation{CaseDigest: frame.Metadata.CaseDigest, InputDigest: frame.Metadata.InputDigest, EvaluationReceipt: agentruntime.EvaluationReceipt{CaseID: frame.Case.ID, Verdict: agentruntime.EvaluationUnknown}}
 	defer func() {
 		if err != nil {
@@ -161,6 +163,7 @@ func (a *App) evaluateSuiteNative(ctx context.Context, placement *suiteNativePla
 	if judge == nil {
 		observation.Assertions = agentruntime.EvaluateAssertions(frame.Case, evidence)
 	} else {
+		a.suiteProgress("case", frame.Case.ID, "judging")
 		observation.Assertions = judge(caseCtx, frame.Case, evidence)
 		if err = caseCtx.Err(); err != nil {
 			return observation, err

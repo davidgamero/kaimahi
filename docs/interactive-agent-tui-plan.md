@@ -1,5 +1,9 @@
 # Interactive agent console
 
+For the implemented experimental suite-first console on
+`feat/suite-centered-tui`, use [the current branch guide](suite-centered-tui.md).
+This page retains the earlier agent-inventory design for historical context.
+
 > Historical UI record: bundle comparison (`b`/`--bundles`) and live create are
 > removed. Chat `/lift` and console Lift only print the digest-Lift move notice;
 > no GUI/copy fallback remains. Console creation uses native workspace review,

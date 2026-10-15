@@ -1,12 +1,25 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/scaffold"
 )
+
+func (a *App) refuseIndependentSuiteAgent(ctx context.Context, namespace, name string) error {
+	raw, err := a.orkaCapture(ctx, nil, "-n", namespace, "get", orkaPlural("Agent"), name, "-o", "json")
+	if err != nil {
+		return err
+	}
+	var doc map[string]any
+	if json.Unmarshal(raw, &doc) != nil {
+		return fmt.Errorf("Agent identity unreadable")
+	}
+	return refuseOrkaSuiteDocument(doc)
+}
 
 type orkaSuiteOwnership struct{ Suite, Digest, Member, Renderer, BindingDigest, RenderedDigest string }
 type orkaPlacementIdentity struct {

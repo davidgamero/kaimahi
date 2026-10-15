@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,6 +88,9 @@ func quickstartResultOptions(namespace, task string) CreateOptions {
 }
 
 func (b *orkaChatBackend) Connect(ctx context.Context, renderer *chatRenderer) ([]cliui.Field, error) {
+	if err := b.app.refuseIndependentSuiteAgent(ctx, b.namespace, b.agent); err != nil {
+		return nil, err
+	}
 	b.chatContext = ctx
 	location, err := b.app.chatLocation(ctx)
 	if err != nil {
@@ -123,6 +128,9 @@ func (b *orkaChatBackend) Connect(ctx context.Context, renderer *chatRenderer) (
 }
 
 func (b *orkaChatBackend) Send(ctx context.Context, message string, renderer *chatRenderer) error {
+	if err := b.app.refuseIndependentSuiteAgent(ctx, b.namespace, b.agent); err != nil {
+		return err
+	}
 	renderer.beginAssistant(b.agent)
 	inference, host, err := b.app.hostInferenceStrategy()
 	if err != nil {
@@ -152,7 +160,12 @@ func (b *orkaChatBackend) Send(ctx context.Context, message string, renderer *ch
 		sessionCtx, cancel := context.WithTimeout(parent, 8*time.Minute)
 		quiet := *b.app
 		quiet.Err = io.Discard
-		session, err := quiet.openOrkaResultSession(sessionCtx, quickstartResultOptions(b.namespace, ""))
+		options, err := interactiveResultOptions(b.namespace)
+		if err != nil {
+			cancel()
+			return err
+		}
+		session, err := quiet.openOrkaResultSession(sessionCtx, options)
 		if err != nil {
 			cancel()
 			return err
@@ -179,6 +192,20 @@ func (b *orkaChatBackend) Send(ctx context.Context, message string, renderer *ch
 		renderer.assistantOperation(b.agent, "TIMING", "", colorBlue, profile.summary())
 	}
 	return nil
+}
+
+func interactiveResultOptions(namespace string) (CreateOptions, error) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return CreateOptions{}, fmt.Errorf("cannot select local chat result port: %w", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		return CreateOptions{}, err
+	}
+	opt := quickstartResultOptions(namespace, "")
+	opt.ResultPort = strconv.Itoa(port)
+	return opt, nil
 }
 
 func (a *App) runQuickstartOrkaTaskProfile(parent context.Context, agent, namespace, prompt string, profile *orkaTaskProfile, report func(string), reuse ...*orkaResultSession) (string, error) {

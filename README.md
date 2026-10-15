@@ -29,6 +29,11 @@ and Lift.
 
 ## Create, Prove, Lift
 
+On the experimental `feat/suite-centered-tui` branch, try `make` then
+`bin/kmx console`. The [branch guide](docs/suite-centered-tui.md) covers
+suite-centered source/case review, extraction of an existing standalone Orka
+Agent without changing it, Prove/Publish/Lift, and retained member status/chat.
+
 **Create → Prove → Lift** is available in v0.6.0 for one-member native Orka and
 exact-v0.10.3 Go kagent suites. Bounded CI qualifies root Lift for Orka exact
 reuse, bounded absent-pair registry promotion and kagent fresh-target creation;

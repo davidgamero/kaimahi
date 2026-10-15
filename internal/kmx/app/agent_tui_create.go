@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/opencontainers/go-digest"
 	"io"
+	"os"
 	"strings"
 	"sync"
 
@@ -13,6 +15,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/workspace"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/guard"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/scaffold"
 )
@@ -120,6 +123,16 @@ func (a *App) runSuiteWorkspaceReview(ctx context.Context, root, namespace strin
 	if !finished.ready {
 		return finished.result, context.Canceled
 	}
+	if finished.prepared != nil {
+		id, err := a.RetainSuiteDeployment(ctx, finished.prepared.Plan, finished.result)
+		if err != nil {
+			return finished.result, err
+		}
+		a.quickstartDeployment = id
+		if err := rememberSuiteConsoleEntry(suiteConsoleEntry{Root: root, Evidence: finished.prepared.Evidence, Reference: finished.prepared.Plan.options.Reference, Layout: finished.prepared.Layout}); err != nil {
+			return finished.result, err
+		}
+	}
 	return finished.result, nil
 }
 
@@ -159,6 +172,8 @@ func consoleContextServer(kube *guard.Kubeconfig, name string) string {
 }
 
 type consoleWorkspaceLiftRequest struct {
+	imageOptions                              SuiteConsoleOptions
+	imageBindingsDigest                       string
 	env                                       agentTUIEnvironment
 	server, namespace, provider, typedContext string
 	review                                    *suiteWorkspaceReview
@@ -189,6 +204,9 @@ func (a *App) consoleWorkspaceLift(ctx context.Context, request consoleWorkspace
 	}
 	if !request.env.Local && (request.env.Name == "" || request.typedContext != request.env.Name) {
 		return fail(fmt.Errorf("type the selected context exactly before authorizing evaluation Tasks and resource placement"))
+	}
+	if request.review.image != nil {
+		return a.consoleImageWorkspaceLift(ctx, request)
 	}
 	if err := scaffold.ValidateObjectName(request.provider); err != nil {
 		return fail(err)
@@ -237,6 +255,8 @@ func (a *App) consoleWorkspaceLift(ctx context.Context, request consoleWorkspace
 }
 
 type agentTUICreatePane struct {
+	authorRoot                                             string
+	authorValues                                           []string
 	input                                                  textinput.Model
 	env                                                    agentTUIEnvironment
 	namespace, server                                      string
@@ -245,6 +265,8 @@ type agentTUICreatePane struct {
 	summary                                                ReleaseLiftSummary
 	result                                                 ReleaseLiftResult
 	provider, typedContext, stage                          string
+	imageBindingsDigest                                    string
+	imageBindingReview                                     string
 	page, scroll, operation                                int
 	running, finished, cancelling, executionStarted, ready bool
 	frame                                                  int
@@ -258,6 +280,9 @@ type agentTUICreatePane struct {
 func suiteWorkspaceLiftOutcomeSummary(result ReleaseLiftResult) string {
 	var text strings.Builder
 	fmt.Fprintf(&text, "Lift state: %s", tuiOneLine(result.State))
+	if result.Placement != "" {
+		fmt.Fprintf(&text, "\nPlacement: %s\nRun: kmx run --deployment %s --prompt <text>\nStatus: kmx suite status --deployment %s", result.Placement, result.Placement, result.Placement)
+	}
 	for _, row := range result.Resources {
 		fmt.Fprintf(&text, "\n%s/%s: %s; observed Ready=%t; UID=%s", tuiOneLine(row.Kind), tuiOneLine(row.Name), tuiOneLine(row.Outcome), row.Ready, tuiOneLine(row.UID))
 	}
@@ -291,7 +316,13 @@ func (p *agentTUICreatePane) reviewLines(width int) []string {
 		return agentTUIIndentedText("LIFT PLAN / IDENTITY REVIEW\n"+string(raw)+"\nConfirm Apply once, then Verify placement. Ready is not an answer.", width, 0)
 	}
 	if p.stage == "consent" {
-		text := fmt.Sprintf("EXECUTION CONSENT\nContext: %s · Server: %s\nNamespace: %s · Inference: provider:%s (Ready openai only)\nSuite: %s\nSource fingerprint: %s\nAuthorize full inventory: %d evaluation Tasks and owned Provider/Agent resource placement, then exact local publication and Lift planning. No automatic chat or answer Task. Cancellation/errors may leave resources.", p.env.Name, p.server, p.namespace, p.provider, p.review.suite.Digest, p.review.prepared.Fingerprint, len(p.review.inventory))
+		text := fmt.Sprintf("EXECUTION CONSENT\nContext: %s · Server: %s\nNamespace: %s · Inference: provider:%s (Ready openai only)\nSuite: %s\nSource fingerprint: %s\nAuthorize full inventory: %d evaluation Tasks and owned Provider/Agent resource placement, then exact local publication and Lift planning. No automatic chat or answer Task. Cancellation/errors may leave resources.", p.env.Name, p.server, p.namespace, p.provider, p.review.digest(), p.review.prepared.Fingerprint, len(p.review.inventory))
+		if p.review.image != nil {
+			text = fmt.Sprintf("IMAGE EXECUTION CONSENT\nContext: %s · Server: %s\nNamespace: %s\nEnvironment bindings: %s\nSuite: %s\nAuthorize build/publication, a fresh image evaluation placement and all %d cases, followed by reviewed exact-placement Lift. Model and endpoint come from these bindings. Resources may remain after failure.", p.env.Name, p.server, p.namespace, p.provider, p.review.digest(), len(p.review.inventory))
+		}
+		if p.review.image != nil {
+			text += "\nBinding review (Secret references only):\n" + p.imageBindingReview
+		}
 		if !p.env.Local {
 			text += "\nType selected context exactly to authorize: " + p.env.Name + "\n" + p.input.View()
 		} else {
@@ -396,10 +427,67 @@ func (m agentTUIModel) updateCreatePane(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if p.finished {
 			return m, nil
 		}
+		if p.stage == "author" {
+			if msg.Code == tea.KeyEnter {
+				value := strings.TrimSpace(p.input.Value())
+				if value == "" {
+					p.err = fmt.Errorf("value required")
+					return m, nil
+				}
+				p.authorValues = append(p.authorValues, value)
+				p.input.SetValue("")
+				if len(p.authorValues) < 4 {
+					return m, nil
+				}
+				v := p.authorValues
+				opt := workspace.CreateOptions{Name: v[0], InstructionsFile: v[2]}
+				switch v[1] {
+				case "image-http":
+					opt.Execution = workspace.ImageExecution
+					opt.ContextTokens = 8192
+					opt.OutputTokens = 1024
+				case "orka":
+					opt.Model = v[3]
+				default:
+					p.err = fmt.Errorf("console profile must be orka or image-http; use root create for other runtimes")
+					p.authorValues = nil
+					return m, nil
+				}
+				if opt.Execution == workspace.ImageExecution && v[3] != "capabilities" {
+					p.err = fmt.Errorf("image-http requires capabilities, not a model")
+					p.authorValues = nil
+					return m, nil
+				}
+				if err := workspace.Create(context.Background(), p.authorRoot, opt); err != nil {
+					p.err = err
+					p.authorValues = nil
+					return m, nil
+				}
+				p.stage = ""
+				p.err = nil
+				return m, m.startWorkspaceReview(p.authorRoot, nil)
+			}
+			p.input, _ = p.input.Update(msg)
+			return m, nil
+		}
 		if p.stage == "provider" {
 			if msg.Code == tea.KeyEnter {
 				provider := strings.TrimSpace(p.input.Value())
-				if err := scaffold.ValidateObjectName(provider); err != nil {
+				if p.review.image != nil {
+					env, err := ReadSuiteEnvironment(provider)
+					if err != nil || env.Context != p.env.Name || env.Namespace != p.namespace {
+						p.err = fmt.Errorf("image bindings must match the selected context and namespace")
+						return m, nil
+					}
+					raw, err := os.ReadFile(provider)
+					if err != nil || len(raw) > 64<<10 {
+						p.err = fmt.Errorf("cannot retain image binding review")
+						return m, nil
+					}
+					p.imageBindingsDigest = digest.FromBytes(raw).String()
+					view, _ := json.MarshalIndent(env, "", "  ")
+					p.imageBindingReview = string(view)
+				} else if err := scaffold.ValidateObjectName(provider); err != nil {
 					p.err = err
 					return m, nil
 				}
@@ -482,6 +570,21 @@ func (m agentTUIModel) updateCreatePane(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			p.err = nil
+			if root, ok := strings.CutPrefix(strings.TrimSpace(p.input.Value()), "new "); ok {
+				if m.opt.Demo {
+					p.err = fmt.Errorf("demo does not write workspaces")
+					return m, nil
+				}
+				if strings.TrimSpace(root) == "" {
+					p.err = fmt.Errorf("new requires a workspace directory")
+					return m, nil
+				}
+				p.authorRoot = root
+				p.stage = "author"
+				p.authorValues = nil
+				p.input.SetValue("")
+				return m, nil
+			}
 			return m, m.startWorkspaceReview(p.input.Value(), nil)
 		}
 	}
@@ -516,7 +619,7 @@ func (m agentTUIModel) startWorkspaceLift(apply bool) tea.Cmd {
 		p.err = fmt.Errorf("suite Lift unavailable")
 		return nil
 	}
-	request := consoleWorkspaceLiftRequest{env: p.env, server: p.server, namespace: p.namespace, provider: p.provider, typedContext: p.typedContext, review: p.review}
+	request := consoleWorkspaceLiftRequest{env: p.env, server: p.server, namespace: p.namespace, provider: p.provider, typedContext: p.typedContext, review: p.review, imageOptions: m.opt.Suite, imageBindingsDigest: p.imageBindingsDigest}
 	p.stage = "preparing"
 	if apply {
 		request.prepared = p.prepared
@@ -538,6 +641,12 @@ func (m agentTUIModel) creationView() string {
 	fit := func(s string) string { return ansi.Truncate(tuiOneLine(s), inner, "…") }
 	rows := []string{fit("CREATE AGENT · SOURCE → EVAL → LIFT · " + p.env.Name), fit("Namespace: " + p.namespace + " · Server: " + valueOr(p.server, "not available (not reloaded)"))}
 	switch {
+	case p.stage == "author":
+		prompts := []string{"Member name:", "Profile: orka / image-http", "Instructions file path:", "Exact native model, or type capabilities for image-http:"}
+		rows = append(rows, "", fit("Initialize workspace: "+p.authorRoot), fit(prompts[len(p.authorValues)]), fit(p.input.View()), fit("Image defaults: context 8192 / output 1024; edit member.yaml to adjust."), fit("Enter continues · Esc cancels"))
+		if p.err != nil {
+			rows = append(rows, fit(p.err.Error()))
+		}
 	case p.finished:
 		message := "DEMO / review only · no execution"
 		if p.ready {
@@ -568,7 +677,11 @@ func (m agentTUIModel) creationView() string {
 		}
 		rows = append(rows, "", fit([]string{"⠋", "⠙", "⠹", "⠸"}[p.frame%4]+" "+message), "", "<esc> cancel")
 	case p.stage == "provider":
-		rows = append(rows, "", fit("Destination Provider name (Ready openai only):"), fit(p.input.View()), fit("No host Foundry/Copilot modes or model override."), fit("<enter> review execution consent · <esc> cancel"))
+		label := "Destination Provider name (Ready openai only):"
+		if p.review.image != nil {
+			label = "Image environment bindings file:"
+		}
+		rows = append(rows, "", fit(label), fit(p.input.View()), fit("<enter> review execution consent · <esc> cancel"))
 		if p.err != nil {
 			rows = append(rows, fit(p.err.Error()))
 		}
@@ -582,7 +695,7 @@ func (m agentTUIModel) creationView() string {
 			rows = append(rows, fit(p.err.Error()))
 		}
 	default:
-		rows = append(rows, "", fit("Select an already AUTHORED one-member native Orka workspace."), fit("Explicit root (no discovery fallback):"), fit(p.input.View()), fit("kmx create authors offline separately; this flow does not author."), fit("Review all source/cases before authorizing evaluation Tasks."))
+		rows = append(rows, "", fit("Select an authored workspace, or type new <directory> to initialize."), fit("Explicit root (no discovery fallback):"), fit(p.input.View()), fit("Creation uses the same offline writer as kmx create."), fit("Review all source/cases before authorizing evaluation Tasks."))
 		if p.err != nil {
 			rows = append(rows, fit(p.err.Error()))
 		}

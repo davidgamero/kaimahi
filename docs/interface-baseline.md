@@ -4,6 +4,11 @@ This document is a reviewable snapshot of the interfaces implemented on current
 `main`. It is not a proposal for future syntax. The [`kmx` reference](kmx.md)
 remains authoritative for command flags and output contracts.
 
+The `feat/suite-centered-tui` branch adds `suite extract/show/status`, native
+retained `run/chat --deployment`, `lift --retain-placement`, and the suite-centered
+console. See [branch contracts](suite-centered-tui.md); these experimental additions
+extend the main baseline below without widening other runtime capabilities.
+
 ## Installed command tree
 
 Visible product commands:

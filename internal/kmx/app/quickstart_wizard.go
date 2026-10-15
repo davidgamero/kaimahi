@@ -142,6 +142,9 @@ func (a *App) QuickstartWizard(opt QuickstartWizardOptions) error {
 		return err
 	}
 	if chat {
+		if a.quickstartDeployment != "" {
+			return a.ChatSuiteMember(a.quickstartDeployment, completed.Name, "")
+		}
 		return a.quickstartOrkaChat(completed.Name, completed.Namespace)
 	}
 	a.complete("Agent is ready", started)

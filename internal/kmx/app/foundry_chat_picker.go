@@ -95,9 +95,16 @@ func (b *orkaChatBackend) browseFoundryChat(ctx context.Context) (foundryChatCon
 		return c, err
 	}
 	var items []chatPickerItem
+	var keys []string
 	for _, s := range subs {
-		items = append(items, chatPickerItem{name: s.Name})
+		items = append(items, chatPickerItem{name: s.Name + " · " + s.ID})
+		keys = append(keys, s.ID)
 	}
+	prefs, err := loadLiftPreferences()
+	if err != nil {
+		return c, err
+	}
+	items, order := recentLiftItems(items, keys, prefs[suiteSubscriptionPreference])
 	i, ok, err := b.foundryPick(ctx, "Subscription", items, true)
 	if err != nil {
 		return c, err
@@ -105,7 +112,10 @@ func (b *orkaChatBackend) browseFoundryChat(ctx context.Context) (foundryChatCon
 	if !ok {
 		return c, context.Canceled
 	}
-	sub := subs[i]
+	sub := subs[order[i]]
+	if err := saveLiftPreference(suiteSubscriptionPreference, sub.ID); err != nil {
+		return c, err
+	}
 	c.Tenant = sub.TenantID
 	raw, err = b.foundryFetch(ctx, "Loading Foundry resources", "cognitiveservices", "account", "list", "--subscription", sub.ID, "-o", "json", "--only-show-errors")
 	if err != nil {

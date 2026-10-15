@@ -101,7 +101,7 @@ func orkaChartCRDs(chart []byte) ([]byte, int, error) {
 // release status, explicit harness mode and marker together allow a repeat.
 func (a *App) orkaInstallState() (bool, error) {
 	raw, err := a.Run.Capture("helm", "list", "-n", OrkaNamespace, "--kube-context", a.Cfg.KubeContext,
-		"-o", "json", "-f", "^"+orkaRelease+"$", "--all")
+		"-o", "json", "-f", "^"+orkaRelease+"$", "--deployed", "--failed", "--pending", "--uninstalled", "--superseded", "--uninstalling")
 	if err != nil {
 		return false, fmt.Errorf("cannot inspect Orka Helm releases: %w", err)
 	}
@@ -208,6 +208,7 @@ func (a *App) orkaInstallState() (bool, error) {
 }
 
 func (a *App) applyOrkaChart(chart []byte) error {
+	a.suiteProgress("Checking existing Orka installation", OrkaNamespace, "running")
 	known, err := a.orkaInstallState()
 	if err != nil {
 		return err
@@ -240,6 +241,7 @@ func (a *App) applyOrkaChart(chart []byte) error {
 		return err
 	}
 	quiet := *a.Run
+	a.suiteProgress("Installing verified shared CRDs", OrkaNamespace, "running")
 	quiet.Echo = false
 	fmt.Fprintf(a.Err, "kubectl --context %s apply -f - # (%d CRDs from verified Orka chart)\n", a.Cfg.KubeContext, count)
 	if err := quiet.RunStdin(crds, "kubectl", a.kubectl("apply", "-f", "-")...); err != nil {
@@ -252,10 +254,13 @@ func (a *App) applyOrkaChart(chart []byte) error {
 	// an appropriate place to expose generated Secret values in kmx logs.
 	quiet.Stdout, quiet.Stderr = io.Discard, io.Discard
 	fmt.Fprintf(a.Err, "helm install orka <verified chart> -n %s --kube-context %s --wait # (harness-v2)\n", OrkaNamespace, a.Cfg.KubeContext)
+	a.suiteProgress("Installing pinned Orka chart; waiting for readiness", OrkaNamespace, "running")
 	if err := quiet.Run("helm", "install", orkaRelease, file.Name(), "-n", OrkaNamespace,
 		"--kube-context", a.Cfg.KubeContext, "--create-namespace", "--wait", "--timeout", "10m",
 		"--set", "controller.mode=harness-v2", "--set", "fullnameOverride=orka-api",
 		"--set-string", "labels.kmx\\.kaimahi\\.dev/installed=true",
+		"--set-string", "annotations.kmx\\.kaimahi\\.dev/installed=true",
+		"--set-string", "annotations.kmx\\.kaimahi\\.dev/runtime-version="+OrkaVersion,
 		"--set-string", "controller.image.digest="+orkaControllerDigest,
 		"--set-string", "workers.ai.image.digest="+orkaAIWorkerDigest,
 		"--set-string", "workers.general.image.digest="+orkaGeneralWorkerDigest,
@@ -266,5 +271,6 @@ func (a *App) applyOrkaChart(chart []byte) error {
 		"--set-string", "controller.acpRuntime.opencodeImage="+orkaOpencodeImage); err != nil {
 		return fmt.Errorf("installing pinned Orka chart: %w\n  A failed release and CRDs may remain; kmx refuses to silently reinstall over them. Inspect without exposing Secrets:\n  helm --kube-context %s -n %s status %s\n  kubectl --context %s -n %s get pods,events", err, shellArg(a.Cfg.KubeContext), OrkaNamespace, orkaRelease, shellArg(a.Cfg.KubeContext), OrkaNamespace)
 	}
+	a.suiteProgress("Pinned Orka chart ready", OrkaNamespace, "ready")
 	return nil
 }

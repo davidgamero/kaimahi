@@ -16,6 +16,18 @@ import (
 // stderr is classified, never propagated: it may contain a TokenRequest or
 // admission echo.
 func (a *App) orkaCapture(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
+	if a.suiteEvents != nil {
+		for i, arg := range args {
+			if (arg == "get" || arg == "create" || arg == "wait" || arg == "rollout") && i+1 < len(args) {
+				resource := args[i+1]
+				if resource == "-f" {
+					resource = "reviewed resources"
+				}
+				a.suiteProgress("Kubernetes "+arg, resource, "running")
+				break
+			}
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

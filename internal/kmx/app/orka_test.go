@@ -357,6 +357,11 @@ func TestOrkaInstallRefusesForeignOrMismatchedHelmRelease(t *testing.T) {
 			if !strings.Contains(f.calls(t), "helm list -n orka-system --kube-context kind-kaimahi-p1 -o json -f ^orka$") {
 				t.Errorf("release ownership check was not scoped to the cluster/name:\n%s", f.calls(t))
 			}
+			for _, status := range []string{"--deployed", "--failed", "--pending", "--uninstalled", "--superseded", "--uninstalling"} {
+				if !strings.Contains(f.calls(t), status) {
+					t.Fatalf("release inventory missed %s", status)
+				}
+			}
 		})
 	}
 }

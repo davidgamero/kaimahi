@@ -275,11 +275,13 @@ func (a *App) evaluateSuiteWorkspace(ctx context.Context, p *PreparedSuiteWorksp
 		return err
 	}
 	mayHaveChanged = true
+	worker.suiteProgress("evaluation placement", p.suite.MemberID, "running")
 	placement, err := worker.placeSuiteNativeMode(ctx, native, strictReuse)
 	if err != nil {
 		return err
 	}
 	observations := make([]suitePassingObservation, 0, len(p.inventory))
+	worker.suiteProgress("evaluation placement", p.suite.MemberID, "ready")
 	for _, frame := range p.inventory {
 		if err := workspace.CheckCurrent(ctx, p.root, p.prepared); err != nil {
 			return err
@@ -308,6 +310,7 @@ func (a *App) evaluateSuiteWorkspace(ctx context.Context, p *PreparedSuiteWorksp
 	if err := p.output.publish(ctx, receipt, p.suite); err != nil {
 		return err
 	}
+	worker.suiteProgress("evidence", p.suite.MemberID, "exported")
 	if _, err := fmt.Fprintf(worker.Out, "Passing native receipt: %q (unsigned observations, not authentication or a policy gate)\n", p.options.Out); err != nil {
 		return errSuitePassingExport
 	}
