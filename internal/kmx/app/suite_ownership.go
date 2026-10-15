@@ -12,6 +12,7 @@ import (
 const suiteCandidateRunMarker = "kaimahi.dev/suite-evaluation-run"
 
 type orkaSuiteOwnership struct{ Suite, Digest, Member, Renderer, BindingDigest, RenderedDigest, EvaluationRun string }
+
 func (a *App) refuseIndependentSuiteAgent(ctx context.Context, namespace, name string) error {
 	raw, err := a.orkaCapture(ctx, nil, "-n", namespace, "get", orkaPlural("Agent"), name, "-o", "json")
 	if err != nil {

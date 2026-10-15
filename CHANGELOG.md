@@ -22,6 +22,14 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 ## Unreleased
 
+- Reconciled suite console with main's native workspace pipeline: guided new-source
+  Lift uses the same disposable evaluation, cleanup, managed passing proof,
+  exact-S publication, completion verification and scoped consent as root Lift.
+  Added presentation-only consent/progress hooks and a separate canonical evidence
+  copy for retained invocation after successful Apply. Native console push now
+  uses evaluated-by-default managed evidence. Reused main's Helm 3/4 detection
+  and OCI descriptor contracts rather than maintaining duplicate implementations.
+
 ### Breaking
 
 - AgentSuite draft schema: every suite-local content reference (`Suite.agents`,

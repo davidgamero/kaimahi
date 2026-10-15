@@ -405,7 +405,9 @@ func newSuitePushCommand(state *commandState, workspaceMode bool) *cobra.Command
 				return err
 			}
 			if summary.Execution == workspace.ImageExecution {
-				if reference=="" { return fmt.Errorf("image publication requires explicit repository:tag") }
+				if reference == "" {
+					return fmt.Errorf("image publication requires explicit repository:tag")
+				}
 				if target != "" || cmd.Flags().Changed("evaluation") {
 					return fmt.Errorf("image publication requires a registry; image evaluation evidence is not yet supported")
 				}

@@ -27,6 +27,10 @@ import (
 // Rendering belongs to this backend: four stderr lines, verbose diagnostics, or
 // one JSON result on stdout. Promote nil selects disclosed source-only promotion.
 type WorkspaceLiftOptions struct {
+	// Confirm presents the frozen, observed pipeline and returns the exact
+	// context challenge entered by the user. The shared guard still validates it.
+	Confirm                               func(context.Context, WorkspaceLiftPlan) (string, error)
+	RetainPlacement                       bool
 	Workspace                             string
 	Evaluation                            SuiteWorkspaceEvaluationOptions
 	Destination                           ReleaseLiftOptions
@@ -58,12 +62,13 @@ type WorkspaceLiftStage struct {
 	Total  int    `json:"total,omitempty"`
 }
 type WorkspaceLiftResult struct {
-	Plan      WorkspaceLiftPlan  `json:"plan"`
-	Eval      WorkspaceLiftStage `json:"eval"`
-	Push      WorkspaceLiftStage `json:"push"`
-	Lift      WorkspaceLiftStage `json:"lift"`
-	Placement *ReleaseLiftResult `json:"placement,omitempty"`
-	Error     string             `json:"error,omitempty"`
+	Deployment string             `json:"deployment,omitempty"`
+	Plan       WorkspaceLiftPlan  `json:"plan"`
+	Eval       WorkspaceLiftStage `json:"eval"`
+	Push       WorkspaceLiftStage `json:"push"`
+	Lift       WorkspaceLiftStage `json:"lift"`
+	Placement  *ReleaseLiftResult `json:"placement,omitempty"`
+	Error      string             `json:"error,omitempty"`
 }
 type PreparedWorkspaceLift struct {
 	review          *suiteWorkspaceReview
@@ -127,6 +132,9 @@ func PrepareWorkspaceLift(ctx context.Context, opt WorkspaceLiftOptions) (*Prepa
 	review, err := (&App{}).reviewSuiteWorkspace(ctx, opt.Workspace)
 	if err != nil {
 		return nil, err
+	}
+	if review.suite == nil || review.suite.Runtime.ID != "orka" {
+		return nil, errors.New("composed workspace Lift supports native Orka only")
 	}
 	for _, runtime := range []string{opt.Evaluation.ExpectedRuntime, opt.Destination.ExpectedRuntime} {
 		if runtime != "" && runtime != "orka" {
@@ -378,6 +386,13 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 			return r, err
 		}
 	}
+	if p.options.Confirm != nil {
+		answer, e := p.options.Confirm(ctx, r.Plan)
+		if e != nil {
+			return r, e
+		}
+		worker.Cfg.Confirm = answer
+	}
 	grant, err := worker.workspaceLiftConsent(ctx, p, observedEval.Subject, observedDest.Subject, r.Plan.Disclosure, diagnostics)
 	if err != nil {
 		return r, err
@@ -402,6 +417,7 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 		return r, err
 	}
 	if cached {
+		worker.suiteProgress("Eval", p.plan.EvalName, "skipped")
 		r.Eval.Status = "skipped"
 		for _, row := range receipt.Cases {
 			if row.Verdict == "pass" {
@@ -410,6 +426,7 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 		}
 		r.Eval.Detail = fmt.Sprintf("%d/%d runs passed on %s; fresh subject matched; candidate resources cleaned", r.Eval.Passed, r.Eval.Total, p.plan.EvalName)
 	} else {
+		worker.suiteProgress("Eval", p.plan.EvalName, "running")
 		r.Eval.Status = "failed"
 		if err = p.store.reserve(ctx); err != nil {
 			return r, err
@@ -437,6 +454,7 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 			return r, err
 		}
 		r.Eval.Status = "complete"
+		worker.suiteProgress("Eval", p.plan.EvalName, "complete")
 		receipt, _, err = p.store.latest(ctx, p.review.suite)
 		if err != nil {
 			return r, err
@@ -462,6 +480,7 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 	}
 	defer func() { err = errors.Join(err, evidence.root.Remove(evidence.name), evidence.Close()) }()
 	if publication.record != nil {
+		worker.suiteProgress("Push", p.options.Repository, "skipped")
 		r.Push.Status = "skipped"
 		r.Push.Detail = p.options.Repository + "@" + p.plan.SuiteDigest
 	} else {
@@ -478,6 +497,7 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 			return r, err
 		}
 		r.Push.Status = "unknown"
+		worker.suiteProgress("Push", p.options.Repository, "running")
 		r.Push.Detail = "publication incomplete/unknown; copied blobs or tag may exist; destination unchanged"
 		var pushed suiteoras.PushResult
 		pushed, err = suiteoras.PushLayoutRegistry(ctx, p.review.prepared.Path, p.options.Repository+":s-"+strings.TrimPrefix(p.plan.SuiteDigest, "sha256:"), p.options.Destination.PlainHTTP, false, p.review.prepared.Descriptor, pushOptions)
@@ -486,6 +506,7 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 			return r, errors.New(r.Push.Error)
 		}
 		r.Push.Status = "complete"
+		worker.suiteProgress("Push", p.options.Repository, "complete")
 		r.Push.Detail = p.options.Repository + "@" + p.plan.SuiteDigest
 		if sourceWarning != "" && pushed.Provenance != nil {
 			pushed.Warnings = append(pushed.Warnings, sourceWarning)
@@ -529,9 +550,43 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 		return r, err
 	}
 	r.Lift.Status = "complete"
+	worker.suiteProgress("Lift", p.plan.DestinationName, "complete")
 	r.Lift.Detail = p.plan.DestinationName + " Ready; passed on " + p.plan.EvalName + ", not evaluated on " + p.plan.DestinationName
 	if err = placement.commit(ctx, result.placement); err != nil {
 		r.Lift.Detail += "; placement succeeded, completion persistence incomplete"
 	}
+	if err == nil && p.options.RetainPlacement {
+		r.Deployment, err = worker.retainWorkspaceLiftPlacement(ctx, p, receipt, release, result)
+	}
 	return r, err
+}
+
+// Completion records authorize GET-only skips. Retained invocation requires its
+// own immutable canonical receipt copy and opaque successful Apply result.
+func (a *App) retainWorkspaceLiftPlacement(ctx context.Context, p *PreparedWorkspaceLift, receipt *suitePassingReceipt, release *PreparedReleaseLift, result ReleaseLiftResult) (string, error) {
+	base, err := deploymentDirectory()
+	if err != nil {
+		return "", err
+	}
+	if err = os.MkdirAll(base, 0700); err != nil {
+		return "", err
+	}
+	dir, err := os.MkdirTemp(base, "evidence-")
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "passing.json")
+	out, err := preflightSuitePassingExport(ctx, path, p.review.root, p.store.cache)
+	if err != nil {
+		return "", err
+	}
+	err = errors.Join(out.publish(ctx, receipt, p.review.suite), out.Close())
+	if err != nil {
+		return "", err
+	}
+	// Retention consumes only copied selectors/summary and the opaque Apply result;
+	// never copy the plan's atomic single-use state.
+	retained := &PreparedReleaseLift{options: release.options, summary: release.Summary()}
+	retained.options.Evidence = path
+	return a.RetainSuiteDeployment(ctx, retained, result)
 }

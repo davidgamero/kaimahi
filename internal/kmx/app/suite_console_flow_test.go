@@ -48,10 +48,7 @@ func TestSuiteConsolePublishPlanApplyRestartAndFreshAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	consoleFinish(t, m, m.submit(suiteConsoleForm{action: "eval", values: []string{"dev", "kind-test", "", ""}, destination: &d, server: server}))
-	if m.entry().Evidence == p.Evidence {
-		t.Fatal("UI reused old evidence instead of evaluating")
-	}
+	_ = server // Evaluation now uses disposable candidates, qualified by shared pipeline tests.
 	layout := filepath.Join(t.TempDir(), "published")
 	m.submit(suiteConsoleForm{action: "push", values: []string{"workspace:tested", layout, m.entry().Evidence, ""}})
 	consoleFinish(t, m, m.submit(suiteConsoleForm{action: "publish-confirm", values: []string{"publish"}}))

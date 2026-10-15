@@ -338,7 +338,8 @@ func (m *suiteConsole) advanceLiftGuide(c liftGuideChoice) tea.Cmd {
 			m.guideInput("acr-login", "Update publisher login for "+g.acr.Name+"? Type login", "", "login")
 			return nil
 		}
-		m.guideInput("repository", "Repository and version (suggested from agent)", slugAgentName(g.entry.Name)+":v"+time.Now().UTC().Format("20060102-150405"), "")
+		label, value := g.publicationRepositoryDefault()
+		m.guideInput("repository", label, value, "")
 	case "acr-login":
 		return job(func(ctx context.Context, a *App, g *suiteLiftGuide) error {
 			args := []string{"acr", "login", "--name", g.acr.Name, "--only-show-errors"}
@@ -349,7 +350,8 @@ func (m *suiteConsole) advanceLiftGuide(c liftGuideChoice) tea.Cmd {
 			if _, err := a.azureCapture(ctx, 60*time.Second, "az", args, "ACR login failed; check Azure login and publisher permissions"); err != nil {
 				return err
 			}
-			g.input("repository", "Repository and version (suggested from agent)", slugAgentName(g.entry.Name)+":v"+time.Now().UTC().Format("20060102-150405"), "")
+			label, value := g.publicationRepositoryDefault()
+			g.input("repository", label, value, "")
 			g.note = "Host registry login completed. Repository push and node pull remain independently checked."
 			return nil
 		})
@@ -359,6 +361,18 @@ func (m *suiteConsole) advanceLiftGuide(c liftGuideChoice) tea.Cmd {
 		if err != nil {
 			m.status = "Enter repository:version"
 			return nil
+		}
+		if !g.image() {
+			if parsed.Reference != "" {
+				m.status = "Native workspace Lift uses repository only; its version tag is derived from the exact suite digest"
+				return nil
+			}
+			g.repository = parsed.Repository
+			if g.needsJudge() {
+				m.guideInput("pipeline-judge", "Judge endpoint required by authored cases", "", "")
+				return nil
+			}
+			return m.startNativePipeline()
 		}
 		if err = parsed.ValidateReferenceAsTag(); err != nil {
 			m.status = "A repository and version tag are required"
@@ -409,6 +423,12 @@ func (m *suiteConsole) advanceLiftGuide(c liftGuideChoice) tea.Cmd {
 	case "judge-env":
 		g.judgeKeyEnv = g.value
 		m.guideInput("evaluate", "Execute all reviewed cases on "+g.env.Name+"? Type context to authorize placement and model calls", "", g.env.Name)
+	case "pipeline-judge":
+		g.judgeURL = g.value
+		m.guideInput("pipeline-judge-env", "Judge key environment variable (optional)", "", "")
+	case "pipeline-judge-env":
+		g.judgeKeyEnv = g.value
+		return m.startNativePipeline()
 	case "evaluate":
 		return job(func(ctx context.Context, a *App, g *suiteLiftGuide) error { return g.evaluate(ctx, a) })
 	case "proof-refused":
@@ -438,6 +458,13 @@ func (g *suiteLiftGuide) afterInference(ctx context.Context, a *App) error {
 		return nil
 	}
 	return g.registryChoices(ctx, a)
+}
+
+func (g *suiteLiftGuide) publicationRepositoryDefault() (string, string) {
+	if !g.image() {
+		return "Publication repository (version derived from exact suite digest)", slugAgentName(g.entry.Name)
+	}
+	return "Repository and version (suggested from agent)", slugAgentName(g.entry.Name) + ":v" + time.Now().UTC().Format("20060102-150405")
 }
 func (g *suiteLiftGuide) setup() suiteInferenceSetup {
 	return suiteInferenceSetup{Environment: g.env, Namespace: g.namespace, Provider: strings.TrimPrefix(g.provider, "provider:"), Endpoint: g.endpoint, Model: g.model, Secret: g.secret, Key: "api-key"}

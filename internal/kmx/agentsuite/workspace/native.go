@@ -271,7 +271,7 @@ func resolve(name string, m sourceMember, instructions, profile []byte, cases ma
 		return nil, err
 	}
 	agentPath := "agents/" + m.ID + ".json"
-	agentDigest, agentSize, err := put(agentPath, spec.Agent{SchemaVersion: spec.SpecVersion, MediaType: spec.MediaTypeAgent, ID: m.ID, Description: m.Description, Instructions: spec.FileRef{Path: "instructions/" + m.ID + ".md", Descriptor: spec.Descriptor{MediaType: spec.MediaTypeInstructions, Digest: godigest.FromBytes(instructions).String(), Size: int64(len(instructions))}}, Model: spec.ModelRequirement{Protocol: m.Model.Protocol, Model: m.Model.Model, Capabilities:m.Model.Capabilities.portable()}})
+	agentDigest, agentSize, err := put(agentPath, spec.Agent{SchemaVersion: spec.SpecVersion, MediaType: spec.MediaTypeAgent, ID: m.ID, Description: m.Description, Instructions: spec.FileRef{Path: "instructions/" + m.ID + ".md", Descriptor: spec.Descriptor{MediaType: spec.MediaTypeInstructions, Digest: godigest.FromBytes(instructions).String(), Size: int64(len(instructions))}}, Model: spec.ModelRequirement{Protocol: m.Model.Protocol, Model: m.Model.Model, Capabilities: m.Model.Capabilities.portable()}})
 	if err != nil {
 		return nil, err
 	}

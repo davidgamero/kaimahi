@@ -474,7 +474,7 @@ func (g *suiteLiftGuide) publish(ctx context.Context, a *App) error {
 		g.version.Reference = pub.Release
 		g.version.Image = true
 	} else {
-		pub, err := a.PushSuiteWorkspace(ctx, g.entry.Root, ref, "", false, false, SuitePushProvenance{})
+		pub, err := a.PushSuiteWorkspaceManaged(ctx, SuiteWorkspacePushOptions{Workspace: g.entry.Root, Reference: ref, Evaluation: g.version.Evidence})
 		if err != nil {
 			return err
 		}
@@ -546,7 +546,7 @@ func (g *suiteLiftGuide) evaluate(ctx context.Context, a *App) error {
 		if digest != r.digest() {
 			return errors.New("selected version differs from reviewed source; cannot evaluate different source as this artifact")
 		}
-		p, err := PrepareSuiteWorkspaceEvaluation(ctx, SuiteWorkspaceEvaluationOptions{Workspace: g.entry.Root, ToContext: g.env.Name, ToNamespace: g.namespace, Inference: g.provider, Out: out, JudgeBaseURL: g.judgeURL, JudgeKeyEnv: g.judgeKeyEnv})
+		p, err := PrepareSuiteWorkspaceEvaluation(ctx, SuiteWorkspaceEvaluationOptions{Workspace: g.entry.Root, ToContext: g.env.Name, ToNamespace: g.namespace, Inference: g.provider, Out: out, ManagedPass: true, JudgeBaseURL: g.judgeURL, JudgeKeyEnv: g.judgeKeyEnv})
 		if err != nil {
 			return err
 		}

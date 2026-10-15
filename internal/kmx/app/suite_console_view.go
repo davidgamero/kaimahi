@@ -660,6 +660,13 @@ func (m *suiteConsole) suiteOverlay(t suiteConsoleTheme) string {
 	rowHits := map[int]suiteMouseRegion{}
 	mark := func(action string, index int) { rowHits[len(rows)] = suiteMouseRegion{action: action, index: index} }
 	switch {
+	case m.pipelineConsent != nil:
+		p := m.pipelineConsent.plan
+		title = "REVIEW WORKSPACE LIFT"
+		for _, field := range [][2]string{{"Suite", p.SuiteDigest}, {"Evaluate", p.EvalContext + " · " + p.EvalServer}, {"Publish", p.Repository}, {"Lift", p.DestinationContext + " · " + p.DestinationServer}, {"Effects", p.Disclosure}} {
+			rows = append(rows, reviewField(field[0], field[1], w-4, 0)...)
+		}
+		rows = append(rows, fmt.Sprintf("%d declared case runs; compatible completed stages may be verified read-only.", p.CaseRuns), "Type the disclosed context name(s), comma-separated, to confirm:", safeTerminal(ansi.Strip(m.input.View())), safeTerminal(m.status), suiteShortcutHints("Enter authorize · Esc cancel", t))
 	case m.running:
 		title = "WORKING"
 		rows = append(rows, reviewIndented(t.field.Render(safeTerminal(m.loadingLabel)), w-4, 0)...)
