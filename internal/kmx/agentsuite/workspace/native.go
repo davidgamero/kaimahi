@@ -20,6 +20,18 @@ import (
 
 const rendererVersion = "kmx.native-orka/v2"
 const nativePath = "metadata/kmx/native-orka.json"
+const imagePath = "metadata/kmx/image-http.json"
+const imageRendererVersion = "kmx.image-http/v1"
+
+func imageProfile() ([]byte, error) {
+	var p spec.BuildProfile
+	if err := spec.Unmarshal(defaultProfile, &p); err != nil {
+		return nil, err
+	}
+	p.Execution = &spec.ExecutionContract{Configuration: spec.AgentKitMountedConfig, Kind: spec.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []spec.ExecutionInput{{Name: "agent-auth", Environment: "AGENTKIT_AUTH_TOKEN", Secret: true}, {Name: "listen", Environment: "AGENTKIT_BIND"}}}
+	return spec.Marshal(p)
+}
+
 const kagentNativePath = "metadata/kmx/native-kagent.json"
 const kagentRendererVersion = "kmx.native-kagent/v2"
 const agentsessionsNativePath = "metadata/kmx/native-agentsessions.json"
@@ -184,6 +196,9 @@ func loadSource(ctx context.Context, root string) (*snapshot, error) {
 	} else if runtimeProfile.ID == "agentsessions" {
 		renderer, executionProfile, declaredRuntime = agentsessionsRendererVersion, agentsessionsExecutionProfile, &runtimeProfile
 	}
+	if m.Execution == ImageExecution {
+		renderer = imageRendererVersion
+	}
 	framed, err := spec.Marshal(struct {
 		Renderer         string            `json:"renderer"`
 		Files            map[string]string `json:"files"`
@@ -217,6 +232,15 @@ func resolve(name string, m sourceMember, instructions, profile []byte, cases ma
 	if err := spec.Unmarshal(defaultProfile, &approved); err != nil {
 		return nil, err
 	}
+	if m.Execution == ImageExecution {
+		raw, err := imageProfile()
+		if err != nil {
+			return nil, err
+		}
+		if err := spec.Unmarshal(raw, &approved); err != nil {
+			return nil, err
+		}
+	}
 	bpBytes, err := spec.Marshal(bp)
 	if err != nil {
 		return nil, err
@@ -247,7 +271,7 @@ func resolve(name string, m sourceMember, instructions, profile []byte, cases ma
 		return nil, err
 	}
 	agentPath := "agents/" + m.ID + ".json"
-	agentDigest, agentSize, err := put(agentPath, spec.Agent{SchemaVersion: spec.SpecVersion, MediaType: spec.MediaTypeAgent, ID: m.ID, Description: m.Description, Instructions: spec.FileRef{Path: "instructions/" + m.ID + ".md", Descriptor: spec.Descriptor{MediaType: spec.MediaTypeInstructions, Digest: godigest.FromBytes(instructions).String(), Size: int64(len(instructions))}}, Model: spec.ModelRequirement{Protocol: m.Model.Protocol, Model: m.Model.Model}})
+	agentDigest, agentSize, err := put(agentPath, spec.Agent{SchemaVersion: spec.SpecVersion, MediaType: spec.MediaTypeAgent, ID: m.ID, Description: m.Description, Instructions: spec.FileRef{Path: "instructions/" + m.ID + ".md", Descriptor: spec.Descriptor{MediaType: spec.MediaTypeInstructions, Digest: godigest.FromBytes(instructions).String(), Size: int64(len(instructions))}}, Model: spec.ModelRequirement{Protocol: m.Model.Protocol, Model: m.Model.Model, Capabilities:m.Model.Capabilities.portable()}})
 	if err != nil {
 		return nil, err
 	}
@@ -283,6 +307,12 @@ func resolve(name string, m sourceMember, instructions, profile []byte, cases ma
 		record.ExecutionMode, record.RendererVersion = "native-agentsessions", agentsessionsRendererVersion
 		record.Runtime, record.ExecutionProfile = &runtimeProfile, agentsessionsExecutionProfile
 	}
+	if m.Execution == ImageExecution {
+		record.ExecutionMode = ImageExecution
+		record.RendererVersion = imageRendererVersion
+		record.RequiredImages = []string{m.ID + "@linux/amd64"}
+		metadataPath = imagePath
+	}
 	ids := map[string]bool{}
 	for _, name := range slices.Sorted(maps.Keys(cases)) {
 		if !caseName(name) {
@@ -310,6 +340,7 @@ func nativeProfile(files map[string][]byte) (nativeRecord, RuntimeProfile, error
 	var record nativeRecord
 	_, orka := files[nativePath]
 	_, kagent := files[kagentNativePath]
+	_, image := files[imagePath]
 	_, sessions := files[agentsessionsNativePath]
 	count := 0
 	for _, present := range []bool{orka, kagent, sessions} {
@@ -317,7 +348,7 @@ func nativeProfile(files map[string][]byte) (nativeRecord, RuntimeProfile, error
 			count++
 		}
 	}
-	if count != 1 {
+	if count != 1 || image {
 		return record, RuntimeProfile{}, errors.New("exactly one native metadata profile is required")
 	}
 	metadataPath, mode, renderer := nativePath, "native-orka", rendererVersion
@@ -357,6 +388,19 @@ func validateNative(files map[string][]byte) (string, error) {
 		return "", err
 	}
 	record, profile, err := nativeProfile(files)
+	_, image := files[imagePath]
+	if image {
+		if _, ok := files[nativePath]; ok {
+			return "", errors.New("ambiguous image/native profiles")
+		}
+		if _, ok := files[kagentNativePath]; ok {
+			return "", errors.New("ambiguous image/native profiles")
+		}
+		err = spec.Unmarshal(files[imagePath], &record)
+		if err == nil && (record.SchemaVersion != 1 || record.ExecutionMode != ImageExecution || record.RendererVersion != imageRendererVersion || len(record.RequiredImages) != 1 || record.RequiredImages[0] != record.Member+"@linux/amd64" || record.Runtime != nil || record.ExecutionProfile != "") {
+			err = errors.New("unsupported image execution profile")
+		}
+	}
 	if err != nil {
 		return "", err
 	}
@@ -369,6 +413,13 @@ func validateNative(files map[string][]byte) (string, error) {
 		m.Runtime.Version, m.Runtime.Engine = &profile.Version, &profile.Engine
 	}
 	m.Model.Protocol, m.Model.Model = agent.Model.Protocol, agent.Model.Model
+	if image {
+		m.Runtime = nil
+		m.Execution = ImageExecution
+		if c := agent.Model.Capabilities; c != nil {
+			m.Model.Capabilities = &sourceInference{c.API, c.ContextTokens, c.OutputTokens, c.Streaming, c.ToolCalling}
+		}
+	}
 	cases := map[string][]byte{}
 	for _, c := range record.Cases {
 		name := strings.TrimPrefix(c.Path, "metadata/kmx/eval/")

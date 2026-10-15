@@ -56,6 +56,8 @@ resolves against.`,
 func newAgentCreateCommand(state *commandState) *cobra.Command {
 	var root, name, description, model, instructions, runtimeID, version, engine string
 	var profile workspace.RuntimeProfile
+	var execution string
+	var contextTokens, outputTokens int
 	cmd := &cobra.Command{
 		Use: "create <name>", Short: "Author an offline workspace member",
 		Long:    "Author a tool-free Orka, exact kagent Go or pinned AgentSessions chat member in a local workspace. AgentSessions evaluation uses an explicit development host; its lift, chat and status remain unavailable.\n\nCreate does not evaluate, publish, deploy or load cluster configuration.\nUse eval, push and immutable digest lift with explicit evidence for deployment.",
@@ -63,6 +65,9 @@ func newAgentCreateCommand(state *commandState) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&root, "workspace", "", "select an exact workspace directory (initialize without prompting if absent)")
 	_ = cmd.MarkFlagDirname("workspace")
+	cmd.Flags().StringVar(&execution, "execution", "", "explicit image-http execution; native runtime remains the default")
+	cmd.Flags().IntVar(&contextTokens, "context-tokens", 8192, "image inference minimum context capacity")
+	cmd.Flags().IntVar(&outputTokens, "output-tokens", 1024, "image inference minimum output capacity")
 	cmd.Flags().StringVar(&description, "description", "", "one-line description")
 	cmd.Flags().StringVar(&model, "model", "", "authored model identifier (required)")
 	cmd.Flags().StringVar(&instructions, "instructions", "", "file containing the system message (required)")
@@ -83,6 +88,18 @@ func newAgentCreateCommand(state *commandState) *cobra.Command {
 			return fmt.Errorf("workspace creation requires a name: kmx create <name> --model <model> --instructions <file>")
 		}
 		name = args[0]
+		if execution == workspace.ImageExecution {
+			for _, flag := range []string{"runtime", "runtime-version", "kagent-runtime", "model"} {
+				if cmd.Flags().Changed(flag) {
+					return fmt.Errorf("--%s conflicts with image-http", flag)
+				}
+			}
+			profile = workspace.RuntimeProfile{}
+			return workspace.ValidateCreateOptions(workspace.CreateOptions{Name: name, Description: description, InstructionsFile: instructions, Execution: execution, ContextTokens: contextTokens, OutputTokens: outputTokens})
+		}
+		if execution != "" || cmd.Flags().Changed("context-tokens") || cmd.Flags().Changed("output-tokens") {
+			return fmt.Errorf("image execution/capacity flags require --execution image-http")
+		}
 		profile = workspace.RuntimeProfile{ID: runtimeID}
 		if runtimeID == "kagent" {
 			if version != "v0.10.3" || engine != "go" {
@@ -104,12 +121,13 @@ func newAgentCreateCommand(state *commandState) *cobra.Command {
 	}
 	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
 		a := &app.App{Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr(), Stdin: state.deps.stdin}
-		return a.CreateSuiteMember(cmd.Context(), root, workspace.CreateOptions{Name: name, Description: description, Model: model, InstructionsFile: instructions, Runtime: profile})
+		return a.CreateSuiteMember(cmd.Context(), root, workspace.CreateOptions{Name: name, Description: description, Model: model, InstructionsFile: instructions, Runtime: profile, Execution: execution, ContextTokens: contextTokens, OutputTokens: outputTokens})
 	}
 	return cmd
 }
 
 func newAgentChatCommand(state *commandState) *cobra.Command {
+	var deployment, member string
 	var verbose bool
 	var runtime, namespace string
 	usage := "kmx chat [--namespace <namespace>] <name> [message]"
@@ -123,6 +141,8 @@ func newAgentChatCommand(state *commandState) *cobra.Command {
 	_ = cmd.Flags().MarkHidden("json")
 	_ = cmd.RegisterFlagCompletionFunc("runtime", staticCompletion([]string{"auto", "orka"}))
 	cmd.ValidArgsFunction = completeLiveAgents
+	cmd.Flags().StringVar(&deployment, "deployment", "", "retained native suite placement ID instead of a live name")
+	cmd.Flags().StringVar(&member, "member", "", "member of the selected deployment")
 	cmd.Args = func(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("session") {
 			return fmt.Errorf("--session is retired: Orka chat has no resumable server-side session; use kmx chat --namespace <ns> <name>")
@@ -130,10 +150,28 @@ func newAgentChatCommand(state *commandState) *cobra.Command {
 		if cmd.Flags().Changed("json") {
 			return fmt.Errorf("--json is retired: there is no raw A2A JSON equivalent for an existing Agent; use kmx chat --namespace <ns> <name> for interactive chat")
 		}
+		if deployment != "" {
+			if err := app.ValidateSuiteDeploymentID(deployment); err != nil {
+				return err
+			}
+			if strings.TrimSpace(deployment) == "" {
+				return fmt.Errorf("--deployment must not be blank")
+			}
+			if len(args) != 0 || state.contextFlag != "" || cmd.Flags().Changed("namespace") || cmd.Flags().Changed("runtime") {
+				return fmt.Errorf("deployment chat uses retained target; do not supply a live name or target flags")
+			}
+			return nil
+		}
+		if member != "" {
+			return fmt.Errorf("--member requires --deployment")
+		}
 		return usageArgs(1, -1, usage)(cmd, args)
 	}
 	cmd.RunE = appRun(state, func(a *app.App) error {
 		args := cmd.Flags().Args()
+		if deployment != "" {
+			return a.ChatSuiteMember(deployment, member, "")
+		}
 		return a.ChatWithOptions(app.ChatOptions{Agent: args[0], Task: joinArgs(args[1:]), Verbose: verbose, Runtime: runtime, Namespace: namespace})
 	})
 	return cmd

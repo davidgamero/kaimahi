@@ -226,6 +226,12 @@ func (a *App) quickstartCreateOptions() CreateOptions {
 
 // quickstartFollowups are the commands this cluster can actually run next.
 func (a *App) quickstartFollowups() []string {
+	if a.quickstartDeployment != "" {
+		return []string{
+			"kmx chat --deployment " + shellArg(a.quickstartDeployment),
+			a.operationCommand("create", "--help"), a.operationCommand("orka", "status"),
+		}
+	}
 	return []string{
 		a.operationCommand("chat", QuickstartAgent, "--runtime", "orka", "--namespace", OrkaNamespace, "ask it something else"),
 		a.operationCommand("create", "--help"),

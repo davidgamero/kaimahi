@@ -32,11 +32,13 @@ type progressPresenter interface {
 // App carries the resolved configuration and the streams every command
 // writes to.
 type App struct {
-	chatClusterName string
+	chatClusterName      string
+	quickstartDeployment string
 	// kagentProfile is invocation-local; nil keeps the exact create profile.
 	kagentProfile *kagentProfile
 	// operationProgress reports real stage transitions to an owning deployment UI.
 	operationProgress func(name, status string, err error)
+	suiteEvents       func(SuiteProgress)
 	Cfg               *config.Config
 	Run               *run.Runner
 	Out               io.Writer

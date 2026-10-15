@@ -3,6 +3,12 @@
 These rules describe how `kmx` commands, flags, output and interactive controls
 should be named and shaped. Apply them to new commands and to renames.
 
+The experimental [suite-centered branch](suite-centered-tui.md) extends the
+native Orka console with suite extraction/observation and retained member run/chat.
+Its console Lift explicitly selects a digest/evidence and uses the shared reviewed
+engine; it is distinct from the retired chat `/lift` live-copy control. Follow
+the branch contract for those additions and preserve all other runtime limits.
+
 - [kmx reference](kmx.md) documents the commands that exist today.
 - [CLI presentation contracts](cli-ux-plan.md) records terminal and automation
   output details.

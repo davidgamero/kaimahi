@@ -275,6 +275,9 @@ func (a *App) readSuiteNativeInputs(ctx context.Context, namespace, provider str
 	}
 	binding.Secret = suiteNativeSecret{Name: before.Metadata.Name, Namespace: before.Metadata.Namespace, UID: before.Metadata.UID, ResourceVersion: before.Metadata.ResourceVersion, Key: selected.Provider.SecretRef.Key, KeyPresent: true}
 	runtime, err = a.readSuiteNativeRuntime(ctx, namespace)
+	if err != nil {
+		return target, binding, runtime, &suiteRuntimePrerequisiteError{context: a.Cfg.KubeContext}
+	}
 	return target, binding, runtime, err
 }
 
@@ -325,7 +328,7 @@ func suiteNativeControllerFlag(args []string, name string) (string, error) {
 
 func suiteNativeControllerRuntime(controller orkaDeployment, namespace string) (suiteNativeRuntime, error) {
 	var out suiteNativeRuntime
-	if controller.Kind != "Deployment" || controller.Metadata.Namespace != OrkaNamespace || controller.Metadata.UID == "" || controller.Metadata.Generation < 1 || controller.Metadata.DeletionTimestamp != nil {
+	if controller.Kind != "Deployment" || (controller.Metadata.Namespace != OrkaNamespace && controller.Metadata.Namespace != namespace) || controller.Metadata.UID == "" || controller.Metadata.Generation < 1 || controller.Metadata.DeletionTimestamp != nil {
 		return out, fmt.Errorf("native suite requires a live chart controller identity")
 	}
 	out.Helm = suiteNativeHelm(controller.Metadata.Labels)
@@ -376,7 +379,9 @@ func suiteNativePinnedRuntime(r suiteNativeRuntime, namespace string) bool {
 
 func (a *App) readSuiteNativeRuntime(ctx context.Context, namespace string) (suiteNativeRuntime, error) {
 	var out suiteNativeRuntime
-	deployments, err := a.orkaDeployments(ctx)
+	// Native installations watch exactly their own namespace. Preserve the
+	// original default lookup for the default target; never select by name alone.
+	deployments, err := a.orkaDeploymentsIn(ctx, namespace)
 	if err != nil {
 		return out, err
 	}
@@ -388,7 +393,7 @@ func (a *App) readSuiteNativeRuntime(ctx context.Context, namespace string) (sui
 	if err != nil {
 		return out, err
 	}
-	worker, err := a.orkaAIWorkerAccount(ctx)
+	worker, err := a.orkaAIWorkerAccountIn(ctx, namespace)
 	if err != nil {
 		return out, err
 	}
@@ -398,7 +403,7 @@ func (a *App) readSuiteNativeRuntime(ctx context.Context, namespace string) (sui
 	// Existing discovery/trust remains authoritative; add only live UID,
 	// termination and fixed labels, not a second worker discovery mechanism.
 	const projection = `go-template={"Kind":{{printf "%q" .kind}},"Metadata":{"Name":{{printf "%q" .metadata.name}},"Namespace":{{printf "%q" .metadata.namespace}},"UID":{{printf "%q" .metadata.uid}},"Helm":{"Chart":{{printf "%q" (index .metadata.labels "helm.sh/chart")}},"Instance":{{printf "%q" (index .metadata.labels "app.kubernetes.io/instance")}},"App":{{printf "%q" (index .metadata.labels "app.kubernetes.io/name")}},"ManagedBy":{{printf "%q" (index .metadata.labels "app.kubernetes.io/managed-by")}}}},"Worker":{{printf "%q" (index .metadata.labels "orka.ai/worker")}},"Trust":{{printf "%q" (index .metadata.labels "orka.ai/worker-trust")}},"Terminating":{{if .metadata.deletionTimestamp}}true{{else}}false{{end}}}`
-	raw, err := a.orkaCapture(ctx, nil, "-n", OrkaNamespace, "get", "serviceaccount", worker, "-o", projection)
+	raw, err := a.orkaCapture(ctx, nil, "-n", namespace, "get", "serviceaccount", worker, "-o", projection)
 	if err != nil {
 		return out, err
 	}
@@ -411,12 +416,12 @@ func (a *App) readSuiteNativeRuntime(ctx context.Context, namespace string) (sui
 		Worker, Trust string
 		Terminating   bool
 	}
-	if spec.Unmarshal(raw, &account) != nil || account.Kind != "ServiceAccount" || account.Metadata.Name != worker || account.Metadata.Namespace != OrkaNamespace || account.Metadata.UID == "" || account.Terminating || account.Metadata.Helm != out.Helm || account.Worker != "true" || account.Trust != "ai" {
+	if spec.Unmarshal(raw, &account) != nil || account.Kind != "ServiceAccount" || account.Metadata.Name != worker || account.Metadata.Namespace != namespace || account.Metadata.UID == "" || account.Terminating || account.Metadata.Helm != out.Helm || account.Worker != "true" || account.Trust != "ai" {
 		return out, fmt.Errorf("Orka worker has no valid matching runtime identity")
 	}
 	// The reused trust helper reselects the controller. Compare only consumed
 	// semantic identity/configuration, ignoring RV and still-Ready status churn.
-	current, err := a.orkaDeployments(ctx)
+	current, err := a.orkaDeploymentsIn(ctx, namespace)
 	if err != nil {
 		return out, err
 	}

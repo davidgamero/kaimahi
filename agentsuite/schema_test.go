@@ -2,6 +2,8 @@ package agentsuite
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,6 +75,23 @@ func TestToolProviderSchemaDefinesBundledImplementation(t *testing.T) {
 		1,
 	)
 	validateSchemaJSON(t, schema, withoutFileDigest, false)
+}
+
+func TestExecutionSchemaKeepsServingAndMountedABIConsistent(t *testing.T) {
+	schema := compileReferenceSchema(t, "execution.schema.json")
+	valid := `{"kind":"http-v1","protocol":"openai-chat-v1","port":8080,"healthPath":"/healthz","inputs":[],"configuration":"agentkit-v0-mounted-v1"}`
+	validateSchemaJSON(t, schema, valid, true)
+	for _, invalid := range []string{
+		strings.Replace(valid, `"http-v1"`, `"kubernetes-http-v1"`, 1),
+		strings.Replace(valid, `8080`, `9090`, 1),
+		strings.Replace(valid, `"/healthz"`, `"/ready"`, 1),
+	} {
+		validateSchemaJSON(t, schema, invalid, false)
+		var contract ExecutionContract
+		if err := Unmarshal([]byte(invalid), &contract); err == nil && ValidateExecutionContract(contract) == nil {
+			t.Fatal("semantic validator accepted incompatible serving/configuration contract")
+		}
+	}
 }
 
 func TestToolProviderSchemaAcceptsMultiFileCLIBundles(t *testing.T) {
@@ -313,7 +332,19 @@ func compileReferenceSchema(t *testing.T, name string) *jsonschema.Resolved {
 	if err := json.Unmarshal(data, &schema); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := schema.Resolve(nil)
+	resolved, err := schema.Resolve(&jsonschema.ResolveOptions{Loader: func(uri *url.URL) (*jsonschema.Schema, error) {
+		name := filepath.Base(uri.Path)
+		if uri.String() != "https://kaimahi.dev/schemas/agentsuite/v1/"+name || name != "inference.schema.json" && name != "execution.schema.json" {
+			return nil, fmt.Errorf("unsupported schema reference")
+		}
+		data, err := os.ReadFile(filepath.Join("schema", name))
+		if err != nil {
+			return nil, err
+		}
+		var referenced jsonschema.Schema
+		err = json.Unmarshal(data, &referenced)
+		return &referenced, err
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

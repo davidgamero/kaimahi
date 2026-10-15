@@ -99,6 +99,8 @@ func (a *App) evaluateSuiteNative(ctx context.Context, placement *suiteNativePla
 }
 
 func (a *App) evaluateSuiteNativeTracked(ctx context.Context, placement *suiteNativePlacement, frame suitePassingInventoryCase, port string, judge agentruntime.EvaluationJudge, run *suiteCandidateRun) (observation suitePassingObservation, err error) {
+	a.suiteProgress("case", frame.Case.ID, "running")
+	defer func() { a.suiteProgress("case", frame.Case.ID, string(observation.Verdict)) }()
 	observation = suitePassingObservation{CaseDigest: frame.Metadata.CaseDigest, InputDigest: frame.Metadata.InputDigest, EvaluationReceipt: agentruntime.EvaluationReceipt{CaseID: frame.Case.ID, Verdict: agentruntime.EvaluationUnknown}}
 	defer func() {
 		if err != nil {
@@ -240,6 +242,7 @@ func (a *App) evaluateSuiteNativeTracked(ctx context.Context, placement *suiteNa
 	if judge == nil {
 		observation.Assertions = agentruntime.EvaluateAssertions(frame.Case, evidence)
 	} else {
+		a.suiteProgress("case", frame.Case.ID, "judging")
 		observation.Assertions = judge(caseCtx, frame.Case, evidence)
 		if err = caseCtx.Err(); err != nil {
 			return observation, err

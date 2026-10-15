@@ -18,6 +18,8 @@ import (
 func newReleaseLiftCommand(state *commandState) *cobra.Command {
 	var opt app.ReleaseLiftOptions
 	var planOnly bool
+	var checkRuntime bool
+	var retain bool
 	var output string
 	var destination string
 	var selection destinationSelection
@@ -31,6 +33,7 @@ func newReleaseLiftCommand(state *commandState) *cobra.Command {
 			"Default workspace output is four stderr lines (Plan/Eval/Push/Lift); -v shows details, -o json emits one result. Nonterminal confirmation must name the concrete contexts disclosed in Plan.\n" +
 			"Evaluation sends case inputs to the runtime/model; llmJudge additionally transfers inputs, answers and rubrics. Cleanup does not erase retained upstream data.\n" +
 			"With an explicit digest, deploy the original suite from a registry or --from-layout OCI directory without source, builds, repacking or publishing.\n" +
+			"--check-runtime separately inspects the packaged runtime and destination readiness without evidence, admission or installation. Missing Orka setup uses the separately guarded orka install command; existing incompatible runtimes are not upgraded.\n" +
 			"Requires explicit private full-passing --evidence for exactly this suite and either --to NAME from workspace-root kmx.yaml or explicit --to-context; Orka uses Ready --inference provider:NAME, kagent uses author-owned --bindings FILE.\n" +
 			"Named selectors resolve once; explicit flags override. No evalTarget or remembered/current-context fallback for Lift. Without --to, reference Lift never discovers a workspace or kmx.yaml.\n" +
 			"Runtime/model come from the packaged member: native Orka or exact v0.10.3 Go kagent with openai-type inference. No runtime/model override.\n" +
@@ -39,6 +42,7 @@ func newReleaseLiftCommand(state *commandState) *cobra.Command {
 			"with the packaged model declaration (Orka: Ready Provider; kagent: rendered ModelConfig). Evidence proves the source only, not destination evaluation or authenticated approval.\n" +
 			"Kagent creates new ModelConfig/Agent only; occupied names always refuse. Orka may reuse exact evaluated UID/generation/spec. Never update, adopt or retry ambiguous writes.\n" +
 			"Created/recreated resources need fresh evaluation before later receipt-bound reuse. Partial resources may remain; readiness is not execution.\n" +
+			"Experimental image releases use --environment and image passing evidence for absent creation or exact evaluated reuse. Image --promote requires absent resources and identical release/image/model/endpoint/configuration; only physical target and Secret revisions may differ.\n" +
 			"--plan is GET-only: no mutation guard, admission, writes, Tasks or placement records. JSON reports contain identities, never prompts or credentials.",
 		Example: "  kmx lift --to prod\n  kmx lift --to prod --plan\n" +
 			"  kmx lift registry.example/suite@sha256:<digest> --to prod --evidence ../private/pass.json --promote --plan\n" +
@@ -46,13 +50,19 @@ func newReleaseLiftCommand(state *commandState) *cobra.Command {
 			"  kmx lift suite@sha256:<digest> --from-layout ./oci --to-context kind-demo --inference provider:inference --evidence ../private/pass.json --promote -o json",
 		Args: usageArgs(0, 1, "kmx lift --to NAME | kmx lift <ref>@<digest> (--to NAME | --to-context <ctx>) (--inference provider:NAME | --bindings FILE) --evidence FILE [--from-layout DIR] [--promote] [--plan]"),
 		PreRunE: func(cmd *cobra.Command, args []string) error {
+			if checkRuntime && (planOnly || retain || opt.Promote) {
+				return fmt.Errorf("--check-runtime is a separate read-only prerequisite check; do not combine with --plan, --promote or --retain-placement")
+			}
+			if retain && planOnly {
+				return fmt.Errorf("--retain-placement cannot be used with --plan")
+			}
 			if err := validateContainerEngineFlag(cmd, args); err != nil {
 				return err
 			}
 			if state.contextFlag != "" || cmd.Flags().Changed("context") {
 				return fmt.Errorf("--context cannot be used with suite lift; use --to-context")
 			}
-			for _, name := range []string{"to", "to-context", "to-namespace", "inference", "bindings", "evidence", "from-layout", "output", "result-port", "judge-base-url", "judge-key-env"} {
+			for _, name := range []string{"to", "to-context", "to-namespace", "inference", "bindings", "environment", "evidence", "from-layout", "output", "result-port", "judge-base-url", "judge-key-env"} {
 				if f := cmd.Flag(name); f.Changed && strings.TrimSpace(f.Value.String()) == "" {
 					return fmt.Errorf("lift requires non-empty --%s", name)
 				}
@@ -61,7 +71,7 @@ func newReleaseLiftCommand(state *commandState) *cobra.Command {
 				return fmt.Errorf("lift output must be text or json")
 			}
 			if len(args) == 0 {
-				for _, name := range []string{"evidence", "from-layout", "bindings"} {
+				for _, name := range []string{"evidence", "from-layout", "bindings", "environment", "check-runtime", "retain-placement"} {
 					if cmd.Flags().Changed(name) {
 						return fmt.Errorf("workspace lift refuses --%s; use explicit digest Lift", name)
 					}
@@ -79,7 +89,7 @@ func newReleaseLiftCommand(state *commandState) *cobra.Command {
 					return fmt.Errorf("explicit-reference lift refuses --%s", name)
 				}
 			}
-			if !cmd.Flags().Changed("evidence") {
+			if !checkRuntime && !cmd.Flags().Changed("evidence") {
 				return fmt.Errorf("%w: explicit-reference lift requires --evidence FILE", app.ErrReleaseLift)
 			}
 			opt.Reference = args[0]
@@ -98,6 +108,12 @@ func newReleaseLiftCommand(state *commandState) *cobra.Command {
 			}
 			opt.ToContext, opt.ToNamespace, opt.ExpectedRuntime = selection.Context, selection.Namespace, selection.ExpectedRuntime
 			opt.Inference, opt.Bindings, opt.PlainHTTP = selection.Inference, selection.Bindings, selection.PlainHTTP
+			if checkRuntime {
+				if !strings.Contains(opt.Reference, "@sha256:") || opt.ToContext == "" {
+					return fmt.Errorf("--check-runtime requires a digest and explicit destination")
+				}
+				return nil
+			}
 			return app.ValidateReleaseLiftOptions(opt)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -141,11 +157,25 @@ func newReleaseLiftCommand(state *commandState) *cobra.Command {
 				parts = append(parts, quoteShell(arg))
 			}
 			a.InvocationCommand = strings.Join(parts, " ")
+			if checkRuntime {
+				report, err := a.CheckSuiteRuntime(ctx, opt)
+				if err != nil {
+					return err
+				}
+				if output == "json" {
+					return json.NewEncoder(cmd.OutOrStdout()).Encode(report)
+				}
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "Runtime: %s\nRequired: %s\nDestination: %s / %s\nState: %s\n%s\nNext: %s\n", report.Runtime, report.Required, report.Context, report.Namespace, report.State, report.Detail, report.Next)
+				return err
+			}
 			prepared, err := a.PrepareReleaseLift(ctx, opt)
 			if err != nil {
 				return err
 			}
 			summary := prepared.Summary()
+			if retain && summary.Runtime != "orka" {
+				return fmt.Errorf("retained member status/run/chat currently requires native Orka; no placement attempted")
+			}
 			if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "Runtime: %s (from suite %s, evaluated on source)\n", summary.Runtime, summary.SuiteDigest); err != nil {
 				return err
 			}
@@ -170,10 +200,20 @@ func newReleaseLiftCommand(state *commandState) *cobra.Command {
 				return nil
 			}
 			result, applyErr := a.ApplyReleaseLift(ctx, prepared, summary.PlanDigest)
+			if applyErr == nil && retain {
+				id, err := a.RetainSuiteDeployment(ctx, prepared, result)
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "Deployment: %s\n", id)
+			}
 			if output == "json" {
 				return errors.Join(applyErr, json.NewEncoder(cmd.OutOrStdout()).Encode(result))
 			}
 			_, writeErr := fmt.Fprintf(cmd.OutOrStdout(), "Lift: %s\nSuite: %s\nMember: %s\nTarget: %q/%q\n", result.State, summary.SuiteDigest, summary.Member, summary.Target.Context, summary.Target.Namespace)
+			if writeErr == nil && result.Placement != "" {
+				_, writeErr = fmt.Fprintf(cmd.OutOrStdout(), "Placement: %s\n", result.Placement)
+			}
 			for _, r := range result.Resources {
 				if writeErr != nil {
 					break
@@ -188,12 +228,16 @@ func newReleaseLiftCommand(state *commandState) *cobra.Command {
 	cmd.Flags().StringVar(&opt.ToNamespace, "to-namespace", app.OrkaNamespace, "destination namespace")
 	cmd.Flags().StringVar(&opt.Inference, "inference", "", "existing Ready inference Provider, as provider:NAME")
 	cmd.Flags().StringVar(&opt.Bindings, "bindings", "", "author-owned KagentBindings file for the packaged kagent runtime")
+	cmd.Flags().StringVar(&opt.Environment, "environment", "", "image bindings checked against full image evidence; mutually exclusive with native bindings")
+	_ = cmd.MarkFlagFilename("environment")
 	_ = cmd.MarkFlagFilename("bindings")
 	cmd.Flags().StringVar(&opt.Evidence, "evidence", "", "explicit private full-passing native evidence file")
 	cmd.Flags().StringVar(&opt.FromLayout, "from-layout", "", "read exact digest from a local OCI directory")
 	cmd.Flags().BoolVar(&opt.PlainHTTP, "plain-http", false, "allow plain HTTP registry transport (not with --from-layout)")
 	cmd.Flags().BoolVar(&opt.Promote, "promote", false, "explicit same-suite/model/runtime promotion; source-only evidence")
 	cmd.Flags().BoolVar(&planOnly, "plan", false, "GET-only review; no admission or placement")
+	cmd.Flags().BoolVar(&checkRuntime, "check-runtime", false, "read packaged runtime and destination prerequisites; no evidence, installation or placement")
+	cmd.Flags().BoolVar(&retain, "retain-placement", false, "retain private Orka placement inputs for status/run/chat after successful verification")
 	cmd.Flags().StringVarP(&output, "output", "o", "text", "output: text|json")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "show workspace stage diagnostics")
 	cmd.Flags().DurationVar(&evaluation.CaseTimeout, "case-timeout", 5*time.Minute, "workspace evaluation deadline per run, at most 9m")

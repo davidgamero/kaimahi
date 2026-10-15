@@ -3,25 +3,37 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/guard"
 )
 
 // AgentTUIOptions selects the two environments shown by kmx console.
 type AgentTUIOptions struct {
+	Suite                                  SuiteConsoleOptions
 	LocalContext, RemoteContext, Namespace string
+	Workspace, Deployment                  string
 	Demo                                   bool
 }
 
 type agentTUIEnvironment struct {
 	Name, Kubeconfig, Server string
 	Local                    bool
+}
+
+func environmentLabel(env agentTUIEnvironment) string {
+	kind := "REMOTE"
+	if env.Local {
+		kind = "LOCAL"
+	}
+	return kind + " · " + env.Name
 }
 
 func (e agentTUIEnvironment) app(a *App) *App {
@@ -52,10 +64,14 @@ func agentTUIPreferredEnvironments(envs []agentTUIEnvironment, prefs map[string]
 }
 
 type agentTUIAgent struct {
+	Deleting                                  bool
+	Modified                                  time.Time
 	Name, Namespace, Runtime, Version, Ready  string
 	Provider, Model, Endpoint, InferenceReady string
 	InferenceConfig                           string
 	External                                  bool
+	SuiteOwned                                bool
+	SuiteName, SuiteDigest, UID               string
 	SystemPrompt, PromptSource, PromptError   string
 	Tools                                     []agentTUITool
 }
@@ -114,7 +130,7 @@ func (a *App) agentTUIPrompt(ctx context.Context, namespace string, prompt agent
 }
 
 func (a agentTUIAgent) key() string   { return a.Runtime + "/" + a.Namespace + "/" + a.Name }
-func (a agentTUIAgent) canChat() bool { return !a.External }
+func (a agentTUIAgent) canChat() bool { return !a.External && !a.SuiteOwned }
 
 type agentTUIColumn struct {
 	Env       agentTUIEnvironment
@@ -125,9 +141,27 @@ type agentTUIColumn struct {
 }
 
 type agentTUIMetadata struct {
+	DeletionTimestamp *time.Time
+	CreationTimestamp time.Time
+	ManagedFields     []struct {
+		Time        time.Time
+		Subresource string
+	}
 	Name, Namespace string
+	UID             string
+	Annotations     map[string]string
 	Generation      int64
 	Labels          map[string]string
+}
+
+func (m agentTUIMetadata) modifiedTime() time.Time {
+	latest := m.CreationTimestamp
+	for _, field := range m.ManagedFields {
+		if field.Subresource != "status" && field.Time.After(latest) {
+			latest = field.Time
+		}
+	}
+	return latest
 }
 
 func (m agentTUIMetadata) version() string {
@@ -176,8 +210,9 @@ func (a *App) agentTUIEnvironments(ctx context.Context) ([]agentTUIEnvironment, 
 	}
 	locations, err := loadAgentLocations()
 	if err != nil {
-		return envs, err
+		locations = nil
 	}
+	locationErr := err
 	saved := map[string]bool{}
 	for _, l := range locations {
 		if saved[l.Context] || l.Kubeconfig == "" {
@@ -204,8 +239,17 @@ func (a *App) agentTUIEnvironments(ctx context.Context) ([]agentTUIEnvironment, 
 		}
 		saved[l.Context] = true
 	}
+	access, accessErr := a.savedConsoleContexts(ctx)
+	for _, env := range access {
+		if i, ok := seen[env.Name]; ok {
+			envs[i] = env
+		} else {
+			seen[env.Name] = len(envs)
+			envs = append(envs, env)
+		}
+	}
 	sort.Slice(envs, func(i, j int) bool { return envs[i].Name < envs[j].Name })
-	return envs, nil
+	return envs, errors.Join(locationErr, accessErr)
 }
 
 // Empty inventories are valid only when Kubernetes explicitly returns an array.
@@ -245,7 +289,7 @@ func (a *App) agentTUIInventory(ctx context.Context, env agentTUIEnvironment, na
 	var agents []agentTUIAgent
 	var problems []string
 	read := func(kind, ns string, dst any) bool {
-		raw, err := a.orkaCapture(ctx, nil, "-n", ns, "get", kind, "-o", "json")
+		raw, err := a.orkaCapture(ctx, nil, "-n", ns, "get", kind, "-o", "json", "--show-managed-fields=true")
 		if err == nil {
 			err = decodeConsoleList(raw, dst)
 		}
@@ -303,6 +347,12 @@ func (a *App) agentTUIInventory(ctx context.Context, env agentTUIEnvironment, na
 			}
 			for _, item := range list.Items {
 				row := agentTUIAgent{Name: item.Metadata.Name, Namespace: namespace, Runtime: "orka", Version: item.Metadata.version(), Ready: agentTUIReady(item.Status.Ready), Provider: item.Spec.ProviderRef.Name, Model: item.Spec.Model.Name, InferenceReady: "unknown"}
+				row.Modified = item.Metadata.modifiedTime()
+				row.Deleting = item.Metadata.DeletionTimestamp != nil
+				row.UID = item.Metadata.UID
+				row.SuiteOwned = hasOrkaSuiteReservation(item.Metadata.Annotations)
+				row.SuiteName = item.Metadata.Annotations["kaimahi.dev/suite"]
+				row.SuiteDigest = item.Metadata.Annotations["kaimahi.dev/suite-digest"]
 				row.External = len(item.Spec.Runtime) > 0 && string(item.Spec.Runtime) != "null"
 				a.agentTUIPrompt(ctx, namespace, item.Spec.SystemPrompt, &row)
 				for _, ref := range item.Spec.Tools {

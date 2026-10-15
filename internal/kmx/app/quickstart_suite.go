@@ -186,6 +186,14 @@ func (a *App) stepQuickstartSuite() error {
 		return err
 	}
 	a.quickstartPrepared, a.quickstartPlacement = p, &result
+	id, err := a.RetainSuiteDeployment(ctx, p.Plan, result)
+	if err != nil {
+		return err
+	}
+	a.quickstartDeployment = id
+	if err = rememberSuiteConsoleEntry(suiteConsoleEntry{Root: p.Workspace, Evidence: p.Evidence, Reference: p.Plan.options.Reference, Layout: p.Layout}); err != nil {
+		return err
+	}
 	return nil
 }
 

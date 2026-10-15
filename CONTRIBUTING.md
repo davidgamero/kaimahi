@@ -6,6 +6,11 @@ corrections, tests, and small capability changes. Start with the organization
 
 ## Before building something new
 
+The experimental `feat/suite-centered-tui` branch extends native Orka suite
+observation/invocation and read-only cluster extraction. Its specific contracts,
+test workflow and remaining limits are in [the branch guide](docs/suite-centered-tui.md).
+Preserve independent-agent ownership refusals and all other runtime restrictions.
+
 For command changes, follow [AGENTS.md](AGENTS.md), the
 [command conventions](docs/command-conventions.md) and the
 [command alignment record](docs/command-semantics.md), including help,

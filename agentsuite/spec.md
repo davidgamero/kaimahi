@@ -429,6 +429,14 @@ retained or ignored.
 
 ## 8. Agents
 
+The experimental capability-based profile accepts `model.capabilities` instead
+of an exact `model.model`. The two are mutually exclusive. Requirements declare
+an API revision, minimum total context and maximum-output capacity, inference
+streaming and tool-calling support. Endpoint and credential bindings remain
+deployment inputs. See [inference.schema.json](schema/inference.schema.json).
+The exact-model representation remains supported unchanged. Capability declarations
+are not model qualification evidence or permission to substitute an exact model.
+
 An agent manifest defines:
 
 - a stable identifier and optional description;
@@ -1301,6 +1309,22 @@ A ToolProvider composition does not authorize any agent, resolve a remote endpoi
 deploy the resulting image.
 
 ## 11. Build profiles
+
+An optional experimental `execution` record describes the image serving contract,
+named environment inputs and configuration ABI. Its closed schema is
+[execution.schema.json](schema/execution.schema.json). The initial mounted
+configuration mapping is deliberately limited to the pinned AgentKit HTTP profile;
+it does not complete sandbox-image conformance or native runtime registration.
+The `http-v1` kind describes a serving interface, not Kubernetes placement or
+runtime selection. The `agentkit-v0-mounted-v1` configuration value is an explicit
+experimental adapter ABI; it is not a general cross-harness configuration format.
+This record describes a built image interface; it does not select a suite
+member's runtime or make images mandatory for native execution. A consumer's
+versioned execution-profile selection determines whether a member requires an
+image. If it does, the image declaration must agree with the selected build
+profile's serving contract. Native exact-model profiles must not be converted
+to capability-based image execution merely because their declared build inputs
+include a harness or execution record.
 
 A build profile MUST contain non-empty `runtimeBase` and `harness` arrays and
 one positive, profile-wide `sourceEpoch`. Each array contains one image entry

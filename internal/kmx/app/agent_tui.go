@@ -80,7 +80,7 @@ func newAgentTUIModel(opt AgentTUIOptions) agentTUIModel {
 
 // AgentTUI releases terminal ownership before entering chat,
 // then restores the dashboard and refreshes both inventories on return.
-func (a *App) AgentTUI(opt AgentTUIOptions) error {
+func (a *App) agentInventoryTUI(opt AgentTUIOptions) error {
 	if a.Stdin == nil || !isTerminalFile(a.Stdin) || !isInteractiveTerminal(a.Out) || os.Getenv("TERM") == "dumb" {
 		return fmt.Errorf("kmx console requires an interactive terminal on stdin and stdout; use kmx orka list for piped output")
 	}
@@ -407,6 +407,7 @@ func (m agentTUIModel) createAgent() (tea.Model, tea.Cmd) {
 	input.CharLimit = 4096
 	input.SetWidth(max(1, min(88, m.width-8)-4))
 	input.Focus()
+	input.SetValue(m.opt.Workspace)
 	m.creation = &agentTUICreatePane{input: input, env: c.Env, namespace: valueOr(m.opt.Namespace, OrkaNamespace), server: c.Env.Server}
 	return m, textinput.Blink
 }

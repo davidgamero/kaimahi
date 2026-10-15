@@ -17,6 +17,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	spec "github.com/kaimahi-agents/kaimahi/agentsuite"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/scaffold"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/secretshapes"
 	"go.yaml.in/yaml/v3"
@@ -31,6 +32,9 @@ const maxFile = 1 << 20
 const AgentSessionsVersion = "ca85f47a2ec17ca6e16029cfa69419cfe29442b3"
 
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
+
+const NativeExecution = "native-orka"
+const ImageExecution = "image-http"
 
 // RuntimeProfile is KMX-private selection metadata, not a public AgentSuite SPI.
 // The zero value is accepted only as the historical Orka authoring default.
@@ -73,6 +77,8 @@ func (r *sourceRuntime) profile() (RuntimeProfile, error) {
 type CreateOptions struct {
 	Name, Description, Model, InstructionsFile string
 	Runtime                                    RuntimeProfile
+	Execution                                  string
+	ContextTokens, OutputTokens                int
 }
 type sourceWorkspace struct {
 	SchemaVersion int    `yaml:"schemaVersion"`
@@ -81,14 +87,31 @@ type sourceWorkspace struct {
 	BuildProfile  string `yaml:"buildProfile"`
 }
 type sourceMember struct {
+	Execution    string `yaml:"execution,omitempty"`
 	ID           string `yaml:"id"`
 	Description  string `yaml:"description,omitempty"`
 	Instructions string `yaml:"instructions"`
 	Model        struct {
-		Protocol string `yaml:"protocol"`
-		Model    string `yaml:"model"`
+		Protocol     string           `yaml:"protocol"`
+		Model        string           `yaml:"model,omitempty"`
+		Capabilities *sourceInference `yaml:"capabilities,omitempty"`
 	} `yaml:"model"`
 	Runtime *sourceRuntime `yaml:"runtime,omitempty"`
+}
+
+type sourceInference struct {
+	API           string `yaml:"api"`
+	ContextTokens int    `yaml:"contextTokens"`
+	OutputTokens  int    `yaml:"outputTokens"`
+	Streaming     bool   `yaml:"streaming"`
+	ToolCalling   bool   `yaml:"toolCalling"`
+}
+
+func (s *sourceInference) portable() *spec.InferenceRequirements {
+	if s == nil {
+		return nil
+	}
+	return &spec.InferenceRequirements{API: s.API, ContextTokens: s.ContextTokens, OutputTokens: s.OutputTokens, Streaming: s.Streaming, ToolCalling: s.ToolCalling}
 }
 
 func safeText(value string) error {
@@ -107,7 +130,19 @@ func validateMember(m sourceMember, instructions []byte) error {
 	if err := scaffold.ValidateName(m.ID); err != nil {
 		return err
 	}
-	if m.Model.Protocol != "openai-compatible" || strings.TrimSpace(m.Model.Model) == "" || strings.TrimSpace(m.Model.Model) != m.Model.Model || strings.IndexFunc(m.Model.Model, unicode.IsControl) >= 0 {
+	if m.Execution == ImageExecution {
+		if m.Runtime != nil {
+			return errors.New("image-http cannot also declare a native runtime")
+		}
+		if m.Model.Protocol != "openai-compatible" || m.Model.Model != "" || m.Model.Capabilities == nil {
+			return errors.New("image-http requires inference capabilities, not an exact model")
+		}
+		if err := m.Model.Capabilities.portable().Validate(); err != nil {
+			return err
+		}
+	} else if m.Execution != "" && m.Execution != NativeExecution {
+		return errors.New("unsupported member execution profile")
+	} else if m.Model.Capabilities != nil || m.Model.Protocol != "openai-compatible" || strings.TrimSpace(m.Model.Model) == "" || strings.TrimSpace(m.Model.Model) != m.Model.Model || strings.IndexFunc(m.Model.Model, unicode.IsControl) >= 0 {
 		return errors.New("an explicit exact model and openai-compatible protocol are required")
 	}
 	if strings.TrimSpace(string(instructions)) == "" {
@@ -213,13 +248,21 @@ func createInput(opt CreateOptions) (sourceMember, []byte, error) {
 		declared.Version, declared.Engine = &profile.Version, &profile.Engine
 	}
 	m := sourceMember{ID: opt.Name, Description: opt.Description, Instructions: "instructions.md", Runtime: declared}
+	m.Execution = opt.Execution
+	if opt.Execution == ImageExecution {
+		if opt.Runtime != (RuntimeProfile{}) {
+			return m, nil, errors.New("image-http cannot also select a native runtime")
+		}
+		m.Runtime = nil
+		m.Model.Capabilities = &sourceInference{API: "openai-chat-completions-v1", ContextTokens: opt.ContextTokens, OutputTokens: opt.OutputTokens}
+	}
 	if err := safeText(opt.Name); err != nil {
 		return m, nil, err
 	}
 	if err := scaffold.ValidateName(opt.Name); err != nil {
 		return m, nil, err
 	}
-	if strings.TrimSpace(opt.Model) == "" || strings.TrimSpace(opt.InstructionsFile) == "" {
+	if opt.Execution != ImageExecution && strings.TrimSpace(opt.Model) == "" || strings.TrimSpace(opt.InstructionsFile) == "" {
 		return m, nil, errors.New("workspace creation requires --model and --instructions <file>")
 	}
 	m.Model.Protocol, m.Model.Model = "openai-compatible", opt.Model
@@ -252,6 +295,13 @@ func Create(ctx context.Context, root string, opt CreateOptions) error {
 	if err != nil {
 		return err
 	}
+	profile := defaultProfile
+	if opt.Execution == ImageExecution {
+		profile, err = imageProfile()
+		if err != nil {
+			return err
+		}
+	}
 	root, err = safeAbsolute(root)
 	if err != nil {
 		return err
@@ -283,7 +333,7 @@ func Create(ctx context.Context, root string, opt CreateOptions) error {
 	if err != nil {
 		return err
 	}
-	files := map[string][]byte{"workspace.yaml": wb, w.Member: mb, "agents/" + opt.Name + "/instructions.md": instructions, w.BuildProfile: defaultProfile, "eval/example.yaml": []byte("id: example\ninput: What is 2+2?\nexpectContains: [\"4\"]\n")}
+	files := map[string][]byte{"workspace.yaml": wb, w.Member: mb, "agents/" + opt.Name + "/instructions.md": instructions, w.BuildProfile: profile, "eval/example.yaml": []byte("id: example\ninput: What is 2+2?\nexpectContains: [\"4\"]\n")}
 	if err := writeFiles(stage, files); err != nil {
 		return err
 	}
@@ -368,9 +418,13 @@ func strictYAML(b []byte, out any) error {
 				}
 				seen[c.Value] = true
 				value := n.Content[i+1]
-				if c.Value == "schemaVersion" {
+				if c.Value == "schemaVersion" || c.Value == "contextTokens" || c.Value == "outputTokens" {
 					if value.Kind != yaml.ScalarNode || value.Tag != "!!int" {
 						return errors.New("schemaVersion must be an integer scalar")
+					}
+				} else if c.Value == "streaming" || c.Value == "toolCalling" {
+					if value.Kind != yaml.ScalarNode || value.Tag != "!!bool" {
+						return errors.New("inference capability flag must be boolean")
 					}
 				} else if value.Kind == yaml.ScalarNode && value.Tag != "!!str" {
 					return errors.New("source fields must be strings, without scalar coercion")
