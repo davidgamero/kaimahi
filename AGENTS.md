@@ -89,7 +89,8 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
   Guided console Lift selects copied context/namespace/inference values without
   requiring kmx.yaml. Runtime/Foundry/auth-Secret setup, ACR login, publication,
   evaluation and Apply each require explicit consent. Image bindings derive from
-  reviewed packaged capabilities and selected Secret references. Registry HTTPS
+  reviewed packaged capabilities and selected Secret references. ACR login consent
+  uses Confirm login / Cancel, not a typed keyword. Registry HTTPS
   reachability and role observations are not publisher/pull authorization.
   Shared handlers own effects; no automatic retry of writes/model sends. Offline
   layouts/manual bindings remain Advanced; no default local OCI directory prompt.

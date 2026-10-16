@@ -1393,7 +1393,7 @@ func (m *suiteConsole) submit(f suiteConsoleForm) tea.Cmd {
 					return suiteConsoleResult{err: errors.New("exact context required")}
 				}
 				answer, err := w.RunImagePlacement(ctx, selected.Deployment, v[0])
-				return suiteConsoleResult{text: answer, err: err}
+				return suiteConsoleResult{text: answer, err: err, feedback: consoleAnswerFeedback(answer, err)}
 			}
 			d, err := ReadSuiteDeployment(selected.Deployment)
 			if err != nil {
@@ -1406,7 +1406,7 @@ func (m *suiteConsole) submit(f suiteConsoleForm) tea.Cmd {
 			cfg.Confirm = v[1]
 			w.Cfg = &cfg
 			answer, err := w.RunSuiteMember(ctx, selected.Deployment, "", v[0])
-			return suiteConsoleResult{text: answer, err: err}
+			return suiteConsoleResult{text: answer, err: err, feedback: consoleAnswerFeedback(answer, err)}
 		})
 	case "run-live":
 		if selected.Live == nil || !selected.Live.canChat() || v[1] != selected.Context {

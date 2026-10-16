@@ -17,6 +17,13 @@ type suiteFeedback struct {
 	scroll int
 }
 
+func consoleAnswerFeedback(answer string, err error) *suiteFeedback {
+	if err != nil {
+		return &suiteFeedback{title: "RUN STOPPED", text: err.Error()}
+	}
+	return &suiteFeedback{title: "AGENT ANSWER", text: answer}
+}
+
 func consoleLoadingBar(frame, width int) string {
 	width = max(4, min(28, width))
 	cells := make([]string, width)

@@ -101,6 +101,10 @@ the final exclusive save refuses if another process creates the destination.
 
 ### Guided console Lift
 
+ACR login asks **Confirm login / Cancel**, showing the selected registry. Press
+Enter or click Confirm login; no typed `login` keyword is required. Successful
+login continues to repository selection, while Cancel returns to access options.
+
 New native source uses the root workspace Lift backend after guided selectors:
 disposable full-suite evaluation/cleanup → managed proof → exact-S-derived registry
 publication → guarded Lift. The shared plan disclosure is confirmed once in the

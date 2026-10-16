@@ -22,6 +22,15 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 ## Unreleased
 
+- Guided ACR login uses Confirm login / Cancel instead of requiring the user to
+  type `login`; the selected registry is shown before authentication.
+
+- Headless live console qualification found and fixed result-forward port
+  collisions in composed Lift and retained member invocation. Lift completion,
+  pipeline failures and fresh answers now use visible dialogs instead of the
+  removed inline detail preview. Real native AKS evaluation/publication/Lift and
+  a fresh TUI answer passed with terminal restoration and resource UID readback.
+
 - Reconciled suite console with main's native workspace pipeline: guided new-source
   Lift uses the same disposable evaluation, cleanup, managed passing proof,
   exact-S publication, completion verification and scoped consent as root Lift.

@@ -6,6 +6,33 @@ The [CLI reference](kmx.md) remains authoritative for implemented commands.
 
 ## Test this branch
 
+### Headless terminal qualification after main reconciliation
+
+On 2026-10-15, a real PTY driven through a headless xterm emulator completed
+native Orka guided Lift on the rebased integration branch (`d5ce5b5` plus the
+result-port/completion-dialog fixes). Binary SHA-256:
+`d8043165f012f515958555851e8ab6e91ca1eb776d2e8d83866056007bcab0c9`.
+Rendered screen snapshots verified fuzzy destination, namespace, inference and
+ACR selection; explicit publisher login; the suggested repository; source and
+both case reviews; rejection of blank consent; and the shared workspace pipeline.
+Two real arithmetic cases passed against qwen2.5:3b on AKS, candidates were cleaned,
+the exact suite was published to ACR, and Lift created a retained placement.
+A subsequent TUI Run returned `8`. Independent cluster readback matched Agent and
+Provider UIDs, retained status succeeded, and terminal settings were restored.
+
+The rehearsal exposed fixed result-port collisions and completion/answer output
+hidden in the removed detail pane. Pipeline and retained member execution now
+select an available loopback port, preserving bind verification. Completion,
+failure and answers have visible dialogs. Earlier failed evaluations stopped
+publication and cleaned their candidates; a diagnostic interrupted run left its
+acknowledged deployment for inspection. Model availability was repaired separately
+before a new explicitly confirmed candidate, never credited as passing proof.
+
+Private captures and the successful summary remain under the operator's
+`/tmp/opencode/headless-lift-pz5j0_69` test directory. Dedicated test deployments
+and registry artifacts are retained. This qualifies the native path at 180×52,
+not image building, all terminal sizes, or automatic runtime installation.
+
 ### Main reconciliation
 
 Integration branch `feat/suite-centered-tui-main` rebases the preserved console
