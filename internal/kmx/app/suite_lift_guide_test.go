@@ -150,6 +150,39 @@ func TestGuidedImageOptionsDoNotMixNativeInference(t *testing.T) {
 	}
 }
 
+func TestGuidedACRLoginConfirmationAndCancel(t *testing.T) {
+	t.Setenv("KMX_HOME", t.TempDir())
+	a, _, _, _ := extractionFixture(t)
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "login-calls")
+	t.Setenv("TEST_ACR_CALLS", calls)
+	fakeTool(t, dir, "az", `printf '%s\n' "$*" > "$TEST_ACR_CALLS"`)
+	t.Setenv("PATH", dir)
+	var workers sync.WaitGroup
+	g := &suiteLiftGuide{stage: "registry-access", entry: suiteConsoleEntry{Name: "agent"}, acr: suiteAzureRegistry{Name: "chosen", LoginServer: "chosen.azurecr.io", ID: "/subscriptions/sub-id/resourceGroups/rg/providers/Microsoft.ContainerRegistry/registries/chosen"}}
+	m := &suiteConsole{a: a, ctx: t.Context(), workers: &workers, events: make(chan suiteConsoleProgress, 16), input: textinput.New(), liftGuide: g}
+	m.advanceLiftGuide(liftGuideChoice{value: "login"})
+	if g.stage != "acr-login" || g.confirm != "" || len(g.choices) != 2 {
+		t.Fatal("login did not offer confirmation choices")
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if _, err := os.Stat(calls); !os.IsNotExist(err) || g.stage != "registry-access" {
+		t.Fatal("Cancel performed login or did not return")
+	}
+	m.advanceLiftGuide(liftGuideChoice{value: "login"})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	consoleFinish(t, m, cmd)
+	raw, err := os.ReadFile(calls)
+	if err != nil || !strings.Contains(string(raw), "acr login --name chosen") || !strings.Contains(string(raw), "--subscription sub-id") {
+		t.Fatalf("wrong login: %s %v", raw, err)
+	}
+	if m.liftGuide.stage != "repository" {
+		t.Fatal("login did not continue to publication setup")
+	}
+	workers.Wait()
+}
+
 func TestGuidedImageGeneratesReviewedBindingsWithoutClusterWrites(t *testing.T) {
 	t.Setenv("KMX_HOME", t.TempDir())
 	a, _, _, _ := extractionFixture(t)

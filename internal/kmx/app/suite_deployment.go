@@ -272,7 +272,10 @@ func (a *App) answerRetainedMember(parent context.Context, r ReleaseLiftResult, 
 	}
 	taskName := strings.TrimRight(name[:min(len(name), 40)], "-.") + "-run-" + suffix
 	doc := map[string]any{"apiVersion": "core.orka.ai/v1alpha1", "kind": "Task", "metadata": map[string]any{"name": taskName, "namespace": ns}, "spec": map[string]any{"type": "ai", "prompt": prompt, "agentRef": map[string]any{"name": name, "namespace": ns}, "resources": map[string]any{}}}
-	options := quickstartResultOptions(ns, "")
+	options, err := interactiveResultOptions(ns)
+	if err != nil {
+		return "", err
+	}
 	if a.quickstartResultPort != "" {
 		options.ResultPort = a.quickstartResultPort
 	}

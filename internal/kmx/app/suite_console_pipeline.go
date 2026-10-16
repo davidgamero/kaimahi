@@ -35,8 +35,12 @@ func (m *suiteConsole) startNativePipeline() tea.Cmd {
 			return suiteConsoleResult{err: err}
 		}
 		w := g.env.app(a).withRunContext(ctx)
+		transport, err := interactiveResultOptions(g.namespace)
+		if err != nil {
+			return suiteConsoleResult{err: err, pipelineDone: true, feedback: &suiteFeedback{title: "LIFT STOPPED", text: err.Error()}}
+		}
 		opt := WorkspaceLiftOptions{Workspace: g.entry.Root, Repository: g.registry + "/" + g.repository, EvalName: g.env.Name, DestinationName: g.env.Name, RetainPlacement: true,
-			Evaluation:  SuiteWorkspaceEvaluationOptions{Workspace: g.entry.Root, ToContext: g.env.Name, ToNamespace: g.namespace, Inference: g.provider, JudgeBaseURL: g.judgeURL, JudgeKeyEnv: g.judgeKeyEnv},
+			Evaluation:  SuiteWorkspaceEvaluationOptions{Workspace: g.entry.Root, ToContext: g.env.Name, ToNamespace: g.namespace, Inference: g.provider, ResultPort: transport.ResultPort, JudgeBaseURL: g.judgeURL, JudgeKeyEnv: g.judgeKeyEnv},
 			Destination: ReleaseLiftOptions{ToContext: g.env.Name, ToNamespace: g.namespace, Inference: g.provider},
 			Confirm: func(ctx context.Context, plan WorkspaceLiftPlan) (string, error) {
 				request := suitePipelineConsent{plan: plan, reply: make(chan string, 1)}
@@ -55,12 +59,13 @@ func (m *suiteConsole) startNativePipeline() tea.Cmd {
 		}
 		prepared, err := PrepareWorkspaceLift(ctx, opt)
 		if err != nil {
-			return suiteConsoleResult{err: err}
+			return suiteConsoleResult{err: err, pipelineDone: true, feedback: &suiteFeedback{title: "LIFT PREPARATION STOPPED", text: err.Error()}}
 		}
 		defer prepared.Close()
 		result, err := w.LiftWorkspace(ctx, prepared)
 		if err != nil {
-			return suiteConsoleResult{err: err, text: fmt.Sprintf("Eval: %s\nPush: %s\nLift: %s", result.Eval.Detail, result.Push.Detail, result.Lift.Detail)}
+			text := fmt.Sprintf("%s\n\nEval: %s\nPush: %s\nLift: %s\n\nNo automatic retry. Inspect any retained resources before starting another Lift.", err, result.Eval.Detail, result.Push.Detail, result.Lift.Detail)
+			return suiteConsoleResult{err: err, pipelineDone: true, feedback: &suiteFeedback{title: "LIFT STOPPED", text: text}, text: text}
 		}
 		e := g.entry
 		e.Reference = opt.Repository + "@" + result.Plan.SuiteDigest
@@ -80,7 +85,8 @@ func (m *suiteConsole) startNativePipeline() tea.Cmd {
 				e.Side = 1
 			}
 		}
-		return suiteConsoleResult{entry: &e, pipelineDone: true, text: fmt.Sprintf("Eval: %s\nPush: %s\nLift: %s\n%s", result.Eval.Detail, result.Push.Detail, result.Lift.Detail, map[bool]string{true: "Chat/run now available", false: "Completion verified read-only; use an existing retained placement for chat/run"}[e.Deployment != ""])}
+		text := fmt.Sprintf("Eval: %s\nPush: %s\nLift: %s\n%s", result.Eval.Detail, result.Push.Detail, result.Lift.Detail, map[bool]string{true: "Chat/run now available · close this dialog, then u to run or c to chat", false: "Completion verified read-only; use an existing retained placement for chat/run"}[e.Deployment != ""])
+		return suiteConsoleResult{entry: &e, pipelineDone: true, text: text, feedback: &suiteFeedback{title: "LIFT COMPLETE", text: text}}
 	})
 }
 

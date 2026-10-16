@@ -3,8 +3,23 @@ package app
 import (
 	"context"
 	"errors"
+	"github.com/charmbracelet/x/ansi"
+	"strings"
 	"testing"
 )
+
+func TestPipelineCompletionRemainsVisibleWithoutInlinePreview(t *testing.T) {
+	m := &suiteConsole{width: 100, height: 32, running: true, liftGuide: &suiteLiftGuide{stage: "repository"}}
+	m.Update(suiteConsoleResult{pipelineDone: true, feedback: &suiteFeedback{title: "LIFT COMPLETE", text: "Eval: 2/2 passed\nChat/run now available"}})
+	view := ansi.Strip(m.View().Content)
+	if m.liftGuide != nil || m.running || !strings.Contains(view, "LIFT COMPLETE") || !strings.Contains(view, "Chat/run now available") {
+		t.Fatal("completion remained hidden behind stale guide")
+	}
+	m.Update(suiteConsoleResult{feedback: consoleAnswerFeedback("8", nil)})
+	if !strings.Contains(ansi.Strip(m.View().Content), "AGENT ANSWER") {
+		t.Fatal("fresh answer hidden")
+	}
+}
 
 func TestWorkspaceLiftPresentationConsentCannotBypassGuard(t *testing.T) {
 	a, opt, state, _, _, writes := workspaceLiftFixture(t)

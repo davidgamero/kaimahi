@@ -335,12 +335,23 @@ func (m *suiteConsole) advanceLiftGuide(c liftGuideChoice) tea.Cmd {
 			return job(func(ctx context.Context, a *App, g *suiteLiftGuide) error { return g.registryChoices(ctx, a) })
 		}
 		if c.value == "login" {
-			m.guideInput("acr-login", "Update publisher login for "+g.acr.Name+"? Type login", "", "login")
+			g.pick("acr-login", "Log in to "+g.acr.Name+"?", []liftGuideChoice{
+				{label: "Confirm login", value: "confirm", detail: "Use your Azure login to update local registry credentials for " + g.acr.LoginServer},
+				{label: "Cancel", value: "cancel", detail: "Return to registry access options"},
+			})
 			return nil
 		}
 		label, value := g.publicationRepositoryDefault()
 		m.guideInput("repository", label, value, "")
 	case "acr-login":
+		if c.value != "confirm" {
+			g.pick("registry-access", "Registry access", []liftGuideChoice{
+				{label: "Log in to selected ACR", value: "login"},
+				{label: "Continue to publication", value: "continue"},
+				{label: "Choose another registry", value: "registry"},
+			})
+			return nil
+		}
 		return job(func(ctx context.Context, a *App, g *suiteLiftGuide) error {
 			args := []string{"acr", "login", "--name", g.acr.Name, "--only-show-errors"}
 			parts := strings.Split(strings.Trim(g.acr.ID, "/"), "/")
