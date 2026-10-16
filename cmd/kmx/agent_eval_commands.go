@@ -99,7 +99,9 @@ func newAgentEvalCommand(state *commandState) *cobra.Command {
 				}
 				return a.EvaluateImageRelease(ctx, image, native.Out)
 			}
-			if err := refuseMultiMemberWorkspace(native.Workspace); err != nil {return err}
+			if err := refuseMultiMemberWorkspace(native.Workspace); err != nil {
+				return err
+			}
 			selectedNative := native
 			selectedNative.JSON = output == "json"
 			if !cmd.Flags().Changed("to-namespace") {

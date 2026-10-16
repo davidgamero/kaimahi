@@ -52,7 +52,7 @@ func imageInventory(suite *workspace.ImageSuite) ([]suitePassingInventoryCase, s
 	}
 	// Reuse only the runtime-neutral case parser and assertion inventory, never
 	// native subject/receipt validation or a native execution identity.
-	return suitePassingInventory(&workspace.NativeSuite{Cases: suite.Cases})
+	return suitePassingInventory(&workspace.NativeSuite{MemberID: suite.MemberID, Cases: suite.Cases})
 }
 
 func canonicalImagePassing(ctx context.Context, r *suiteImagePassingReceipt, suite *workspace.ImageSuite) ([]byte, error) {

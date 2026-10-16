@@ -10,9 +10,9 @@ import (
 )
 
 func TestImagePassingEvidenceBindsCompleteCasesAndImageSubject(t *testing.T) {
-	caseBytes := []byte("id: example\ninput: What is 2+2?\nexpectContains: [\"4\"]\n")
+	caseBytes := []byte(`{"schemaVersion":"1.0.0-draft","mediaType":"application/vnd.agentsuite.eval.case.v1+json","id":"example","input":"What is 2+2?","assertions":[{"id":"expectContains.0","type":"contains","value":"4"}]}`)
 	d := "sha256:" + strings.Repeat("a", 64)
-	suite := &workspace.ImageSuite{Digest: d, MemberID: "hello", Cases: []workspace.PackagedCase{{Path: "metadata/kmx/eval/example.yaml", Digest: digest.FromBytes(caseBytes).String(), Bytes: caseBytes}}}
+	suite := &workspace.ImageSuite{Digest: d, MemberID: "hello", Cases: []workspace.PackagedCase{{Path: "evals/hello/cases/example.json", Digest: digest.FromBytes(caseBytes).String(), Bytes: caseBytes}}}
 	inventory, casesDigest, err := imageInventory(suite)
 	if err != nil {
 		t.Fatal(err)

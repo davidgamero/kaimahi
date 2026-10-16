@@ -34,6 +34,10 @@ type releaseLiftProvenance struct {
 }
 
 func (a *App) prepareReleaseLiftProvenance(ctx context.Context, p *PreparedReleaseLift, docs []map[string]any) (*releaseLiftRecordWriter, string, error) {
+	// The native receipt-backed provenance contract does not consume image proof.
+	if p.image != nil {
+		return nil, "", nil
+	}
 	creates := false
 	version := 1
 	for _, r := range p.summary.Resources {
@@ -95,6 +99,9 @@ func (a *App) prepareReleaseLiftProvenance(ctx context.Context, p *PreparedRelea
 // Only newly created objects participate. Existing objects and historical
 // annotations are never patched, and their absence is not synthesized here.
 func (a *App) verifyReleaseLiftProvenance(ctx context.Context, p *PreparedReleaseLift, docs []map[string]any, result ReleaseLiftResult) error {
+	if p.image != nil {
+		return nil
+	}
 	for i, resource := range result.Resources {
 		if resource.Action != "create" || resource.Outcome != "created" {
 			continue

@@ -570,7 +570,8 @@ final pointer only after completeness. Root image eval/lift use separate evidenc
 and shared guarded apply, not a parallel reconciler. Retained image placements
 support root run/chat and suite status; shared console uses the same review pane.
 Ownership is suite/member/instance/target-specific plus receipt UID/spec fences.
-Private packaged cases remain until #493 adopts #497; no speculative spec migration.
+  Image and native packaged cases use the shared public evaluation decoder.
+  Image evidence remains runtime-specific and does not enter native Lift provenance.
 
 Run checks appropriate to the changed paths as described in CONTRIBUTING.md.
 Command changes normally require `go test ./cmd/kmx`, affected operation-package

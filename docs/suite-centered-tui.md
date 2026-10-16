@@ -6,6 +6,27 @@ The [CLI reference](kmx.md) remains authoritative for implemented commands.
 
 ## Test this branch
 
+### Full-branch tmux qualification on current main
+
+The complete feature branch was rebased onto main `38a7daf`, retaining public
+AgentSuite v0.3.1 consumption, public evaluation cases, policy/multi-member
+boundaries, portable evidence export/verify, destination status and native
+create-time Lift provenance. Image execution now decodes the same public case
+inventory; image receipts remain distinct from native Lift provenance records.
+Chat and console invocation use main's kubectl-selected free result ports.
+
+A real 180×52 tmux session completed guided native Lift on AKS: destination,
+namespace, inference and ACR fuzzy selection; Confirm login; source and two-case
+review; blank-consent refusal; shared evaluation/cleanup/publication/Lift; retained
+status; and a separate fresh answer of `8`. Tested binary SHA-256:
+`c3957c4ae92b2cff86ffa97ad7f2187dae2c49781f804994da83b424d7bca5c3`.
+Private screen captures/summary are under
+`/tmp/opencode/tmux-rebase-lift-2gshux_r`; session `tmux-lift-1792186639` remains
+available. Dedicated resources and artifacts remain for inspection. Two earlier
+fresh candidates failed model assertions, cleaned up, and blocked publication;
+no failed receipt was used. This qualifies the native UI path, not live image
+execution or every possible runtime setup branch on this revision.
+
 ### Headless terminal qualification after main reconciliation
 
 On 2026-10-15, a real PTY driven through a headless xterm emulator completed

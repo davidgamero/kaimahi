@@ -93,6 +93,7 @@ func verificationFailed(err error) error {
 	}
 	return errors.New("packaged native suite verification failed")
 }
+
 // HasImageProfile only selects validation; it confers no execution authority.
 func HasImageProfile(artifact *suiteoras.Artifact) bool {
 	if artifact == nil {
@@ -141,7 +142,10 @@ func LoadImageArtifact(ctx context.Context, artifact *suiteoras.Artifact) (*Imag
 		return nil, errors.New("invalid image member")
 	}
 	out.Instructions = files[member.Instructions.Path]
-	out.Cases,_,err=packagedCases(files,member);if err!=nil{return nil,err}
+	out.Cases, _, err = packagedCases(files, member)
+	if err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 

@@ -32,8 +32,8 @@ type ReleaseLiftResult struct {
 	ReleaseRecord   *ReleaseRecordObservation `json:"releaseRecord,omitempty"`
 	placement       *suiteNativePlacement
 	kagent          *releaseLiftKagentPlacement
-	Placement string               `json:"placement,omitempty"`
-	image     *releaseLiftImage
+	Placement       string `json:"placement,omitempty"`
+	image           *releaseLiftImage
 }
 
 type releaseLiftInputs struct {
@@ -355,9 +355,11 @@ func (a *App) ApplyReleaseLift(ctx context.Context, p *PreparedReleaseLift, revi
 			result.State, row.Outcome = "partial", "unknown"
 			row.UID, row.Generation, row.ResourceVersion, row.SpecDigest = "", 0, "", ""
 			created[i], err = worker.createReleaseLift(ctx, p, doc, admitted[i], row)
-			if persistErr := record.checkpoint(context.WithoutCancel(ctx), result); persistErr != nil {
-				provenanceFailed = true
-				return result, errors.Join(err, errReleaseLiftProvenance)
+			if record != nil {
+				if persistErr := record.checkpoint(context.WithoutCancel(ctx), result); persistErr != nil {
+					provenanceFailed = true
+					return result, errors.Join(err, errReleaseLiftProvenance)
+				}
 			}
 			if err != nil {
 				return result, err

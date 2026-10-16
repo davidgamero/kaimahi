@@ -5,8 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
-	"strconv"
 	"strings"
 	"time"
 
@@ -195,17 +193,7 @@ func (b *orkaChatBackend) Send(ctx context.Context, message string, renderer *ch
 }
 
 func interactiveResultOptions(namespace string) (CreateOptions, error) {
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		return CreateOptions{}, fmt.Errorf("cannot select local chat result port: %w", err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		return CreateOptions{}, err
-	}
-	opt := quickstartResultOptions(namespace, "")
-	opt.ResultPort = strconv.Itoa(port)
-	return opt, nil
+	return quickstartResultOptions(namespace, ""), nil
 }
 
 func (a *App) runQuickstartOrkaTaskProfile(parent context.Context, agent, namespace, prompt string, profile *orkaTaskProfile, report func(string), reuse ...*orkaResultSession) (string, error) {

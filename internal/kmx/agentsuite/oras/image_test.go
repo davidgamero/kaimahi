@@ -22,7 +22,7 @@ func TestImageBuildSourceBindsSupplementalContent(t *testing.T) {
 	defer server.Close()
 	t.Setenv("DOCKER_CONFIG", t.TempDir())
 	source := filepath.Join(t.TempDir(), "source")
-	if err := os.CopyFS(source, os.DirFS(filepath.Join("..", "..", "..", "..", "agentsuite", "testdata", "minimal"))); err != nil {
+	if err := os.CopyFS(source, os.DirFS(filepath.Join("..", "..", "..", "..", "testdata", "agentsuite", "minimal"))); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"eval/case.yaml", "metadata/kmx/profile.json"} {

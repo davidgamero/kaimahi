@@ -128,10 +128,12 @@ func newAgentCreateCommand(state *commandState) *cobra.Command {
 		return nil
 	}
 	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
-		opt := workspace.CreateOptions{Name: name, Description: description, Model: model, InstructionsFile: instructions, Runtime: profile,Execution:execution,ContextTokens:contextTokens,OutputTokens:outputTokens}
-		if execution!=workspace.ImageExecution {if err := completeCreateInputs(cmd.Context(), state.deps.stdin, cmd.ErrOrStderr(), &opt); err != nil {
-			return err
-		}}
+		opt := workspace.CreateOptions{Name: name, Description: description, Model: model, InstructionsFile: instructions, Runtime: profile, Execution: execution, ContextTokens: contextTokens, OutputTokens: outputTokens}
+		if execution != workspace.ImageExecution {
+			if err := completeCreateInputs(cmd.Context(), state.deps.stdin, cmd.ErrOrStderr(), &opt); err != nil {
+				return err
+			}
+		}
 		a := &app.App{Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr(), Stdin: state.deps.stdin}
 		return a.CreateSuiteMember(cmd.Context(), root, opt)
 	}

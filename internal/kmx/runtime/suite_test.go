@@ -39,7 +39,7 @@ func (f *suiteFake) Deploy(_ context.Context, p SuiteMemberPlan) (SuiteMemberOut
 
 func suiteRequest(t *testing.T) SuiteDeployRequest {
 	t.Helper()
-	suite, err := agentsuite.ResolveDeploymentSuite(filepath.Join("..", "..", "..", "agentsuite", "testdata", "coordinator-workers"), agentsuite.Platform{OS: "linux", Architecture: "amd64"})
+	suite, err := agentsuite.ResolveDeploymentSuite(filepath.Join("..", "..", "..", "testdata", "agentsuite", "coordinator-workers"), agentsuite.Platform{OS: "linux", Architecture: "amd64"})
 	if err != nil {
 		t.Fatal(err)
 	}
