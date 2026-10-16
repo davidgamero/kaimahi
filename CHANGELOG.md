@@ -29,6 +29,11 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
   suite bytes. Image references are explicitly `declared-unverified`; no image
   verification, runtime qualification, executable plan, CLI consumer or Apply
   support is enabled.
+- Added internal presentation hooks to the existing native workspace Lift pipeline:
+  value-only confirmation requests and metadata-only stage progress. Custom input
+  still uses the shared context guard and source/target rechecks. This is the
+  foundation for AgentSuite-centered console integration; current CLI/console
+  commands, output and supported runtimes are unchanged.
 
 ### Fixed
 
