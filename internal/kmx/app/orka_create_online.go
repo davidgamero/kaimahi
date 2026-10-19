@@ -194,6 +194,15 @@ func (a *App) createOrkaObjectObserved(ctx context.Context, namespace string, do
 	if err != nil {
 		return id, nil, err
 	}
+	if _, annotated := createdByVersionValue(doc); annotated {
+		admitted, err := a.orkaCapture(ctx, body, "-n", namespace, "create", "--dry-run=server", "--validate=strict", "-f", "-", "-o", "json")
+		if err != nil {
+			return id, nil, fmt.Errorf("preflight %s/%s failed: %w", id.Kind, id.Name, err)
+		}
+		if err := validateCreatedByVersion(admitted, doc, namespace, false); err != nil {
+			return id, nil, fmt.Errorf("preflight %s/%s changed its build identity: %w", id.Kind, id.Name, err)
+		}
+	}
 	raw, err := a.orkaCapture(ctx, body, "-n", namespace, "create", "--validate=strict", "-f", "-", "-o", "json")
 	if err != nil {
 		return id, nil, fmt.Errorf("create %s/%s failed or was ambiguous; it may exist or be running. No execution retry, adoption or cleanup: %w", id.Kind, id.Name, err)
@@ -203,6 +212,9 @@ func (a *App) createOrkaObjectObserved(ctx context.Context, namespace string, do
 		return id, nil, fmt.Errorf("create %s/%s returned no valid identity; it may exist or be running. No retry", id.Kind, id.Name)
 	}
 	id.UID, id.Generation = object.Metadata.UID, object.Metadata.Generation
+	if err := validateCreatedByVersion(raw, doc, namespace, true); err != nil {
+		return id, raw, fmt.Errorf("create %s/%s changed its build identity; it may exist or be running. No retry: %w", id.Kind, id.Name, err)
+	}
 	return id, raw, nil
 }
 
