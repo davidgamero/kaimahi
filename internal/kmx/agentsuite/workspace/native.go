@@ -137,7 +137,9 @@ func loadSource(ctx context.Context, root string) (*snapshot, error) {
 		return nil, err
 	}
 	// Bind the public case layout for every runtime and source schema.
-	if s.workspace.SchemaVersion==1&&s.members[0].member.Execution==ImageExecution{renderer=imageRendererVersion}
+	if s.workspace.SchemaVersion == 1 && s.members[0].member.Execution == ImageExecution {
+		renderer = imageRendererVersion
+	}
 	framed, err := agentsuite.Marshal(struct {
 		Renderer         string            `json:"renderer"`
 		Layout           string            `json:"layout"`
@@ -313,7 +315,7 @@ func resolveMemberGraph(m sourceMember, instructions []byte, cases []runtime.Eva
 		return nil, agentsuite.ManifestRef{}, agentsuite.ManifestRef{}, err
 	}
 	agentPath := "agents/" + m.ID + ".json"
-	agentDigest, agentSize, err := put(agentPath, agentsuite.Agent{Policy: policyRef, SchemaVersion: agentsuite.SpecVersion, MediaType: agentsuite.MediaTypeAgent, ID: m.ID, Description: m.Description, Instructions: agentsuite.FileRef{Path: "instructions/" + m.ID + ".md", Descriptor: agentsuite.Descriptor{MediaType: agentsuite.MediaTypeInstructions, Digest: godigest.FromBytes(instructions).String(), Size: int64(len(instructions))}}, Model: agentsuite.ModelRequirement{Protocol: m.Model.Protocol, Model: m.Model.Model,Capabilities:m.Model.Capabilities.portable()}, Evals: []agentsuite.FileRef{{Path: evalIndexPath(m.ID), Descriptor: agentsuite.Descriptor{MediaType: agentsuite.MediaTypeEvaluationIndex, Digest: indexDigest, Size: indexSize}}}})
+	agentDigest, agentSize, err := put(agentPath, agentsuite.Agent{Policy: policyRef, SchemaVersion: agentsuite.SpecVersion, MediaType: agentsuite.MediaTypeAgent, ID: m.ID, Description: m.Description, Instructions: agentsuite.FileRef{Path: "instructions/" + m.ID + ".md", Descriptor: agentsuite.Descriptor{MediaType: agentsuite.MediaTypeInstructions, Digest: godigest.FromBytes(instructions).String(), Size: int64(len(instructions))}}, Model: agentsuite.ModelRequirement{Protocol: m.Model.Protocol, Model: m.Model.Model, Capabilities: m.Model.Capabilities.portable()}, Evals: []agentsuite.FileRef{{Path: evalIndexPath(m.ID), Descriptor: agentsuite.Descriptor{MediaType: agentsuite.MediaTypeEvaluationIndex, Digest: indexDigest, Size: indexSize}}}})
 	if err != nil {
 		return nil, agentsuite.ManifestRef{}, agentsuite.ManifestRef{}, err
 	}
@@ -399,7 +401,7 @@ func validateNative(files map[string][]byte) (string, error) {
 			return "", errors.New("ambiguous image/native profiles")
 		}
 		err = agentsuite.Unmarshal(files[imagePath], &record)
-		if err == nil && (record.SchemaVersion != 1 || record.ExecutionMode != ImageExecution || record.RendererVersion != imageRendererVersion || len(record.RequiredImages) != 1 || record.RequiredImages[0] != record.Member+"@linux/amd64" || record.Runtime != nil || record.ExecutionProfile != "") {
+		if err == nil && (record.SchemaVersion != nativeRecordVersion || record.ExecutionMode != ImageExecution || record.RendererVersion != imageRendererVersion || len(record.RequiredImages) != 1 || record.RequiredImages[0] != record.Member+"@linux/amd64" || record.Runtime != nil || record.ExecutionProfile != "") {
 			err = errors.New("unsupported image execution profile")
 		}
 	}

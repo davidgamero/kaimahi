@@ -30,9 +30,15 @@ func Describe(root string) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
-	var w sourceWorkspace
-	if err := strictYAML(b, &w); err != nil {
+	w, err := parseSourceWorkspace(b)
+	if err != nil {
 		return Summary{}, err
+	}
+	if w.SchemaVersion == 3 {
+		return Summary{Name: w.Name, Member: w.Member, Execution: "profiled"}, nil
+	}
+	if w.SchemaVersion == 2 {
+		return Summary{}, ErrMultiMemberUnsupported
 	}
 	b, err = readBounded(r, w.Member)
 	if err != nil {

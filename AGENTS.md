@@ -15,10 +15,11 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
   behavior and any suite reservation refuse. Retained placement records are
   private rediscovery hints, never evaluation/export or Lift-reuse authority.
   Revalidate package, evidence, target, binding and owned UIDs before observation
-  or member sends. Keep independent-agent refusals and all non-Orka limits.
+  or member sends. Keep console independent-selection ownership fences and all
+  non-Orka limits; root live run/chat follow main's suite-owned invocation contract.
   This explicitly adds native member observation/invocation and the console
   digest-Lift action described below; it does not restore old bundle/live-copy
-  workflows or a retired command group. Root status remains runtime-only.
+  workflows or a retired command group. Root destination status follows main.
 
 - This branch integrates #448/#449 image-http source/build/release/evaluation
   through the same root commands and split-pane console. Native remains default;

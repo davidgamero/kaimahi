@@ -155,7 +155,11 @@ func validateMember(m sourceMember, instructions []byte) error {
 	} else if m.Model.Capabilities != nil || m.Model.Protocol != "openai-compatible" || strings.TrimSpace(m.Model.Model) == "" || strings.TrimSpace(m.Model.Model) != m.Model.Model || strings.IndexFunc(m.Model.Model, unicode.IsControl) >= 0 {
 		return errors.New("an explicit exact model and openai-compatible protocol are required")
 	}
-	if m.Execution!=ImageExecution {if err:=scaffold.ValidateModelIdentifier(m.Model.Model);err!=nil{return fmt.Errorf("model: %w",err)}}
+	if m.Execution != ImageExecution {
+		if err := scaffold.ValidateModelIdentifier(m.Model.Model); err != nil {
+			return fmt.Errorf("model: %w", err)
+		}
+	}
 	if strings.TrimSpace(string(instructions)) == "" {
 		return errors.New("instructions must not be blank")
 	}

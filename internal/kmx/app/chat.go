@@ -86,9 +86,6 @@ func quickstartResultOptions(namespace, task string) CreateOptions {
 }
 
 func (b *orkaChatBackend) Connect(ctx context.Context, renderer *chatRenderer) ([]cliui.Field, error) {
-	if err := b.app.refuseIndependentSuiteAgent(ctx, b.namespace, b.agent); err != nil {
-		return nil, err
-	}
 	b.chatContext = ctx
 	location, err := b.app.chatLocation(ctx)
 	if err != nil {
@@ -126,9 +123,6 @@ func (b *orkaChatBackend) Connect(ctx context.Context, renderer *chatRenderer) (
 }
 
 func (b *orkaChatBackend) Send(ctx context.Context, message string, renderer *chatRenderer) error {
-	if err := b.app.refuseIndependentSuiteAgent(ctx, b.namespace, b.agent); err != nil {
-		return err
-	}
 	renderer.beginAssistant(b.agent)
 	inference, host, err := b.app.hostInferenceStrategy()
 	if err != nil {

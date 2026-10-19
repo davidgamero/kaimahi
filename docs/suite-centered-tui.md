@@ -6,6 +6,26 @@ The [CLI reference](kmx.md) remains authoritative for implemented commands.
 
 ## Test this branch
 
+### Latest main refresh
+
+Subsequent refresh rebases the integration onto `96b0b39` (17 further main
+commits): runtime-profiled offline packaging, sessions v0.2.0, AKS workflow
+hardening, evaluation abort counts and sealed release ownership acknowledgments.
+The shared root run/chat handlers now retain main's supported suite-owned live
+invocation instead of branch-local legacy refusals; console retained-placement
+selection remains independently fenced. Main's private updater is not exposed as
+a new console action. Focused profile/image/ownership and console tests pass;
+previous tmux qualification predates this refresh.
+
+The full integration is now rebased onto `96b0b39`, incorporating runtime-profile
+offline packaging, AgentSessions sessions v0.2.0, v0.8.1 AKS hardening, evaluation
+abort reports and acknowledged release ownership/baselines. Profiled sources use
+main's normalizer/transfer path and remain execution-ineligible. Image members
+retain their explicit capabilities through shared graph construction, while image
+evidence does not enroll native update authority. Task recovery delegates to
+main's executable-aware methods. Earlier live tmux results below predate this
+refresh; current verification is recorded separately from runtime qualification.
+
 ### Full-branch tmux qualification on current main
 
 The complete feature branch was rebased onto main `38a7daf`, retaining public

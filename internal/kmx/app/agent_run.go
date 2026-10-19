@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -161,15 +160,6 @@ func (a *App) RunAgent(opt RunAgentOptions) error {
 		return fmt.Errorf("cannot read Agent %s/%s at destination: %w", namespace, name, err)
 	}
 	live := describeRunAgent(raw)
-	var document map[string]any
-	if len(raw) > 0 {
-		if json.Unmarshal(raw, &document) != nil {
-			return fmt.Errorf("Agent identity unreadable")
-		}
-		if err := refuseOrkaSuiteDocument(document); err != nil {
-			return err
-		}
-	}
 	switch {
 	case !live.Found:
 		return fmt.Errorf("Agent %s/%s is not deployed at this destination", namespace, name)
@@ -247,14 +237,6 @@ func (a *App) RunAgent(opt RunAgentOptions) error {
 		return fmt.Errorf("cannot recheck Agent %s/%s: %w", namespace, name, err)
 	}
 	latest := describeRunAgent(latestRaw)
-	if len(latestRaw) > 0 {
-		if json.Unmarshal(latestRaw, &document) != nil {
-			return fmt.Errorf("Agent identity unreadable")
-		}
-		if err := refuseOrkaSuiteDocument(document); err != nil {
-			return err
-		}
-	}
 	if !latest.Found || latest.UID != live.UID || latest.Generation != live.Generation {
 		return fmt.Errorf("Agent %s/%s was replaced or changed before Task creation", namespace, name)
 	}

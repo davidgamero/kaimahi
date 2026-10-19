@@ -297,13 +297,13 @@ func (a *App) answerRetainedMember(parent context.Context, r ReleaseLiftResult, 
 	if err = validateSuiteNativeTask(created, doc); err != nil {
 		return "", err
 	}
-	if _, err = fmt.Fprintf(a.Err, "Task: %s\nRetrieve: %s\n", id.Name, taskRecovery(id.Name, a.Cfg.KubeContext, ns)); err != nil {
+	if _, err = fmt.Fprintf(a.Err, "Task: %s\nRetrieve: %s\n", id.Name, a.taskRecovery(id.Name, a.Cfg.KubeContext, ns)); err != nil {
 		return "", fmt.Errorf("Task exists; reporting failed: %w", err)
 	}
 	a.suiteProgress("answer", id.Name, "running")
 	answer, err := a.waitOrkaTaskResult(ctx, ns, id, session)
 	if err != nil {
-		return "", runTaskWaitError(ctx, err, id.Name, a.Cfg.KubeContext, ns)
+		return "", a.runTaskWaitError(ctx, err, id.Name, a.Cfg.KubeContext, ns)
 	}
 	a.suiteProgress("answer", id.Name, "answered")
 	return answer, nil
