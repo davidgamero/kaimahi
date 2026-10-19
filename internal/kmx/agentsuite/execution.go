@@ -18,17 +18,17 @@ const (
 // sandbox binding, filesystem inventory or signed build provenance.
 type ImageDeployment struct {
 	Inference     *agentsuite.InferenceRequirements `json:"inference,omitempty"`
-	SchemaVersion string                      `json:"schemaVersion"`
-	MediaType     string                      `json:"mediaType"`
+	SchemaVersion string                            `json:"schemaVersion"`
+	MediaType     string                            `json:"mediaType"`
 	// SuiteReference is an optional legacy retrieval hint, never source identity.
 	// New builds omit it so copying a suite repository does not change the image.
-	SuiteReference     string                 `json:"suiteReference,omitempty"`
-	SuiteDigest        string                 `json:"suiteDigest"`
-	Agent              string                 `json:"agent"`
+	SuiteReference     string                       `json:"suiteReference,omitempty"`
+	SuiteDigest        string                       `json:"suiteDigest"`
+	Agent              string                       `json:"agent"`
 	Platform           agentsuite.Platform          `json:"platform"`
-	CompositionDigest  string                 `json:"compositionDigest"`
-	BuildProfile       string                 `json:"buildProfile"`
-	BuildProfileDigest string                 `json:"buildProfileDigest"`
+	CompositionDigest  string                       `json:"compositionDigest"`
+	BuildProfile       string                       `json:"buildProfile"`
+	BuildProfileDigest string                       `json:"buildProfileDigest"`
 	Execution          agentsuite.ExecutionContract `json:"execution"`
 }
 
