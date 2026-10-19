@@ -127,8 +127,11 @@ func ResolveImage(ctx context.Context, source kmxsuite.ReadOnlyTarget, reference
 		}
 		matches := 0
 		for _, candidate := range index.Manifests {
-			p := candidate.Platform
-			if p != nil && p.OS == platform.OS && p.Architecture == platform.Architecture && p.Variant == platform.Variant {
+			match, err := imageDescriptorMatchesPlatform(ctx, source, candidate, platform)
+			if err != nil {
+				return ResolvedImage{}, err
+			}
+			if match {
 				root = candidate
 				matches++
 			}
@@ -206,6 +209,39 @@ func ResolveImage(ctx context.Context, source kmxsuite.ReadOnlyTarget, reference
 		}
 	}
 	return ResolvedImage{Descriptor: root, Deployment: *record}, nil
+}
+
+func imageDescriptorMatchesPlatform(ctx context.Context, source kmxsuite.Fetcher, candidate ocispec.Descriptor, platform agentsuite.Platform) (bool, error) {
+	if candidate.MediaType != ocispec.MediaTypeImageManifest || candidate.Annotations["vnd.docker.reference.type"] == "attestation-manifest" {
+		return false, nil
+	}
+	if candidate.Platform != nil {
+		return candidate.Platform.OS == platform.OS &&
+			candidate.Platform.Architecture == platform.Architecture &&
+			candidate.Platform.Variant == platform.Variant, nil
+	}
+	data, err := imageJSON(ctx, source, candidate)
+	if err != nil {
+		return false, err
+	}
+	var manifest ocispec.Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return false, err
+	}
+	if manifest.SchemaVersion != 2 || manifest.ArtifactType != "" || manifest.Config.MediaType != ocispec.MediaTypeImageConfig {
+		return false, errors.New("platform-less image index entry is not a runnable OCI image manifest")
+	}
+	data, err = imageJSON(ctx, source, manifest.Config)
+	if err != nil {
+		return false, err
+	}
+	var config ocispec.Image
+	if err := json.Unmarshal(data, &config); err != nil {
+		return false, err
+	}
+	return config.OS == platform.OS &&
+		config.Architecture == platform.Architecture &&
+		config.Variant == platform.Variant, nil
 }
 
 func imageDescriptor(d ocispec.Descriptor) error {

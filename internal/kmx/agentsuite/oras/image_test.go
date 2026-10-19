@@ -13,6 +13,7 @@ import (
 
 	agentsuite "github.com/agent-primitives/suite"
 	kmxsuite "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
+	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"
@@ -25,7 +26,7 @@ func TestPushImagePreservesGraphWithoutDeploymentAdmission(t *testing.T) {
 			server, reg := newTestRegistryServer("", "")
 			defer server.Close()
 			t.Setenv("DOCKER_CONFIG", t.TempDir())
-			archive, image, root, blobs := publicationArchive(t, nested, "first")
+			archive, image, root, blobs := publicationArchive(t, nested, "first", "", false)
 			ref := strings.TrimPrefix(server.URL, "http://") + "/team/image:v1"
 			platform := agentsuite.Platform{OS: "linux", Architecture: "amd64"}
 			result, err := PushImage(t.Context(), archive, ref, platform, true, false)
@@ -58,7 +59,7 @@ func TestPushImagePreservesGraphWithoutDeploymentAdmission(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			changed, _, changedRoot, _ := publicationArchive(t, nested, "second")
+			changed, _, changedRoot, _ := publicationArchive(t, nested, "second", "", false)
 			if _, err := PushImage(t.Context(), changed, ref, platform, true, false); err == nil || !strings.Contains(err.Error(), "--force") {
 				t.Fatalf("tag replacement accepted: %v", err)
 			}
@@ -82,7 +83,7 @@ func TestPushImagePreservesGraphWithoutDeploymentAdmission(t *testing.T) {
 	}
 }
 
-func publicationArchive(t *testing.T, nested bool, marker string) (string, string, string, []ocispec.Descriptor) {
+func publicationArchive(t *testing.T, nested bool, marker, deploymentLabel string, omitPlatform bool) (string, string, string, []ocispec.Descriptor) {
 	t.Helper()
 	blobs := map[string][]byte{}
 	var descriptors []ocispec.Descriptor
@@ -97,16 +98,24 @@ func publicationArchive(t *testing.T, nested bool, marker string) (string, strin
 		return d
 	}
 	layer := add(ocispec.MediaTypeImageLayer, "fixture layer")
-	config := add(ocispec.MediaTypeImageConfig, ocispec.Image{Platform: ocispec.Platform{OS: "linux", Architecture: "amd64"}, Config: ocispec.ImageConfig{User: "1000", Entrypoint: []string{"/agent"}}, RootFS: ocispec.RootFS{Type: "layers"}})
+	labels := map[string]string{}
+	if deploymentLabel != "" {
+		labels[kmxsuite.ImageDeploymentLabel] = deploymentLabel
+	}
+	config := add(ocispec.MediaTypeImageConfig, ocispec.Image{Platform: ocispec.Platform{OS: "linux", Architecture: "amd64"}, Config: ocispec.ImageConfig{User: "1000", Entrypoint: []string{"/agent"}, Labels: labels}, RootFS: ocispec.RootFS{Type: "layers", DiffIDs: []digest.Digest{layer.Digest}}})
 	image := add(ocispec.MediaTypeImageManifest, ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, Config: config, Layers: []ocispec.Descriptor{layer}, Annotations: map[string]string{"fixture": marker}})
-	image.Platform = &ocispec.Platform{OS: "linux", Architecture: "amd64"}
+	if !omitPlatform {
+		image.Platform = &ocispec.Platform{OS: "linux", Architecture: "amd64"}
+	}
 	image.Annotations = map[string]string{ocispec.AnnotationRefName: "local:latest"}
 	var layers []ocispec.Descriptor
 	for _, predicate := range []string{"https://spdx.dev/Document", "https://slsa.dev/provenance/v1"} {
 		layers = append(layers, add("application/vnd.in-toto+json", map[string]any{"_type": "https://in-toto.io/Statement/v1", "predicateType": predicate, "subject": []any{map[string]any{"digest": map[string]string{"sha256": image.Digest.Encoded()}}}, "predicate": map[string]any{"fixture": true}}))
 	}
 	attestation := add(ocispec.MediaTypeImageManifest, ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, Config: config, Layers: layers})
-	attestation.Platform = &ocispec.Platform{OS: "unknown", Architecture: "unknown"}
+	if !omitPlatform {
+		attestation.Platform = &ocispec.Platform{OS: "unknown", Architecture: "unknown"}
+	}
 	attestation.Annotations = map[string]string{"vnd.docker.reference.type": "attestation-manifest", "vnd.docker.reference.digest": image.Digest.String()}
 	index := ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: []ocispec.Descriptor{image, attestation}}
 	root := add(ocispec.MediaTypeImageIndex, index)
@@ -141,6 +150,44 @@ func publicationArchive(t *testing.T, nested bool, marker string) (string, strin
 		t.Fatal(err)
 	}
 	return path, image.Digest.String(), root.Digest.String(), descriptors
+}
+
+func TestPushAndResolveImageWithoutDescriptorPlatform(t *testing.T) {
+	server, _ := newTestRegistryServer("", "")
+	defer server.Close()
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+	platform := agentsuite.Platform{OS: "linux", Architecture: "amd64"}
+	suiteDigest := "sha256:" + strings.Repeat("a", 64)
+	record := kmxsuite.ImageDeployment{
+		SchemaVersion:      agentsuite.SpecVersion,
+		MediaType:          kmxsuite.ImageDeploymentMediaType,
+		SuiteDigest:        suiteDigest,
+		Agent:              "hello",
+		Platform:           platform,
+		CompositionDigest:  suiteDigest,
+		BuildProfile:       "default",
+		BuildProfileDigest: suiteDigest,
+		Execution: agentsuite.ExecutionContract{
+			Kind:       agentsuite.ExecutionHTTPV1,
+			Protocol:   "openai-chat-v1",
+			Port:       8080,
+			HealthPath: "/healthz",
+			Inputs:     []agentsuite.ExecutionInput{},
+		},
+	}
+	label, err := kmxsuite.EncodeImageDeployment(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, image, _, _ := publicationArchive(t, false, "omitted-platform", label, true)
+	ref := strings.TrimPrefix(server.URL, "http://") + "/team/image:v1"
+	if published, err := PushImage(t.Context(), archive, ref, platform, true, false); err != nil || published != strings.TrimSuffix(ref, ":v1")+"@"+image {
+		t.Fatalf("published=%q error=%v", published, err)
+	}
+	resolved, err := ResolveImageRegistryTransport(t.Context(), ref, platform, true)
+	if err != nil || resolved.Descriptor.Digest.String() != image {
+		t.Fatalf("resolved=%+v error=%v", resolved, err)
+	}
 }
 
 func TestImageBuildSourceBindsSupplementalContent(t *testing.T) {
@@ -223,7 +270,7 @@ func TestImageBuildSourceBindsSupplementalContent(t *testing.T) {
 }
 
 func TestResolveImageVerifiesContractAndPlatform(t *testing.T) {
-	for _, scenario := range []string{"valid", "unmarked", "root", "wrong platform", "ambiguous index", "suite artifact"} {
+	for _, scenario := range []string{"valid", "unmarked", "root", "wrong platform", "ambiguous index", "ambiguous omitted platform", "suite artifact"} {
 		t.Run(scenario, func(t *testing.T) {
 			store := memory.New()
 			ctx := t.Context()
@@ -265,8 +312,12 @@ func TestResolveImageVerifiesContractAndPlatform(t *testing.T) {
 			root := push(ocispec.MediaTypeImageManifest, manifest)
 			root.Platform = &ocispec.Platform{OS: "linux", Architecture: "amd64"}
 			entries := []ocispec.Descriptor{root}
-			if scenario == "ambiguous index" {
+			if scenario == "ambiguous index" || scenario == "ambiguous omitted platform" {
 				entries = append(entries, root)
+			}
+			if scenario == "ambiguous omitted platform" {
+				entries[0].Platform = nil
+				entries[1].Platform = nil
 			}
 			index := push(ocispec.MediaTypeImageIndex, ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: entries})
 			if err := store.Tag(ctx, index, "v1"); err != nil {
