@@ -106,21 +106,24 @@ def verify_candidate(receipt, frames, cases, specs):
     require(any(f["verb"] == "create" and f["resource"] == "token" for f in frames), "candidate-token")
     markers = dict(zip(MARKERS, [subject[k] for k in ("Suite", "SuiteDigest", "Member", "Renderer", "BindingDigest", "RenderedDigest")]))
     markers["kaimahi.dev/suite-evaluation-run"] = run
-    diagnostic_version = None
+    diagnostic_present, diagnostic_version = None, None
     observations = {}
     require(len(rows) == len(cases), "candidate-case-count")
     for created, (kind, name) in zip(creates, wanted):
         observed = created.get("response", {})
         meta = observed.get("metadata", {})
         annotations = meta.get("annotations", {})
+        current_present = CREATED_BY_VERSION in annotations
         current_version = annotations.get(CREATED_BY_VERSION)
-        require(isinstance(current_version, str) and 0 < len(current_version) <= 128 and
+        require(not current_present or isinstance(current_version, str) and 0 < len(current_version) <= 128 and
                 re.fullmatch(r"[A-Za-z0-9!#$%&'*+\-.^_`|~]+", current_version), "candidate-created-version")
-        if diagnostic_version is None:
+        if diagnostic_present is None:
+            diagnostic_present = current_present
             diagnostic_version = current_version
-        require(current_version == diagnostic_version and
+        expected_annotations = set(markers) | ({CREATED_BY_VERSION} if diagnostic_present else set())
+        require(current_present == diagnostic_present and current_version == diagnostic_version and
                 {k: annotations.get(k) for k in markers} == markers and
-                set(annotations) == set(markers) | {CREATED_BY_VERSION}, "candidate-created-markers")
+                set(annotations) == expected_annotations, "candidate-created-markers")
         owned = pair[kind] if kind != "Task" else {"UID": rows[wanted.index((kind, name)) - 2]["taskUID"], "Generation": 1}
         require(observed.get("apiVersion") == "core.orka.ai/v1alpha1" and observed.get("kind") == kind and
                 meta.get("name") == name and meta.get("namespace") == "orka-system" and meta.get("uid") == owned["UID"] and
@@ -136,7 +139,7 @@ def verify_candidate(receipt, frames, cases, specs):
             current_annotations = cm["annotations"]
             require(cm["uid"] == owned["UID"] and cm["namespace"] == "orka-system" and
                     {k: current_annotations.get(k) for k in markers} == markers and
-                    set(current_annotations) == set(markers) | {CREATED_BY_VERSION} and
+                    set(current_annotations) == expected_annotations and
                     current_annotations.get(CREATED_BY_VERSION) == diagnostic_version and
                     (cm["generation"] == 1 or cm["terminating"] and cm["generation"] == 2) and
                     current["specDigest"] == observed["specDigest"], "candidate-get-drift")
