@@ -536,6 +536,11 @@ class CandidateProofTests(unittest.TestCase):
             edit(changed[0]["response"]["metadata"]["annotations"])
             with self.subTest(edit=edit), self.assertRaisesRegex(ValueError, "candidate-(created-(version|markers)|get-drift)"):
                 Q.verify_candidate(receipt, changed, cases, specs)
+        without_version = copy.deepcopy(frames)
+        for frame in without_version:
+            if frame.get("response", {}).get("kind") in {"Provider", "Agent", "Task"}:
+                frame["response"]["metadata"]["annotations"].pop(Q.CREATED_BY_VERSION, None)
+        self.assertEqual(Q.verify_candidate(receipt, without_version, cases, specs)[0]["uid"], "task-uid")
         for edit in (lambda fs: fs[-1]["preconditions"].update(resourceVersion="stale"),
                      lambda fs: fs[-1]["preconditions"].update(uid="foreign"),
                      lambda fs: fs[-1]["response"].update(status="Failure"),
