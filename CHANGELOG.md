@@ -1,10 +1,5 @@
 # Changelog
 
-- KMX now identifies direct HTTP requests with `User-Agent: kmx/<version>` and
-  annotates newly created native runtime resources with the diagnostic-only
-  `kaimahi.dev/created-by-version` value. Tagged builds use the release version;
-  checkout builds retain their version or short revision and dirty marker.
-
 Kaimahi is **pre-1.0 and incubating**. Versions are semantic with the pre-1.0
 reading of that word:
 
@@ -26,6 +21,14 @@ Each entry names what changed, and — where it matters — what an operator has
 to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 ## Unreleased
+
+### Added
+
+- KMX now identifies direct HTTP requests with `User-Agent: kmx/<version>` and
+  annotates newly created native runtime resources with the diagnostic-only
+  `kaimahi.dev/created-by-version` value. Tagged builds use the release version;
+  checkout builds add a non-release discriminator, short revision and dirty
+  marker when available.
 
 ### Fixed
 

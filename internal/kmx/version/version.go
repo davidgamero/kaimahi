@@ -127,6 +127,24 @@ func (b Build) Identifier() string {
 	if value == "" {
 		value = Unknown
 	}
+	base := productToken(value, 128)
+	if b.Release {
+		return base
+	}
+	suffix := "-nonrelease"
+	if b.Revision != "" {
+		suffix = "-dev." + productToken(short(b.Revision), 12)
+		if b.Modified {
+			suffix += ".dirty"
+		}
+	}
+	if len(base)+len(suffix) > 128 {
+		base = base[:128-len(suffix)]
+	}
+	return base + suffix
+}
+
+func productToken(value string, limit int) string {
 	var out strings.Builder
 	for _, r := range value {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("!#$%&'*+-.^_`|~", r) {
@@ -134,7 +152,7 @@ func (b Build) Identifier() string {
 		} else {
 			out.WriteByte('-')
 		}
-		if out.Len() == 128 {
+		if out.Len() == limit {
 			break
 		}
 	}

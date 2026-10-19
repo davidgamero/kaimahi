@@ -27,6 +27,12 @@ func validateSuiteNativeTask(raw []byte, desired map[string]any) error {
 	if meta["name"] != wanted["name"] || meta["namespace"] != wanted["namespace"] || meta["deletionTimestamp"] != nil {
 		return errSuiteNativeEvaluation
 	}
+	if value, expected := createdByVersionValue(desired); expected {
+		actual, _ := meta["annotations"].(map[string]any)
+		if actual[createdByVersionAnnotation] != value {
+			return errSuiteNativeEvaluation
+		}
+	}
 	if ann, ok := wanted["annotations"].(map[string]any); ok && ann[suiteCandidateRunMarker] != nil {
 		actual, _ := meta["annotations"].(map[string]any)
 		for _, key := range []string{orkaBundleMarker, orkaPortableMarker, orkaRenderedMarker} {
