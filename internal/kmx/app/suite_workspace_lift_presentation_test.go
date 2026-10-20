@@ -149,3 +149,58 @@ func TestWorkspaceLiftPlanOnlyDoesNotInvokePresentation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWorkspaceLiftUpdatePresentationRefusesWrongOrCancelledInput(t *testing.T) {
+	for _, mode := range []string{"wrong", "empty", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			a, opt, state, reads, _, writes := workspaceLiftFixture(t)
+			prepared, err := PrepareWorkspaceLift(t.Context(), opt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.LiftWorkspace(t.Context(), prepared); err != nil {
+				t.Fatal(err)
+			}
+			api := attachReleaseUpdateAPI(t, a, os.Getenv("KMX_RECONCILE_DIR"))
+			path := filepath.Join(opt.Workspace, "agents/greeter/instructions.md")
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, append(raw, []byte("\nA new version.\n")...), 0600); err != nil {
+				t.Fatal(err)
+			}
+			opt.Destination.Update = true
+			confirmations := 0
+			opt.Confirm = func(context.Context, WorkspaceLiftConfirmation) (string, error) {
+				confirmations++
+				switch mode {
+				case "wrong":
+					return "other-target", nil
+				case "cancel":
+					return "", context.Canceled
+				}
+				return "", nil
+			}
+			var events []WorkspaceLiftProgress
+			opt.Progress = func(event WorkspaceLiftProgress) { events = append(events, event) }
+			beforeCreates, beforeRecords := len(state.creates), reads.records.writes
+			prepared, err = PrepareWorkspaceLift(t.Context(), opt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := a.LiftWorkspace(t.Context(), prepared)
+			if err == nil || confirmations != 1 || len(state.creates) != beforeCreates || reads.records.writes != beforeRecords || *writes != 0 || api.patches != 0 || result.Placement != nil {
+				t.Fatal("update consent refusal allowed effects", mode, result, err)
+			}
+			if mode == "cancel" && !errors.Is(err, context.Canceled) {
+				t.Fatal("update presentation lost cancellation", err)
+			}
+			for _, event := range events {
+				if event.Stage != "Plan" {
+					t.Fatal("refused update claimed execution progress", event)
+				}
+			}
+		})
+	}
+}

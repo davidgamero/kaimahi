@@ -17,6 +17,7 @@ runtime contract when extending or comparing implementations.
 | I want to… | Read |
 |---|---|
 | Set up the current development CLI and understand prerequisites | [Getting started](getting-started.md) |
+| Review Create, Prove, Lift stages, workspace/live paths and safety limits | [Workflow overview](workflow-overview.md) |
 | Inspect compiled runtime support and qualification evidence with `kmx targets`; understand runtime and inference boundaries | [Runtime contract and support matrix](runtime-adapters.md) |
 | Install Orka, inspect before applying, or see the version actually running | [Orka](orka.md) |
 | Define or validate a portable OCI AgentSuite with bundled or remote ToolProviders and standalone provider sandbox images | [AgentSuite Artifact Specification](https://github.com/agent-primitives/suite/blob/main/spec.md) |
@@ -24,6 +25,7 @@ runtime contract when extending or comparing implementations.
 | Author one native suite member offline, evaluate the Orka or exact kagent profile, publish the exact OCI graph, and lift that packaged digest | [Suite workspace](suite-workspace.md) |
 | Inspect deployed agents, per-object Lift provenance and readiness without writes | [Destination status](destination-status.md) |
 | Discover models and configure native inference | [Models](models.md), [Copilot inference](copilot-inference.md), [Foundry inference](local-foundry-inference.md) |
+| Build single-node AKS and ACR with Bicep, then test CPU-model inference and the agent lifecycle | [Azure CPU-model demo](azure/cpu-model/README.md) |
 | Chat with an existing Orka Agent | [Interactive chat](interactive-chat.md) |
 | Run the local-proof to ACR to AKS walkthrough | [AKS Create, Prove, Lift demo](aks-demo.md) |
 | Use an existing AKS cluster or provision a disposable one | [AKS](aks.md) |
@@ -55,7 +57,7 @@ See [format boundaries](bundle-format.md) and [current CLI contracts](kmx.md).
 - [Suite-first lifecycle direction](suite-first-lifecycle.md): workspace, release, deployment and evaluation objects; partly implemented, not an operator recipe.
 - [KMX lifecycle interface decision](kmx-lifecycle-interfaces.md): rationale for the experimental target, platform, runtime, deployment and receipt boundaries.
 - [KMX application API](kmx-application-api.md): how another Go layer uses AgentEnvironment, AgentSuites and AgentDeployments while management ports remain internal.
-- [KMX public interface summary](kmx-public-interface.md): the current layering, setup-only environment contract and CLI-to-Go mapping; environment recovery and teardown remain deferred.
+- [KMX public interface summary](kmx-public-interface.md): the concrete read-only suite-member loader plus current alpha lifecycle layering, setup-only environment contract and CLI-to-Go mapping.
 - [Naming](NAMING.md): the name and publication constraints.
 
 ## Assessments that inform current work

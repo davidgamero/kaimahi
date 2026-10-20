@@ -22,6 +22,9 @@ is implemented on main:
    stage/status/count snapshots, with no raw logs, prompts, answers or credentials.
    CLI output and offline plan-only behavior remain unchanged. This internal seam
    is not yet wired into the current console.
+   Conditional updates and rollback use the same confirmation/progress seam;
+   verified GET-only update no-ops report completed planning and skipped stages
+   without a mutation prompt or fresh evaluation counts.
 2. **Native AgentSuite console.** Make source/package/member selection central;
    connect source/case review and the existing composed workspace Lift through the
    foundation hooks. Preserve one backend, shared free-port selection, public

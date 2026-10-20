@@ -24,7 +24,7 @@ import (
 )
 
 // WorkspaceLiftOptions contains resolved selectors only, never a live config file.
-// Rendering belongs to this backend: four stderr lines, verbose diagnostics, or
+// Rendering belongs to this backend: four stage lines plus failure details, or
 // one JSON result on stdout. Promote nil selects disclosed source-only promotion.
 type WorkspaceLiftOptions struct {
 	// Confirm replaces only the input presentation. Its exact answer is still
@@ -74,11 +74,12 @@ type WorkspaceLiftPlan struct {
 }
 type WorkspaceLiftStage struct {
 	*SuiteRunExecutionSummary
-	Status string `json:"status"`
-	Detail string `json:"detail"`
-	Error  string `json:"error,omitempty"`
-	Passed int    `json:"passed,omitempty"`
-	Total  int    `json:"total,omitempty"`
+	Status   string               `json:"status"`
+	Detail   string               `json:"detail"`
+	Error    string               `json:"error,omitempty"`
+	Passed   int                  `json:"passed,omitempty"`
+	Total    int                  `json:"total,omitempty"`
+	Failures []suiteFailureDetail `json:"failures,omitempty"`
 }
 type WorkspaceLiftResult struct {
 	Plan      WorkspaceLiftPlan  `json:"plan"`
@@ -96,6 +97,7 @@ type PreparedWorkspaceLift struct {
 	started         bool
 	kube            []byte
 	completionSlots int
+	failures        []suiteFailureDetail
 }
 
 func (p *PreparedWorkspaceLift) Summary() WorkspaceLiftPlan { return p.plan }
@@ -162,6 +164,9 @@ func PrepareWorkspaceLift(ctx context.Context, opt WorkspaceLiftOptions) (*Prepa
 	opt.Evaluation.ManagedPass = true
 	plan := WorkspaceLiftPlan{SuiteDigest: review.suite.Digest, Workspace: review.root, EvalName: opt.EvalName, DestinationName: opt.DestinationName, Repository: opt.Repository, EvalContext: opt.Evaluation.ToContext, DestinationContext: opt.Destination.ToContext, CaseRuns: len(review.inventory), Promote: promote}
 	plan.Disclosure = "eval,push,lift; fresh Tasks and UID-safe candidate deletion; publication of source/cases; runtime/model retention may outlive cleanup"
+	if opt.Destination.Update {
+		plan.Disclosure += "; conditional retained Orka update, live ownership eligibility not checked by this cold plan"
+	}
 	if promote {
 		plan.Disclosure += "; source-only promotion (not evaluated on destination)"
 	} else {
@@ -335,7 +340,55 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 	if err != nil {
 		return r, err
 	}
-	cached := receipt != nil && receipt.CandidateCleanup == "complete" && reflect.DeepEqual(receipt.Subject, observedEval.Subject)
+	if p.options.Destination.Update {
+		baseline, e := dest.inspectReleaseUpdateBaseline(ctx, observedDest, p.options.Destination.Inference)
+		if e != nil {
+			return r, e
+		}
+		if receipt == nil {
+			receipt, e = baseline.retainedReleaseEvidence(ctx, p.plan.SuiteDigest)
+			if e != nil && !errors.Is(e, errSuitePassMissing) {
+				return r, e
+			}
+		}
+		if baseline.noop {
+			if receipt == nil {
+				return r, errSuitePassMissing
+			}
+			if _, _, e = dest.releaseLiftGate(ctx, receipt.Subject, observedDest.Subject, p.plan.Promote); e != nil {
+				return r, e
+			}
+			baseline.lift = &PreparedReleaseLift{native: observedDest, summary: ReleaseLiftSummary{Member: observedDest.Subject.Member, Target: releaseLiftTarget(observedDest.Subject.Target)}}
+			var verified ReleaseLiftResult
+			if e = dest.finishReleaseUpdate(ctx, baseline, baseline.before.State.Baseline, &verified); e != nil {
+				return r, e
+			}
+			if e = dest.checkReleaseReservation(ctx, baseline.before); e != nil {
+				return r, e
+			}
+			if err = checkSource(); err != nil {
+				return r, err
+			}
+			r.Plan.Disclosure = "verify-only update; acknowledged desired placement; no eval, publication or mutation"
+			r.Eval.Status, r.Push.Status, r.Lift.Status = "skipped", "skipped", "skipped"
+			r.Eval.Detail = "not needed; retained desired placement, no fresh evaluation claim"
+			r.Push.Detail = "not needed; no publication or registry repair"
+			r.Lift.Detail = p.plan.DestinationName + " Ready; retained desired placement verified GET-only"
+			emit("Plan", "complete", 0, p.plan.CaseRuns)
+			emit("Eval", "skipped", 0, 0)
+			emit("Push", "skipped", 0, 0)
+			emit("Lift", "skipped", 0, 0)
+			activeStage = ""
+			return r, nil
+		}
+		if e = preflightReleaseUpdateCapacity(baseline.before.State, p.plan.SuiteDigest); e != nil {
+			return r, e
+		}
+		if e = dest.preflightReleaseUpdateWrites(ctx, observedDest.Subject, baseline.before); e != nil {
+			return r, e
+		}
+	}
+	cached := receipt != nil && (p.options.Destination.Update || receipt.CandidateCleanup == "complete" && reflect.DeepEqual(receipt.Subject, observedEval.Subject))
 	if !cached && receipt != nil {
 		runID, err = randomHex(16)
 		if err != nil {
@@ -346,7 +399,11 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 			return r, err
 		}
 	}
-	if _, _, err = dest.releaseLiftGate(ctx, observedEval.Subject, observedDest.Subject, p.plan.Promote); err != nil {
+	gateSource := observedEval.Subject
+	if p.options.Destination.Update && cached {
+		gateSource = receipt.Subject
+	}
+	if _, _, err = dest.releaseLiftGate(ctx, gateSource, observedDest.Subject, p.plan.Promote); err != nil {
 		return r, err
 	}
 	publication, err := p.liftRecord(ctx, "publication", p.options.Repository)
@@ -354,9 +411,14 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 		return r, err
 	}
 	defer func() { err = errors.Join(err, publication.Close()) }()
-	placement, err := p.liftRecord(ctx, "placement", p.options.Repository+"\n"+p.options.Destination.ToContext+"\n"+p.options.Destination.ToNamespace+"\n"+p.options.Destination.Inference)
-	if err != nil {
-		return r, err
+	// Update never interprets an immutable historical completion as current
+	// placement or mutation authority. Its fresh shared/private baseline owns it.
+	placement := &workspaceLiftCompletion{}
+	if !p.options.Destination.Update {
+		placement, err = p.liftRecord(ctx, "placement", p.options.Repository+"\n"+p.options.Destination.ToContext+"\n"+p.options.Destination.ToNamespace+"\n"+p.options.Destination.Inference)
+		if err != nil {
+			return r, err
+		}
 	}
 	defer func() { err = errors.Join(err, placement.Close()) }()
 	if placement.record != nil && publication.record == nil {
@@ -383,17 +445,19 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 	}
 	if placement.record != nil {
 		if placement.record.Placement == nil || !reflect.DeepEqual(placement.record.Placement.Subject, observedDest.Subject) {
-			return r, errWorkspaceLiftState
+			return r, dest.releaseLiftOccupiedAdvice(ctx, observedDest, p.options.Destination.Inference, errWorkspaceLiftState)
 		}
 		if err = dest.verifySuiteNative(ctx, placement.record.Placement); err != nil {
-			return r, errWorkspaceLiftState
+			return r, dest.releaseLiftOccupiedAdvice(ctx, observedDest, p.options.Destination.Inference, errWorkspaceLiftState)
 		}
 	}
 	// Known storage constraints must refuse before evaluation/publication spend.
 	// A verified placement skip never opens or repairs the provenance store.
 	if placement.record == nil {
-		if err = dest.preflightReleaseStateCreate(ctx, releaseStateSubject(observedDest.Subject)); err != nil {
-			return r, err
+		if !p.options.Destination.Update {
+			if err = dest.preflightReleaseStateCreate(ctx, releaseStateSubject(observedDest.Subject)); err != nil {
+				return r, dest.releaseLiftOccupiedAdvice(ctx, observedDest, p.options.Destination.Inference, err)
+			}
 		}
 		if err = preflightReleaseLiftStorage(ctx); err != nil {
 			return r, err
@@ -413,6 +477,9 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 		missing = []string{"verify-only"}
 	}
 	r.Plan.Disclosure = strings.Join(missing, ",") + "; source-only proof, not destination evaluation"
+	if p.options.Destination.Update {
+		r.Plan.Disclosure += "; update retained Orka pair (conditional patch); operator quiet window required; no drain or zero-downtime guarantee"
+	}
 	if !cached {
 		r.Plan.Disclosure += "; fresh Tasks and UID-safe candidate cleanup; runtime/model retention may outlive cleanup"
 		if p.plan.Judging {
@@ -482,6 +549,9 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 			}
 		}
 		r.Eval.Detail = fmt.Sprintf("%d/%d runs passed on %s; fresh subject matched; candidate resources cleaned", r.Eval.Passed, r.Eval.Total, p.plan.EvalName)
+		if p.options.Destination.Update {
+			r.Eval.Detail = fmt.Sprintf("%d/%d retained exact-version runs passed on %s; historical evidence, not current evaluation health", r.Eval.Passed, r.Eval.Total, receipt.Subject.Target.Context+"/"+receipt.Subject.Target.Namespace)
+		}
 	} else {
 		emit("Eval", "running", 0, r.Eval.Total)
 		r.Eval.Status = "failed"
@@ -496,13 +566,16 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 		for i, f := range p.review.inventory {
 			cases[i] = f.Case
 		}
-		judge, e := newEvaluationCaseJudge(evaluationJudgeConfig{BaseURL: p.options.Evaluation.JudgeBaseURL, KeyEnv: p.options.Evaluation.JudgeKeyEnv}, cases, worker.Err)
+		var diagnosticKey string
+		judge, e := newEvaluationCaseJudge(evaluationJudgeConfig{BaseURL: p.options.Evaluation.JudgeBaseURL, KeyEnv: p.options.Evaluation.JudgeKeyEnv, diagnosticKey: &diagnosticKey}, cases, io.Discard)
 		if e != nil {
 			output.Close()
 			return r, e
 		}
-		ep := &PreparedSuiteWorkspaceEvaluation{prepared: p.review.prepared, suite: p.review.suite, inventory: p.review.inventory, root: p.review.root, options: p.options.Evaluation, output: output, store: p.store, judge: judge, candidateRun: runID, runs: suiteRunSummary{Total: len(p.review.inventory), SuiteRunExecutionSummary: SuiteRunExecutionSummary{NotExecuted: len(p.review.inventory)}}, cleanup: "candidate cleanup not required"}
+		ep := &PreparedSuiteWorkspaceEvaluation{prepared: p.review.prepared, suite: p.review.suite, inventory: p.review.inventory, root: p.review.root, options: p.options.Evaluation, output: output, store: p.store, judge: judge, diagnosticKey: diagnosticKey, candidateRun: runID, runs: suiteRunSummary{Total: len(p.review.inventory), SuiteRunExecutionSummary: SuiteRunExecutionSummary{NotExecuted: len(p.review.inventory)}}, cleanup: "candidate cleanup not required", failureWriter: diagnostics}
 		err = eval.EvaluateSuiteWorkspace(ctx, ep)
+		p.failures = ep.failures
+		r.Eval.Failures = suiteFailureSummaries(ep.failures)
 		r.Eval.Passed = ep.runs.Passed
 		r.Eval.SuiteRunExecutionSummary = &ep.runs.SuiteRunExecutionSummary
 		r.Eval.Detail = fmt.Sprintf("%d/%d runs passed on %s; candidate resources cleaned", r.Eval.Passed, r.Eval.Total, p.plan.EvalName)
@@ -522,9 +595,8 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 	if err = boundary(); err != nil {
 		return r, err
 	}
-	// Prove an edit before checking an occupied older destination. A passing
-	// version still cannot publish or adopt that destination through this route.
-	if placement.record == nil {
+	// Plain Lift remains create-only; update authority was checked before spend.
+	if placement.record == nil && !p.options.Destination.Update {
 		for _, doc := range []map[string]any{observedDest.bundle.Provider, observedDest.bundle.Agent} {
 			if _, err = dest.inspectReleaseLiftResource(ctx, observedDest.Subject, doc, suiteNativeOwnedResource{}); err != nil {
 				return r, err
@@ -595,6 +667,9 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 	opt.Reference = p.options.Repository + "@" + p.plan.SuiteDigest
 	opt.Evidence = evidence.path
 	opt.EvaluationName = p.plan.EvalName
+	if opt.Update && !statusSameTarget(releaseLiftTarget(receipt.Subject.Target), releaseLiftTarget(observedEval.Subject.Target)) {
+		opt.EvaluationName = ""
+	}
 	r.Lift.Status = "failed"
 	activeStage = "Lift"
 	emit("Lift", "running", 0, 0)
@@ -614,9 +689,15 @@ func (a *App) LiftWorkspace(ctx context.Context, p *PreparedWorkspaceLift) (r Wo
 		return r, err
 	}
 	r.Lift.Status = "complete"
-	r.Lift.Detail = p.plan.DestinationName + " Ready; passed on " + p.plan.EvalName + ", not evaluated on " + p.plan.DestinationName
-	if err = placement.commit(ctx, result.placement); err != nil {
-		r.Lift.Detail += "; placement succeeded, completion persistence incomplete"
+	evidenceSource := p.plan.EvalName
+	if opt.Update {
+		evidenceSource = receipt.Subject.Target.Context + "/" + receipt.Subject.Target.Namespace
+	}
+	r.Lift.Detail = p.plan.DestinationName + " Ready; passed on " + evidenceSource + ", not evaluated on " + p.plan.DestinationName
+	if !p.options.Destination.Update {
+		if err = placement.commit(ctx, result.placement); err != nil {
+			r.Lift.Detail += "; placement succeeded, completion persistence incomplete"
+		}
 	}
 	if err == nil {
 		emit("Lift", "complete", 0, 0)

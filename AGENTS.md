@@ -38,7 +38,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
   composes missing Orka evaluation/publication/Lift from one frozen workspace and
   selector plan. Require saved publishRepository and destination evaluationTarget;
   automatic disclosed promotion, one scoped confirmation, four default stage lines
-  with verbose/JSON details. Exact-version private completion observations authorize
+  plus compact non-pass evaluation details, with verbose/JSON stage diagnostics. Exact-version private completion observations authorize
   GET-only skips, never Apply/reuse/adoption/repair. Keep kagent out of composed
   Lift until its candidate-scoped placement and ownership-safe cleanup are qualified.
   Internal workspace Lift presentation hooks receive value-only plan/challenge
@@ -47,6 +47,8 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
   never fall back to terminal or environment consent. Callbacks grant no placement
   or evaluation authority. Keep the normal CLI output contract and offline plan
   behavior; console wiring is a separate incremental change.
+  Conditional updates use the same hooks. Verified GET-only update no-ops emit
+  terminal stage skips without prompting, writing or claiming executed runs.
 - Create-only Release Lift stamps only newly created primaries with versioned non-secret
   `kaimahi.dev/lift-record` JSON: exact consumed canonical receipt identity,
   source/destination, actual gate, attempt time and expected specs. Actor is omitted
@@ -56,7 +58,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
   observations alone grant no evaluation, ownership, skip or replay authority.
   Complete new Orka creates additionally retain acknowledged versioned target
   ownership/dependency proof tied to a shared release record; only that new proof
-  authorizes the private update/rollback backend. Older or mixed placements never
+  authorizes opt-in public Orka update/rollback through the private backend. Older or mixed placements never
   enroll. Keep provenance out
   of plan digests, suite ownership markers, portable schemas and candidate eval.
   Root destination status reads these annotations without private-state enrichment;
@@ -162,15 +164,16 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
   fields compare by default. Go workload image proof is observed after creation;
   mismatch leaves partial resources with no successful placement authority.
   No lift Tasks/model calls, fake Provider or destination evaluation is implied.
-  ApplyReleaseLift
-  is guarded and single-use, rechecks artifact/evidence/target/owned proof, preflights
-  both creates after the guard, and only conditionally creates or exactly reuses.
-  Partial outcomes retain acknowledged UIDs and readiness separately; no update,
-  adoption, retry, rollback or cleanup.
-  A separate private Orka updater requires shared reservation and acknowledged new
-  ownership/target-dependency proof. Fresh per-patch identity/spec/markers and exact
-  prepared inputs remain mandatory; only between-revision inference-Provider RV
-  churn may pass unchanged authoritative-field reproof. No public update flag.
+  ApplyReleaseLift is guarded and single-use, rechecks artifact/evidence/target/owned
+  proof, and in plain mode only conditionally creates or exactly reuses after both
+  create preflights. Partial outcomes retain acknowledged UIDs and readiness
+  separately; no adoption, automatic retry, rollback or cleanup.
+  Explicit public --update is Orka-only and uses the private updater with shared
+  reservation and acknowledged new ownership/target-dependency proof. Arrange a
+  quiet window; no draining or zero-downtime guarantee. Fresh per-patch
+  identity/spec/markers and exact prepared inputs remain mandatory; only
+  between-revision inference-Provider RV churn may pass unchanged authoritative-field
+  reproof. Rollback consumes original passing evidence without re-evaluation.
   VerifyReleaseLiftPlacement rechecks an opaque
   success before caller invocation. Created/recreated UIDs require fresh evaluation
   before later receipt-bound reuse. Root lift supports registry/local --from-layout,
@@ -217,6 +220,15 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
   resources against legacy adoption, copying, bundle authorization and retirement.
   Registry workspace publication shares unsigned suite provenance defaults/flags and records Git source only from
   fingerprint-bound authored inputs matching HEAD; local layouts get no referrers.
+- `pkg/suiteview` is a concrete read-only public projection over verified
+  local AgentSuite OCI layouts and bounded uncompressed layout archives. It
+  returns exact artifact/graph/member/instruction identities, copied instructions
+  and the complete public model requirement for one explicit member. It grants no
+  runtime/profile/composition selection, policy enforcement, cases, evidence,
+  configuration, registry, execution, publication or Lift authority. Keep public
+  format ownership in `github.com/agent-primitives/suite`; KMX native loaders call
+  the public projection on their frozen snapshots before applying stricter private
+  runtime checks.
 - Single-member `schemaVersion: 3` is offline profiled packaging only: explicit
   `push --runtime-profile ID [--platform OS/ARCH] --unevaluated` transfers all
   profiles/compositions under unchanged S. Legacy push rejects these selectors.
@@ -248,7 +260,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
   flags and a nonpersistent operational hook. Unsupported/budget/output checks
   run before config; one fresh outer guard covers pair placement and all Tasks.
   Fail/unknown/drift/cancel/output errors stop later sends with no partial export.
-  No model/runtime override, subset/content mode or standalone package
+  No model/runtime override, subset mode or standalone package
   reference is accepted. Authored llmJudge is supported for Orka/kagent and explicit AgentSessions development hosts with
   explicit --judge-base-url and optional --judge-key-env (environment name only).
   The fixed openai-chat-completions-v1 request style uses max_completion_tokens
@@ -256,8 +268,18 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
   judge. No request-style flag, model inference or error fallback. Two independent
   scores must agree on the threshold side;
   unavailable/malformed/split results stay unknown. Judgment shares the existing
-  per-run deadline and attribution is rechecked afterward. Root eval discards
-  reasoning and omits judge endpoints from recovery commands. Private passing
+  per-run deadline and attribution is rechecked afterward. Root eval and composed
+  Lift report non-pass case/run, assertion IDs/types and both judge scores/threshold;
+  --show-content alone opts into sanitized bounded expected values, rationale and
+  answer excerpts on stderr. Lift --verbose does not opt into content. Default
+  Orka JSON remains payload-free; cached Lift skips invent no diagnostics.
+  Diagnostic content is transient only, not evidence, never a receipt field,
+  reference, signature or portable export. No retained failure store or explain
+  command is implemented yet. Post-judge attribution failure withholds content;
+  known credential shapes/keys and header-like content are withheld before
+  truncation. This is not a guarantee that arbitrary secrets are detected.
+  The clarified local-storage policy sentence preserves the historical v2
+  evidence fingerprint and existing receipts. Recovery omits judge endpoints. Private passing
   rows bind authored model/version, request style, threshold, policy, endpoint
   configuration hash, both scores and aligned modelMatches observations. Returned
   model identity matches only the exact authored model or model+"-"+version,
@@ -340,6 +362,8 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), the
   before state, output or operational selection; verified multi artifacts cannot
   reach reference-Lift target observations. No binding, approval, invocation or
   evaluation semantics, mixed-runtime execution or runtime qualification is implied.
+
+- Experimental `create NAME --workspace DIR --members FILE --flow FILE` imports strict JSON member rows and the public critical `kmx.flow.v1alpha1` document, without prompts, runtime selectors or operational configuration. Member model strings use the existing fixed openai-compatible protocol; relative input paths are confined to the members-file directory. All inputs and complete graph closure validate before destination writes. Source schemaVersion 2 alone permits an optional workspace-relative `flow` path. Explicit PrepareFlow/flow inventory and read-only suiteview flow APIs preserve all members, original S/F and copied recipes; default loaders and all current execution/transfer/registry paths remain strict. The flow file alone gets 4 MiB, retaining 1 MiB other-file/8 MiB total/212-file/256-entry ceilings and 128 combined member+flow cases. This is offline authoring/storage, not qualified execution, approval enforcement or whole-suite evidence.
 
 ## Optional member policy boundary
 

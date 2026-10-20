@@ -106,6 +106,7 @@ python3 scripts/check-agentsuite-fixtures.py --selftest && python3 scripts/check
 python3 scripts/check-legacy-runtime.py --selftest && python3 scripts/check-legacy-runtime.py
 python3 scripts/check-comment-history.py --selftest && python3 scripts/check-comment-history.py
 python3 scripts/test_check_mutations.py
+python3 scripts/test_app_tests.py
 python3 scripts/check-mutations.py
 python3 scripts/check-readme-front-door.py
 python3 scripts/check-readme-front-door-test.py
@@ -113,7 +114,7 @@ python3 scripts/check-brand-assets.py
 python3 scripts/homebrew-formula.py --selftest
 bash scripts/check-no-azure-ids-test.sh && bash scripts/check-no-azure-ids.sh
 bash scripts/kube-guard-test.sh
-formatted=$(gofmt -l cmd internal pkg/kmx embed.go embed_test.go) && test -z "$formatted" && go vet ./... && go test ./...
+formatted=$(gofmt -l cmd internal pkg embed.go embed_test.go) && test -z "$formatted" && go vet ./... && go test ./...
 python3 scripts/test_model_fixtures.py -v
 python3 scripts/test_kagent_lift.py -v
 python3 scripts/test_kagent_lift_shell.py -v
@@ -139,6 +140,15 @@ job runs each checker, each checker's self-test, and a set of inline
 meta-checks over CI's own guards; it is the authority on what gates a
 merge, not this list.
 
+The Linux app tests run in four process-isolated CI shards, assigned by SHA-256
+of each compiled top-level test name. Subtests stay with their parent. The
+required `hygiene` check requires every shard to succeed and still runs the other
+packages and focused app regressions. Each shard retains the 600-second package
+limit and publishes payload-free per-test timings. To run one shard locally,
+use `python3 scripts/ci/app-tests.py --shard 0 --shards 4`; ordinary
+`go test ./...` still runs the complete suite without sharding.
+Use `make test-app` locally to run all four CI shards; an unsharded local run can reach the 600s limit.
+
 The retired-command scanner checks concrete removed commands and assets, not
 kagent API/image identifiers or runtime-version support. Its small exact
 path/text/reason exceptions cover inert CI controls, notices and refusals;
@@ -159,10 +169,11 @@ change classification is uncertain. It runs the harness in full on main pushes
 and in the nightly hygiene job. Its inexpensive runner/routing tests and other
 hygiene checks run regardless of that mutation gate.
 
-One Go module contains the root CLI (`cmd/kmx`, `internal/kmx`) and application
-interface (`pkg/kmx`). Portable AgentSuite validation is a separate dependency:
+One Go module contains the root CLI (`cmd/kmx`, `internal/kmx`), concrete
+read-only suite member recipe view (`pkg/suiteview`) and alpha application
+interfaces (`pkg/kmx`). Portable AgentSuite validation is a separate dependency:
 `agentsuite "github.com/agent-primitives/suite"`, pinned to the published minor release
-`v0.4.0` in `go.mod` with verified module sums.
+`v0.6.0` in `go.mod` with verified module sums.
 Public runtime-profile format acceptance enables offline packaging/selection, not
 qualified image execution; see [runtime profiles](docs/suite-workspace.md#explicit-runtime-profiles-offline-only).
 Root `go test ./...` covers kmx consumers, including first-class Orka paths and
@@ -221,8 +232,8 @@ The existing `e2e-orka-runtime` shard also runs
 after its raw upstream Orka Tool/Task and model-answer proof. The checkout-only qualifier requires the
 shard's exclusive cluster-creation flag and a matching `KIND_CLUSTER`, refuses
 existing work/model fixtures, and uses a fresh private KMX home. It adds the pinned
-CPU AIKit model inside that owned cluster, warms it, then attempts one native
-full-workspace evaluation without retry. Historical API UID/spec/input snapshots,
+CPU AIKit model inside that owned cluster, warms it, then attempts two independent
+native full-workspace evaluations without retry. Historical API UID/spec/input snapshots,
 exact registry/layout transfer, verified
 candidate root/child absence, source-withheld explicit promotion and no-effect
 refusal audits gate its metadata artifacts. Source answer/verdict/judge metadata
@@ -230,8 +241,13 @@ is product-observed after cleanup, not re-fetched from deleted Tasks. Only passi
 metadata and scalar `qualification.json` are uploaded; raw captures are private.
 Existing cluster deletion owns all runtime/model cleanup.
 The shard also runs `TestReleaseUpdatePinnedRV` and `TestReleaseStatePinnedCAS`
-against the pinned controller after native qualification. The full private
-updater round trip is a separate opt-in test using two real passing digests.
+against the pinned controller after native qualification. The native qualifier
+also uses its two real passing digests for public CLI update, original-evidence
+rollback, forward update and status-only dependency-RV no-op. Stable UIDs, fresh
+mutation IDs, shared completion and unchanged Task inventory gate the result.
+Workspace stale-skip and known-partial cases retain focused Go coverage; do not
+claim those are live-qualified without separate evidence. A full private updater
+round trip remains available as a separate opt-in test.
 The native-only
 inventory has two text cases plus one open-ended rubric case, with exactly two
 judge samples from the same pinned AIKit workload over an owned keyless loopback
