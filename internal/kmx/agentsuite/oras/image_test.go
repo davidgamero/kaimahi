@@ -118,6 +118,9 @@ func publicationArchive(t *testing.T, nested bool, marker, deploymentLabel strin
 	}
 	attestation.Annotations = map[string]string{"vnd.docker.reference.type": "attestation-manifest", "vnd.docker.reference.digest": image.Digest.String()}
 	index := ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: []ocispec.Descriptor{image, attestation}}
+	if marker == "large-index" {
+		index.Annotations = map[string]string{"padding": strings.Repeat("x", (1<<20)+1024)}
+	}
 	root := add(ocispec.MediaTypeImageIndex, index)
 	if nested {
 		root.Annotations = map[string]string{ocispec.AnnotationRefName: "local:latest"}
@@ -150,6 +153,19 @@ func publicationArchive(t *testing.T, nested bool, marker, deploymentLabel strin
 		t.Fatal(err)
 	}
 	return path, image.Digest.String(), root.Digest.String(), descriptors
+}
+
+func TestImagePublicationMetadataBudget(t *testing.T) {
+	server, _ := newTestRegistryServer("", "")
+	defer server.Close()
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+	for _, nested := range []bool{false, true} {
+		archive, _, _, _ := publicationArchive(t, nested, "large-index", "", false)
+		ref := strings.TrimPrefix(server.URL, "http://") + fmt.Sprintf("/large/image:v%t", nested)
+		if _, err := PushImage(t.Context(), archive, ref, agentsuite.Platform{OS: "linux", Architecture: "amd64"}, true, false); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestPushAndResolveImageWithoutDescriptorPlatform(t *testing.T) {

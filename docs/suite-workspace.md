@@ -112,12 +112,50 @@ or aliasing mutable selected bytes. There is no profiled inventory API.
 `suite build DIRECTORY --runtime-profile ID [--platform OS/ARCH]` resolves an
 exact composition/build profile offline, but the existing AgentKit producer
 **refuses every profiled plan** before exporting or invoking Docker. There is no
-producer fallback, Sessions image-build adapter or suite/image association here.
+producer fallback or Sessions image-build adapter.
 Profiled execution, evaluated push, private receipt creation/export, native public
 evidence export and Lift all refuse, including profiles declaring `runtime.id=orka`.
 Only explicit unevaluated publication is available. Independent `eval verify`
 can check externally produced portable evidence against separately reviewed
 expectations; it grants no private push/Lift authority.
+
+### Detached Sessions declarations (internal, offline only)
+
+Internal `workspace.NewSessionsAssociation` and `CheckSessionsAssociation` create
+and check canonical detached `SessionsAssociationV1` JSON against the frozen
+selected graph. They do not write files, alter S, discover records from caches,
+read source or contact a registry. There is no CLI association flag or consumer.
+
+The closed record requires `version: 1`, `kind: "kmx.sessions-association"`,
+`suiteDigest`, `memberID`, `runtimeProfile: {id, digest}`,
+`compositionDigest`, `buildProfileDigest`, `platform: {os, architecture, variant}`
+(including empty `variant`), `harnessImage`, `executionKind: "harnesswire-chat-v1"`,
+`configDigest` and `imageVerification: "declared-unverified"`. Inputs are at most
+16 KiB and must exactly match independently derived canonical bytes; missing,
+null, unknown, duplicate or mismatched fields refuse without echoing payloads.
+
+Only a selected declaration with `runtime.id=agentsessions`, no member policy and
+no build-profile `execution` contract is eligible. This selects a declaration
+family, not a supported runtime. The image reference must echo the selected
+build profile's exact digest-pinned harness reference; mirrored repositories,
+tags and profile/build-profile harness digest mismatches refuse. Config uses
+the existing framed hash of the exact JSON `system_prompt` bytes. Mutable
+selected-view fields cannot change the frozen selection or its config.
+
+**The image digest and platform are declared, not verified.** No image bytes are
+read; runtime/harness/renderer versions and configuration ABI are not qualified.
+Successful declaration checks grant no execution, evidence, evaluated-publication
+or Lift authority. Profiled execution and Apply remain refused.
+
+Suite instructions are **non-confidential and must never contain secrets**.
+Authorized Sessions Replay readers, journal-at-rest readers and route-config
+readers may see injected instructions; credentials must stay host-side.
+Source and packaged-native preflight reuse the existing credential-shape checker.
+A match in valid UTF-8 instructions adds a fixed, redacted `Warning:` line before
+the existing hard refusal in the returned error diagnostic; it is not an
+admission mode or a separate warnings result. No matched bytes are printed.
+Other credential and invalid-Unicode refusals stay in place. Clean lint does
+not establish that instructions are secret-free.
 
 ### Offline private receipt consistency
 
@@ -144,8 +182,7 @@ The receipt-only projection preserves the profiled marker/graph, never fills or
 changes observed receipt runtime/host facts, and cannot enter execution or export.
 Public implementation digests are **not qualified** by this consistency check.
 Synthetic tests demonstrate only lookup/binding consistency, not two-runtime
-execution. Real profiled execution/evidence integration and image association
-remain unavailable.
+execution. Real profiled execution/evidence integration remains unavailable.
 
 ## Provisional multi-member source (offline only)
 
@@ -305,9 +342,11 @@ placement in that order, using the existing disposable candidate and release gat
 Promotion is selected automatically and disclosed as **passed on the evaluation
 target, not evaluated on the destination**; explicit `--promote=false` stays strict.
 Newly created release objects carry the non-secret provenance described below.
-Guided authoring, tag-based Lift, destination update and rollback are not included.
+Guided authoring and tag-based Lift are not included. Destination update and
+rollback require the explicit retained Orka path below; plain Lift stays create-only.
 
-The default stage transcript has four stderr lines: Plan, Eval, Push and Lift;
+The default stage transcript has four stage lines on stderr: Plan, Eval, Push and Lift,
+plus compact non-pass evaluation detail;
 failures may add a safe refusal or critical cleanup warning. Skipped stages keep
 their line. Counts are case runs (Tasks), also named `caseRuns` in JSON; a completed
 evaluation means each case's threshold was met, not that every run passed.
@@ -412,7 +451,8 @@ preserves missing/unknown/foreign distinctions; `orka status` remains runtime-on
 
 ## Release retention and operator recovery
 
-**The public Lift command remains create-only; `--update` is not enabled.**
+**Plain Lift remains create-only. Updates require explicit `--update` and the
+retained Orka ownership proof described here.**
 New complete Orka Provider/Agent pair creates now require namespace-local
 ConfigMap `create`, and `get`/`patch` for the stable
 `kmx-release-<40-hex-character-key>` record. The key binds suite/member/runtime;
@@ -484,8 +524,8 @@ For operator recovery:
    private state to bypass a reservation. Capacity/unreadable-state errors must
    be resolved deliberately, not with automatic pruning or guessed recovery.
 
-The private updater is covered by backend tests only until its CLI slice lands
-([#561](https://github.com/kaimahi-agents/kaimahi/issues/561)). It keeps model,
+The opt-in Orka updater ([#561](https://github.com/kaimahi-agents/kaimahi/issues/561))
+keeps model,
 inference binding, runtime and names fixed, requires complete bounded cluster-wide
 Agent-list access to refuse shared Providers (including model fallbacks and
 potentially Task-namespace-resolved unqualified references), and conditionally patches with
@@ -496,6 +536,53 @@ re-evaluates rollback evidence. Mutation provenance uses version 2, retaining th
 original create observation separately; the shipped v0.8.1 status reader treats
 that version as unknown rather than attributing the old record to a new revision.
 No draining, zero-downtime, in-flight-work or release-readiness claim is made.
+
+## Update and rollback
+
+This is the **unreleased** retained Orka lifecycle, not functionality in v0.8.1.
+Arrange a quiet window before updating: no draining, zero-downtime or in-flight-work
+claim is made. Plain Lift never changes occupied resources. Kagent, old/mixed/reused
+placements and missing completion acknowledgments refuse; no enrollment or repair.
+
+```bash
+# Review a desired workspace version without contacting the cluster.
+kmx lift --to prod --update --plan
+# Compose missing evaluation/publication, then update the eligible retained pair.
+kmx lift --to prod --update
+# Or place an already-published passing version, including a previous version.
+kmx lift registry.example/team/agents@sha256:<passing-digest> --to prod \
+  --evidence ../private/original-pass.json --promote --update --plan
+kmx lift registry.example/team/agents@sha256:<passing-digest> --to prod \
+  --evidence ../private/original-pass.json --promote --update
+kmx status --to prod
+```
+
+Digest update/rollback consumes the exact artifact and original full passing
+receipt: no evaluation, build, publication or Task send. `--promote` still means
+source-only evidence, **not evaluated on the destination**. Strict evidence mode
+is not bypassed by a no-op. Digest `--plan` reads retained proof, current pair,
+prerequisites and a bounded cluster-wide Agent inventory; it performs no auth
+probe, admission, reservation or writes. Cold workspace plans remain offline and
+only describe conditional stages: they do not establish live update eligibility.
+
+Workspace updates check current shared/private baseline, target dependencies,
+exclusive Provider references, patch permissions and retention before missing
+stage spend. Historical exact-version full passing evidence is reused as historical
+proof, including original evidence retained with a placement if its redundant
+managed-pass cache is gone; it is never relabeled as a fresh evaluation. Publication
+reuse is separately checked. Previously recorded placement generations cannot skip
+a needed update after rollback. Update mode never rewrites those immutable
+completion observations or serializes opaque authority into them.
+
+An already-desired update verifies acknowledged full pair fingerprints, fresh
+prerequisites and current-generation Ready without writes, a new Lift ID or marker
+repair. Workspace no-op skips evaluation and publication as unnecessary; it does
+not claim fresh evaluation or verify/repair a different repository's publication.
+Only inference-Provider resourceVersion drift may be tolerated between revisions
+after unchanged authoritative-field reproof. Within one operation, proofs remain
+exact. One reservation covers the pair; conditional patches recheck UID, generation,
+whole spec and owned metadata. Known partials can reconcile only recorded old/new
+states; unknown effects or checkpoint failures remain blocked. See recovery above.
 
 ## Create
 
@@ -816,7 +903,12 @@ per judge assertion per run**, sharing that run's deadline. Both
 scores at/above the threshold pass, both below fail, and disagreement, malformed
 or unavailable responses are unknown. There are no retries or candidate Tasks beyond the authored runs. Native
 attribution is checked again after judging; late drift/deadline
-prevents a case pass and export. Reasoning is discarded, never printed.
+prevents a case pass and export. Failure summaries include assertion IDs/types and
+both judge scores versus the threshold; unavailable or split outcomes have safe
+classes. Only `--show-content` prints sanitized bounded rationale and answer
+excerpts on stderr, including in composed Lift. `lift --verbose` alone does not
+opt into content. The storage-only policy wording clarification leaves the
+historical v2 evidence fingerprint, scoring rules and existing receipts unchanged.
 Choose a judge model strong enough for the rubric: two agreeing scores do not
 make an incorrect judgment correct; validate it against known pass/fail examples.
 
@@ -885,9 +977,36 @@ Service-proxy audit bodies and model transfers. No auth settings are modified.
 For Orka, the temporary result session uses the selected ServiceAccount's **full effective
 authority**. Discarding its bearer is not revocation; Task-read enforcement is
 unverified for v0.2.0. One pinned loopback connection is opened per run, without
-reconnect. Prompts, answers, assertion operands and reasoning stay out of KMX
-terminal summaries and receipts, but runtime/model storage and Kubernetes audit
-policy may retain them. Published suites themselves contain authored inputs.
+reconnect. Default summaries omit prompts, answers, assertion operands and
+reasoning. `eval --show-content` and executing workspace `lift --show-content`
+opt into expected values/patterns, short judge rationale and answer excerpts on
+stderr. Orka outcome JSON stays one payload-free document with non-pass metadata.
+The flag is refused for deploy-only or plan-only Lift. Prompts are never printed
+by these diagnostics, and receipts still contain no content or references to it.
+Runtime/model storage and Kubernetes audit policy may retain inputs and answers.
+Published suites themselves contain authored inputs.
+
+Failure content is diagnostic-only and currently transient: no retained failure
+store, offline explain, signing or export path is implemented. Each answer is
+bounded to 64 KiB in memory; rationale is bounded to 512 UTF-8 bytes per sample,
+expected values to 512 bytes, and displayed excerpts to 512 bytes per assertion
+and 2 KiB total per run. Forbidden-text failures show an excerpt around the match;
+a missing positive match or judge failure shows a labeled leading excerpt, not
+an invented failure span. Failed individual runs are reported even if their group
+later meets minPasses. Unknown outcomes with unverified attribution expose no
+answer or rationale.
+
+Before truncation, diagnostics check full raw and terminal-normalized content for
+known credential shapes and the configured judge key. Credential-shaped,
+header-like and invalid-UTF-8 fields are withheld, not partially redacted.
+Conservative header checks can withhold consecutive Markdown labels, bare URL
+lines, times and other colon-delimited text that also parses as header fields.
+Clean checks do not prove arbitrary secrets or personal data are absent; only opt
+into content on a private terminal. No raw transport/subprocess errors, headers
+or judge endpoint URLs are retained in these diagnostic fields. Known typed
+transport failures preserve fixed classes (timeout, connection-refused, EOF,
+TLS or HTTP status); kagent subprocess failures use stage classes, never inferred
+HTTP/network causes. Cleanup does not erase independently retained upstream data.
 
 A missed pass threshold, unknown results, execution failure, drift, cancellation
 or output failure stops later cases

@@ -22,19 +22,75 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
 
 ## Unreleased
 
+- Experimental source-linked image builds use the shared bounded artifact loader
+  and preserve accepted file, directory and link semantics. AgentKit declarations
+  must match consumed credential/listen/auth inputs. Image transport uses the
+  inspector's 4-MiB metadata budget; suite referrers retain their smaller limit.
+  The KMX image declaration schema is self-contained with null/presence checks.
+
 ### Added
 
-- Experimental inference capability/execution records from the published
-  AgentSuite module, source-linked image builds with deployment-time model
-  configuration, and `suite push-image` publication. Source-linked builds
-  compare all packaged bytes, types and modes against bounded, digest-verified
-  published content, preserving executable modes. Native exact-model,
-  zero-image workspaces keep their existing behavior. Target-neutral `http-v1`
-  image declarations bind full suite OCI and exact build-profile digests without
-  source registry hints. Publication preserves attestations and does not require
-  deployment metadata; replacing a different image tag requires explicit `--force`.
-  Malformed `--platform` values refuse before archive reads.
-  The AgentKit adapter refuses serving settings it cannot implement.
+- Eval and composed workspace Lift show non-pass case/run, assertion IDs/types,
+  both judge scores against the threshold and safe unknown-outcome classes.
+  `--show-content` opts into sanitized bounded expected values, judge rationale
+  and answer excerpts on stderr; outcome JSON remains payload-free. Diagnostics
+  are transient and separate from evidence; local retention/explain is not yet
+  implemented. Known credentials/headers are withheld before truncation, but
+  shape checks cannot detect arbitrary secrets.
+- Opt-in Orka `kmx lift --to <destination> --update` and digest/evidence update
+  or rollback. Only newly created, acknowledged retained pairs qualify; v0.8.1
+  and earlier, reused, mixed and unrecorded placements are never enrolled.
+  Original passing evidence supports rollback without re-evaluation. Same-digest
+  updates are no-write checks; workspace updates re-prove the actual cluster
+  baseline instead of trusting a historical placement skip. Arrange a quiet
+  window: there is no draining, zero-downtime or automatic recovery guarantee.
+- Destination status reads v1 creates and v2 mutation attempts, with a bounded
+  exact-name shared-record GET reporting pending/partial/completed/unknown
+  separately from readiness. These unsigned observations never grant update
+  authority or prove local completion acknowledgment.
+- Public Go package `pkg/suiteview` returns a verified, read-only `MemberRecipe`
+  for one explicit member: caller-owned instructions and the complete portable
+  model requirement from a local
+  AgentSuite OCI layout or bounded uncompressed layout archive. It retains exact
+  artifact, graph, member and instruction identities, uses payload-free typed
+  refusals including a distinct resource-limit category, and performs no configuration, registry, runtime, evaluation,
+  publication or Lift operation. The recipe is intentionally not a complete
+  runtime/build/tool/policy/evaluation plan. KMX native loaders call the public
+  projection on their frozen snapshots before applying separate runtime-private
+  checks.
+- Internal offline detached Sessions association records bind exact selected suite,
+  profile, build-profile, platform and chat config declarations without changing
+  suite bytes. Image references are explicitly `declared-unverified`; no image
+  verification, runtime qualification, executable plan, CLI consumer or Apply
+  support is enabled.
+
+### Changed
+
+- Workspace `lift --verbose` no longer prints judge rationale by itself; use
+  `--show-content` for non-pass content. Deploy-only and plan-only Lift refuse
+  that flag. The judge policy's local-diagnostics clarification preserves the
+  historical v2 evidence fingerprint and existing receipts; no new receipt
+  fields, diagnostic references, signatures or exports are introduced.
+- AgentSuite validation now uses `github.com/agent-primitives/suite v0.5.0`.
+  Editor and external-validator registries should select the complete v0.5.0
+  schema bundle with `/schema/v0.5/` IDs. Historical hosted v0.1.0 schemas
+  remain byte-for-byte unchanged, not aliases to the new contract. Wire versions,
+  media types and digests of unchanged suite documents are unchanged.
+
+- Credential-shaped suite instructions now add a fixed redacted warning before
+  the existing source/package hard refusal. Instructions are non-confidential
+  and must never contain secrets; clean lint is not a secret-free guarantee.
+  Package diagnostics expose this fixed warning instead of only a generic
+  verification failure. Other credential and invalid-Unicode refusals remain.
+
+- Complete fresh Orka Lift creates now retain a namespace-local shared release
+  record and explicit private ownership proof for the opt-in updater
+  ([#561](https://github.com/kaimahi-agents/kaimahi/issues/561)). Composed Lift
+  preflights retention before evaluation/publication spend. Shared completion
+  uses conditional writes and requires a private acknowledgment checkpoint;
+  ambiguous or partial first creates remain blocked, without automatic cleanup.
+  Exact reuse/mixed reuse/skips never enroll. Kagent is unchanged; plain Lift
+  remains create-only. See the [update contract](docs/suite-workspace.md#update-and-rollback).
 
 ### Fixed
 
@@ -44,19 +100,21 @@ to do. Sections: **Added**, **Changed**, **Fixed**, **Breaking**, **Upgrading**.
   publication checks and output cleanup succeed. Lost shared-write responses
   still block; there is no retry, backfill or automatic cleanup.
 
-### Changed
-
-- Complete fresh Orka Lift creates now retain a namespace-local shared release
-  record and explicit private ownership proof for the forthcoming updater
-  ([#561](https://github.com/kaimahi-agents/kaimahi/issues/561)). Composed Lift
-  preflights retention before evaluation/publication spend. Shared completion
-  uses conditional writes and requires a private acknowledgment checkpoint;
-  ambiguous or partial first creates remain blocked, without automatic cleanup.
-  Exact reuse/mixed reuse/skips never enroll. Kagent is unchanged. The public
-  command remains create-only; no `--update` flag is enabled by this backend slice.
-
 ### Breaking
 
+- Suite loading now refuses Suite/ToolProvider extensions without an explicit
+  `critical` boolean, present empty/null ToolProvider `variants`, and explicitly
+  null tool `outputSchema` properties. ToolProvider JSON decoding also rejects
+  unknown or duplicate properties. Declare extension criticality and omit absent
+  variants/output schemas; keep nonempty variants and valid schema descriptors.
+  Changed documents require rebinding their descriptors and ancestors. Explicit
+  `critical: false` remains valid; Agent extension acceptance is unchanged.
+
+- Destination status now reads the exact shared release ConfigMap for owned Orka
+  rows. Read-only roles need named-record `get` access; denial makes the shared
+  observation unknown and the report incomplete (exit 1), including legacy v1
+  rows. Existing object provenance remains visible; no permission is granted or
+  inferred automatically. See [status access](docs/destination-status.md#selection-and-access).
 - All unmarked private ownership proofs are refused, including successful test
   baselines from unreleased #573 builds. A visible `4.json` alone is not a
   completed acknowledgment. Recreate an owned pair explicitly when ready; no

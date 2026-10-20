@@ -162,6 +162,32 @@ func (b *Builder) validate(plan kmxsuite.SandboxPlan) error {
 		if plan.Agent.Model.Capabilities == nil && execution.Configuration != "" {
 			errs = append(errs, errors.New("exact-model AgentKit builds do not implement mounted configuration"))
 		}
+		inputs := map[string]bool{}
+		for _, input := range execution.Inputs {
+			inputs[input.Environment] = input.Secret
+			switch input.Environment {
+			case "AGENTKIT_BIND":
+				if input.Secret {
+					errs = append(errs, errors.New("AgentKit bind input must be non-secret"))
+				}
+			case "AGENTKIT_AUTH_TOKEN":
+				if !input.Secret {
+					errs = append(errs, errors.New("AgentKit authentication input must be secret"))
+				}
+			default:
+				if plan.Agent.Model.Capabilities != nil || b.options.ModelAPIKeyEnv == "" || input.Environment != b.options.ModelAPIKeyEnv || !input.Secret {
+					errs = append(errs, errors.New("execution input is not consumed by the pinned AgentKit adapter"))
+				}
+			}
+		}
+		if plan.Agent.Model.Capabilities != nil {
+			bind, ok := inputs["AGENTKIT_BIND"]
+			if !ok || bind || !inputs["AGENTKIT_AUTH_TOKEN"] {
+				errs = append(errs, errors.New("mounted AgentKit serving requires non-secret AGENTKIT_BIND and secret AGENTKIT_AUTH_TOKEN inputs"))
+			}
+		} else if b.options.ModelAPIKeyEnv != "" && !inputs[b.options.ModelAPIKeyEnv] {
+			errs = append(errs, errors.New("execution declaration must include the configured model credential environment as a secret input"))
+		}
 	}
 	if b.options.SuiteReference != "" && (agentsuite.ValidateImageReference(b.options.SuiteReference) != nil || !agentsuite.IsValidDigest(b.options.SuiteDigest) || !strings.HasSuffix(b.options.SuiteReference, "@"+b.options.SuiteDigest)) {
 		errs = append(errs, errors.New("published source reference must pin the exact suite manifest digest"))
@@ -171,6 +197,9 @@ func (b *Builder) validate(plan kmxsuite.SandboxPlan) error {
 	}
 	if err := ValidateModelAPIKeyEnv(b.options.ModelAPIKeyEnv); err != nil {
 		errs = append(errs, err)
+	}
+	if b.options.ModelAPIKeyEnv == "AGENTKIT_AUTH_TOKEN" || b.options.ModelAPIKeyEnv == "AGENTKIT_BIND" {
+		errs = append(errs, errors.New("model credential environment must not alias AgentKit serving inputs"))
 	}
 	if plan.Agent.Model.Capabilities != nil {
 		if b.options.ModelBaseURL != "" || b.options.ModelAPIKeyEnv != "" {

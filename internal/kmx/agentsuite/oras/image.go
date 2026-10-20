@@ -1,16 +1,12 @@
 package oras
 
 import (
-	"archive/tar"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
-	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -46,46 +42,10 @@ func PrepareImageBuildSource(ctx context.Context, source, reference, output stri
 	if err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(local.files, remote.files) || !reflect.DeepEqual(local.entries, remote.entries) {
+	if !local.SameContent(remote) {
 		return errors.New("local and published suite content differs, including supplemental metadata and cases")
 	}
-	if err := os.Mkdir(output, 0o700); err != nil {
-		return err
-	}
-	for name, data := range remote.files {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		// The artifact reader has already confined and validated every path.
-		path := filepath.Join(output, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return err
-		}
-		if err := os.WriteFile(path, data, 0o600); err != nil {
-			return err
-		}
-		if err := os.Chmod(path, os.FileMode(remote.entries[name].Mode)&0777&^0022); err != nil {
-			return err
-		}
-	}
-	// Apply directory modes last, deepest first, so read-only directories do not
-	// prevent materialization. Preserve explicit empty directories as well.
-	var dirs []string
-	for name, entry := range remote.entries {
-		if entry.Kind == tar.TypeDir {
-			dirs = append(dirs, name)
-			if err := os.MkdirAll(filepath.Join(output, filepath.FromSlash(name)), 0700); err != nil {
-				return err
-			}
-		}
-	}
-	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
-	for _, name := range dirs {
-		if err := os.Chmod(filepath.Join(output, filepath.FromSlash(name)), os.FileMode(remote.entries[name].Mode)&0777&^0022); err != nil {
-			return err
-		}
-	}
-	return ctx.Err()
+	return remote.Materialize(ctx, output)
 }
 
 // ResolveImageRegistry reads verified manifests and config without extracting or
@@ -95,7 +55,7 @@ func ResolveImageRegistry(ctx context.Context, reference string, platform agents
 }
 
 func ResolveImageRegistryTransport(ctx context.Context, reference string, platform agentsuite.Platform, plainHTTP bool) (ResolvedImage, error) {
-	repository, ref, err := newRegistryRepository(reference, plainHTTP, nil)
+	repository, ref, err := newRegistryRepositoryLimit(reference, plainHTTP, nil, 4<<20)
 	if err != nil {
 		return ResolvedImage{}, err
 	}

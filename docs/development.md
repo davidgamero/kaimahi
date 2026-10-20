@@ -102,6 +102,7 @@ classification.
 | Path | Responsibility |
 |---|---|
 | `cmd/kmx/`, `internal/kmx/`, `embed.go` | CLI command tree, Orka and version-bounded kagent lifecycle adapter, portable authoring, shared plumbing and embedded manifests |
+| `pkg/suiteview/` | concrete read-only selected-member projection from verified local AgentSuite OCI layouts/archives; no runtime/evidence authority |
 | `pkg/kmx/` | experimental public setup-only environment plus suite/deployment contracts, not wired into the installed CLI |
 | `k8s/ollama.yaml`, `k8s/orka-k8s-tool.yaml` | native local model and read-only Kubernetes Tool |
 | `scripts/`, `Makefile` | checks, packaging and repository helpers |
@@ -121,8 +122,9 @@ command tree plus `pkg/kmx` method sets, use the
 
 ## Build and verify
 
-Run from the repository root. AgentSuite is a public package in the same Go
-module, so these commands include it without a workspace or a dependency pin.
+Run from the repository root. Portable AgentSuite is a separate pinned Go module;
+KMX's public packages are part of this root module and the commands below include
+them without a nested workspace.
 CI's Go hygiene checks remain unguarded, including on documentation-only changes;
 only the live and clone-free operation steps use documentation-only guards.
 Formatting checks must test `gofmt` output because
@@ -134,7 +136,7 @@ config location, while macOS uses `~/Library/Application Support`. `KMX_HOME`
 is the repository's explicit cross-platform isolation contract.
 
 ```bash
-formatted=$(gofmt -l cmd internal pkg/kmx embed.go embed_test.go) && test -z "$formatted" && go vet ./... && go build ./... && go test ./...
+formatted=$(gofmt -l cmd internal pkg embed.go embed_test.go) && test -z "$formatted" && go vet ./... && go build ./... && go test ./...
 npm --prefix docs ci --ignore-scripts && npm --prefix docs run docs:check
 python3 scripts/check-doc-links.py --selftest
 python3 scripts/check-doc-links.py
@@ -152,7 +154,10 @@ python3 scripts/test_model_fixtures.py -v
 
 Import the separate module as `agentsuite "github.com/agent-primitives/suite"`.
 The internal builder uses `kmxsuite` and the ORAS adapter uses `suiteoras`.
-`go.mod` pins the published release `v0.4.0`, with its sums in `go.sum`.
+`go.mod` pins the published release `v0.5.0`, with its sums in `go.sum`.
+Use the [complete release-pinned schema bundle](docs-site.md#current-agentsuite-schema-selection)
+for editors and external validators; the historical hosted schemas are not the
+current consumer contract.
 Verify releases with `GOWORK=off`. For coordinated local development, select an
 external absolute `go.work` containing both modules with
 `GOWORK=/absolute/path/to/go.work`; do not commit workspace files, `replace`
@@ -229,11 +234,19 @@ live writer whose object writes have ceased may persist a known partial and
 release its reservation. Pending/partial shared proof never rolls; completed
 history rolls at ten entries within 64 KiB. See
 [retention and operator recovery](suite-workspace.md#release-retention-and-operator-recovery).
-The update/rollback backend remains private and unwired to CLI flags. Its tests
-must distinguish same-digest no-write, fresh-RV-without-new-authority, old/new
+The public `lift --update` route uses the retained Orka backend. Tests must
+distinguish same-digest no-write, fresh-RV-without-new-authority, old/new
 known partials, a separate client/private home, and lost final acknowledgments.
 Pinned API characterization is necessary but does not substitute for complete
-Lift/retention qualification or prove a model answer. Keep existing CI budgets.
+Lift/retention qualification or prove a model answer. The existing native Python
+qualifier now independently evaluates and publishes v2, then drives the public
+CLI v1→v2→original-evidence v1→v2 and status-only dependency-RV no-op against its
+owned pair. It checks current status, stable UIDs, fresh mutation IDs, original
+evidence and no Task/evaluation/publication during digest updates. Offline audit
+tests do not establish live qualification or job headroom. Workspace historical
+skip invalidation and separate-client/known-partial cases also retain focused Go
+coverage; do not describe those as live-qualified without corresponding evidence.
+Keep existing CI budgets.
 
 ### Local loop
 

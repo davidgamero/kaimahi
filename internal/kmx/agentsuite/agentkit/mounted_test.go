@@ -2,9 +2,12 @@ package agentkit
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -22,6 +25,7 @@ func TestMountedImageOmitsSelectedModelAndUsesRuntimeConfigABI(t *testing.T) {
 	plan.Instructions = []byte("immutable instructions")
 	plan.Harness.ImageRef = "ghcr.io/orka-agents/agentkit/serve-pydantic-ai@sha256:8c4c17dc3d778c02097ad7e1ea88e9084b3f1aad6c36458829ff9cec9b4d043c"
 	plan.BuildProfile.Execution = &agentsuite.ExecutionContract{Configuration: agentsuite.AgentKitMountedConfig, Kind: agentsuite.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []agentsuite.ExecutionInput{}}
+	plan.BuildProfile.Execution.Inputs = []agentsuite.ExecutionInput{{Name: "listen", Environment: "AGENTKIT_BIND"}, {Name: "agent-auth", Environment: "AGENTKIT_AUTH_TOKEN", Secret: true}}
 	var captured agentImage
 	builder := New(Options{SuiteReference: "registry.example/source@" + testDigest, SuiteDigest: testDigest, exporter: ociExporterFunc(func(_ context.Context, image agentImage, _ io.Writer) error { captured = image; return nil })})
 	if _, err := builder.Build(context.Background(), plan, io.Discard); err != nil {
@@ -36,7 +40,31 @@ func TestMountedImageOmitsSelectedModelAndUsesRuntimeConfigABI(t *testing.T) {
 	if string(captured.Instructions) != "immutable instructions" {
 		t.Fatal("instructions changed")
 	}
+	_, labelLine, ok := strings.Cut(string(captured.AgentkitFile), "LABEL "+kmxsuite.ImageDeploymentLabel+"=")
+	if !ok {
+		t.Fatal("missing declaration")
+	}
+	label, err := strconv.Unquote(strings.TrimSpace(labelLine))
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaration, err := kmxsuite.DecodeImageDeployment([]byte(label))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(declaration.Execution.Inputs) != 2 || !strings.Contains(string(captured.AgentkitFile), "AGENTKIT_BIND=127.0.0.1") {
+		t.Fatal("mounted serving inputs/config not represented together")
+	}
 	first := string(captured.AgentkitFile)
+	for _, inputs := range [][]agentsuite.ExecutionInput{nil, {{Name: "listen", Environment: "AGENTKIT_BIND"}}, {{Name: "auth", Environment: "AGENTKIT_AUTH_TOKEN", Secret: true}}} {
+		bad := plan
+		execution := *plan.BuildProfile.Execution
+		execution.Inputs = inputs
+		bad.BuildProfile.Execution = &execution
+		if _, err := builder.Build(t.Context(), bad, io.Discard); err == nil {
+			t.Fatal("incomplete mounted serving inputs accepted")
+		}
+	}
 	builder.options.SuiteReference = "other.example/copied-source@" + testDigest
 	if _, err := builder.Build(t.Context(), plan, io.Discard); err != nil {
 		t.Fatal(err)
@@ -52,6 +80,49 @@ func TestMountedImageOmitsSelectedModelAndUsesRuntimeConfigABI(t *testing.T) {
 	if _, err := builder.Build(context.Background(), plan, io.Discard); err == nil {
 		t.Fatal("model build override accepted")
 	}
+}
+
+func TestAgentKitCredentialDeclarationMatchesGeneratedConfig(t *testing.T) {
+	for _, declared := range []bool{false, true} {
+		t.Run(fmt.Sprint(declared), func(t *testing.T) {
+			plan := minimalPlan()
+			plan.CompositionDigest = testDigest
+			plan.BuildProfileDigest = testDigest
+			plan.BuildProfile.ID = "default"
+			plan.BuildProfile.Execution = &agentsuite.ExecutionContract{Kind: agentsuite.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []agentsuite.ExecutionInput{}}
+			if declared {
+				plan.BuildProfile.Execution.Inputs = []agentsuite.ExecutionInput{{Name: "model-key", Environment: "MODEL_API_KEY", Secret: true}}
+			}
+			calls := 0
+			b := New(Options{SuiteReference: "registry.example/suite@" + testDigest, SuiteDigest: testDigest, ModelBaseURL: "https://model.example/v1", ModelAPIKeyEnv: "MODEL_API_KEY", exporter: ociExporterFunc(func(_ context.Context, img agentImage, _ io.Writer) error {
+				calls++
+				_, body, _ := strings.Cut(string(img.AgentkitFile), "\n")
+				var config agentConfig
+				if err := json.Unmarshal([]byte(body), &config); err != nil {
+					t.Fatal(err)
+				}
+				r, err := kmxsuite.DecodeImageDeployment([]byte(config.Metadata.Labels[kmxsuite.ImageDeploymentLabel]))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if config.Model.APIKeyEnv != "MODEL_API_KEY" || len(r.Execution.Inputs) != 1 || r.Execution.Inputs[0].Environment != config.Model.APIKeyEnv || !r.Execution.Inputs[0].Secret {
+					t.Fatal("config/declaration disagreement")
+				}
+				return nil
+			})})
+			_, err := b.Build(t.Context(), plan, io.Discard)
+			if (err == nil) != declared || calls != btoi(declared) {
+				t.Fatalf("declared=%t calls=%d error=%v", declared, calls, err)
+			}
+		})
+	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 type mountedBuildRunner struct{ t *testing.T }

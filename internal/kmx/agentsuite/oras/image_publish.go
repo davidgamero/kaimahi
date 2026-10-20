@@ -49,10 +49,11 @@ func PushImage(ctx context.Context, archive, reference string, platform agentsui
 	if err := parsed.ValidateReferenceAsTag(); err != nil {
 		return "", err
 	}
-	target, tag, err := newRegistryRepository(reference, plainHTTP, nil)
+	target, tag, err := newRegistryRepositoryLimit(reference, plainHTTP, nil, 4<<20)
 	if err != nil {
 		return "", err
 	}
+	// Keep generic registry/provenance readers on their smaller default budget.
 	// Reuse tag policy without suite provenance or deployment admission. The
 	// inspector has already selected and verified the single runnable platform.
 	if _, err := pushRegistryGraph(ctx, graph, target, tag, force, PushOptions{}, PushResult{Reference: reference, Descriptor: graph.root}); err != nil {

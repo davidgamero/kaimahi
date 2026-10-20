@@ -1,6 +1,8 @@
 package agentsuite
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -36,8 +38,25 @@ func DecodeImageDeployment(data []byte) (*ImageDeployment, error) {
 		return nil, errors.New("image declaration exceeds 16 KiB")
 	}
 	var r ImageDeployment
+	var fields map[string]json.RawMessage
+	if err := agentsuite.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	for _, name := range []string{"schemaVersion", "mediaType", "suiteDigest", "agent", "platform", "compositionDigest", "buildProfile", "buildProfileDigest", "execution"} {
+		if raw, ok := fields[name]; !ok || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return nil, errors.New("image declaration requires explicit non-null identity and execution fields")
+		}
+	}
+	for _, name := range []string{"inference", "suiteReference"} {
+		if raw, ok := fields[name]; ok && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return nil, errors.New("optional image declaration fields must not be null")
+		}
+	}
 	if err := agentsuite.Unmarshal(data, &r); err != nil {
 		return nil, err
+	}
+	if _, present := fields["suiteReference"]; present && r.SuiteReference == "" {
+		return nil, errors.New("suiteReference must not be empty when present")
 	}
 	if r.SchemaVersion != agentsuite.SpecVersion || r.MediaType != ImageDeploymentMediaType || !agentsuite.IsValidDigest(r.SuiteDigest) || !agentsuite.IsValidDigest(r.CompositionDigest) || !agentsuite.IsValidDigest(r.BuildProfileDigest) || !builderIdentifierPattern.MatchString(r.Agent) || !builderIdentifierPattern.MatchString(r.BuildProfile) {
 		return nil, errors.New("invalid image deployment identity")

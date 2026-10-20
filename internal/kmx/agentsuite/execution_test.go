@@ -1,10 +1,62 @@
 package agentsuite
 
 import (
+	"encoding/json"
 	agentsuite "github.com/agent-primitives/suite"
+	"github.com/google/jsonschema-go/jsonschema"
+	"os"
 	"strings"
 	"testing"
 )
+
+func TestImageDeclarationSchemaParity(t *testing.T) {
+	raw, err := os.ReadFile("schema/image-deployment.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := "sha256:" + strings.Repeat("a", 64)
+	r := ImageDeployment{SchemaVersion: agentsuite.SpecVersion, MediaType: ImageDeploymentMediaType, SuiteDigest: d, Agent: "hello", Platform: agentsuite.Platform{OS: "linux", Architecture: "amd64"}, CompositionDigest: d, BuildProfile: "default", BuildProfileDigest: d, Execution: agentsuite.ExecutionContract{Kind: agentsuite.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []agentsuite.ExecutionInput{}}}
+	base, err := EncodeImageDeployment(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		valid  bool
+		change func(map[string]any)
+	}{
+		{"valid", true, func(map[string]any) {}},
+		{"null inference", false, func(m map[string]any) { m["inference"] = nil }},
+		{"null hint", false, func(m map[string]any) { m["suiteReference"] = nil }},
+		{"missing execution", false, func(m map[string]any) { delete(m, "execution") }},
+		{"missing inputs", false, func(m map[string]any) { delete(m["execution"].(map[string]any), "inputs") }},
+		{"mounted without inference", false, func(m map[string]any) {
+			m["execution"].(map[string]any)["configuration"] = agentsuite.AgentKitMountedConfig
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var m map[string]any
+			_ = json.Unmarshal([]byte(base), &m)
+			tc.change(m)
+			wire, _ := json.Marshal(m)
+			_, err := DecodeImageDeployment(wire)
+			if (err == nil) != tc.valid {
+				t.Fatalf("decoder: %v", err)
+			}
+			if err := resolved.Validate(m); (err == nil) != tc.valid {
+				t.Fatalf("schema: %v", err)
+			}
+		})
+	}
+}
 
 func TestImageDeclarationRoundTripAndBindingRefusal(t *testing.T) {
 	d := "sha256:" + strings.Repeat("a", 64)
