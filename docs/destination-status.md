@@ -10,8 +10,31 @@ kmx status --to prod --workspace ./operator-workspace -o json
 ```
 
 Use `kmx orka status` for the existing table-only Orka runtime report. Bare
-`kmx status` now refuses before application configuration and names both routes.
+`kmx status` reports tracked local running/stopped agent instances, not source files.
 There is no new `suite status` or legacy bundle-status command.
+
+## Local instance status
+
+```sh
+kmx status
+kmx status --directory ./project -o json
+```
+
+Status reads instance records created by Run/Chat. A fresh installation says
+`No agent instances`; merely adding a file does not create one. It shows name,
+type, environment, running/stopped state, inference provider/model, definition hash,
+run generation and original source. Shared-manager agents have the same manager
+PID/socket but independent instance IDs and sessions.
+`--directory` filters by original source location; omitted means all instances,
+including ones whose original source was moved or deleted. A process-held lease
+determines liveness; abandoned running records display stopped with an incomplete
+completion reason in JSON. PID is informational. Test calls do not create instances.
+
+Status never prompts, signs in, installs, performs inference/tests, or writes KMX
+state. Use `kmx info` for Copilot installation/sign-in/default inference and
+`kmx list --definitions --type md` to discover source files. `--directory` applies
+only locally; `--workspace` and
+cluster selectors require `--to NAME`. Explicit empty `--to` is an error.
 
 ## Selection and access
 

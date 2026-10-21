@@ -23,7 +23,10 @@ func TestDestinationStatusRefusesBeforeConfiguration(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{[]string{"status"}, []string{"kmx status --to <destination>", "kmx orka status"}},
+		{[]string{"status", "--directory="}, []string{"--directory"}},
+		{[]string{"status", "--workspace", "."}, []string{"--to"}},
+		{[]string{"status", "--context", "kind-test"}, []string{"--to"}},
+		{[]string{"status", "--to", "prod", "--directory", "."}, []string{"--directory"}},
 		{[]string{"status", "--to="}, []string{"--to"}},
 		{[]string{"status", "--to", " "}, []string{"--to"}},
 		{[]string{"status", "--to", "prod", "-o", "yaml"}, []string{"table", "json"}},
@@ -53,6 +56,31 @@ func TestDestinationStatusRefusesBeforeConfiguration(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBareStatusWorksBeforeSetupWithoutClusterConfiguration(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	home := filepath.Join(root, "absent-state")
+	t.Setenv("KMX_HOME", home)
+	t.Setenv("PATH", t.TempDir())
+	for _, args := range [][]string{{"status"}, {"status", "-o", "json"}, {"status", "--directory", root}} {
+		var out, diag bytes.Buffer
+		deps, loads := testDependencies(&out, &diag)
+		deps.loadConfig = func(string, string) (*config.Config, error) {
+			t.Fatal("local status loaded cluster config")
+			return nil, nil
+		}
+		if err := execute(args, deps); err != nil {
+			t.Fatal(err)
+		}
+		if *loads != 0 || (args[len(args)-1] != "json" && !strings.Contains(out.String(), "No agent instances")) || diag.Len() != 0 {
+			t.Fatalf("out=%s diag=%s", &out, &diag)
+		}
+	}
+	if _, err := os.Stat(home); !os.IsNotExist(err) {
+		t.Fatalf("state created: %v", err)
 	}
 }
 

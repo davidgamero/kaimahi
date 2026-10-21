@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentpreview"
 	kmxsuite "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
@@ -198,12 +199,28 @@ func legacyCommandInvocation(argv []string, verb string) bool {
 func newRootCommand(state *commandState) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "kmx",
-		Short: "Create and run agents on Kubernetes",
+		Short: "Create, inspect, test and run agents",
 		// Leave Args unset so Cobra rejects unknown roots before parsing their
 		// flags or honoring --help. Bare root still runs the help handler.
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		RunE:          func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if state.deps.stdin != nil && term.IsTerminal(int(state.deps.stdin.Fd())) {
+				if state.contextFlag != "" || cmd.Flags().Changed("container-engine") {
+					return errors.New("local agent browser does not use cluster selectors; choose an explicit cluster command")
+				}
+				_, err := app.SetupMarkdownProvider(state.deps.stdin, state.deps.stderr, false)
+				if err != nil {
+					return err
+				}
+				a, err := state.application()
+				if err != nil {
+					return err
+				}
+				return a.AgentTUI(app.AgentTUIOptions{Directory: "."})
+			}
+			return cmd.Help()
+		},
 	}
 	root.SetOut(state.deps.stdout)
 	root.SetErr(state.deps.stderr)
@@ -213,13 +230,21 @@ func newRootCommand(state *commandState) *cobra.Command {
 	root.PersistentPreRunE = validateContainerEngineFlag
 	_ = root.RegisterFlagCompletionFunc("context", completeContexts)
 	_ = root.RegisterFlagCompletionFunc("container-engine", staticCompletion([]string{"docker", "podman"}))
+	create, chat, run := newAgentCreateCommand(state), newAgentChatCommand(state), newAgentRunCommand(state)
+	addAgentTypeRoute(state, create, "init")
+	addAgentTypeRoute(state, chat, "chat")
+	addAgentTypeRoute(state, run, "run")
+	settings := markdownOperation(state, "settings")
+	settings.Use = "settings"
 	root.AddCommand(
 		newVersionCommand(state), newMCPCommand(state), newCompletionCommand(root), newModelCommand(state), newContextCommand(state), newLocalCommand(state), newDestinationsCommand(state),
 		newQuickstartCommand(state), newAKSCommand(state),
 		newConsoleCommand(state), newOrkaCommand(state),
-		newStatusCommand(state), newAgentCreateCommand(state), newAgentChatCommand(state), newAgentRunCommand(state),
+		newStatusCommand(state), create, chat, run,
 		newAgentTestCommand(state), newAgentEvalCommand(state), newReleaseDeployCommand(state), newReleaseLiftCommand(state), newTaskCommand(state),
 		newSuiteCommand(state), newSuitePushCommand(state, true), newTargetsCommand(state),
+		newListTypedAgentsCommand(state), newInspectAgentCommand(state), newTypedAgentCommand(state, "validate", "validate"), newInfoCommand(state), newStopAgentCommand(state), settings,
+		markdownOperation(state, "import"),
 		retiredCommand("quickstart-wizard", "kmx quickstart --interactive"),
 	)
 	return root
