@@ -284,7 +284,7 @@ func (o Output) FocusInput(kind FocusKind, prompt, value, hint string, width int
 
 // UserMessage is a durable transcript box, with no editor hint or background.
 func (o Output) UserMessage(value string, width int) []string {
-	return o.inputFrame("YOU", lipgloss.BrightBlack, "", value, "", width).Rows
+	return o.inputFrame("YOU", lipgloss.Blue, "", value, "", width).Rows
 }
 
 func (o Output) inputFrame(title string, color color.Color, prompt, value, hint string, width int) FocusFrame {
@@ -299,14 +299,19 @@ func (o Output) inputFrame(title string, color color.Color, prompt, value, hint 
 	}
 	topLabel := "─ " + title + " "
 	top := "╭" + topLabel + strings.Repeat("─", max(0, width-2-lipgloss.Width(topLabel))) + "╮"
+	left, bottomLeft := "│", "╰"
+	if title == "YOU" || title == "MESSAGE" {
+		left, bottomLeft = "▌", "▌"
+		top = "▌" + strings.TrimPrefix(top, "╭")
+	}
 	rows := []string{top}
 	for _, row := range textRows {
 		content := lipgloss.NewStyle().Width(inner).Render(row)
 		if o.cap.Color {
 			border := lipgloss.NewStyle().Foreground(color)
-			rows = append(rows, border.Render("│")+" "+content+" "+border.Render("│"))
+			rows = append(rows, border.Render(left)+" "+content+" "+border.Render("│"))
 		} else {
-			rows = append(rows, "│ "+content+" │")
+			rows = append(rows, left+" "+content+" │")
 		}
 	}
 	cursorRow := len(rows) - 1
@@ -316,12 +321,12 @@ func (o Output) inputFrame(title string, color color.Color, prompt, value, hint 
 		content := lipgloss.NewStyle().Foreground(lipgloss.BrightBlack).Width(inner).Render(hint)
 		if o.cap.Color {
 			border := lipgloss.NewStyle().Foreground(color)
-			rows = append(rows, border.Render("│")+" "+content+" "+border.Render("│"))
+			rows = append(rows, border.Render(left)+" "+content+" "+border.Render("│"))
 		} else {
-			rows = append(rows, "│ "+content+" │")
+			rows = append(rows, left+" "+content+" │")
 		}
 	}
-	rows = append(rows, "╰"+strings.Repeat("─", width-2)+"╯")
+	rows = append(rows, bottomLeft+strings.Repeat("─", width-2)+"╯")
 	if o.cap.Color {
 		border := lipgloss.NewStyle().Foreground(color)
 		rows[0] = border.Render(rows[0])

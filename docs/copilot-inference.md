@@ -1,17 +1,249 @@
 # Copilot inference and tools
 
-Host Copilot chat inference is independent from native workspace evaluation
-and Deploy. Copilot wizard authoring is retired; automatic wizard tool attachment
-and live source tools/inference edits remain retired. Outside the wizard,
-`/inference-copilot` discovers models through the authenticated installed CLI
-without rewriting the saved Orka Provider. Native eval/Deploy requires its exact
-packaged model and native binding, not host Copilot execution.
+## Markdown-agent spike (unreleased)
 
-On a local kind target, `/inference-copilot` opens a discovered-model picker.
-Host Copilot inference is refused on remote targets; configure a cluster Provider
-there instead. `/inference-local` returns to the Agent's Orka Provider; `/retry`
-repeats the previous prompt using the chosen route. Each reply shows total elapsed
-request time.
+Build this branch and run the local browser:
+
+```sh
+go build -o bin/kmx ./cmd/kmx
+./bin/kmx
+```
+
+On first interactive launch, KMX detects the installed Copilot CLI and asks
+`Use it by default for local agents? [Y/n]`. Enter accepts; No is remembered.
+The per-user choice lives in `preferences.json` under `config.StateDir()`:
+`$KMX_HOME`, or normally `~/.config/kmx` on Linux and
+`~/Library/Application Support/kmx` on macOS. Credentials remain managed by Copilot.
+Missing authentication directs you to `copilot login`. Help/version/completion
+and redirected bare-root invocations never prompt. An empty browser offers to
+create a hello starter using `kmx create NAME --type md`.
+The shared agent console displays `md` file-backed agents and Orka agents by type;
+Markdown is not a separate command namespace. This follows a resource-oriented
+workflow: list, inspect, create, run and chat with agents, selecting their type
+where needed. Source files and AgentSuite artifacts remain distinct backing forms.
+
+```sh
+./bin/kmx settings --provider copilot
+./bin/kmx settings --provider none
+./bin/kmx settings --provider reset
+./bin/kmx list --type md
+./bin/kmx status
+./bin/kmx info
+./bin/kmx list --definitions --type md
+./bin/kmx console
+./bin/kmx console --definitions
+./bin/kmx validate hello
+./bin/kmx inspect hello --type md
+./bin/kmx chat hello --type md
+./bin/kmx run hello --type md --prompt 'My name is Sam'
+./bin/kmx run .github/agents/hello.agent.md
+./bin/kmx chat hello --type md
+./bin/kmx stop hello
+./bin/kmx run -i .github/agents/hello.agent.md
+./bin/kmx test hello --show-content
+./bin/kmx test hello --case greet-sam
+./bin/kmx test weather --provider copilot --show-content
+```
+
+`--provider copilot` overrides the saved route for one invocation. `--model ID`
+overrides the file's string model; an omitted model inherits Copilot defaults.
+Default/auto is explicitly unpinned. Observed model IDs are retained in test rows.
+`settings` prompts in a terminal and prints preferences when redirected. The
+preference file stays 0600 even when an existing owned config directory is 0755;
+save failure is an error, never a silently forgotten choice. Explicit `.agent.md`
+paths select type md; registered local instance names/IDs also resolve locally
+before Orka discovery. Thus `kmx chat frogagent` attaches directly when frogagent
+is running in the background. Explicit `--type orka`, runtime or cluster selectors
+take precedence. Ambiguous local names require a full instance ID. `list` shows tracked local instances;
+`--definitions` explicitly discovers source files. `inspect` dispatches by type; full native
+AgentSuite evaluation remains `eval`. `test` and `validate` currently support md.
+
+### Agent and test files
+
+Start with `kmx create frogagent --type md` to generate a definition and its tests,
+then edit the instruction body below the YAML header. For an existing plain-text
+file, `kmx validate frogagent.agent.md` prints a copyable header when one is missing:
+
+Interactive Run/Chat also offers **Import agent?** when a `.agent.md` file has no
+front matter. `kmx import frogagent.agent.md` starts that flow explicitly. Name
+defaults from the filename; description and optional model are prompted. Tools
+default to none. Saving defaults to a **new file**, `frogagent.imported.agent.md`,
+with an editable path and no overwriting existing files. Choosing **replace** then
+confirming explicitly replaces the original. The instruction bytes are preserved.
+Run/Chat continues with the saved path. Cancelling or declining changes nothing;
+scripts get the import command instead of prompts. Validate remains read-only.
+
+```markdown
+---
+name: frogagent
+description: Answers questions as a frog
+tools: []
+---
+
+You are literally a frog. Answer as if you are one.
+```
+
+Name defaults to the filename; description and explicit tools are required by the
+local runner. Omit model to use Copilot's default. `tools: []` disables tools.
+Validation never edits the original file. Run it with `kmx run -i frogagent.agent.md`.
+
+- [hello definition](../.github/agents/hello.agent.md) pairs with
+  [hello tests](../.github/agent-tests/hello.agent.test.md).
+- [weather definition](../.github/agents/weather.agent.md) pairs with
+  [weather tests](../.github/agent-tests/weather.agent.test.md), demonstrating a
+  real model tool call handled by a deterministic mock.
+
+Definitions use native Copilot front matter: optional name/model strings,
+required description, and explicit tools (`[]` for tool-free execution).
+Other Copilot features produce a located unsupported-field diagnostic rather
+than being silently ignored. The old nested model object and inline test format
+are retired: move tests to the companion and use a string model or omit it.
+
+Pairing is by filename stem in `.github/agents/` and `.github/agent-tests/`.
+For an agent elsewhere, supply `--tests PATH`. Test documents have
+`schemaVersion: 1` front matter, prose/headings and `yaml agent-test` fences.
+Case blocks use existing `id`, `input`, `assertions`/`expectContains`, plus optional
+`mocks.tools`. Supported checks: contains, notContains, regex, toolCalled and
+toolNotCalled. Each case has a fresh conversation and fresh mock counters.
+Tests and expected answers are never included in agent instructions.
+
+Every file entry point validates offline before provider discovery. Diagnostics
+include path, line and column; `validate --json` emits structured diagnostics.
+Reads require bounded regular files (definition 64 KiB, tests 128 KiB), UTF-8,
+valid front matter, unique IDs, valid regex and local mock parameter schemas.
+Definitions have a 30,000-character instruction ceiling; suites have at most 32
+cases. Invalid paired tests block execution; missing tests permit tool-free chat
+but Test refuses an empty suite. Discovery includes `.github/agents`, skips
+other hidden directories/dependencies/symlinks, and is bounded to 10,000 entries
+and 100 agents. Native Windows remains unsupported by this checkout.
+
+### Editing TUI
+
+Bare interactive `kmx` and `console` open the shared agent console. The local
+instance environment is selected initially; `console --definitions` explicitly
+shows files that have never run. `/env local CONTEXT` selects a local cluster and
+includes tracked md rows beside Orka rows. Remote columns remain cluster-only.
+Use `--type md` or `--type orka` to filter console inventory, and `--directory DIR`
+to choose local source. Arrow keys select an agent; `i` inspects, `c` chats, and
+Enter opens type-specific actions. MD actions include edit definition, edit tests
+and run tests. `chat hello --type md` opens the same editing chat directly.
+Use your editor normally, or:
+
+| Command | Action |
+|---|---|
+| `/edit` | Open the definition in VISUAL/EDITOR (default vi) |
+| `/edit-tests` | Open the companion test file |
+| `/reload` | Adopt saved instructions and start a fresh conversation |
+| `/test [id]` | Test the latest saved pair; ID selection is partial |
+| `/tests` | Show case results, source locations, expected checks and actual answers |
+| `/show` | Show the loaded instructions |
+| `/diff` | Compare saved files with the last in-memory tested snapshot |
+| `/reset` | Start a fresh conversation, keeping the visible transcript |
+| `/auto-test on` / `/auto-test off` | Opt into debounced full tests on save; default off |
+| `/settings copilot` / `none` / `reset` | Change the saved provider preference |
+| `/cancel` | Cancel the active job; Ctrl-C also cancels, or exits when idle |
+| `/quit` / `/back` | Return to the browser (or end explicit chat) |
+
+For a GUI editor, set `VISUAL='code --wait'`. Quoted editor executable/arguments
+are parsed without a shell. Bubble Tea releases/restores terminal ownership for
+the editor. The active pair is reread every 500 ms; save-triggered testing waits
+for a stable interval and never overlaps another job. Invalid saves show INVALID.
+Instruction changes require reload before chat sends; test-only changes retain
+the chat conversation. Earlier messages stay visibly separate from the reloaded
+revision. Wide terminals show a test panel beside chat; `/tests` toggles detailed
+expected/actual output (and switches views on narrow terminals). `list --type md`
+is suitable for redirected output; explicit redirected `chat FILE --type md`
+supports the simpler line-oriented controls.
+
+Edit Hello to Goodbye in the hello definition, save and run `/test`: the greeting
+checks fail. Restore Hello and retest. Git stores source history; exact SHA-256
+hashes of both files bind test attempts. File changes during a run mark the
+captured result stale, and partial tests never become a full-suite pass.
+
+### Test history and execution
+
+### Versions and instances
+
+`kmx run FILE.md` validates/caches the definition and starts a background local
+worker, then prints exact Chat and Stop commands. `kmx run -i FILE.md` opens a
+foreground chat instead. Explicit filenames may end in `.md`; discovery recognizes
+`.agent.md`. With `--prompt`/`--prompt-file`, Run answers once and stops.
+`chat NAME_OR_ID --type md` attaches to an existing background instance using its
+cached definition, even if source has changed or disappeared. Exiting attached
+chat disconnects without stopping the worker; use `kmx stop NAME_OR_ID` to stop it.
+Only one inference turn is allowed at a time in a shared background conversation.
+
+Exact definition bytes are stored without replacement under
+`KMX_HOME/agents/versions/<sha256-hex>/agent.md`. Identical content reuses the entry;
+execution reads its verified bytes. Model overrides are recorded separately.
+`KMX_HOME/agents/instances/<source-path-id>/instance.json` retains selected/previous
+version, generation, state, model route and timestamps. Re-running the same path
+increments its generation; edits select a new version and preserve old snapshots.
+The source path, not display name, identifies the instance. An OS-held lease
+prevents another process from overwriting an active session. Re-running unchanged
+background content returns its existing instance. Stop before running an edited
+version. Foreground `/reload` ends its conversation and the next message starts
+the saved version; attached chat retains its worker's frozen version.
+The worker uses a private Unix socket and inherited process lease. Startup returns
+only after Copilot initialization and socket readiness. It does not expose an HTTP
+listener, auto-restart, or survive machine shutdown. Status still detects crashes.
+Cancelling an attached request disconnects that request; its model turn may finish
+in the worker. Stop cancels the worker and its active turn.
+
+Running agents now share **one local manager and one Copilot CLI process per
+KMX_HOME**. Each agent has its own Copilot session, conversation, turn lock,
+version and instance lease. Stop closes only that agent's session; other agents
+continue running. After the last agent stops, the manager releases the shared
+provider and exits after 30 seconds idle. Foreground and one-shot agent runs use
+the manager too; isolated test invocations retain their own temporary provider.
+Status includes an Inference column (`copilot / default` or the selected model).
+Older dedicated workers are not interrupted automatically: stop and rerun them to
+move to the shared manager. Conversations are not migrated between processes.
+
+The chat header has separate Status, Def, Tests and Tools labels. Input and prior
+user messages share a solid blue left rail. Foreground inference reports safe
+runtime progress and elapsed wait; the limit is five minutes per turn. Tools are
+explicitly none for ordinary md agents, or fixture-only for tests: no built-in
+web search or interactive tool-approval UI is enabled.
+
+`status` reads only these records and checks the owner lease. Abrupt process exit
+is reported stopped rather than trusting a stale running flag or recycled PID.
+`info` reports setup; `list/console --definitions` show available source files.
+Test-only runs do not register agent instances. Version cache eviction is not
+automatic; historical source snapshots remain available locally.
+
+### Test metadata
+
+Last-10 metadata records are stored privately under
+`KMX_HOME/md-tests/<agent-path-hash>/history.json`. Records contain definition/test
+hashes, adapter/runtime/model selection, mode, coverage, safe outcomes and times.
+Raw answers stay in memory for `/tests` or print only with `--show-content`.
+After restart, previous source bytes and answers are unavailable; Git is the
+source-history tool. A passing badge includes its timestamp: source equality is
+not a guarantee that an unpinned hosted model will behave identically later.
+
+The pinned Copilot Go SDK v1.0.24 starts the installed CLI, selects the supported
+native custom agent explicitly and maintains real conversation state. Sessions
+run in an isolated temporary directory with config/skill/hook discovery disabled.
+Test callbacks return fixtures only after an actual tool call. Wrong arguments,
+missing calls or extra calls fail; mocks never fall through to real tools. Ordinary
+chat/run accepts tool-free definitions; the weather agent requires a separately
+configured real provider when used directly in Copilot outside mock tests.
+
+Calls have a five-minute deadline and no KMX automatic resend. Answers are bounded
+to 64 KiB. Copilot owns its session/log retention. Exit 0 means all selected cases
+passed; exit 1 means failed/incomplete execution or invalid input. This is local
+preview, not native publication or deployment evidence. Full implementation
+decisions and remaining extensions are in the [inner-loop design](markdown-agent-inner-loop.md).
+
+## Existing host chat integration
+
+Host Copilot chat inference is independent from native workspace evaluation
+and Deploy. `/inference-copilot` in existing Orka chat discovers models through
+the authenticated installed CLI without rewriting the saved Provider. Native
+eval/Deploy requires its packaged model and native binding, not host execution.
+On a local kind target it opens a model picker; remote targets require a cluster
+Provider. `/inference-local` returns to that Provider; `/retry` sends another turn.
 
 ## Direct model access
 
@@ -94,12 +326,12 @@ mapped to the safe keychain error without exposing their value.
 
 ## Tool translation
 
-KMX supplies enabled registered HTTP Tool descriptions and parameter schemas to
-`copilot -p --model <selected>`. The model returns one JSON action: a tool call or
-a final answer. KMX validates the tool name and arguments, executes the HTTP call,
-and feeds its result into the next prompt. It permits at most eight steps and
-five minutes per turn, with bounded request and response sizes and no automatic
-retry after execution failures. Ctrl-C cancels the subprocess and active requests.
+The existing Orka host-chat adapter supplies enabled HTTP Tool descriptions to
+`copilot -p --model <selected>`, validates returned JSON actions, executes scoped
+HTTP calls and feeds results into the next prompt. It permits at most eight steps
+and five minutes per turn. Supported tools are POST HTTP tools targeting a Service
+in the Agent namespace, without special auth headers, Secrets or outbound policy.
+Calls use an owned loopback forward and the selected Kubernetes context.
 
 Supported tools are POST HTTP tools pointing to a Service in the Agent namespace,
 without special headers, auth Secrets, outbound policy or MCP configuration.
