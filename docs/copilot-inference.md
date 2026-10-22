@@ -2,6 +2,14 @@
 
 ## Markdown-agent spike (unreleased)
 
+This branch's Copilot-native front-matter format is an explicit additional spike
+alongside the canonical Squad charter preview on main. Canonical charters starting
+with `# Name` retain upstream Run/Test/MCP behavior. Use `--type md` to select the
+persistent Copilot-native instance path explicitly. The local native-header parser
+does not replace the canonical charter parser or the direct model-access credential
+flow. Root `test` is the canonical native/workspace evaluation spelling; `eval`
+remains a hidden compatibility alias.
+
 Build this branch and run the local browser:
 
 ```sh
@@ -431,8 +439,8 @@ and digest placeholders with your actual values:
 
 ```sh
 # Evaluate the complete mapped inventory; receipt path must be new and private,
-# outside the workspace. This branch still calls native evaluation "eval".
-kmx eval --workspace ./hello-suite \
+# outside the workspace. Native evaluation uses the canonical test command.
+kmx test --workspace ./hello-suite \
   --to-context kind-kmx-local --inference provider:local \
   --out ./hello-passing.json
 

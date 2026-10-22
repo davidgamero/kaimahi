@@ -243,6 +243,8 @@ func newRootCommand(state *commandState) *cobra.Command {
 	addAgentTypeRoute(state, create, "init")
 	addAgentTypeRoute(state, chat, "chat")
 	addAgentTypeRoute(state, run, "run")
+	test := newAgentTestCommand(state)
+	addAgentTypeRoute(state, test, "test")
 	settings := markdownOperation(state, "settings")
 	settings.Use = "settings"
 	root.AddCommand(
@@ -250,7 +252,7 @@ func newRootCommand(state *commandState) *cobra.Command {
 		newQuickstartCommand(state), newAKSCommand(state),
 		newConsoleCommand(state), newOrkaCommand(state),
 		newStatusCommand(state), create, chat, run,
-		newAgentTestCommand(state), newAgentEvalCommand(state), newReleaseDeployCommand(state), newReleaseLiftCommand(state), newTaskCommand(state),
+		test, newAgentEvalCommand(state), newReleaseDeployCommand(state), newReleaseLiftCommand(state), newTaskCommand(state),
 		newSuiteCommand(state), newSuitePushCommand(state, true), newTargetsCommand(state),
 		newListTypedAgentsCommand(state), newInspectAgentCommand(state), newTypedAgentCommand(state, "validate", "validate"), newInfoCommand(state), newStopAgentCommand(state), newRemoveAgentCommand(state), settings,
 		markdownOperation(state, "import"),
