@@ -14,3 +14,8 @@
 - Local status aliases list (running by default, --all includes stopped); info
   reports local setup. Canonical Squad charter Run/Test and MCP behavior remain
   available alongside explicit --type md native-header instances.
+
+### Fixed
+
+- Align the PTY transcript regression with the solid user-message rail while
+  retaining checks for preserved tool details and removal of the input frame.
