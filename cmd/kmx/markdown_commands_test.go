@@ -66,13 +66,35 @@ func TestRegisteredAgentNameRoutesLocallyBeforeClusterDiscovery(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "active.lock"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, selector := range []string{"frogagent", id} {
+	for _, selector := range []string{"frogagent", id, strings.TrimPrefix(id, "md-")[:12]} {
 		var out, diag bytes.Buffer
 		deps, loads := testDependencies(&out, &diag)
 		err := execute([]string{"chat", selector}, deps)
 		if err == nil || !strings.Contains(err.Error(), "is stopped") || *loads != 0 {
 			t.Fatalf("selector=%s err=%v loads=%d", selector, err, *loads)
 		}
+	}
+	for _, selector := range []string{id, strings.TrimPrefix(id, "md-")[:12]} {
+		var out, diag bytes.Buffer
+		deps, loads := testDependencies(&out, &diag)
+		if err := execute([]string{"inspect", selector, "-o", "json"}, deps); err != nil {
+			t.Fatal(err)
+		}
+		if *loads != 0 || !strings.Contains(out.String(), id) {
+			t.Fatalf("inspect: %s loads=%d", &out, *loads)
+		}
+	}
+	var listOut, statusOut, diagnostics bytes.Buffer
+	listDeps, _ := testDependencies(&listOut, &diagnostics)
+	statusDeps, _ := testDependencies(&statusOut, &diagnostics)
+	if err := execute([]string{"list", "--all", "-o", "json"}, listDeps); err != nil {
+		t.Fatal(err)
+	}
+	if err := execute([]string{"status", "--all", "-o", "json"}, statusDeps); err != nil {
+		t.Fatal(err)
+	}
+	if listOut.String() != statusOut.String() {
+		t.Fatal("list/status aliases diverged")
 	}
 	var out, diag bytes.Buffer
 	deps, loads := testDependencies(&out, &diag)

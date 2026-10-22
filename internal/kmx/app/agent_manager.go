@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,14 +12,16 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
 
-const localAgentManagerVersion = "copilot-sessions/v1"
+const localAgentManagerVersion = "copilot-sessions/v2"
 
 type agentManagerRecord struct {
 	Version string `json:"version"`
@@ -26,14 +29,70 @@ type agentManagerRecord struct {
 	Socket  string `json:"socket"`
 }
 type managedAgent struct {
-	lease      *agentLease
-	definition *MarkdownAgent
-	executor   markdownExecutor
-	ctx        context.Context
-	cancel     context.CancelFunc
-	turn       sync.Mutex
-	stopped    bool // protected by turn
+	lease          *agentLease
+	definition     *MarkdownAgent
+	ctx            context.Context
+	cancel         context.CancelFunc
+	sessions       map[string]*managedConversation
+	defaultSession string
+	stopping       bool
 }
+type AgentSessionInfo struct {
+	ID              string `json:"id"`
+	Label           string `json:"label"`
+	State           string `json:"state"`
+	Activity        string `json:"activity"`
+	Version         string `json:"version"`
+	ProviderSession string `json:"providerSession,omitempty"`
+}
+type managedConversation struct {
+	id, label, version string
+	executor           markdownExecutor
+	turn               sync.Mutex
+	responding         atomic.Bool
+	failed             atomic.Bool
+}
+
+func (m *localAgentManager) newConversation(a *managedAgent, label string) (*managedConversation, error) {
+	if len(a.sessions) >= 64 {
+		return nil, errors.New("agent has 64 sessions; stop/restart to release them")
+	}
+	if label == "" {
+		label = "conversation"
+	}
+	if len(label) > 64 || !markdownAgentName.MatchString(label) {
+		return nil, errors.New("session label must be at most 64 printable characters")
+	}
+	idBytes := make([]byte, 12)
+	if _, err := rand.Read(idBytes); err != nil {
+		return nil, err
+	}
+	s := &managedConversation{id: fmt.Sprintf("s-%x", idBytes), label: label, version: a.definition.Revision, executor: m.newExecutor()}
+	a.sessions[s.id] = s
+	return s, nil
+}
+func sessionInfo(s *managedConversation) AgentSessionInfo {
+	activity := "idle"
+	if s.responding.Load() {
+		activity = "responding"
+	} else if s.failed.Load() {
+		activity = "error"
+	}
+	providerID := ""
+	if observer, ok := s.executor.(interface{ SessionIdentity() string }); ok {
+		providerID = observer.SessionIdentity()
+	}
+	return AgentSessionInfo{ID: s.id, Label: s.label, State: "open", Activity: activity, Version: s.version, ProviderSession: providerID}
+}
+func agentSessions(a *managedAgent) []AgentSessionInfo {
+	rows := make([]AgentSessionInfo, 0, len(a.sessions))
+	for _, s := range a.sessions {
+		rows = append(rows, sessionInfo(s))
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	return rows
+}
+
 type localAgentManager struct {
 	mu          sync.Mutex
 	agents      map[string]*managedAgent
@@ -370,17 +429,15 @@ func (m *localAgentManager) handle(ctx context.Context, req agentWorkerRequest) 
 		if err != nil {
 			return fail(err)
 		}
-		executor := m.newExecutor()
 		agentCtx, cancel := context.WithCancel(ctx)
 		lease.record.Socket = m.socket
 		lease.record.Manager = localAgentManagerVersion
 		if err = lease.save(); err != nil {
 			cancel()
-			executor.Close()
 			lease.finish(err)
 			return fail(err)
 		}
-		m.agents[id] = &managedAgent{lease: lease, definition: frozen, executor: executor, ctx: agentCtx, cancel: cancel}
+		m.agents[id] = &managedAgent{lease: lease, definition: frozen, ctx: agentCtx, cancel: cancel, sessions: map[string]*managedConversation{}}
 		r := lease.record
 		return agentWorkerReply{Ready: true, Instance: &r}
 	}
@@ -390,19 +447,45 @@ func (m *localAgentManager) handle(ctx context.Context, req agentWorkerRequest) 
 		return fail(errors.New("agent session is stopped or unknown"))
 	}
 	r := agent.lease.record
+	if agent.stopping {
+		m.mu.Unlock()
+		return fail(errors.New("agent is stopping"))
+	}
 	if req.Version != r.Version || req.Generation != r.Generation {
 		m.mu.Unlock()
 		return fail(errors.New("agent version changed; reconnect"))
 	}
+	if req.Operation == "observe" {
+		activity := "idle"
+		sessions := agentSessions(agent)
+		for _, s := range sessions {
+			if s.Activity == "responding" {
+				activity = "responding"
+				break
+			}
+			if s.Activity == "error" {
+				activity = "error"
+			}
+		}
+		m.mu.Unlock()
+		return agentWorkerReply{Ready: true, Activity: activity, Sessions: sessions, SessionsKnown: true}
+	}
 	if req.Operation == "stop" {
-		// Keep the manager mutex while stop drains this agent; no replacement can
-		// acquire its source lease until cleanup and record finalization complete.
+		agent.stopping = true
 		agent.cancel()
-		agent.turn.Lock()
-		agent.stopped = true
-		agent.executor.Close()
+		m.mu.Unlock()
+		for _, s := range agent.sessions {
+			s.turn.Lock()
+			s.executor.Close()
+			s.turn.Unlock()
+		}
+		m.mu.Lock()
+		agent.lease.record.Sessions = agentSessions(agent)
+		for i := range agent.lease.record.Sessions {
+			agent.lease.record.Sessions[i].State = "closed"
+			agent.lease.record.Sessions[i].Activity = ""
+		}
 		err := agent.lease.finish(nil)
-		agent.turn.Unlock()
 		delete(m.agents, req.AgentID)
 		m.lastActive = time.Now()
 		m.mu.Unlock()
@@ -415,6 +498,34 @@ func (m *localAgentManager) handle(ctx context.Context, req agentWorkerRequest) 
 		m.mu.Unlock()
 		return agentWorkerReply{Ready: true}
 	}
+	if req.Operation == "session-open" || req.Operation == "session-new" {
+		defer m.mu.Unlock()
+		var s *managedConversation
+		if req.Operation == "session-new" {
+			var err error
+			s, err = m.newConversation(agent, req.Label)
+			if err != nil {
+				return fail(err)
+			}
+		} else if req.Session != "" {
+			s = agent.sessions[req.Session]
+			if s == nil {
+				return fail(errors.New("session not found on this agent; inspect the agent for session IDs"))
+			}
+		} else {
+			s = agent.sessions[agent.defaultSession]
+			if s == nil {
+				var err error
+				s, err = m.newConversation(agent, "default")
+				if err != nil {
+					return fail(err)
+				}
+				agent.defaultSession = s.id
+			}
+		}
+		info := sessionInfo(s)
+		return agentWorkerReply{Ready: true, Session: s.id, Conversation: &info}
+	}
 	if req.Operation != "send" {
 		m.mu.Unlock()
 		return fail(errors.New("unsupported manager operation"))
@@ -423,20 +534,41 @@ func (m *localAgentManager) handle(ctx context.Context, req agentWorkerRequest) 
 		m.mu.Unlock()
 		return fail(errors.New("prompt must contain 1-65536 bytes"))
 	}
-	if !agent.turn.TryLock() {
+	s := agent.sessions[req.Session]
+	if req.Session == "" {
+		s = agent.sessions[agent.defaultSession]
+		if s == nil {
+			var err error
+			s, err = m.newConversation(agent, "default")
+			if err != nil {
+				m.mu.Unlock()
+				return fail(err)
+			}
+			agent.defaultSession = s.id
+		}
+	}
+	if s == nil {
 		m.mu.Unlock()
-		return fail(errors.New("agent is busy with another turn"))
+		return fail(errors.New("session not found on this agent"))
 	}
+	if !s.turn.TryLock() {
+		m.mu.Unlock()
+		return fail(errors.New("session is busy with another turn"))
+	}
+	if s.failed.Load() {
+		s.turn.Unlock()
+		m.mu.Unlock()
+		return fail(errors.New("session failed; start a new conversation with /reset or chat --new"))
+	}
+	s.responding.Store(true)
 	m.mu.Unlock()
-	defer agent.turn.Unlock()
-	if agent.stopped {
-		return fail(errors.New("agent stopped"))
-	}
-	answer, err := agent.executor.Answer(agent.ctx, agent.definition, req.Prompt, nil)
+	defer func() { s.responding.Store(false); s.turn.Unlock() }()
+	answer, err := s.executor.Answer(agent.ctx, agent.definition, req.Prompt, nil)
 	if err != nil {
+		s.failed.Store(true)
 		return fail(err)
 	}
-	return agentWorkerReply{Ready: true, Answer: answer.Text}
+	return agentWorkerReply{Ready: true, Answer: answer.Text, Session: s.id}
 }
 func (m *localAgentManager) close() {
 	m.mu.Lock()
@@ -444,11 +576,17 @@ func (m *localAgentManager) close() {
 	m.closing = true
 	for id, a := range m.agents {
 		a.cancel()
-		a.turn.Lock()
-		a.executor.Close()
+		for _, s := range a.sessions {
+			s.turn.Lock()
+			s.executor.Close()
+			s.turn.Unlock()
+		}
+		a.lease.record.Sessions = agentSessions(a)
+		for i := range a.lease.record.Sessions {
+			a.lease.record.Sessions[i].State = "closed"
+			a.lease.record.Sessions[i].Activity = ""
+		}
 		_ = a.lease.finish(nil)
-		a.stopped = true
-		a.turn.Unlock()
 		delete(m.agents, id)
 	}
 }

@@ -21,12 +21,19 @@ import (
 // never registered: md is an agent type, not a command namespace.
 func markdownOperations(state *commandState) *cobra.Command {
 	var tests, provider, model string
+	var output string
+	var selectedSession, label string
+	var freshSession bool
 	var directory string
 	group := &cobra.Command{
 		Use: "md [directory]", Short: "Browse and try .agent.md files with Copilot (experimental)",
 		Long: "Browse native .agent.md files paired with .agent.test.md files. Chat, edit and test through the installed Copilot CLI.\nWith redirected input, list files only. Test metadata is saved privately under KMX_HOME; Copilot owns its session retention.",
 		Args: cobra.MaximumNArgs(1),
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			format, _ := cmd.Flags().GetString("output")
+			if format != "text" && format != "table" && format != "json" && format != "yaml" {
+				return errors.New("output must be text, json or yaml")
+			}
 			if state.contextFlag != "" || cmd.Flags().Changed("container-engine") {
 				return errors.New("md is a local preview; omit cluster and container-engine selectors")
 			}
@@ -44,6 +51,7 @@ func markdownOperations(state *commandState) *cobra.Command {
 	group.PersistentFlags().StringVar(&tests, "tests", "", "explicit companion test file (otherwise .github/agent-tests/NAME.agent.test.md)")
 	group.PersistentFlags().StringVar(&provider, "provider", "", "one-invocation provider override: copilot")
 	group.PersistentFlags().StringVar(&model, "model", "", "one-invocation model override")
+	group.PersistentFlags().StringVarP(&output, "output", "o", "text", "output: text|json|yaml (noninteractive operations)")
 	group.PersistentFlags().StringVar(&directory, "directory", ".", "project directory containing agents")
 	input := state.deps.stdin
 	if input == nil {
@@ -94,6 +102,11 @@ func markdownOperations(state *commandState) *cobra.Command {
 		}
 		return nil
 	}
+	structured := func(cmd *cobra.Command) bool {
+		value, _ := cmd.Flags().GetString("output")
+		return value == "json" || value == "yaml"
+	}
+	report := func(cmd *cobra.Command, value any) error { return json.NewEncoder(cmd.OutOrStdout()).Encode(value) }
 	loadForExecution := func(cmd *cobra.Command, path string) (*app.MarkdownAgent, error) {
 		a, err := app.LoadMarkdownAgent(path, tests)
 		var diagnostic *app.MarkdownDiagnostic
@@ -114,6 +127,9 @@ func markdownOperations(state *commandState) *cobra.Command {
 		return a, err
 	}
 	group.AddCommand(&cobra.Command{Use: "import FILE", Short: "Import plain instructions as a native agent (interactive)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if structured(cmd) {
+			return errors.New("interactive import does not produce a structured report; use validate -o yaml after importing")
+		}
 		if !term.IsTerminal(int(input.Fd())) {
 			return errors.New("import requires an interactive terminal; add front matter explicitly for scripts")
 		}
@@ -127,12 +143,15 @@ func markdownOperations(state *commandState) *cobra.Command {
 		if err != nil {
 			return err
 		}
+		if structured(cmd) {
+			return report(cmd, map[string]any{"name": a.Name, "type": "md", "source": a.Path, "version": a.Revision, "model": a.Model, "instructions": a.Instructions, "tests": a.TestsPath, "testsDigest": a.TestsRevision, "cases": len(a.Examples)})
+		}
 		return app.ShowMarkdownAgent(state.deps.stdout, a)
 	}})
 	var validationJSON bool
 	validate := &cobra.Command{Use: "validate FILE", Short: "Validate definition and paired tests offline", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		a, err := app.LoadMarkdownAgent(args[0], tests)
-		if validationJSON {
+		if validationJSON || structured(cmd) {
 			if err != nil {
 				var d *app.MarkdownDiagnostic
 				if errors.As(err, &d) {
@@ -162,9 +181,19 @@ func markdownOperations(state *commandState) *cobra.Command {
 			default:
 				return errors.New("use --provider copilot, none or reset")
 			}
-			return app.SetMarkdownProvider(choice)
+			if err := app.SetMarkdownProvider(choice); err != nil {
+				return err
+			}
+			if structured(cmd) {
+				p, err := app.ReadMarkdownPreferences()
+				if err != nil {
+					return err
+				}
+				return report(cmd, p)
+			}
+			return nil
 		}
-		if !term.IsTerminal(int(input.Fd())) {
+		if structured(cmd) || !term.IsTerminal(int(input.Fd())) {
 			p, err := app.ReadMarkdownPreferences()
 			if err != nil {
 				return err
@@ -180,15 +209,30 @@ func markdownOperations(state *commandState) *cobra.Command {
 			return err
 		}
 		file := filepath.Join(directory, ".github", "agents", args[0]+".agent.md")
+		if structured(cmd) {
+			return report(cmd, map[string]any{"created": true, "definition": file, "tests": app.MarkdownTestsPath(file)})
+		}
 		_, err := fmt.Fprintf(cmd.OutOrStdout(), "Created definition: %s\nCreated tests: %s\n\nEdit the instructions below the --- header, then run:\n  %s run -i %s\n", file, app.MarkdownTestsPath(file), state.executable(), quoteShell(file))
 		return err
 	}})
-	group.AddCommand(&cobra.Command{Use: "chat FILE", Short: "Chat with an agent; /reload picks up edits", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	chat := &cobra.Command{Use: "chat FILE", Short: "Chat with an agent; --new creates an independent conversation", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if structured(cmd) {
+			return errors.New("interactive chat has no report output; use run --prompt with -o json or -o yaml")
+		}
+		if freshSession && selectedSession != "" {
+			return errors.New("--new and --session are mutually exclusive")
+		}
+		if cmd.Flags().Changed("session") && strings.TrimSpace(selectedSession) == "" {
+			return errors.New("--session requires an ID")
+		}
+		if label != "" && !freshSession {
+			return errors.New("--label requires --new")
+		}
 		if instance, e := app.FindAgentInstance(args[0]); e == nil && instance.State == "running" && instance.Socket != "" {
 			if cmd.Flags().Changed("model") || cmd.Flags().Changed("provider") {
 				return errors.New("attached chat uses the running instance's model/provider")
 			}
-			s, a, err := app.NewAttachedAgentSession(cmd.Context(), instance.ID, state.deps.stdout, state.deps.stderr)
+			s, a, err := app.NewSelectedAgentSession(cmd.Context(), instance.ID, selectedSession, freshSession, label, state.deps.stdout, state.deps.stderr)
 			if err != nil {
 				return err
 			}
@@ -206,15 +250,23 @@ func markdownOperations(state *commandState) *cobra.Command {
 			return err
 		}
 		s := session()
+		s.SelectedSession, s.NewSession, s.SessionLabel = selectedSession, freshSession, label
 		defer s.Close()
 		if term.IsTerminal(int(input.Fd())) {
 			return s.ChatTUI(cmd.Context(), a, input)
 		}
 		return withInput(cmd, func(ctx context.Context, reader io.Reader) error { return s.Chat(ctx, a, reader) })
-	}})
+	}}
+	chat.Flags().StringVar(&selectedSession, "session", "", "resume a session ID belonging to this agent")
+	chat.Flags().BoolVar(&freshSession, "new", false, "create a new independent conversation")
+	chat.Flags().StringVar(&label, "label", "", "label for a new conversation (requires --new)")
+	group.AddCommand(chat)
 	var prompt, promptFile string
 	var interactive bool
 	run := &cobra.Command{Use: "run FILE", Short: "Ask an agent one question through Copilot", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if interactive && structured(cmd) {
+			return errors.New("-i cannot be combined with structured output")
+		}
 		if cmd.Flags().Changed("prompt") && cmd.Flags().Changed("prompt-file") {
 			return errors.New("provide only one of --prompt or --prompt-file (- for stdin)")
 		}
@@ -260,6 +312,16 @@ func markdownOperations(state *commandState) *cobra.Command {
 				}
 				prompt = string(data)
 			}
+			if structured(cmd) {
+				if strings.TrimSpace(prompt) == "" || len(prompt) > 64<<10 {
+					return errors.New("provide a nonempty prompt of at most 64 KiB")
+				}
+				answer, err := s.AnswerAgent(ctx, a, prompt)
+				if err != nil {
+					return err
+				}
+				return report(cmd, map[string]any{"name": a.Name, "version": a.Revision, "answer": answer.Text, "model": answer.Model})
+			}
 			return s.Run(ctx, a, prompt)
 		}
 		if !cmd.Flags().Changed("prompt") && !cmd.Flags().Changed("prompt-file") {
@@ -267,6 +329,9 @@ func markdownOperations(state *commandState) *cobra.Command {
 				record, err := s.StartBackgroundAgent(cmd.Context(), a)
 				if err != nil {
 					return err
+				}
+				if structured(cmd) {
+					return report(cmd, record)
 				}
 				_, err = fmt.Fprintf(state.deps.stdout, "Started %s (%s) · version %s\nChat: %s chat %s --type md\nStop: %s stop %s\n", record.Name, record.ID, record.Version, state.executable(), record.ID, state.executable(), record.ID)
 				return err
@@ -304,6 +369,20 @@ func markdownOperations(state *commandState) *cobra.Command {
 		}
 		s := session()
 		defer s.Close()
+		if structured(cmd) {
+			result, err := s.Evaluate(ctx, a, selected, nil)
+			if result.ID == "" {
+				return err
+			}
+			if showContent {
+				answers := map[string]string{}
+				for _, row := range result.Cases {
+					answers[row.ID] = row.Answer
+				}
+				return errors.Join(err, report(cmd, map[string]any{"result": result, "answers": answers}))
+			}
+			return errors.Join(err, report(cmd, result))
+		}
 		return s.Test(ctx, a, selected, showContent)
 	}}
 	test.Flags().StringVar(&selected, "case", "", "run only this example ID (partial result)")

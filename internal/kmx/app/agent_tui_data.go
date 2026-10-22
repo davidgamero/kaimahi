@@ -63,6 +63,7 @@ type agentTUIAgent struct {
 	SystemPrompt, PromptSource, PromptError   string
 	Tools                                     []agentTUITool
 	DefinitionPath, TestsPath, TestStatus     string
+	InstanceID                                string
 }
 
 type agentTUITool struct {

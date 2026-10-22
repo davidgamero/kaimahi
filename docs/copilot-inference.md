@@ -27,6 +27,7 @@ where needed. Source files and AgentSuite artifacts remain distinct backing form
 ./bin/kmx settings --provider none
 ./bin/kmx settings --provider reset
 ./bin/kmx list --type md
+./bin/kmx list --all
 ./bin/kmx status
 ./bin/kmx info
 ./bin/kmx list --definitions --type md
@@ -35,6 +36,8 @@ where needed. Source files and AgentSuite artifacts remain distinct backing form
 ./bin/kmx validate hello
 ./bin/kmx inspect hello --type md
 ./bin/kmx chat hello --type md
+./bin/kmx chat hello --new --label research
+./bin/kmx chat hello --type md --session s-SESSION_ID
 ./bin/kmx run hello --type md --prompt 'My name is Sam'
 ./bin/kmx run .github/agents/hello.agent.md
 ./bin/kmx chat hello --type md
@@ -138,7 +141,7 @@ Use your editor normally, or:
 | `/tests` | Show case results, source locations, expected checks and actual answers |
 | `/show` | Show the loaded instructions |
 | `/diff` | Compare saved files with the last in-memory tested snapshot |
-| `/reset` | Start a fresh conversation, keeping the visible transcript |
+| `/reset` | Create/select a new session without restarting the agent; older transcript stays visibly historical |
 | `/auto-test on` / `/auto-test off` | Opt into debounced full tests on save; default off |
 | `/settings copilot` / `none` / `reset` | Change the saved provider preference |
 | `/cancel` | Cancel the active job; Ctrl-C also cancels, or exits when idle |
@@ -164,6 +167,45 @@ captured result stale, and partial tests never become a full-suite pass.
 
 ### Versions and instances
 
+Inventory includes **AGE**, elapsed wall time since the instance's latest start
+(not cumulative uptime). `inspect` shows the exact UTC start and age; JSON/YAML
+retain `started`. Reusing an already-running version preserves this timestamp;
+restart updates it; new/reset conversations do not. Generation remains an internal
+stale-request guard and is still available in structured inspection.
+
+Use `-o yaml` wherever a JSON report is supported. Local list/status, inspect,
+definition listing, info, validate, settings, create, stop, background run,
+one-shot run and Test provide structured output. For example:
+
+```sh
+kmx list --all -o yaml
+kmx inspect frogagent -o yaml
+kmx test .github/agents/hello.agent.md -o yaml
+kmx validate .github/agents/hello.agent.md -o yaml
+```
+
+Test reports omit answers by default; `--show-content` explicitly includes them.
+YAML renders the same field contract as JSON, preserving timestamps and numeric
+precision. Interactive chat, `run -i`, and import do not emit report documents and
+refuse structured-output selection before execution. Runtime-specific commands
+without JSON reporting (such as `orka status`) keep their existing text interface.
+
+`list` is the canonical instance inventory: running by default, `--all`/`-a`
+includes stopped instances. Local `status` is a compatibility alias with identical
+filtering/output; `status --to NAME` retains deployment inspection. `inspect ID`
+shows full instance identity, version, session, source, generation, timestamps and
+cached instructions; it works even when the source is deleted. `-o json` retains
+full IDs and digests. Use `info` for setup and `list --definitions` for files.
+
+The ID column displays 12 hexadecimal characters (extended when necessary to
+disambiguate). Chat, stop, run and inspect accept a full ID (with or without `md-`),
+a unique prefix of at least six hex characters, or a unique name. Exact IDs win
+over prefixes, which win over names. Literal file paths select that source.
+Ambiguity lists matching IDs/states/paths; it never picks the first match.
+IDs remain source-path-derived in this iteration, preserving existing records;
+moving a file can create another instance. Version hashes identify content and
+are not interchangeable with instance IDs. The TUI's inspect view shows full IDs.
+
 `kmx run FILE.md` validates/caches the definition and starts a background local
 worker, then prints exact Chat and Stop commands. `kmx run -i FILE.md` opens a
 foreground chat instead. Explicit filenames may end in `.md`; discovery recognizes
@@ -172,6 +214,25 @@ foreground chat instead. Explicit filenames may end in `.md`; discovery recogniz
 cached definition, even if source has changed or disappeared. Exiting attached
 chat disconnects without stopping the worker; use `kmx stop NAME_OR_ID` to stop it.
 Only one inference turn is allowed at a time in a shared background conversation.
+
+The instance now owns zero or more independent conversations. `chat NAME`
+creates/resumes the **default** conversation; `--new` creates another, optionally
+named with `--label research`. `--session s-ID` resumes an exact session belonging
+to that agent. `/reset` creates a new conversation for this client, leaving the old
+one available and preserving the agent's version, generation and other sessions.
+
+`list`/local `status` retain one row per agent with **SESSIONS**, the open session
+count. `inspect ID` expands ID, label, state, activity and pinned version per
+session. KMX session IDs exist when opened; Copilot's session is created on the
+first message, with its ID available in inspect JSON. Activity is responding when
+any session is handling a turn; different sessions execute independently. Errors
+require a new conversation instead of silently resetting the old session identity.
+
+Stop closes all sessions and retains their closed metadata in the stopped record.
+KMX does not retain transcripts: reconnect restores model context but does not
+replay previous messages in the terminal. Restart begins with zero conversations.
+At most 64 sessions are allowed per running instance; stop/restart releases them.
+Older managers require stop/rerun for this protocol; unavailable counts show unknown.
 
 Exact definition bytes are stored without replacement under
 `KMX_HOME/agents/versions/<sha256-hex>/agent.md`. Identical content reuses the entry;

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	copilot "github.com/github/copilot-sdk/go"
@@ -31,7 +32,16 @@ type markdownCopilot struct {
 	session      *copilot.Session
 	dir, version string
 	progress     func(string)
-	borrowed     bool // shared manager owns the client process and temporary directory
+	borrowed     bool         // shared manager owns the client process and temporary directory
+	sessionID    atomic.Value // string, readable while a turn is executing
+}
+
+func (c *markdownCopilot) SessionIdentity() string {
+	v := c.sessionID.Load()
+	if v == nil {
+		return ""
+	}
+	return v.(string)
 }
 
 func (c *markdownCopilot) Start(ctx context.Context) (string, error) {
@@ -68,6 +78,7 @@ func (c *markdownCopilot) Start(ctx context.Context) (string, error) {
 	return c.version, nil
 }
 func (c *markdownCopilot) Reset() {
+	c.sessionID.Store("")
 	if c.session != nil {
 		_ = c.session.Disconnect()
 		c.session = nil
@@ -157,6 +168,7 @@ func (c *markdownCopilot) Answer(ctx context.Context, a *MarkdownAgent, input st
 		if err != nil {
 			return result, errors.New("Copilot could not select the agent/model; check the installed runtime and model access")
 		}
+		c.sessionID.Store(c.session.SessionID)
 	}
 	turn, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()

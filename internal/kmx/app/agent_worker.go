@@ -24,6 +24,8 @@ type agentWorkerConfig struct {
 	RecordPath string        `json:"recordPath"`
 }
 type agentWorkerRequest struct {
+	Session    string `json:"session,omitempty"`
+	Label      string `json:"label,omitempty"`
 	AgentID    string `json:"agentID,omitempty"`
 	Source     string `json:"source,omitempty"`
 	Model      string `json:"model,omitempty"`
@@ -33,11 +35,16 @@ type agentWorkerRequest struct {
 	Generation int    `json:"generation"`
 }
 type agentWorkerReply struct {
-	Instance *AgentInstance `json:"instance,omitempty"`
-	Socket   string         `json:"socket,omitempty"`
-	Ready    bool           `json:"ready,omitempty"`
-	Answer   string         `json:"answer,omitempty"`
-	Error    string         `json:"error,omitempty"`
+	Sessions      []AgentSessionInfo `json:"sessions,omitempty"`
+	SessionsKnown bool               `json:"sessionsKnown,omitempty"`
+	Conversation  *AgentSessionInfo  `json:"conversation,omitempty"`
+	Activity      string             `json:"activity,omitempty"`
+	Session       string             `json:"session,omitempty"`
+	Instance      *AgentInstance     `json:"instance,omitempty"`
+	Socket        string             `json:"socket,omitempty"`
+	Ready         bool               `json:"ready,omitempty"`
+	Answer        string             `json:"answer,omitempty"`
+	Error         string             `json:"error,omitempty"`
 }
 
 // StartBackgroundAgent transfers a held lease to a child of this exact executable.
@@ -313,21 +320,7 @@ func FindAgentInstance(selector string) (AgentInstance, error) {
 	if err != nil {
 		return AgentInstance{}, err
 	}
-	absolute, _ := filepath.Abs(selector)
-	var found *AgentInstance
-	for _, r := range rows {
-		if selector == r.ID || absolute == r.Source || selector == r.Name {
-			if found != nil {
-				return AgentInstance{}, errors.New("ambiguous agent name; use its full instance ID or source path")
-			}
-			copy := r
-			found = &copy
-		}
-	}
-	if found == nil {
-		return AgentInstance{}, os.ErrNotExist
-	}
-	return *found, nil
+	return resolveAgentInstance(rows, selector)
 }
 func agentWorkerCall(ctx context.Context, r AgentInstance, operation, prompt string) (agentWorkerReply, error) {
 	if r.State != "running" || r.Socket == "" {
@@ -404,19 +397,46 @@ func StopAgentInstance(ctx context.Context, selector string) error {
 	}
 }
 
-type attachedAgentExecutor struct{ record AgentInstance }
+type attachedAgentExecutor struct {
+	record         AgentInstance
+	session, label string
+}
 
 func (e *attachedAgentExecutor) Start(ctx context.Context) (string, error) {
 	_, err := agentWorkerCall(ctx, e.record, "ping", "")
 	return "background-worker", err
 }
 func (e *attachedAgentExecutor) Answer(ctx context.Context, _ *MarkdownAgent, input string, _ []MarkdownMock) (markdownAnswer, error) {
-	reply, err := agentWorkerCall(ctx, e.record, "send", input)
+	reply, err := agentSocketCall(ctx, e.record.Socket, agentWorkerRequest{AgentID: e.record.ID, Version: e.record.Version, Generation: e.record.Generation, Operation: "send", Prompt: input, Session: e.session})
+	if err == nil && reply.Session != "" {
+		e.session = reply.Session
+	}
 	return markdownAnswer{Text: reply.Answer}, err
+}
+func (e *attachedAgentExecutor) selectSession(ctx context.Context, selected string, fresh bool, label string) error {
+	if e.record.Manager != localAgentManagerVersion {
+		return errors.New("agent manager predates multiple sessions; stop and rerun the agent")
+	}
+	op := "session-open"
+	if fresh {
+		op = "session-new"
+	}
+	reply, err := agentSocketCall(ctx, e.record.Socket, agentWorkerRequest{AgentID: e.record.ID, Version: e.record.Version, Generation: e.record.Generation, Operation: op, Session: selected, Label: label})
+	if err != nil {
+		return err
+	}
+	if reply.Conversation == nil || reply.Session == "" {
+		return errors.New("manager returned no conversation")
+	}
+	e.session, e.label = reply.Session, reply.Conversation.Label
+	return nil
 }
 func (e *attachedAgentExecutor) Reset() {}
 func (e *attachedAgentExecutor) Close() {}
 func NewAttachedAgentSession(ctx context.Context, selector string, out, diagnostics io.Writer) (*MarkdownSession, *MarkdownAgent, error) {
+	return NewSelectedAgentSession(ctx, selector, "", false, "", out, diagnostics)
+}
+func NewSelectedAgentSession(ctx context.Context, selector, session string, fresh bool, label string, out, diagnostics io.Writer) (*MarkdownSession, *MarkdownAgent, error) {
 	r, err := FindAgentInstance(selector)
 	if err != nil {
 		return nil, nil, err
@@ -431,6 +451,11 @@ func NewAttachedAgentSession(ctx context.Context, selector string, out, diagnost
 	s.Model = r.Model
 	if _, err = s.executor.Start(ctx); err != nil {
 		return nil, nil, err
+	}
+	if r.Manager == localAgentManagerVersion || session != "" || fresh {
+		if err := s.executor.(*attachedAgentExecutor).selectSession(ctx, session, fresh, label); err != nil {
+			return nil, nil, err
+		}
 	}
 	return s, a, nil
 }

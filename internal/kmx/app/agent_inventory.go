@@ -16,6 +16,9 @@ import (
 // ListTypedAgents uses the same typed rows and inventory loaders as the console.
 // Local files remain visible even if an independently requested cluster fails.
 func ListTypedAgents(ctx context.Context, a *App, out io.Writer, directory, kind, namespace string) error {
+	return ListTypedAgentsOutput(ctx, a, out, directory, kind, namespace, "table")
+}
+func ListTypedAgentsOutput(ctx context.Context, a *App, out io.Writer, directory, kind, namespace, output string) error {
 	var rows []agentTUIAgent
 	var problem error
 	if kind != "orka" {
@@ -36,6 +39,25 @@ func ListTypedAgents(ctx context.Context, a *App, out io.Writer, directory, kind
 		}
 	}
 	var cells [][]string
+	if output == "json" || output == "yaml" {
+		type rowView struct {
+			Name       string `json:"name"`
+			Type       string `json:"type"`
+			State      string `json:"state"`
+			Model      string `json:"model"`
+			Source     string `json:"source"`
+			TestStatus string `json:"testStatus,omitempty"`
+		}
+		values := []rowView{}
+		for _, r := range rows {
+			source := r.DefinitionPath
+			if source == "" {
+				source = r.Namespace + "/" + r.Name
+			}
+			values = append(values, rowView{r.Name, r.Runtime, r.Ready, r.Model, source, r.TestStatus})
+		}
+		return errors.Join(problem, cliui.WriteStructured(out, output, values))
+	}
 	for _, row := range rows {
 		status, source := row.Ready, row.Namespace+"/"+row.Name
 		if row.Runtime == "md" {

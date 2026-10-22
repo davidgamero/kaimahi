@@ -35,6 +35,7 @@ type mdProgress struct {
 	row        MarkdownCaseResult
 }
 type mdEditorDone struct{ err error }
+type mdConversationReset struct{ err error }
 type mdRuntimeProgress struct {
 	generation int
 	text       string
@@ -118,7 +119,11 @@ func (m *markdownTUI) refreshHeader() {
 	if len(a.Tools) > 0 {
 		tools = strings.Join(a.Tools, ", ") + " (mock tests only)"
 	}
-	m.fields = []cliui.Field{{Label: "Location", Value: "local · " + a.Path}, {Label: "Inference", Value: "Copilot · " + mdModelLabel(m.session.effective(a).Model)}, {Label: "Status", Value: status}, {Label: "Definition", Value: mdShort(a.Revision)}, {Label: "Tests", Value: testStatus}, {Label: "Tools", Value: tools}}
+	inference := "Copilot · " + mdModelLabel(m.session.effective(a).Model)
+	if m.session.conversationDisplay != "" {
+		inference += " · session " + m.session.conversationDisplay
+	}
+	m.fields = []cliui.Field{{Label: "Location", Value: "local · " + a.Path}, {Label: "Inference", Value: inference}, {Label: "Status", Value: status}, {Label: "Definition", Value: mdShort(a.Revision)}, {Label: "Tests", Value: testStatus}, {Label: "Tools", Value: tools}}
 }
 func mdShort(hash string) string {
 	if hash == "" {
@@ -255,9 +260,10 @@ func (m *markdownTUI) localCommand(input string) tea.Cmd {
 		m.note("RELOADED", m.loaded.PairRevision+" · new conversation; earlier messages belong to the old revision")
 	case "/reset":
 		if !m.busy {
-			m.session.Reset()
-			m.instanceRunning = false
-			m.note("RESET", "Fresh conversation. Earlier messages remain in the transcript only.")
+			m.busy = true
+			s, ctx := m.session, m.ctx
+			m.workers.Add(1)
+			return func() tea.Msg { defer m.workers.Done(); return mdConversationReset{s.ResetConversation(ctx)} }
 		}
 	case "/edit", "/edit-tests":
 		path := m.loaded.Path
@@ -338,6 +344,16 @@ func mdCaseDetails(a *MarkdownAgent, r MarkdownCaseResult) string {
 }
 func (m markdownTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
+	case mdConversationReset:
+		m.busy = false
+		m.session.conversationDisplay = m.session.conversationLabel()
+		if v.err != nil {
+			m.note("RESET", v.err.Error())
+		} else {
+			m.note("NEW SESSION", "Fresh conversation; agent version/generation unchanged. Earlier messages belong to the previous session.")
+		}
+		m.refreshHeader()
+		return m, nil
 	case mdRuntimeProgress:
 		if v.generation == m.generation {
 			m.note("RUNTIME", v.text)
@@ -393,6 +409,7 @@ func (m markdownTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.busy = false
+		m.session.conversationDisplay = m.session.conversationLabel()
 		if v.result == nil {
 			m.instanceRunning = v.err == nil
 		}
@@ -502,6 +519,7 @@ func (s *MarkdownSession) ChatTUI(ctx context.Context, a *MarkdownAgent, in *os.
 	workers := &sync.WaitGroup{}
 	m := markdownTUI{chatTimelineModel: timeline, session: s, loaded: a, disk: a, ctx: ctx, cancel: cancel, events: make(chan tea.Msg, 64), workers: workers}
 	m.instanceRunning = s.instance != nil
+	s.conversationDisplay = s.conversationLabel()
 	rows, err := LoadMarkdownHistory(a)
 	if err != nil {
 		m.note("HISTORY", err.Error())
@@ -510,6 +528,9 @@ func (s *MarkdownSession) ChatTUI(ctx context.Context, a *MarkdownAgent, in *os.
 	}
 	m.refreshHeader()
 	m.note("LOCAL AGENT", "/edit instructions · /edit-tests expectations · /test · /tests failures · /reload · /help")
+	if s.conversationDisplay != "" {
+		m.note("SESSION", s.conversationDisplay+" · reconnect retains model context; previous transcript is not displayed")
+	}
 	if s.InitialTest {
 		m.pendingAuto = true
 		m.lastSave = time.Now().Add(-time.Second)

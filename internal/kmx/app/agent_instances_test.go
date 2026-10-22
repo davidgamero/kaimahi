@@ -2,11 +2,13 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAgentInstancesOnlyAppearAfterRun(t *testing.T) {
@@ -39,6 +41,84 @@ func TestAgentInstancesOnlyAppearAfterRun(t *testing.T) {
 	rows, err = ReadAgentInstances("")
 	if err != nil || len(rows) != 1 {
 		t.Fatal("status depends on original source file")
+	}
+}
+
+func TestAgentAgeFromUTCStart(t *testing.T) {
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		elapsed time.Duration
+		want    string
+	}{{0, "0s"}, {45 * time.Second, "45s"}, {12 * time.Minute, "12m"}, {90 * time.Minute, "1h30m"}, {49 * time.Hour, "2d1h"}, {-time.Second, "clock skew"}} {
+		if got := agentAge(now.Add(-tc.elapsed), now); got != tc.want {
+			t.Fatalf("%s: %s", tc.want, got)
+		}
+	}
+	if agentAge(time.Time{}, now) != "unknown" {
+		t.Fatal("zero timestamp gained age")
+	}
+}
+
+func TestAgentIDResolutionPrecedenceAndCollisions(t *testing.T) {
+	a := AgentInstance{ID: "md-abcdef123456" + strings.Repeat("a", 52), Name: "frog", Source: "/one/frog.agent.md", State: "running"}
+	b := AgentInstance{ID: "md-abcdef123456" + strings.Repeat("b", 52), Name: "frog", Source: "/two/frog.agent.md", State: "stopped"}
+	c := AgentInstance{ID: "md-123456" + strings.Repeat("c", 58), Name: "abcdef123456" + strings.Repeat("a", 52), Source: "/three/other.agent.md"}
+	rows := []AgentInstance{a, b, c}
+	for _, selector := range []string{a.ID, strings.TrimPrefix(a.ID, "md-"), "abcdef123456a", "md-abcdef123456a", a.Source} {
+		r, err := resolveAgentInstance(rows, selector)
+		if err != nil || r.ID != a.ID {
+			t.Fatalf("%s: %+v %v", selector, r, err)
+		}
+	}
+	for _, selector := range []string{"frog", "abcdef", "md-abcdef"} {
+		_, err := resolveAgentInstance(rows, selector)
+		if err == nil || !strings.Contains(err.Error(), a.Source) || !strings.Contains(err.Error(), b.Source) {
+			t.Fatalf("ambiguity %s: %v", selector, err)
+		}
+	}
+	if len(agentDisplayID(a.ID, rows)) != 13 {
+		t.Fatal("colliding displayed IDs not lengthened")
+	}
+	if _, err := resolveAgentInstance(rows, "abc"); err == nil || !strings.Contains(err.Error(), "at least 6") {
+		t.Fatal(err)
+	}
+	if _, err := resolveAgentInstance(rows, "missing"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+}
+
+func TestInspectInstanceUsesCacheAfterSourceDeletion(t *testing.T) {
+	a := mdFixture(t)
+	lease, _, err := beginAgentInstance(a, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = lease.finish(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Remove(a.Path); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err = InspectAgentInstance(t.Context(), &out, ShortAgentID(lease.record.ID), "json"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), a.Instructions) || !strings.Contains(out.String(), lease.record.ID) {
+		t.Fatal(out.String())
+	}
+	out.Reset()
+	if err = ListAgentInstances(&out, "", "json", false); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), lease.record.ID) {
+		t.Fatal("stopped instance in running-only list")
+	}
+	out.Reset()
+	if err = ListAgentInstances(&out, "", "json", true); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), lease.record.ID) {
+		t.Fatal("all list omitted stopped instance")
 	}
 }
 

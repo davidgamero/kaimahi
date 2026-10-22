@@ -121,6 +121,7 @@ func (s *commandState) operationApplication(cmd *cobra.Command) (*app.App, error
 }
 
 func execute(argv []string, deps dependencies) error {
+	output := &yamlOutput{out: deps.stdout}
 	contextFlag := ""
 	var err error
 	if len(argv) == 0 || argv[0] != "__complete" && argv[0] != "__completeNoDesc" {
@@ -149,6 +150,25 @@ func execute(argv []string, deps dependencies) error {
 	}
 	state := &commandState{deps: deps, contextFlag: contextFlag, argv: append([]string(nil), argv...)}
 	root := newRootCommand(state)
+	output.selectOutput = func(enabled bool) {
+		writer := output.out
+		if enabled {
+			writer = output
+		}
+		state.deps.stdout = writer
+		root.SetOut(writer)
+	}
+	enableYAMLOutput(root, output)
+	// Help/completion produce their own text, never an operation's JSON report.
+	for _, arg := range argv {
+		if arg == "--" {
+			break
+		}
+		if arg == "--help" || arg == "-h" || arg == "help" || arg == "__complete" || arg == "__completeNoDesc" {
+			output.selectOutput = nil
+			break
+		}
+	}
 	root.InitDefaultHelpCmd()
 	help, _, _ := root.Find([]string{"help"})
 	// Cobra otherwise reports an unknown help topic on stdout but exits zero.
@@ -170,7 +190,11 @@ func execute(argv []string, deps dependencies) error {
 		return err
 	})
 	root.SetArgs(argv)
-	return root.Execute()
+	err = root.Execute()
+	if output.selectOutput == nil {
+		return err
+	}
+	return output.finish(err)
 }
 
 // Recognize only the root command (or explicit help topic) after known global

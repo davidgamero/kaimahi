@@ -644,8 +644,8 @@ func TestQuickstartRoutesEachMode(t *testing.T) {
 		{[]string{"quickstart", "--interactive"}, "kmx quickstart --interactive requires an interactive terminal"},
 		{[]string{"quickstart", "--interactive", "--task", "hi", "--verbose", "--tools", "k8s-get-resources"}, "quickstart tool shortcuts are retired"},
 		{[]string{"quickstart", "-i"}, "kmx quickstart --interactive requires an interactive terminal"},
-		{[]string{"quickstart", "-o", "yaml"}, "unknown --output"},
-		{[]string{"quickstart", "--task", "hi", "-o", "yaml"}, "unknown --output"},
+		{[]string{"quickstart", "-o", "xml"}, "unknown --output"},
+		{[]string{"quickstart", "--task", "hi", "-o", "xml"}, "unknown --output"},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
 			var out, errOut bytes.Buffer

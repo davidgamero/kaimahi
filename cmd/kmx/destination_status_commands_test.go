@@ -29,7 +29,7 @@ func TestDestinationStatusRefusesBeforeConfiguration(t *testing.T) {
 		{[]string{"status", "--to", "prod", "--directory", "."}, []string{"--directory"}},
 		{[]string{"status", "--to="}, []string{"--to"}},
 		{[]string{"status", "--to", " "}, []string{"--to"}},
-		{[]string{"status", "--to", "prod", "-o", "yaml"}, []string{"table", "json"}},
+		{[]string{"status", "--to", "prod", "-o", "xml"}, []string{"table", "json"}},
 		{[]string{"status", "--to", "prod", "-o", "text"}, []string{"table", "json"}},
 		{[]string{"status", "--to", "prod", "-o", ""}, []string{"table", "json"}},
 		{[]string{"status", "--to", "prod", "--workspace="}, []string{"--workspace"}},
@@ -75,7 +75,7 @@ func TestBareStatusWorksBeforeSetupWithoutClusterConfiguration(t *testing.T) {
 		if err := execute(args, deps); err != nil {
 			t.Fatal(err)
 		}
-		if *loads != 0 || (args[len(args)-1] != "json" && !strings.Contains(out.String(), "No agent instances")) || diag.Len() != 0 {
+		if *loads != 0 || (args[len(args)-1] != "json" && !strings.Contains(out.String(), "No running agents")) || diag.Len() != 0 {
 			t.Fatalf("out=%s diag=%s", &out, &diag)
 		}
 	}

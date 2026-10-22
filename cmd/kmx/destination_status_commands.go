@@ -13,9 +13,10 @@ import (
 func newStatusCommand(state *commandState) *cobra.Command {
 	var destination, workspace, directory string
 	var opt app.DestinationStatusOptions
+	var all bool
 	cmd := &cobra.Command{
-		Use: "status [--to <destination>]", Short: "Show running/stopped agents or inspect a deployment destination",
-		Long: "Without --to, list tracked agent instances and their cached versions. Source files that have never run are not instances. Liveness comes from process-held leases, not file discovery. Use kmx info for local inference setup.\nWith --to, inspect deployed agents at a saved destination using read-only observations. Use kmx orka status for the Orka runtime report.",
+		Use: "status [--to <destination>]", Short: "Alias of local list, or inspect a deployment destination",
+		Long: "Without --to, status is a compatibility alias of kmx list: running local instances, with --all for stopped ones. Use inspect ID for detail and info for inference setup.\nWith --to, inspect deployed agents at a saved destination. Use kmx orka status for the Orka runtime report.",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if err := cobra.NoArgs(cmd, args); err != nil {
 				return err
@@ -39,11 +40,14 @@ func newStatusCommand(state *commandState) *cobra.Command {
 			} else if cmd.Flags().Changed("directory") {
 				return fmt.Errorf("--directory is for local status; use --workspace with --to")
 			}
+			if destination != "" && cmd.Flags().Changed("all") {
+				return fmt.Errorf("--all applies to local inventory, not --to")
+			}
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if destination == "" {
-				return app.AgentInstanceStatus(cmd.OutOrStdout(), directory, opt.Output)
+				return app.ListAgentInstances(cmd.OutOrStdout(), directory, opt.Output, all)
 			}
 			_, doc, err := resolveDestinations(workspace)
 			if err != nil {
@@ -75,6 +79,7 @@ func newStatusCommand(state *commandState) *cobra.Command {
 		},
 	}
 	registerDestinationFlag(cmd, &destination)
+	cmd.Flags().BoolVarP(&all, "all", "a", false, "include stopped local instances (without --to)")
 	cmd.Flags().StringVar(&directory, "directory", "", "filter instances by original source directory (default: all local instances)")
 	cmd.Flags().StringVar(&workspace, "workspace", "", "select an exact workspace root instead of nearest-ancestor discovery")
 	_ = cmd.RegisterFlagCompletionFunc("workspace", staticCompletion(nil))

@@ -1,7 +1,10 @@
 package cliui
 
 import (
+	"encoding/json"
+	"fmt"
 	"image/color"
+	"io"
 	"strconv"
 	"strings"
 
@@ -9,7 +12,48 @@ import (
 	liptable "charm.land/lipgloss/v2/table"
 	"charm.land/lipgloss/v2/tree"
 	"github.com/charmbracelet/x/ansi"
+	"go.yaml.in/yaml/v3"
 )
+
+// WriteStructured preserves the JSON contract (tags, nulls and exact numbers)
+// when presenting YAML. JSON is parsed as YAML's JSON-compatible subset rather
+// than round-tripped through float64 or Go's default YAML field names.
+func WriteStructured(out io.Writer, format string, value any) error {
+	if format == "json" {
+		return json.NewEncoder(out).Encode(value)
+	}
+	if format != "yaml" {
+		return fmt.Errorf("structured output must be json or yaml")
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return WriteJSONAsYAML(out, raw)
+}
+func WriteJSONAsYAML(out io.Writer, raw []byte) error {
+	if !json.Valid(raw) {
+		return fmt.Errorf("command did not produce one valid JSON report")
+	}
+	var node yaml.Node
+	if err := yaml.Unmarshal(raw, &node); err != nil {
+		return err
+	}
+	var block func(*yaml.Node)
+	block = func(n *yaml.Node) {
+		n.Style = 0
+		for _, child := range n.Content {
+			block(child)
+		}
+	}
+	block(&node)
+	encoder := yaml.NewEncoder(out)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&node); err != nil {
+		return err
+	}
+	return encoder.Close()
+}
 
 type Field struct {
 	Label string
