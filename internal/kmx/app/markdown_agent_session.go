@@ -81,7 +81,15 @@ func (s *MarkdownSession) conversationLabel() string {
 func (s *MarkdownSession) finishInstance(cause error) {
 	if s.ownedManaged != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-		err := StopAgentInstance(ctx, s.ownedManaged)
+		var err error
+		if executor, ok := s.executor.(*attachedAgentExecutor); ok {
+			current, e := FindAgentInstance(s.ownedManaged)
+			if e != nil {
+				err = e
+			} else if current.State == "running" && current.Generation == executor.record.Generation && current.Version == executor.record.Version {
+				_, err = agentWorkerCall(ctx, executor.record, "stop", "")
+			}
+		}
 		cancel()
 		if err != nil {
 			fmt.Fprintln(s.Err, "Could not stop managed agent:", err)

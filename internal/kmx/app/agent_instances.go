@@ -159,6 +159,43 @@ func agentStateRoot() (string, error) {
 	return filepath.Join(root, "agents"), err
 }
 
+// AgentCompletionCandidates reads local records/leases only. Duplicate names
+// are omitted; displayed IDs stay unique across both running and stopped rows.
+func AgentCompletionCandidates(prefix string, runningOnly bool) ([]string, error) {
+	rows, err := ReadAgentInstances("")
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]int{}
+	for _, r := range rows {
+		counts[r.Name]++
+	}
+	values := []string{}
+	for _, r := range rows {
+		if runningOnly && r.State != "running" {
+			continue
+		}
+		id := agentDisplayID(r.ID, rows)
+		if strings.HasPrefix(prefix, "md-") {
+			id = r.ID
+		} else if len(prefix) > len(id) {
+			id = strings.TrimPrefix(r.ID, "md-")
+		}
+		detail := safeTerminal(r.Name) + " · " + r.Type + " · " + r.State
+		if strings.HasPrefix(id, prefix) {
+			values = append(values, id+"\t"+detail)
+		}
+		if counts[r.Name] == 1 && strings.HasPrefix(r.Name, prefix) {
+			resolved, e := resolveAgentInstance(rows, r.Name)
+			if e == nil && resolved.ID == r.ID {
+				values = append(values, r.Name+"\t"+agentDisplayID(r.ID, rows)+" · "+r.Type+" · "+r.State)
+			}
+		}
+	}
+	sort.Strings(values)
+	return values, nil
+}
+
 // CacheMarkdownVersion stores exact source bytes once. Existing entries are
 // verified rather than rewritten, so all invocations agree on a version's bytes.
 func CacheMarkdownVersion(a *MarkdownAgent) (*MarkdownAgent, error) {
@@ -274,7 +311,11 @@ func beginAgentInstance(a *MarkdownAgent, model string) (*agentLease, *MarkdownA
 	}()
 	recordPath := filepath.Join(dir, "instance.json")
 	var old AgentInstance
-	if e := mdStateRead(recordPath, &old); e != nil && !errors.Is(e, os.ErrNotExist) {
+	e := mdStateRead(recordPath, &old)
+	if errors.Is(e, os.ErrNotExist) {
+		e = mdStateRead(filepath.Join(dir, "removed.json"), &old)
+	}
+	if e != nil && !errors.Is(e, os.ErrNotExist) {
 		return nil, nil, e
 	}
 	if old.ID != "" && (old.ID != id || old.SchemaVersion != 1 || old.Source != source) {
@@ -298,6 +339,80 @@ func beginAgentInstance(a *MarkdownAgent, model string) (*agentLease, *MarkdownA
 	}
 	failed = false
 	return lease, frozen, nil
+}
+
+// RemoveAgentInstance removes an instance from inventory, never its definition,
+// cached versions or test history. Keep lock inodes and a private tombstone so a
+// concurrent/recreated instance cannot acquire stale generation authority.
+func RemoveAgentInstance(ctx context.Context, selector string, force bool) (AgentInstance, error) {
+	r, err := FindAgentInstance(selector)
+	if err != nil {
+		return r, err
+	}
+	if err = ctx.Err(); err != nil {
+		return r, err
+	}
+	if r.State == "running" {
+		if !force {
+			return r, fmt.Errorf("agent %s (%s) is running; stop it first or use rm --force %s", r.Name, ShortAgentID(r.ID), ShortAgentID(r.ID))
+		}
+		if _, err = agentWorkerCall(ctx, r, "stop", ""); err != nil {
+			return r, err
+		}
+	}
+	root, err := agentStateRoot()
+	if err != nil {
+		return r, err
+	}
+	dir := filepath.Join(root, "instances", r.ID)
+	lease, err := openAgentLease(filepath.Join(dir, "active.lock"), false)
+	if err != nil {
+		return r, err
+	}
+	defer lease.Close()
+	deadline, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	for {
+		err = unix.Flock(int(lease.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !force || (!errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN)) {
+			return r, errors.New("agent instance busy; nothing removed")
+		}
+		select {
+		case <-deadline.Done():
+			return r, errors.New("stop requested but agent is still busy; nothing removed")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	defer unix.Flock(int(lease.Fd()), unix.LOCK_UN)
+	path := filepath.Join(dir, "instance.json")
+	var current AgentInstance
+	if err = mdStateRead(path, &current); err != nil {
+		return r, err
+	}
+	if current.ID != r.ID || current.Source != r.Source || current.Generation != r.Generation || current.Version != r.Version || !current.Started.Equal(r.Started) {
+		return r, errors.New("agent changed during removal; nothing removed")
+	}
+	if err = ctx.Err(); err != nil {
+		return r, err
+	}
+	// Atomic rename hides the record from inventory. The retained record is only
+	// consulted to allocate a later generation, not to list or resume the agent.
+	if err = os.Rename(path, filepath.Join(dir, "removed.json")); err != nil {
+		return r, err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return r, err
+	}
+	defer d.Close()
+	if err = d.Sync(); err != nil {
+		return r, fmt.Errorf("agent removed but persistence uncertain: %w", err)
+	}
+	r.State = "removed"
+	return r, nil
 }
 func (l *agentLease) save() error {
 	return mdStateUpdate(l.path, func() ([]byte, error) { return json.Marshal(l.record) })

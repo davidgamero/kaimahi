@@ -23,6 +23,8 @@ import (
 
 const localAgentManagerVersion = "copilot-sessions/v2"
 
+var ErrAgentVersionChanged = errors.New("agent is running a different version; use --update to update the agent definition")
+
 type agentManagerRecord struct {
 	Version string `json:"version"`
 	PID     int    `json:"pid"`
@@ -114,7 +116,7 @@ func (s *MarkdownSession) StartBackgroundAgent(ctx context.Context, a *MarkdownA
 			return AgentInstance{}, fmt.Errorf("%s uses a dedicated worker; stop it and run again to use the shared manager", existing.Name)
 		}
 		if existing.Version != a.Revision || existing.Model != s.effective(a).Model {
-			return AgentInstance{}, fmt.Errorf("agent %s is running a different version; stop it before updating", existing.Name)
+			return AgentInstance{}, fmt.Errorf("%s: %w", existing.Name, ErrAgentVersionChanged)
 		}
 		if _, err = agentWorkerCall(ctx, existing, "ping", ""); err != nil {
 			return AgentInstance{}, err
@@ -411,7 +413,7 @@ func (m *localAgentManager) handle(ctx context.Context, req agentWorkerRequest) 
 		if active := m.agents[id]; active != nil {
 			r := active.lease.record
 			if r.Version != req.Version || r.Model != req.Model {
-				return fail(errors.New("agent already running another version; stop before updating"))
+				return fail(errors.New("agent is running a different version; use --update to update the agent definition"))
 			}
 			return agentWorkerReply{Ready: true, Instance: &r}
 		}
@@ -493,6 +495,64 @@ func (m *localAgentManager) handle(ctx context.Context, req agentWorkerRequest) 
 			return fail(err)
 		}
 		return agentWorkerReply{Ready: true}
+	}
+	if req.Operation == "update" {
+		// Complete source/package validation precedes cancelling any old session.
+		if !agentVersionDigest.MatchString(req.NewVersion) || (req.Model != "" && !localModelName.MatchString(req.Model)) {
+			m.mu.Unlock()
+			return fail(errors.New("invalid new version/model"))
+		}
+		a, err := LoadMarkdownAgent(r.Source, req.Source)
+		if err != nil {
+			m.mu.Unlock()
+			return fail(err)
+		}
+		if a.Revision != req.NewVersion || len(a.Tools) > 0 {
+			m.mu.Unlock()
+			return fail(errors.New("source changed or tools unsupported; running agent unchanged"))
+		}
+		frozen, err := CacheMarkdownVersion(a)
+		if err != nil {
+			m.mu.Unlock()
+			return fail(err)
+		}
+		frozen.Model = req.Model
+		if r.Version == a.Revision && r.Model == req.Model {
+			m.mu.Unlock()
+			return agentWorkerReply{Ready: true, Instance: &r}
+		}
+		agent.stopping = true
+		agent.cancel()
+		m.mu.Unlock()
+		for _, s := range agent.sessions {
+			s.turn.Lock()
+			s.executor.Close()
+			s.turn.Unlock()
+		}
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		next := r
+		next.PreviousVersion = r.Version
+		next.Version = a.Revision
+		next.Name = a.Name
+		next.Model = req.Model
+		next.Generation++
+		next.Started = time.Now().UTC()
+		next.Finished = nil
+		next.Reason = ""
+		next.Sessions = nil
+		next.SessionCount = nil
+		next.Session = ""
+		next.Activity = ""
+		agent.lease.record = next
+		if err = agent.lease.save(); err != nil {
+			_ = agent.lease.finish(err)
+			delete(m.agents, req.AgentID)
+			return fail(errors.New("old sessions closed but saving replacement failed; inspect agent state"))
+		}
+		newCtx, cancel := context.WithCancel(ctx)
+		m.agents[req.AgentID] = &managedAgent{lease: agent.lease, definition: frozen, ctx: newCtx, cancel: cancel, sessions: map[string]*managedConversation{}}
+		return agentWorkerReply{Ready: true, Instance: &next}
 	}
 	if req.Operation == "ping" {
 		m.mu.Unlock()

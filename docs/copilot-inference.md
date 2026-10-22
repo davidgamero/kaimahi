@@ -6,10 +6,10 @@ Build this branch and run the local browser:
 
 ```sh
 go build -o bin/kmx ./cmd/kmx
-./bin/kmx
+./bin/kmx console
 ```
 
-On first interactive launch, KMX detects the installed Copilot CLI and asks
+Bare `kmx` displays help. On first interactive agent execution, KMX detects the installed Copilot CLI and asks
 `Use it by default for local agents? [Y/n]`. Enter accepts; No is remembered.
 The per-user choice lives in `preferences.json` under `config.StateDir()`:
 `$KMX_HOME`, or normally `~/.config/kmx` on Linux and
@@ -67,12 +67,13 @@ Start with `kmx create frogagent --type md` to generate a definition and its tes
 then edit the instruction body below the YAML header. For an existing plain-text
 file, `kmx validate frogagent.agent.md` prints a copyable header when one is missing:
 
-Interactive Run/Chat also offers **Import agent?** when a `.agent.md` file has no
-front matter. `kmx import frogagent.agent.md` starts that flow explicitly. Name
-defaults from the filename; description and optional model are prompted. Tools
-default to none. Saving defaults to a **new file**, `frogagent.imported.agent.md`,
-with an editable path and no overwriting existing files. Choosing **replace** then
-confirming explicitly replaces the original. The instruction bytes are preserved.
+Interactive Run/Chat offers a single **Import agent** confirmation for missing
+front matter. `kmx import frogagent.agent.md` starts that flow explicitly. Name and
+description default from the filename, model inherits provider defaults and tools
+are none. Press Enter to save **a new file**, `frogagent.imported.agent.md`.
+Choose `e` to edit metadata/output path, `r` to replace the original with additional
+confirmation, or `n` to cancel. Existing files are not overwritten by default.
+The instruction bytes are preserved.
 Run/Chat continues with the saved path. Cancelling or declining changes nothing;
 scripts get the import command instead of prompts. Validate remains read-only.
 
@@ -122,7 +123,7 @@ and 100 agents. Native Windows remains unsupported by this checkout.
 
 ### Editing TUI
 
-Bare interactive `kmx` and `console` open the shared agent console. The local
+`kmx console` opens the shared agent console; bare `kmx` displays help. The local
 instance environment is selected initially; `console --definitions` explicitly
 shows files that have never run. `/env local CONTEXT` selects a local cluster and
 includes tracked md rows beside Orka rows. Remote columns remain cluster-only.
@@ -137,6 +138,7 @@ Use your editor normally, or:
 | `/edit` | Open the definition in VISUAL/EDITOR (default vi) |
 | `/edit-tests` | Open the companion test file |
 | `/reload` | Adopt saved instructions and start a fresh conversation |
+| `/update` | Review a replacement of the running version; `/update yes` applies and opens a fresh chat |
 | `/test [id]` | Test the latest saved pair; ID selection is partial |
 | `/tests` | Show case results, source locations, expected checks and actual answers |
 | `/show` | Show the loaded instructions |
@@ -166,6 +168,31 @@ captured result stale, and partial tests never become a full-suite pass.
 ### Test history and execution
 
 ### Versions and instances
+
+Remove a stopped local instance with `kmx rm ID_OR_NAME`. Use `kmx rm --force ID`
+to stop a running background instance first. Removal hides the instance from all
+inventory/lookup; source Markdown, paired tests, cached versions and test history
+are preserved. Private lock/generation bookkeeping remains to prevent stale
+clients from acquiring authority over a later run of the same source. This is not
+a cluster-resource or cache-pruning command. `-o json|yaml` reports removal.
+
+ID/name completion is available for run, chat, inspect, stop and rm (and run's
+--agent flag). Stop/chat suggest running instances; rm/inspect/run include stopped
+ones. Ambiguous names are omitted in favor of unique IDs. Local completion reads
+records/leases only, never Copilot or source content. Explicit Orka selection keeps
+the existing live-agent completion.
+
+For the current zsh session, enable completion for the checkout binary:
+
+```sh
+autoload -Uz compinit && compinit
+source <(./bin/kmx completion zsh)
+compdef _kmx ./bin/kmx
+# Then type: ./bin/kmx stop 1f<Tab>
+```
+
+Installed `kmx` uses the same generated completion. Re-source it after command-tree
+changes; other shells can use `kmx completion bash` or `kmx completion fish`.
 
 Inventory includes **AGE**, elapsed wall time since the instance's latest start
 (not cumulative uptime). `inspect` shows the exact UTC start and age; JSON/YAML
@@ -242,9 +269,33 @@ version, generation, state, model route and timestamps. Re-running the same path
 increments its generation; edits select a new version and preserve old snapshots.
 The source path, not display name, identifies the instance. An OS-held lease
 prevents another process from overwriting an active session. Re-running unchanged
-background content returns its existing instance. Stop before running an edited
-version. Foreground `/reload` ends its conversation and the next message starts
+background content returns its existing instance. Plain Run refuses to replace
+changed content; use `run FILE --update` to apply an explicit replacement.
+Foreground `/reload` ends its conversation and the next message starts
 the saved version; attached chat retains its worker's frozen version.
+
+### Edit → test → update → chat
+
+```sh
+kmx test .github/agents/hello.agent.md --show-content
+kmx run .github/agents/hello.agent.md --update -i
+```
+
+Update validates and caches the saved definition before affecting the running
+agent, shows old/new version and model, open conversations that will close, and
+the latest matching local test status. Full passing tests are informative, not
+mandatory for local experimentation. Confirm once to close all previous sessions,
+replace the version under the same instance ID, advance the internal generation
+and UTC start time, and start a fresh chat with `-i`. Without `-i`, it remains a
+background agent and prints the chat command. Scripts must supply `--yes`.
+
+Unchanged definition/model is a no-op: no confirmation, restart, session loss or
+timestamp change. Source edits after review and stale instance generations refuse.
+Old cached versions remain. Update requires an existing running instance on the
+current manager; initial/stopped agents use plain Run. Other agents are unaffected.
+Existing attached clients cannot send into the replacement generation. In the
+TUI, `/update` shows the plan, `/update yes` applies, and `/update cancel` discards
+the plan. `/reset` still creates a conversation on the same running version.
 The worker uses a private Unix socket and inherited process lease. Startup returns
 only after Copilot initialization and socket readiness. It does not expose an HTTP
 listener, auto-restart, or survive machine shutdown. Status still detects crashes.
@@ -297,7 +348,145 @@ passed; exit 1 means failed/incomplete execution or invalid input. This is local
 preview, not native publication or deployment evidence. Full implementation
 decisions and remaining extensions are in the [inner-loop design](markdown-agent-inner-loop.md).
 
-## Existing host chat integration
+## Graduate an md agent to AgentSuite and remote Orka
+
+### One deployment workflow
+
+Use the existing Deploy command directly; its hidden `lift` compatibility alias
+accepts the same arguments:
+
+```sh
+kmx deploy .github/agents/hello.agent.md --to prod --model qwen2.5:3b --plan
+kmx deploy .github/agents/hello.agent.md --to prod --model qwen2.5:3b
+# Compatibility spelling:
+kmx lift .github/agents/hello.agent.md --to prod --model qwen2.5:3b
+```
+
+KMX freezes the working-copy definition and tests, converts them to temporary native
+Orka source, then delegates to the existing full evaluation → evaluated publication
+→ deployment pipeline. No manual conversion step is required. The temporary source
+is removed afterward; the package/evidence/lifecycle handlers retain their existing
+rules. Each invocation maps afresh, so it does not rely on reusable workspace-path
+completion shortcuts. Copilot results never substitute for native passing evidence.
+`--plan` may create temporary local mapping/preparation data, but makes no cluster
+writes, model calls or publication. It cannot establish actual runtime readiness.
+
+Provide operational configuration in `kmx.yaml` in the current directory, or select
+its directory with `--directory DIR`; no workspace marker is needed for this file
+route. For example (replace the repository, contexts and Provider names):
+
+```yaml
+version: 1
+publishRepository: ghcr.io/YOUR_ORG/hello
+targets:
+  eval:
+    context: kind-kmx-local
+    namespace: orka-system
+    runtime: orka
+    inference: provider:local
+  prod:
+    context: REMOTE_CONTEXT
+    namespace: orka-system
+    runtime: orka
+    inference: provider:remote
+    evaluationTarget: eval
+```
+
+Both targets need the supported Orka installation and a Ready inference Provider
+serving the exact `--model`. Registry access/authentication must already work.
+The existing reviewed execution plan governs effects and promotion. Source-side
+tests are not destination evaluation. Tool-enabled agents/mocks refuse. Deployment
+does not change the local running instance. This path has offline-plan and mapping
+qualification and a one-off live kind-to-AKS demonstration described below.
+
+### Inspect the generated workspace or run stages manually
+
+The explicit offline mapper converts the saved definition and complete paired
+text tests into a one-member native Orka workspace:
+
+```sh
+kmx suite map .github/agents/hello.agent.md \
+  --workspace ./hello-suite --model qwen2.5:3b
+```
+
+Use `--tests FILE` for nonconventional companions and `--name ID` if the md name
+is not a valid native member name. `-o json|yaml` reports source/test/pair hashes,
+destination, model and case count. This snapshots the working copy, not a running
+instance's older cached version. The mapper writes instructions without front
+matter, a pinned build profile, member/workspace descriptors and ordered
+`eval/001-ID.yaml` cases. Existing workspace/member paths refuse replacement.
+The native packager embeds those cases as public AgentSuite evaluation documents.
+
+**An exact deployment model is required**, even if the local definition uses
+Copilot auto/default. The target must serve that model through a Ready Orka openai
+Provider. Copilot CLI authentication does not become cluster inference credentials.
+Changing runtime/model can change behavior; native tests must pass independently.
+Tools, mocks and tool assertions refuse rather than being silently stripped.
+Mapping produces no passing receipt and does not install, publish or deploy.
+
+After preparing an evaluation cluster with the existing Docker/kind path
+(`kmx local up`) and a destination cluster with the supported Orka runtime/model
+Provider, use the existing lifecycle. Replace the context, Provider, repository
+and digest placeholders with your actual values:
+
+```sh
+# Evaluate the complete mapped inventory; receipt path must be new and private,
+# outside the workspace. This branch still calls native evaluation "eval".
+kmx eval --workspace ./hello-suite \
+  --to-context kind-kmx-local --inference provider:local \
+  --out ./hello-passing.json
+
+# Publish exactly the evaluated suite. Registry authentication is configured separately.
+kmx push --workspace ./hello-suite --evaluation ./hello-passing.json \
+  ghcr.io/YOUR_ORG/hello:v1
+
+# Use the digest returned by push, not the mutable v1 tag.
+kmx deploy ghcr.io/YOUR_ORG/hello@sha256:DIGEST \
+  --to-context REMOTE_CONTEXT --to-namespace orka-system \
+  --inference provider:REMOTE_PROVIDER --evidence ./hello-passing.json \
+  --promote --plan
+
+kmx deploy ghcr.io/YOUR_ORG/hello@sha256:DIGEST \
+  --to-context REMOTE_CONTEXT --to-namespace orka-system \
+  --inference provider:REMOTE_PROVIDER --evidence ./hello-passing.json --promote
+
+# Use the Agent identity reported by Deploy; this creates a fresh remote Task.
+kmx run --type orka --agent DEPLOYED_AGENT --context REMOTE_CONTEXT \
+  --namespace orka-system --prompt 'My name is Sam'
+```
+
+`--promote` explicitly consumes source-environment evidence; it does not claim
+the destination was evaluated. Deploy validates exact artifact/runtime/model and
+destination compatibility; installing a different model or Orka version is not a
+substitute. See [digest deploy](suite-workspace.md#digest-lift) for target prerequisites,
+ownership rules and evidence limits. Native tool-free suites need no per-agent
+Docker image build.
+
+### Live qualification (2026-10-22)
+
+A one-off run against existing kind and AKS environments demonstrated automatic
+Markdown mapping, two passing native greeting cases, candidate cleanup, exact
+AgentSuite publication to ACR, remote Provider/Agent creation and a separate
+successful remote answer (`Hello, Sam!`). Both environments used Orka v0.2.0 and
+the declared model `qwen2.5:3b`. The successful remote Task took 2m19s from start
+to completion, including runtime/model startup. This is not a clean-machine
+timing study or continuous CI qualification.
+
+Setup exposed three issues: Docker Desktop was stopped and saved kind endpoints
+were unavailable; a saved AKS context was stale; and private proof storage refused
+a group-writable ancestor directory. Explicit private kubeconfig/state directories
+and a normal restrictive umask resolved the test setup. Registry credentials were
+kept in an isolated private Docker configuration, never committed.
+
+The deployment itself reached Ready, but the first remote answer failed because
+the existing Ollama pod had an empty model inventory despite a Ready Provider
+declaring the expected model. Pulling the exact model (about 1.9 GB) and issuing
+a new Task produced the answer. The failed Task was not retried or rewritten.
+This reinforces that destination readiness and source passing evidence are not
+destination inference qualification. A clean-machine demo/write-up and the
+day-0 Publish recommendation remain outstanding for #604.
+
+## Existing host chat integration (Orka)
 
 Host Copilot chat inference is independent from native workspace evaluation
 and Deploy. `/inference-copilot` in existing Orka chat discovers models through

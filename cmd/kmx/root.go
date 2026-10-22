@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentpreview"
 	kmxsuite "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
@@ -229,20 +228,6 @@ func newRootCommand(state *commandState) *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if state.deps.stdin != nil && term.IsTerminal(int(state.deps.stdin.Fd())) {
-				if state.contextFlag != "" || cmd.Flags().Changed("container-engine") {
-					return errors.New("local agent browser does not use cluster selectors; choose an explicit cluster command")
-				}
-				_, err := app.SetupMarkdownProvider(state.deps.stdin, state.deps.stderr, false)
-				if err != nil {
-					return err
-				}
-				a, err := state.application()
-				if err != nil {
-					return err
-				}
-				return a.AgentTUI(app.AgentTUIOptions{Directory: "."})
-			}
 			return cmd.Help()
 		},
 	}
@@ -267,7 +252,7 @@ func newRootCommand(state *commandState) *cobra.Command {
 		newStatusCommand(state), create, chat, run,
 		newAgentTestCommand(state), newAgentEvalCommand(state), newReleaseDeployCommand(state), newReleaseLiftCommand(state), newTaskCommand(state),
 		newSuiteCommand(state), newSuitePushCommand(state, true), newTargetsCommand(state),
-		newListTypedAgentsCommand(state), newInspectAgentCommand(state), newTypedAgentCommand(state, "validate", "validate"), newInfoCommand(state), newStopAgentCommand(state), settings,
+		newListTypedAgentsCommand(state), newInspectAgentCommand(state), newTypedAgentCommand(state, "validate", "validate"), newInfoCommand(state), newStopAgentCommand(state), newRemoveAgentCommand(state), settings,
 		markdownOperation(state, "import"),
 		retiredCommand("quickstart-wizard", "kmx quickstart --interactive"),
 	)

@@ -17,9 +17,9 @@ func TestMarkdownImportNewDefaultAndExplicitReplacement(t *testing.T) {
 			if err := os.WriteFile(path, original, 0644); err != nil {
 				t.Fatal(err)
 			}
-			input := "\n\n\n\n\n\n"
+			input := "\n"
 			if replace {
-				input = "\n\n\n\nreplace\ny\n"
+				input = "r\ny\n"
 			}
 			var output bytes.Buffer
 			saved, err := ImportMarkdownAgent(t.Context(), path, strings.NewReader(input), &output)
@@ -28,6 +28,9 @@ func TestMarkdownImportNewDefaultAndExplicitReplacement(t *testing.T) {
 			}
 			if replace && saved != path || !replace && saved == path {
 				t.Fatalf("saved=%s", saved)
+			}
+			if !replace && strings.Count(output.String(), "]: ") != 1 {
+				t.Fatalf("default import asked more than once: %s", &output)
 			}
 			b, err := os.ReadFile(saved)
 			if err != nil || !bytes.HasSuffix(b, original) {
@@ -48,7 +51,7 @@ func TestMarkdownImportNewDefaultAndExplicitReplacement(t *testing.T) {
 }
 
 func TestMarkdownImportCancellationAndCollisionPreserveOriginal(t *testing.T) {
-	for _, input := range []string{"n\n", "\n", "\n\n\n\nreplace\n\n", "\n\n\n\n\n\n"} {
+	for _, input := range []string{"n\n", "", "r\n\n", "\n"} {
 		path := filepath.Join(t.TempDir(), "frog.agent.md")
 		original := []byte("Be a frog")
 		if err := os.WriteFile(path, original, 0600); err != nil {

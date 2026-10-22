@@ -58,7 +58,7 @@ and dependencies. The present generic scan skips hidden directories and must cha
 
 ## First-run Copilot preference
 
-On the first interactive bare `kmx` launch, detect `copilot` on PATH and ask:
+On first interactive local-agent execution, detect `copilot` on PATH and ask:
 
 ```text
 Copilot CLI found.
@@ -67,11 +67,8 @@ Use it by default for local agents? [Y/n]
 
 Enter means **Yes**. Record an explicit accepted/declined choice so neither
 answer is asked again on each launch. After acceptance, show the selected route
-and continue to the local agent browser. If no agents exist, show the expected
-directory and a starter-file action rather than provisioning a cluster.
-Explicit interactive md-type agent operations may perform this setup if bare `kmx` was
-skipped; when a file was supplied, validate it first. This changes bare root from
-help to onboarding/browser and must be accompanied by root-command/help tests.
+and continue the requested agent operation. When a file was supplied, validate it
+first. Bare `kmx` always displays help; `kmx console` explicitly opens the browser.
 `kmx --help`, `help`, version, completion, offline list/show/validate and redirected
 invocations stay inert: no onboarding prompt, provider process or preference write.
 An unrelated cluster operation need not wait for local-agent setup.

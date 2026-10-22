@@ -2,8 +2,10 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,6 +43,105 @@ func TestAgentInstancesOnlyAppearAfterRun(t *testing.T) {
 	rows, err = ReadAgentInstances("")
 	if err != nil || len(rows) != 1 {
 		t.Fatal("status depends on original source file")
+	}
+}
+
+func TestRemoveInstancePreservesSourceCacheAndGeneration(t *testing.T) {
+	a := mdFixture(t)
+	lease, _, err := beginAgentInstance(a, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = RemoveAgentInstance(t.Context(), ShortAgentID(lease.record.ID), false); err == nil {
+		t.Fatal("running instance removed")
+	}
+	if err = lease.finish(nil); err != nil {
+		t.Fatal(err)
+	}
+	root, _ := agentStateRoot()
+	cached := filepath.Join(root, "versions", strings.TrimPrefix(a.Revision, "sha256:"), "agent.md")
+	if err = saveMarkdownResult(a, MarkdownTestResult{SchemaVersion: 1, ID: "before-removal", RunKey: "key"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = RemoveAgentInstance(t.Context(), a.Name, false); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := ReadAgentInstances("")
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("removed still listed: %+v %v", rows, err)
+	}
+	if _, err = FindAgentInstance(lease.record.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("removed instance resolves")
+	}
+	for _, path := range []string{a.Path, a.TestsPath, cached} {
+		if _, err = os.Stat(path); err != nil {
+			t.Fatalf("deleted retained content: %s %v", path, err)
+		}
+	}
+	if history, err := LoadMarkdownHistory(a); err != nil || len(history) != 1 {
+		t.Fatal("test history removed")
+	}
+	recreated, _, err := beginAgentInstance(a, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recreated.finish(nil)
+	if recreated.record.Generation != lease.record.Generation+1 {
+		t.Fatal("removed generation reused")
+	}
+}
+
+func TestForceRemoveStopsOnlySelectedVersion(t *testing.T) {
+	a := mdFixture(t)
+	lease, _, err := beginAgentInstance(a, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.MkdirTemp("", "kmx-rm-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	socket := filepath.Join(dir, "rpc.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	lease.record.Socket = socket
+	if err = lease.save(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		conn, e := listener.Accept()
+		if e != nil {
+			done <- e
+			return
+		}
+		defer conn.Close()
+		var req agentWorkerRequest
+		if e = json.NewDecoder(conn).Decode(&req); e != nil {
+			done <- e
+			return
+		}
+		if req.Operation != "stop" || req.AgentID != lease.record.ID || req.Generation != lease.record.Generation {
+			done <- errors.New("unbound stop request")
+			return
+		}
+		e = lease.finish(nil)
+		_ = json.NewEncoder(conn).Encode(agentWorkerReply{Ready: e == nil})
+		done <- e
+	}()
+	if _, err = RemoveAgentInstance(t.Context(), a.Name, true); err != nil {
+		t.Fatal(err)
+	}
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+	rows, err := ReadAgentInstances("")
+	if err != nil || len(rows) != 0 {
+		t.Fatal("force remove did not remove record")
 	}
 }
 
