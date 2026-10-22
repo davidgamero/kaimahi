@@ -1150,6 +1150,9 @@ func (m agentTUIModel) agentDetailsLines(a agentTUIAgent, inner int) []string {
 	}
 	if a.Runtime == "md" {
 		field("Type", "md")
+		if a.InstanceID != "" {
+			field("ID", a.InstanceID)
+		}
 		field("Definition", a.DefinitionPath)
 		field("Tests", a.TestsPath)
 		field("Test status", a.TestStatus)

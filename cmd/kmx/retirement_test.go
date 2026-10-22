@@ -79,7 +79,9 @@ func TestLegacyChatTransportFlagsAreRetired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"session", "json"} {
+	// --session is now supported for local md conversations only; the old
+	// Orka transport refusal above remains intact.
+	for _, name := range []string{"json"} {
 		flag := cmd.Flags().Lookup(name)
 		if flag == nil || !flag.Hidden {
 			t.Errorf("retired --%s must parse but stay out of help", name)

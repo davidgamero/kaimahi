@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,24 +23,28 @@ import (
 // AgentInstance describes an execution, never a merely discovered source file.
 // The process-held lease is authoritative for liveness; PID is informational.
 type AgentInstance struct {
-	SchemaVersion   int        `json:"schemaVersion"`
-	ID              string     `json:"id"`
-	Name            string     `json:"name"`
-	Type            string     `json:"type"`
-	Environment     string     `json:"environment"`
-	Source          string     `json:"source"`
-	Version         string     `json:"version"`
-	PreviousVersion string     `json:"previousVersion,omitempty"`
-	Generation      int        `json:"generation"`
-	State           string     `json:"state"`
-	Reason          string     `json:"reason,omitempty"`
-	PID             int        `json:"pid"`
-	Provider        string     `json:"provider"`
-	Model           string     `json:"model"`
-	Started         time.Time  `json:"started"`
-	Finished        *time.Time `json:"finished,omitempty"`
-	Socket          string     `json:"socket,omitempty"`
-	Manager         string     `json:"manager,omitempty"`
+	SchemaVersion   int                `json:"schemaVersion"`
+	ID              string             `json:"id"`
+	Name            string             `json:"name"`
+	Type            string             `json:"type"`
+	Environment     string             `json:"environment"`
+	Source          string             `json:"source"`
+	Version         string             `json:"version"`
+	PreviousVersion string             `json:"previousVersion,omitempty"`
+	Generation      int                `json:"generation"`
+	State           string             `json:"state"`
+	Activity        string             `json:"activity,omitempty"`
+	Session         string             `json:"session,omitempty"`
+	Sessions        []AgentSessionInfo `json:"sessions,omitempty"`
+	SessionCount    *int               `json:"sessionCount,omitempty"`
+	Reason          string             `json:"reason,omitempty"`
+	PID             int                `json:"pid"`
+	Provider        string             `json:"provider"`
+	Model           string             `json:"model"`
+	Started         time.Time          `json:"started"`
+	Finished        *time.Time         `json:"finished,omitempty"`
+	Socket          string             `json:"socket,omitempty"`
+	Manager         string             `json:"manager,omitempty"`
 }
 type agentLease struct {
 	file   *os.File
@@ -51,6 +56,103 @@ var agentVersionDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 func agentInstanceID(source string) string {
 	return "md-" + strings.TrimPrefix(mdHash([]byte(source)), "sha256:")
+}
+
+// ShortAgentID is a display handle, never a version digest or a storage key.
+func ShortAgentID(id string) string {
+	raw := strings.TrimPrefix(id, "md-")
+	return raw[:min(12, len(raw))]
+}
+func agentDisplayID(id string, rows []AgentInstance) string {
+	raw := strings.TrimPrefix(id, "md-")
+	for n := min(12, len(raw)); n <= len(raw); n++ {
+		unique := true
+		for _, r := range rows {
+			if r.ID != id && strings.HasPrefix(strings.TrimPrefix(r.ID, "md-"), raw[:n]) {
+				unique = false
+				break
+			}
+		}
+		if unique {
+			return raw[:n]
+		}
+	}
+	return id
+}
+func resolveAgentInstance(rows []AgentInstance, selector string) (AgentInstance, error) {
+	if selector == "" {
+		return AgentInstance{}, os.ErrNotExist
+	}
+	// Exact IDs always win, including the full hex form without the type prefix.
+	for _, r := range rows {
+		if selector == r.ID || selector == strings.TrimPrefix(r.ID, "md-") {
+			return r, nil
+		}
+	}
+	// Literal paths cannot be mistaken for names or ID prefixes.
+	if filepath.IsAbs(selector) || strings.ContainsAny(selector, "/\\") || strings.HasSuffix(selector, ".md") {
+		absolute, _ := filepath.Abs(selector)
+		if canonical, e := filepath.EvalSymlinks(absolute); e == nil {
+			absolute = canonical
+		}
+		for _, r := range rows {
+			if absolute == r.Source {
+				return r, nil
+			}
+		}
+		return AgentInstance{}, os.ErrNotExist
+	}
+	hex := strings.TrimPrefix(selector, "md-")
+	isHex := len(hex) > 0
+	for _, c := range hex {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			isHex = false
+			break
+		}
+	}
+	selectMatch := func(matches []AgentInstance) (AgentInstance, error) {
+		if len(matches) == 1 {
+			return matches[0], nil
+		}
+		if len(matches) == 0 {
+			return AgentInstance{}, os.ErrNotExist
+		}
+		sort.Slice(matches, func(i, j int) bool { return matches[i].ID < matches[j].ID })
+		var b strings.Builder
+		fmt.Fprintf(&b, "agent selector %q is ambiguous; use a longer ID or source path:\n", safeTerminal(selector))
+		for _, r := range matches {
+			fmt.Fprintf(&b, "  %s  %s  %s  %s\n", agentDisplayID(r.ID, rows), safeTerminal(r.Name), r.State, safeTerminal(r.Source))
+		}
+		return AgentInstance{}, errors.New(strings.TrimSpace(b.String()))
+	}
+	if isHex && len(hex) >= 6 {
+		matches := []AgentInstance{}
+		for _, r := range rows {
+			if strings.HasPrefix(strings.TrimPrefix(r.ID, "md-"), hex) {
+				matches = append(matches, r)
+			}
+		}
+		if len(matches) > 0 {
+			return selectMatch(matches)
+		}
+	}
+	matches := []AgentInstance{}
+	for _, r := range rows {
+		if r.Name == selector {
+			matches = append(matches, r)
+		}
+	}
+	if len(matches) > 0 {
+		return selectMatch(matches)
+	}
+	if isHex && len(hex) < 6 {
+		for _, r := range rows {
+			if strings.HasPrefix(strings.TrimPrefix(r.ID, "md-"), hex) {
+				return AgentInstance{}, errors.New("agent ID prefixes require at least 6 hexadecimal characters")
+			}
+		}
+	}
+	return AgentInstance{}, os.ErrNotExist
 }
 func agentStateRoot() (string, error) {
 	root, err := config.StateDir()
@@ -290,10 +392,29 @@ func ReadAgentInstances(directory string) ([]AgentInstance, error) {
 	return rows, nil
 }
 func AgentInstanceStatus(out io.Writer, directory, output string) error {
+	return ListAgentInstances(out, directory, output, true)
+}
+
+func ListAgentInstances(out io.Writer, directory, output string, all bool) error {
+	if output != "table" && output != "json" {
+		return errors.New("agent inventory output must be table or json")
+	}
 	rows, err := ReadAgentInstances(directory)
 	if err != nil {
 		return err
 	}
+	allRows := rows
+	if !all {
+		rows = []AgentInstance{}
+		for _, r := range allRows {
+			if r.State == "running" {
+				rows = append(rows, r)
+			}
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	observeAgentActivity(ctx, rows)
 	if output == "json" {
 		return json.NewEncoder(out).Encode(struct {
 			Environment string          `json:"environment"`
@@ -304,7 +425,11 @@ func AgentInstanceStatus(out io.Writer, directory, output string) error {
 		return errors.New("status output must be table or json")
 	}
 	if len(rows) == 0 {
-		_, err = fmt.Fprintln(out, "No agent instances. Start one with: kmx run FILE.md")
+		message := "No running agents. Use kmx list --all for stopped instances, or kmx run FILE.md to start one."
+		if all {
+			message = "No agent instances. Start one with: kmx run FILE.md"
+		}
+		_, err = fmt.Fprintln(out, message)
 		return err
 	}
 	cells := [][]string{}
@@ -313,10 +438,142 @@ func AgentInstanceStatus(out io.Writer, directory, output string) error {
 		if model == "" {
 			model = "default"
 		}
-		cells = append(cells, []string{r.Name, r.Type, r.Environment, r.State, r.Provider + " / " + model, mdShort(r.Version), fmt.Sprint(r.Generation), r.Source})
+		activity, session := r.Activity, "unknown"
+		if activity == "" {
+			activity = "—"
+		}
+		if r.SessionCount != nil {
+			session = fmt.Sprint(*r.SessionCount)
+		}
+		cells = append(cells, []string{agentDisplayID(r.ID, allRows), r.Name, r.Type, r.Environment, r.State, activity, session, mdShort(r.Version), r.Provider + "/" + model, agentAge(r.Started, time.Now())})
 	}
-	_, err = fmt.Fprintln(out, cliui.New(out).TableWithRoles([]string{"NAME", "TYPE", "ENVIRONMENT", "STATE", "INFERENCE", "VERSION", "RUN", "SOURCE"}, cells, []cliui.ColumnRole{cliui.ColumnText, cliui.ColumnText, cliui.ColumnText, cliui.ColumnState}))
+	_, err = fmt.Fprintln(out, cliui.New(out).TableWithRoles([]string{"ID", "NAME", "TYPE", "ENVIRONMENT", "STATE", "ACTIVITY", "SESSIONS", "VERSION", "INFERENCE", "AGE"}, cells, []cliui.ColumnRole{cliui.ColumnText, cliui.ColumnText, cliui.ColumnText, cliui.ColumnText, cliui.ColumnState, cliui.ColumnState, cliui.ColumnNumber}))
 	return err
+}
+
+// Age is elapsed wall time since the latest start, not uptime or a version ID.
+func agentAge(start, now time.Time) string {
+	if start.IsZero() {
+		return "unknown"
+	}
+	elapsed := now.Sub(start)
+	if elapsed < 0 {
+		return "clock skew"
+	}
+	if elapsed < time.Minute {
+		return fmt.Sprintf("%ds", int(elapsed.Seconds()))
+	}
+	if elapsed < time.Hour {
+		return fmt.Sprintf("%dm", int(elapsed.Minutes()))
+	}
+	if elapsed < 24*time.Hour {
+		return fmt.Sprintf("%dh%dm", int(elapsed.Hours()), int(elapsed.Minutes())%60)
+	}
+	return fmt.Sprintf("%dd%dh", int(elapsed.Hours())/24, int(elapsed.Hours())%24)
+}
+
+// InspectAgentInstance is source-independent: edits/deletions cannot change the
+// identity and cached instructions of the selected running/stopped instance.
+func InspectAgentInstance(ctx context.Context, out io.Writer, selector, output string) error {
+	if output != "table" && output != "json" {
+		return errors.New("inspect output must be table or json")
+	}
+	r, err := FindAgentInstance(selector)
+	if err != nil {
+		return err
+	}
+	probe, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	rows := []AgentInstance{r}
+	observeAgentActivity(probe, rows)
+	r = rows[0]
+	a, cacheErr := loadAgentVersion(r)
+	if output == "json" {
+		report := struct {
+			AgentInstance
+			Instructions string `json:"instructions,omitempty"`
+			CacheError   string `json:"cacheError,omitempty"`
+		}{AgentInstance: r}
+		if cacheErr != nil {
+			report.CacheError = "cached definition unavailable or corrupt"
+		} else {
+			report.Instructions = a.Instructions
+		}
+		return json.NewEncoder(out).Encode(report)
+	}
+	model := r.Model
+	if model == "" {
+		model = "default"
+	}
+	activity, session := r.Activity, "unknown"
+	if activity == "" {
+		activity = "—"
+	}
+	if r.SessionCount != nil {
+		session = fmt.Sprint(*r.SessionCount)
+	}
+	fields := []cliui.Field{{Label: "ID", Value: r.ID}, {Label: "Name", Value: safeTerminal(r.Name)}, {Label: "Type", Value: r.Type}, {Label: "Environment", Value: r.Environment}, {Label: "State", Value: r.State}, {Label: "Activity", Value: activity}, {Label: "Open sessions", Value: session}, {Label: "Version", Value: r.Version}, {Label: "Inference", Value: r.Provider + "/" + model}, {Label: "Generation", Value: fmt.Sprint(r.Generation)}, {Label: "Source", Value: safeTerminal(r.Source)}, {Label: "Started", Value: r.Started.Format(time.RFC3339)}}
+	if r.Finished != nil {
+		fields = append(fields, cliui.Field{Label: "Stopped", Value: r.Finished.Format(time.RFC3339)})
+	}
+	fields = append(fields, cliui.Field{Label: "Age (since start)", Value: agentAge(r.Started, time.Now())})
+	if r.Reason != "" {
+		fields = append(fields, cliui.Field{Label: "Reason", Value: safeTerminal(r.Reason)})
+	}
+	ui := cliui.New(out)
+	text := ui.Fields(fields)
+	if cacheErr != nil {
+		text += "\n\nCached definition unavailable or corrupt."
+	} else {
+		text += "\n\n" + ui.Heading("Cached instructions") + "\n" + safeTerminal(a.Instructions)
+	}
+	if len(r.Sessions) > 0 {
+		cells := [][]string{}
+		for _, s := range r.Sessions {
+			activity := s.Activity
+			if activity == "" {
+				activity = "—"
+			}
+			cells = append(cells, []string{s.ID, s.Label, s.State, activity, mdShort(s.Version)})
+		}
+		text += "\n\n" + ui.Heading("Sessions") + "\n" + ui.Table([]string{"SESSION", "LABEL", "STATE", "ACTIVITY", "VERSION"}, cells)
+	}
+	_, err = fmt.Fprintln(out, text)
+	return err
+}
+
+// Activity is a bounded observation, never inferred from a held lease or a PID.
+// Older managers and unreachable providers retain lifecycle but report unknown.
+func observeAgentActivity(ctx context.Context, rows []AgentInstance) {
+	for i := range rows {
+		r := &rows[i]
+		r.Activity, r.Session = "", ""
+		r.SessionCount = nil
+		if r.State != "running" {
+			zero := 0
+			r.SessionCount = &zero
+			for j := range r.Sessions {
+				r.Sessions[j].State = "closed"
+				r.Sessions[j].Activity = ""
+			}
+			continue
+		}
+		r.Sessions = nil
+		r.Activity = "unknown"
+		if r.Manager != localAgentManagerVersion || r.Socket == "" || ctx.Err() != nil {
+			continue
+		}
+		reply, err := agentWorkerCall(ctx, *r, "observe", "")
+		if err != nil || !reply.Ready || (reply.Activity != "idle" && reply.Activity != "responding" && reply.Activity != "error") {
+			continue
+		}
+		r.Activity, r.Session = reply.Activity, reply.Session
+		if reply.SessionsKnown {
+			r.Sessions = reply.Sessions
+			count := len(reply.Sessions)
+			r.SessionCount = &count
+		}
+	}
 }
 
 func agentInstanceInventory(directory string) ([]agentTUIAgent, error) {
@@ -328,6 +585,7 @@ func agentInstanceInventory(directory string) ([]agentTUIAgent, error) {
 	for _, r := range instances {
 		row := agentTUIAgent{Name: r.Name, Runtime: r.Type, Ready: r.State, Version: mdShort(r.Version), DefinitionPath: r.Source, TestsPath: MarkdownTestsPath(r.Source), Provider: r.Provider, Model: mdModelLabel(r.Model), PromptSource: "cached version " + r.Version, TestStatus: r.State + " · " + mdShort(r.Version)}
 		root, e := agentStateRoot()
+		row.InstanceID = r.ID
 		if e != nil {
 			return nil, e
 		}

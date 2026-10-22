@@ -37,11 +37,20 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 			cmd.Flags().AddFlag(local.Flags().Lookup(name))
 		}
 	}
+	if cmd.Flags().Lookup("output") == nil {
+		cmd.Flags().AddFlag(local.Flags().Lookup("output"))
+	}
 	if operation != "init" && cmd.Flags().Lookup("model") == nil {
 		cmd.Flags().AddFlag(local.Flags().Lookup("model"))
 	}
 	if operation == "run" {
 		cmd.Flags().AddFlag(local.Flags().Lookup("interactive"))
+	}
+	if operation == "chat" {
+		cmd.Flags().AddFlag(local.Flags().Lookup("new"))
+		cmd.Flags().AddFlag(local.Flags().Lookup("label"))
+		cmd.Flags().Lookup("session").Hidden = false
+		cmd.Flags().Lookup("session").Usage = "resume a local md conversation by session ID"
 	}
 	originalArgs, originalRun := cmd.Args, cmd.RunE
 	var selectionError error
@@ -141,6 +150,20 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 					return errors.New("provide only one of --prompt or --prompt-file")
 				}
 			}
+			if operation == "chat" {
+				fresh, _ := cmd.Flags().GetBool("new")
+				sid, _ := cmd.Flags().GetString("session")
+				label, _ := cmd.Flags().GetString("label")
+				if fresh && sid != "" {
+					return errors.New("--new and --session are mutually exclusive")
+				}
+				if cmd.Flags().Changed("session") && strings.TrimSpace(sid) == "" {
+					return errors.New("--session requires an ID")
+				}
+				if label != "" && !fresh {
+					return errors.New("--label requires --new")
+				}
+			}
 			_, err := localArgs(cmd, args)
 			return err
 		}
@@ -149,11 +172,17 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 				return fmt.Errorf("--%s requires --type md", name)
 			}
 		}
+		if operation == "chat" && (cmd.Flags().Changed("new") || cmd.Flags().Changed("label")) {
+			return errors.New("--new/--label require a local md agent")
+		}
 		if operation != "init" && cmd.Flags().Changed("model") {
 			return errors.New("--model requires --type md")
 		}
 		if operation == "run" && cmd.Flags().Changed("interactive") {
 			return errors.New("--interactive currently requires --type md")
+		}
+		if cmd.Flags().Changed("output") && operation != "show" {
+			return errors.New("structured output on this route requires a local md agent")
 		}
 		if originalArgs != nil {
 			return originalArgs(cmd, args)
@@ -177,6 +206,22 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 			}
 		}
 		// Shared prompt flags are owned by the existing root Run command.
+		if operation == "chat" && cmd.Flags().Changed("session") {
+			v, _ := cmd.Flags().GetString("session")
+			if err := local.Flags().Set("session", v); err != nil {
+				return err
+			}
+		}
+		if operation == "show" {
+			instance, e := app.FindAgentInstance(args[0])
+			if e == nil {
+				output, _ := cmd.Flags().GetString("output")
+				return app.InspectAgentInstance(cmd.Context(), cmd.OutOrStdout(), instance.ID, output)
+			}
+			if !errors.Is(e, os.ErrNotExist) {
+				return e
+			}
+		}
 		if operation == "run" {
 			for _, name := range []string{"prompt", "prompt-file"} {
 				if cmd.Flags().Changed(name) {
@@ -222,35 +267,53 @@ func newTypedAgentCommand(state *commandState, name, operation string) *cobra.Co
 
 func newInspectAgentCommand(state *commandState) *cobra.Command {
 	cmd := newAgentShowCommand(state)
-	cmd.Use = "inspect NAME_OR_FILE"
+	cmd.Use = "inspect ID_OR_NAME_OR_FILE"
 	addAgentTypeRoute(state, cmd, "show")
 	return cmd
 }
 
 func newListTypedAgentsCommand(state *commandState) *cobra.Command {
 	var kind, directory, namespace string
-	var definitions bool
-	cmd := &cobra.Command{Use: "list", Short: "List agents by type and backing resource", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+	var definitions, all bool
+	var output string
+	cmd := &cobra.Command{Use: "list", Short: "List running agents; --all includes stopped instances", Long: "List tracked local agent instances, not source files. Use --all for stopped instances, --definitions for authoring files, and inspect ID for details. Local status is a compatibility alias of this inventory.", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+		if output != "table" && output != "json" {
+			return errors.New("list output must be table or json")
+		}
+		if cmd.Flags().Changed("directory") && strings.TrimSpace(directory) == "" {
+			return errors.New("--directory requires a directory")
+		}
 		if kind != "" && kind != "md" && kind != "orka" {
 			return errors.New("--type must be md or orka")
 		}
 		if !definitions && kind != "orka" {
-			return app.AgentInstanceStatus(cmd.OutOrStdout(), directory, "table")
+			if state.contextFlag != "" || cmd.Flags().Changed("namespace") || cmd.Flags().Changed("container-engine") {
+				return errors.New("local instance list does not use cluster selectors; use --type orka")
+			}
+			return app.ListAgentInstances(cmd.OutOrStdout(), directory, output, all)
+		}
+		if all {
+			return errors.New("--all applies to local instances, not definitions or Orka listing")
+		}
+		if directory == "" {
+			directory = "."
 		}
 		if kind == "md" {
 			if state.contextFlag != "" || cmd.Flags().Changed("namespace") {
 				return errors.New("md agents are local files; omit cluster selectors")
 			}
-			return app.ListTypedAgents(cmd.Context(), nil, state.deps.stdout, directory, "md", namespace)
+			return app.ListTypedAgentsOutput(cmd.Context(), nil, state.deps.stdout, directory, "md", namespace, output)
 		}
 		a, err := state.application()
 		if err != nil {
 			return err
 		}
-		return app.ListTypedAgents(cmd.Context(), a, state.deps.stdout, directory, kind, namespace)
+		return app.ListTypedAgentsOutput(cmd.Context(), a, state.deps.stdout, directory, kind, namespace, output)
 	}}
 	cmd.Flags().StringVar(&kind, "type", "", "filter agent type: md or orka")
-	cmd.Flags().StringVar(&directory, "directory", ".", "filter source directory")
+	cmd.Flags().StringVar(&directory, "directory", "", "filter instance source directory; definitions default to current directory")
+	cmd.Flags().BoolVarP(&all, "all", "a", false, "include stopped local instances")
+	cmd.Flags().StringVarP(&output, "output", "o", "table", "output: table|json (local instances)")
 	cmd.Flags().BoolVar(&definitions, "definitions", false, "list source definitions rather than tracked instances")
 	cmd.Flags().StringVar(&namespace, "namespace", app.OrkaNamespace, "Orka namespace")
 	_ = cmd.RegisterFlagCompletionFunc("type", staticCompletion([]string{"md", "orka"}))
@@ -274,14 +337,23 @@ func newInfoCommand(state *commandState) *cobra.Command {
 }
 
 func newStopAgentCommand(state *commandState) *cobra.Command {
-	return &cobra.Command{Use: "stop NAME_OR_ID", Short: "Stop a background local agent", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	var output string
+	cmd := &cobra.Command{Use: "stop NAME_OR_ID", Short: "Stop a background local agent", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if output != "text" && output != "json" {
+			return errors.New("output must be text, json or yaml")
+		}
 		if state.contextFlag != "" || cmd.Flags().Changed("container-engine") {
 			return errors.New("stop selects a local background instance, not a cluster")
 		}
 		if err := app.StopAgentInstance(cmd.Context(), args[0]); err != nil {
 			return err
 		}
+		if output == "json" {
+			return app.InspectAgentInstance(cmd.Context(), cmd.OutOrStdout(), args[0], "json")
+		}
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), "Stopped", args[0])
 		return err
 	}}
+	cmd.Flags().StringVarP(&output, "output", "o", "text", "output: text|json|yaml")
+	return cmd
 }

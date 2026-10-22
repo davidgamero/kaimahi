@@ -46,21 +46,38 @@ type MarkdownTestResult struct {
 	Cases         []MarkdownCaseResult `json:"cases"`
 }
 type MarkdownSession struct {
-	InitialTest     bool
-	Out, Err        io.Writer
-	Provider, Model string
-	executor        markdownExecutor
-	runtime         string
-	instance        *agentLease
-	frozen          *MarkdownAgent
-	ownedManaged    string
+	InitialTest         bool
+	Out, Err            io.Writer
+	Provider, Model     string
+	executor            markdownExecutor
+	runtime             string
+	instance            *agentLease
+	frozen              *MarkdownAgent
+	ownedManaged        string
+	SelectedSession     string
+	NewSession          bool
+	SessionLabel        string
+	conversationDisplay string // UI-owned identity; executor may be busy in a worker
 }
 
 func NewMarkdownSession(out, err io.Writer) *MarkdownSession {
 	return &MarkdownSession{Out: out, Err: err, executor: &markdownCopilot{}}
 }
 func (s *MarkdownSession) Close() { s.executor.Close(); s.finishInstance(nil) }
-func (s *MarkdownSession) Reset() { s.executor.Reset(); s.finishInstance(nil) }
+func (s *MarkdownSession) Reset() { s.executor.Reset(); s.finishInstance(nil) } // lifecycle cleanup/reload, not conversation reset
+func (s *MarkdownSession) ResetConversation(ctx context.Context) error {
+	if e, ok := s.executor.(*attachedAgentExecutor); ok {
+		return e.selectSession(ctx, "", true, "conversation")
+	}
+	s.executor.Reset()
+	return nil
+}
+func (s *MarkdownSession) conversationLabel() string {
+	if e, ok := s.executor.(*attachedAgentExecutor); ok {
+		return e.session + " (" + e.label + ")"
+	}
+	return ""
+}
 func (s *MarkdownSession) finishInstance(cause error) {
 	if s.ownedManaged != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
@@ -97,6 +114,11 @@ func (s *MarkdownSession) StartAgent(ctx context.Context, a *MarkdownAgent) erro
 		if !alreadyRunning {
 			s.ownedManaged = record.ID
 		}
+		if err := s.executor.(*attachedAgentExecutor).selectSession(ctx, s.SelectedSession, s.NewSession, s.SessionLabel); err != nil {
+			s.finishInstance(err)
+			return err
+		}
+		s.NewSession = false
 		return nil
 	}
 	if len(a.Tools) > 0 {
@@ -459,6 +481,9 @@ func (s *MarkdownSession) Chat(ctx context.Context, a *MarkdownAgent, in io.Read
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 4096), markdownAgentLimit)
 	fmt.Fprintln(s.Out, "/show /test [id] /reload /reset /quit")
+	if label := s.conversationLabel(); label != "" {
+		fmt.Fprintln(s.Out, "Session:", label, "· reconnect retains model context; previous transcript is not displayed")
+	}
 	for {
 		fmt.Fprint(s.Out, "\nyou> ")
 		if !scanner.Scan() {
@@ -484,7 +509,11 @@ func (s *MarkdownSession) Chat(ctx context.Context, a *MarkdownAgent, in io.Read
 			s.Reset()
 			fmt.Fprintln(s.Out, "Reloaded", a.PairRevision)
 		case input == "/reset":
-			s.Reset()
+			if err := s.ResetConversation(ctx); err != nil {
+				fmt.Fprintln(s.Err, err)
+			} else {
+				fmt.Fprintln(s.Out, "New conversation; agent version and generation unchanged.")
+			}
 		case input == "/test" || strings.HasPrefix(input, "/test "):
 			next, err := LoadMarkdownAgent(a.Path, a.TestsPath)
 			if err != nil {
