@@ -9,6 +9,28 @@ changes in the package's Go doc comment.
 
 ## Command consistency
 
+- Experimental `--type md` adds persistent Copilot-native agents with YAML front
+  matter and paired tests, alongside the canonical Squad charter preview. Root
+  Run/Test dispatch canonical `# Name` charters to the upstream preview path;
+  explicit `--type md` selects the native-header instance path. Preserve shared
+  MCP/charter execution, model-access auth and the test/eval alias contracts.
+  The SDK-managed Copilot CLI route uses its own installed CLI authentication;
+  it is separate from modelaccess direct inference and does not consume its tokens.
+- Local list/status show instances (running by default, --all includes stopped),
+  short IDs, lifecycle/activity, sessions, inference and age. Inspect reads cached
+  definition/identity; source discovery is explicit with --definitions. Chat/new/
+  selected conversations share one local manager/provider, with per-session turns.
+  Run --update replaces a frozen version after consent; same-version is a no-op.
+  rm removes stopped records (force stops first), retaining cache/source and private
+  generation bookkeeping. Completion is bounded local record/lease inspection.
+- Import missing front matter defaults to one new-file confirmation with inferred
+  fields; optional field editing and original replacement are explicit. Bare kmx
+  prints help; console is explicit. Source, cache, test and runtime authority stay
+  separate. Markdown deploy/lift converts text-only definitions/cases to native
+  Orka source and uses the existing evaluated publication/Deploy pipeline; no
+  local-preview result grants deployment authority. JSON-capable reports may be
+  rendered as YAML by the bounded presentation adapter.
+
 - `model list [-o table|json]` defaults to config-free bounded local discovery.
   Explicit `--provider copilot` lists available Chat/Responses routes without
   starting sign-in. `model login` uses GitHub device flow; `--gh` explicitly

@@ -32,7 +32,7 @@ func newSuiteMapCommand(state *commandState) *cobra.Command {
 		if output == "json" {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(report)
 		}
-		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Mapped %s → %s\nDefinition: %s\nTests: %s\nRuntime: orka · model: %s · cases: %d\n\nNative evaluation required; local Copilot results do not authorize deployment.\nNext: %s eval --workspace %s --to-context <evaluation-context> --inference provider:<name> --out <new-private-receipt.json>\n", report.Source, report.Workspace, report.AgentDigest, report.TestsDigest, report.DeploymentModel, report.Cases, state.executable(), quoteShell(report.Workspace))
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Mapped %s → %s\nDefinition: %s\nTests: %s\nRuntime: orka · model: %s · cases: %d\n\nNative evaluation required; local Copilot results do not authorize deployment.\nNext: %s test --workspace %s --to-context <evaluation-context> --inference provider:<name> --out <new-private-receipt.json>\n", report.Source, report.Workspace, report.AgentDigest, report.TestsDigest, report.DeploymentModel, report.Cases, state.executable(), quoteShell(report.Workspace))
 		return err
 	}}
 	cmd.Flags().StringVar(&destination, "workspace", "", "destination native workspace directory (required)")

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,7 +62,7 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 		cmd.Flags().Lookup("session").Hidden = false
 		cmd.Flags().Lookup("session").Usage = "resume a local md conversation by session ID"
 	}
-	originalArgs, originalRun := cmd.Args, cmd.RunE
+	originalArgs, originalRun, originalPreRun := cmd.Args, cmd.RunE, cmd.PreRunE
 	var selectionError error
 	selected := func(cmd *cobra.Command, args []string) bool {
 		selectionError = nil
@@ -72,6 +73,9 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 			return false
 		}
 		if len(args) > 0 && strings.HasSuffix(args[0], ".md") {
+			if (operation == "run" || operation == "test") && isCanonicalCharter(args[0]) {
+				return false
+			}
 			return true
 		}
 		value, _ := cmd.Flags().GetString("agent")
@@ -83,6 +87,9 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 		}
 		if len(args) > 0 {
 			value = args[0]
+		}
+		if operation == "test" && len(args) == 1 && value != "" {
+			return true
 		}
 		if value == "" {
 			return false
@@ -176,7 +183,13 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 			_, err := localArgs(cmd, args)
 			return err
 		}
-		for _, name := range []string{"tests", "provider", "directory"} {
+		if operation == "test" || (operation == "run" && len(args) == 1 && isCanonicalCharter(args[0])) {
+			if originalArgs != nil {
+				return originalArgs(cmd, args)
+			}
+			return nil
+		}
+		for _, name := range []string{"tests", "directory"} {
 			if cmd.Flags().Changed(name) {
 				return fmt.Errorf("--%s requires --type md", name)
 			}
@@ -198,12 +211,31 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 		}
 		return nil
 	}
+	cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
+		if selected(cmd, args) {
+			if selectionError != nil {
+				return selectionError
+			}
+			return nil
+		}
+		if originalPreRun != nil {
+			return originalPreRun(cmd, args)
+		}
+		return nil
+	}
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		if !selected(cmd, args) {
 			return originalRun(cmd, args)
 		}
 		if selectionError != nil {
 			return selectionError
+		}
+		for _, name := range []string{"provider", "model", "case", "show-content"} {
+			if cmd.Flags().Changed(name) && local.Flags().Lookup(name) != nil {
+				if err := local.Flags().Set(name, cmd.Flags().Lookup(name).Value.String()); err != nil {
+					return err
+				}
+			}
 		}
 		resolved, err := localArgs(cmd, args)
 		if err != nil {
@@ -245,6 +277,26 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 	}
 	cmd.Short = strings.ReplaceAll(cmd.Short, "Orka Agent", "agent")
 	cmd.Long += "\n\nRegistered local agent names/IDs and Markdown file paths resolve locally before Orka discovery. Explicit --type or cluster/runtime selectors take precedence. Use --type md NAME_OR_FILE for source discovery with --directory DIR."
+}
+
+// Canonical Squad charters retain upstream Run/Test semantics. Copilot-native
+// front matter (or plain instructions to import) uses the explicit md instance path.
+func isCanonicalCharter(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	s := bufio.NewScanner(f)
+	s.Buffer(make([]byte, 1024), 64<<10)
+	if !s.Scan() {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(s.Text()), "# ")
 }
 
 func newTypedAgentCommand(state *commandState, name, operation string) *cobra.Command {

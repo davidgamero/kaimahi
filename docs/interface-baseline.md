@@ -15,6 +15,13 @@ version, with one stderr notice and unchanged legacy output/exit contracts. See
 
 ## Installed command tree
 
+The experimental Copilot-native instance extension adds root list/inspect/info/
+settings/import/stop/rm and --type md dispatch on create/run/chat/test. These use
+native YAML front matter and companion tests, while canonical Squad charters keep
+the upstream preview path. Suite map and Markdown deploy/lift reuse native Orka
+packaging and evaluation gates. Bare kmx remains help. See the
+[spike guide](copilot-inference.md#markdown-agent-spike-unreleased).
+
 Visible product commands:
 
 ```text
