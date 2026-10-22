@@ -36,6 +36,15 @@ type mdProgress struct {
 }
 type mdEditorDone struct{ err error }
 type mdConversationReset struct{ err error }
+type mdUpdatePlanned struct {
+	plan MarkdownUpdatePlan
+	err  error
+}
+type mdUpdateApplied struct {
+	session *MarkdownSession
+	agent   *MarkdownAgent
+	err     error
+}
 type mdRuntimeProgress struct {
 	generation int
 	text       string
@@ -63,6 +72,7 @@ type markdownTUI struct {
 	testPane                 bool
 	fullWidth                int
 	instanceRunning          bool
+	updatePlan               *MarkdownUpdatePlan
 }
 
 func mdPollCmd() tea.Cmd {
@@ -223,7 +233,7 @@ func (m *markdownTUI) localCommand(input string) tea.Cmd {
 		}
 		return tea.Quit
 	case "/help":
-		m.note("COMMANDS", "/show /test [id] /tests /reload /reset /edit /edit-tests /diff /auto-test on|off /settings /cancel /quit")
+		m.note("COMMANDS", "/show /test [id] /tests /reload /update [yes|cancel] /reset /edit /edit-tests /diff /auto-test on|off /settings /cancel /quit")
 	case "/cancel":
 		if m.stopJob != nil {
 			m.stopJob()
@@ -258,6 +268,57 @@ func (m *markdownTUI) localCommand(input string) tea.Cmd {
 		m.session.Reset()
 		m.instanceRunning = false
 		m.note("RELOADED", m.loaded.PairRevision+" · new conversation; earlier messages belong to the old revision")
+	case "/update":
+		if m.busy {
+			m.note("BUSY", "Finish or cancel the current job before updating.")
+			break
+		}
+		if arg == "cancel" {
+			m.updatePlan = nil
+			m.note("UPDATE", "Cancelled; running version unchanged.")
+			break
+		}
+		if arg == "yes" {
+			if m.updatePlan == nil {
+				m.note("UPDATE", "Use /update first to review the replacement.")
+				break
+			}
+			plan := *m.updatePlan
+			m.updatePlan = nil
+			m.busy = true
+			m.workers.Add(1)
+			ctx := m.ctx
+			return func() tea.Msg {
+				defer m.workers.Done()
+				worker := NewMarkdownSession(io.Discard, io.Discard)
+				worker.Provider = "copilot"
+				r, err := worker.ApplyAgentUpdate(ctx, plan)
+				if err != nil {
+					return mdUpdateApplied{err: err}
+				}
+				s, a, err := NewSelectedAgentSession(ctx, r.ID, "", false, "", io.Discard, io.Discard)
+				return mdUpdateApplied{session: s, agent: a, err: err}
+			}
+		}
+		if arg != "" {
+			m.note("UPDATE", "Use /update, /update yes or /update cancel.")
+			break
+		}
+		m.busy = true
+		m.workers.Add(1)
+		path, tests := m.loaded.Path, m.loaded.TestsPath
+		ctx := m.ctx
+		return func() tea.Msg {
+			defer m.workers.Done()
+			a, err := LoadMarkdownAgent(path, tests)
+			if err != nil {
+				return mdUpdatePlanned{err: err}
+			}
+			worker := NewMarkdownSession(io.Discard, io.Discard)
+			worker.Provider = "copilot"
+			p, err := worker.PlanAgentUpdate(ctx, a)
+			return mdUpdatePlanned{plan: p, err: err}
+		}
 	case "/reset":
 		if !m.busy {
 			m.busy = true
@@ -344,6 +405,41 @@ func mdCaseDetails(a *MarkdownAgent, r MarkdownCaseResult) string {
 }
 func (m markdownTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
+	case mdUpdatePlanned:
+		m.busy = false
+		if v.err != nil {
+			m.note("UPDATE", v.err.Error())
+		} else if v.plan.Noop {
+			m.note("UPDATE", "Already running this version; no sessions changed.")
+		} else {
+			m.updatePlan = &v.plan
+			var text strings.Builder
+			_ = ConfirmAgentUpdate(m.ctx, &text, nil, v.plan, true)
+			m.note("UPDATE PLAN", text.String()+"\n/update yes applies; /update cancel leaves it unchanged.")
+		}
+		m.refreshHeader()
+		return m, nil
+	case mdUpdateApplied:
+		m.busy = false
+		if v.err != nil {
+			m.note("UPDATE", v.err.Error())
+			return m, nil
+		}
+		// The manager has already replaced the old generation. Never let cleanup
+		// of the former foreground owner stop this new instance by the same ID.
+		m.session.ownedManaged = ""
+		m.session.executor.Close()
+		m.session.executor = v.session.executor
+		m.session.Model = v.session.Model
+		m.session.conversationDisplay = m.session.conversationLabel()
+		m.loaded, m.disk = v.agent, v.agent
+		m.diskErr = nil
+		m.instanceRunning = true
+		m.result = nil
+		m.lastTested = nil
+		m.note("UPDATED", "New version "+mdShort(v.agent.Revision)+" · fresh session. Earlier messages belong to the previous version.")
+		m.refreshHeader()
+		return m, nil
 	case mdConversationReset:
 		m.busy = false
 		m.session.conversationDisplay = m.session.conversationLabel()
@@ -441,8 +537,12 @@ func (m markdownTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		if v.String() == "ctrl+c" {
 			if m.busy {
-				m.stopJob()
-				m.note("CANCEL", "Cancelling current operation…")
+				if m.stopJob != nil {
+					m.stopJob()
+					m.note("CANCEL", "Cancelling current operation…")
+				} else {
+					m.note("BUSY", "Finishing the current lifecycle operation; its result will be reported.")
+				}
 				return m, nil
 			}
 			return m, tea.Quit
@@ -511,7 +611,7 @@ func (s *MarkdownSession) ChatTUI(ctx context.Context, a *MarkdownAgent, in *os.
 	defer cancel()
 	timeline := newChatTimeline(a.Name, "local", "", false)
 	timeline.commands = []slashCommand{}
-	for _, name := range []string{"/show", "/test", "/tests", "/edit", "/edit-tests", "/reload", "/reset", "/diff", "/auto-test", "/settings", "/cancel", "/quit"} {
+	for _, name := range []string{"/show", "/test", "/tests", "/edit", "/edit-tests", "/reload", "/update", "/reset", "/diff", "/auto-test", "/settings", "/cancel", "/quit"} {
 		timeline.commands = append(timeline.commands, slashCommand{name: name, usage: name})
 	}
 	timeline.ctx = ctx

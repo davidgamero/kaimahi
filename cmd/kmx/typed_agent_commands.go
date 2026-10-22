@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -29,6 +30,12 @@ func markdownOperation(state *commandState, name string) *cobra.Command {
 // discovery unless the caller explicitly selects a cluster/runtime.
 func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string) {
 	local := markdownOperation(state, operation)
+	if operation != "init" {
+		cmd.ValidArgsFunction = completeTypedAgents
+	}
+	if operation == "run" {
+		_ = cmd.RegisterFlagCompletionFunc("agent", completeTypedAgents)
+	}
 	var kind string
 	cmd.Flags().StringVar(&kind, "type", "", "agent type: md or orka (a .agent.md path selects md)")
 	_ = cmd.RegisterFlagCompletionFunc("type", staticCompletion([]string{"md", "orka"}))
@@ -45,6 +52,8 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 	}
 	if operation == "run" {
 		cmd.Flags().AddFlag(local.Flags().Lookup("interactive"))
+		cmd.Flags().AddFlag(local.Flags().Lookup("update"))
+		cmd.Flags().AddFlag(local.Flags().Lookup("yes"))
 	}
 	if operation == "chat" {
 		cmd.Flags().AddFlag(local.Flags().Lookup("new"))
@@ -178,8 +187,8 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 		if operation != "init" && cmd.Flags().Changed("model") {
 			return errors.New("--model requires --type md")
 		}
-		if operation == "run" && cmd.Flags().Changed("interactive") {
-			return errors.New("--interactive currently requires --type md")
+		if operation == "run" && (cmd.Flags().Changed("interactive") || cmd.Flags().Changed("update") || cmd.Flags().Changed("yes")) {
+			return errors.New("--interactive/--update/--yes currently require an md agent")
 		}
 		if cmd.Flags().Changed("output") && operation != "show" {
 			return errors.New("structured output on this route requires a local md agent")
@@ -354,6 +363,32 @@ func newStopAgentCommand(state *commandState) *cobra.Command {
 		_, err := fmt.Fprintln(cmd.OutOrStdout(), "Stopped", args[0])
 		return err
 	}}
+	cmd.Flags().StringVarP(&output, "output", "o", "text", "output: text|json|yaml")
+	cmd.ValidArgsFunction = completeTypedAgents
+	return cmd
+}
+
+func newRemoveAgentCommand(state *commandState) *cobra.Command {
+	var force bool
+	var output string
+	cmd := &cobra.Command{Use: "rm NAME_OR_ID", Short: "Remove a stopped local agent instance", Long: "Remove a local instance from inventory. --force stops a running background instance first. Source definitions, cached versions and test history are preserved. Private generation bookkeeping prevents stale clients targeting a later instance.", Args: cobra.ExactArgs(1), ValidArgsFunction: completeTypedAgents, RunE: func(cmd *cobra.Command, args []string) error {
+		if state.contextFlag != "" || cmd.Flags().Changed("container-engine") {
+			return errors.New("rm selects local instances, not cluster resources")
+		}
+		if output != "text" && output != "json" {
+			return errors.New("output must be text, json or yaml")
+		}
+		r, err := app.RemoveAgentInstance(cmd.Context(), args[0], force)
+		if err != nil {
+			return err
+		}
+		if output == "json" {
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"id": r.ID, "name": r.Name, "state": "removed"})
+		}
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Removed %s (%s)\n", r.Name, app.ShortAgentID(r.ID))
+		return err
+	}}
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "stop a running instance before removing it")
 	cmd.Flags().StringVarP(&output, "output", "o", "text", "output: text|json|yaml")
 	return cmd
 }

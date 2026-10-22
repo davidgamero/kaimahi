@@ -145,3 +145,17 @@ func TestTypedAgentNamesAndCreationStayOffline(t *testing.T) {
 		t.Fatal("local typed route loaded cluster settings")
 	}
 }
+
+func TestMarkdownUpdateHintIncludesQuotedCommand(t *testing.T) {
+	state := &commandState{deps: productionDependencies()}
+	state.deps.executable = "/path with spaces/kmx"
+	cmd := markdownOperation(state, "run")
+	if err := cmd.ParseFlags([]string{"--model", "model-v2", "--tests", "/my tests/cases.md"}); err != nil {
+		t.Fatal(err)
+	}
+	err := markdownUpdateHint(state, cmd, "/my agents/frog.agent.md", fmt.Errorf("changed"))
+	want := "'/path with spaces/kmx' run '/my agents/frog.agent.md' --update --tests '/my tests/cases.md' --model model-v2"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("missing command: %v", err)
+	}
+}

@@ -262,8 +262,14 @@ func markdownOperations(state *commandState) *cobra.Command {
 	chat.Flags().StringVar(&label, "label", "", "label for a new conversation (requires --new)")
 	group.AddCommand(chat)
 	var prompt, promptFile string
-	var interactive bool
+	var interactive, update, yes bool
 	run := &cobra.Command{Use: "run FILE", Short: "Ask an agent one question through Copilot", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if yes && !update {
+			return errors.New("--yes requires --update")
+		}
+		if update && (cmd.Flags().Changed("prompt") || cmd.Flags().Changed("prompt-file")) {
+			return errors.New("--update uses -i for chat; run one-shot prompts separately")
+		}
 		if interactive && structured(cmd) {
 			return errors.New("-i cannot be combined with structured output")
 		}
@@ -282,6 +288,48 @@ func markdownOperations(state *commandState) *cobra.Command {
 		}
 		s := session()
 		defer s.Close()
+		if update {
+			plan, err := s.PlanAgentUpdate(cmd.Context(), a)
+			if err != nil {
+				return err
+			}
+			if !plan.Noop {
+				if term.IsTerminal(int(input.Fd())) && !yes {
+					err = withInput(cmd, func(ctx context.Context, r io.Reader) error {
+						return app.ConfirmAgentUpdate(ctx, state.deps.stderr, r, plan, false)
+					})
+				} else {
+					err = app.ConfirmAgentUpdate(cmd.Context(), state.deps.stderr, nil, plan, yes)
+				}
+				if err != nil {
+					return err
+				}
+			}
+			r, err := s.ApplyAgentUpdate(cmd.Context(), plan)
+			if err != nil {
+				return err
+			}
+			if interactive {
+				attached, frozen, e := app.NewSelectedAgentSession(cmd.Context(), r.ID, "", !plan.Noop, "", state.deps.stdout, state.deps.stderr)
+				if e != nil {
+					return e
+				}
+				defer attached.Close()
+				if term.IsTerminal(int(input.Fd())) {
+					return attached.ChatTUI(cmd.Context(), frozen, input)
+				}
+				return withInput(cmd, func(ctx context.Context, reader io.Reader) error { return attached.Chat(ctx, frozen, reader) })
+			}
+			if structured(cmd) {
+				return report(cmd, map[string]any{"instance": r, "changed": !plan.Noop})
+			}
+			if plan.Noop {
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "Unchanged: %s already uses %s\nChat: %s chat %s\n", r.Name, r.Version, quoteShell(state.executable()), r.ID)
+			} else {
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "Updated %s (%s) · version %s\nChat: %s chat %s\n", r.Name, app.ShortAgentID(r.ID), r.Version, quoteShell(state.executable()), r.ID)
+			}
+			return err
+		}
 		perform := func(ctx context.Context, reader io.Reader) error {
 			if cmd.Flags().Changed("prompt-file") {
 				if strings.TrimSpace(promptFile) == "" {
@@ -328,12 +376,15 @@ func markdownOperations(state *commandState) *cobra.Command {
 			if !interactive {
 				record, err := s.StartBackgroundAgent(cmd.Context(), a)
 				if err != nil {
+					if errors.Is(err, app.ErrAgentVersionChanged) {
+						return markdownUpdateHint(state, cmd, a.Path, err)
+					}
 					return err
 				}
 				if structured(cmd) {
 					return report(cmd, record)
 				}
-				_, err = fmt.Fprintf(state.deps.stdout, "Started %s (%s) · version %s\nChat: %s chat %s --type md\nStop: %s stop %s\n", record.Name, record.ID, record.Version, state.executable(), record.ID, state.executable(), record.ID)
+				_, err = fmt.Fprintf(state.deps.stdout, "Started %s (%s) · version %s\nStop: %s stop %s\nChat: %s chat %s\n", record.Name, record.ID, record.Version, quoteShell(state.executable()), record.ID, quoteShell(state.executable()), record.ID)
 				return err
 			}
 			if term.IsTerminal(int(input.Fd())) {
@@ -350,6 +401,8 @@ func markdownOperations(state *commandState) *cobra.Command {
 	}}
 	run.Flags().StringVar(&prompt, "prompt", "", "question to ask")
 	run.Flags().BoolVarP(&interactive, "interactive", "i", false, "open foreground chat immediately (default: start a background instance)")
+	run.Flags().BoolVar(&update, "update", false, "replace the running md version and close its conversations after confirmation")
+	run.Flags().BoolVar(&yes, "yes", false, "confirm --update session replacement without prompting")
 	run.Flags().StringVar(&promptFile, "prompt-file", "", "read question from a file, or - for stdin (64 KiB maximum)")
 	group.AddCommand(run)
 	var selected string
@@ -389,4 +442,15 @@ func markdownOperations(state *commandState) *cobra.Command {
 	test.Flags().BoolVar(&showContent, "show-content", false, "print answers alongside check results")
 	group.AddCommand(test)
 	return group
+}
+
+func markdownUpdateHint(state *commandState, cmd *cobra.Command, path string, cause error) error {
+	parts := []string{quoteShell(state.executable()), "run", quoteShell(path), "--update"}
+	for _, flag := range []string{"tests", "provider", "model"} {
+		if cmd.Flags().Changed(flag) {
+			value, _ := cmd.Flags().GetString(flag)
+			parts = append(parts, "--"+flag, quoteShell(value))
+		}
+	}
+	return fmt.Errorf("%w\nUpdate the agent definition with:\n  %s", cause, strings.Join(parts, " "))
 }

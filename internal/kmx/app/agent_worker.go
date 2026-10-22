@@ -24,6 +24,7 @@ type agentWorkerConfig struct {
 	RecordPath string        `json:"recordPath"`
 }
 type agentWorkerRequest struct {
+	NewVersion string `json:"newVersion,omitempty"`
 	Session    string `json:"session,omitempty"`
 	Label      string `json:"label,omitempty"`
 	AgentID    string `json:"agentID,omitempty"`

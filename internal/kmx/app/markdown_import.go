@@ -64,27 +64,60 @@ func ImportMarkdownAgent(ctx context.Context, path string, in io.Reader, out io.
 		}
 		return v, nil
 	}
-	choice, err := ask("No front matter. Import agent? Y/n", "Y")
-	if err != nil {
-		return "", err
-	}
-	if !strings.EqualFold(choice, "y") && !strings.EqualFold(choice, "yes") {
-		return "", errors.New("agent import declined; file unchanged")
-	}
-	name, err = ask("Name", name)
-	if err != nil {
-		return "", err
-	}
-	description, err := ask("Description", strings.ReplaceAll(strings.ReplaceAll(name, "-", " "), "_", " ")+" agent")
-	if err != nil {
-		return "", err
-	}
-	model, err := ask("Model (default uses Copilot selection)", "default")
-	if err != nil {
-		return "", err
-	}
-	if model == "default" {
-		model = ""
+	description := strings.NewReplacer("-", " ", "_", " ").Replace(name) + " agent"
+	model := ""
+	destination := strings.TrimSuffix(path, ".agent.md") + ".imported.agent.md"
+	replace := false
+	for {
+		if _, err = fmt.Fprintf(out, "\nImport agent\n  Name: %s\n  Description: %s\n  Model: %s\n  Tools: none\n  Save new file: %s\n", name, description, mdModelLabel(model), safeTerminal(destination)); err != nil {
+			return "", err
+		}
+		choice, e := ask("[Y] Save new file  [e] Edit fields  [r] Replace original  [n] Cancel", "Y")
+		if e != nil {
+			return "", e
+		}
+		switch strings.ToLower(choice) {
+		case "y", "yes", "new":
+			if !strings.HasSuffix(destination, ".agent.md") {
+				return "", errors.New("new file must end in .agent.md")
+			}
+			if _, err = os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
+				return "", errors.New("new file already exists or is unavailable; choose Edit fields to select another path")
+			}
+		case "e", "edit":
+			name, err = ask("Name", name)
+			if err != nil {
+				return "", err
+			}
+			description, err = ask("Description", description)
+			if err != nil {
+				return "", err
+			}
+			model, err = ask("Model (default uses Copilot selection)", valueOr(model, "default"))
+			if err != nil {
+				return "", err
+			}
+			if model == "default" {
+				model = ""
+			}
+			destination, err = ask("New file", destination)
+			if err != nil {
+				return "", err
+			}
+			continue
+		case "r", "replace":
+			confirm, e := ask("Replace "+safeTerminal(path)+"? y/N", "N")
+			if e != nil {
+				return "", e
+			}
+			if !strings.EqualFold(confirm, "y") && !strings.EqualFold(confirm, "yes") {
+				return "", errors.New("replacement cancelled; original unchanged")
+			}
+			destination, replace = path, true
+		default:
+			return "", errors.New("agent import cancelled; original unchanged")
+		}
+		break
 	}
 	header := struct {
 		Name        string   `yaml:"name"`
@@ -101,39 +134,6 @@ func ImportMarkdownAgent(ctx context.Context, path string, in io.Reader, out io.
 	result = append(result, raw...)
 	if _, err = parseMarkdownAgent(path, result); err != nil {
 		return "", err
-	}
-	if _, err = fmt.Fprintf(out, "\n%s\nTools: none (tools: []). Instructions preserved exactly.\n", front); err != nil {
-		return "", err
-	}
-	choice, err = ask("Save to new file or replace original? new/replace/cancel", "new")
-	if err != nil {
-		return "", err
-	}
-	destination := path
-	replace := false
-	switch strings.ToLower(choice) {
-	case "new":
-		destination, err = ask("New file", strings.TrimSuffix(path, ".agent.md")+".imported.agent.md")
-		if err != nil {
-			return "", err
-		}
-		if !strings.HasSuffix(destination, ".agent.md") {
-			return "", errors.New("new file must end in .agent.md")
-		}
-		if _, err = os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
-			return "", errors.New("new file already exists or is unavailable; choose another name")
-		}
-	case "replace":
-		choice, err = ask("Replace "+safeTerminal(path)+"? y/N", "N")
-		if err != nil {
-			return "", err
-		}
-		if !strings.EqualFold(choice, "y") && !strings.EqualFold(choice, "yes") {
-			return "", errors.New("replacement cancelled; original unchanged")
-		}
-		replace = true
-	default:
-		return "", errors.New("agent import cancelled; original unchanged")
 	}
 	current, err := mdRead(path, markdownAgentLimit)
 	if err != nil || !bytes.Equal(current, raw) {

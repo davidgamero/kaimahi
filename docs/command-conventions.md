@@ -14,8 +14,8 @@ should be named and shaped. Apply them to new commands and to renames.
 Agents share resource-oriented root verbs: `list`, `inspect`, `create`, `run`,
 `chat`, `test` and `validate`, with `--type md|orka` where supported. Markdown is
 an agent type, never a separate command group. `inspect` is the cross-type detail
-verb; existing `orka show` remains compatible. Bare interactive `kmx` opens the
-shared console after local inference setup. See the
+verb; existing `orka show` remains compatible. Bare `kmx` displays help; `kmx console`
+opens the shared console. See the
 [Copilot spike](copilot-inference.md#markdown-agent-spike-unreleased).
 
 ```text
