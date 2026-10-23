@@ -146,6 +146,42 @@ func TestTypedAgentNamesAndCreationStayOffline(t *testing.T) {
 	}
 }
 
+func TestRunAndTestResolveStoppedShortIDToSource(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KMX_HOME", home)
+	t.Setenv("PATH", t.TempDir())
+	root := t.TempDir()
+	var out, diag bytes.Buffer
+	deps, loads := testDependencies(&out, &diag)
+	if err := execute([]string{"create", "identity-test", "--type", "md", "--directory", root}, deps); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, ".github", "agents", "identity-test.agent.md")
+	id := fmt.Sprintf("md-%x", sha256.Sum256([]byte(source)))
+	dir := filepath.Join(home, "agents", "instances", id)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(map[string]any{"schemaVersion": 1, "id": id, "name": "identity-test", "type": "md", "source": source, "version": "sha256:" + strings.Repeat("a", 64), "generation": 1, "state": "stopped"})
+	if err := os.WriteFile(filepath.Join(dir, "instance.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "active.lock"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	short := strings.TrimPrefix(id, "md-")[:12]
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{{[]string{"test", short, "--case", "does-not-exist", "--provider", "copilot"}, "unknown test ID"}, {[]string{"run", short, "--prompt", "", "--provider", "copilot"}, "nonempty prompt"}} {
+		out.Reset()
+		err := execute(tc.args, deps)
+		if err == nil || !strings.Contains(err.Error(), tc.want) || *loads != 0 {
+			t.Fatalf("%v: %v loads=%d", tc.args, err, *loads)
+		}
+	}
+}
+
 func TestMarkdownUpdateHintIncludesQuotedCommand(t *testing.T) {
 	state := &commandState{deps: productionDependencies()}
 	state.deps.executable = "/path with spaces/kmx"

@@ -118,6 +118,12 @@ func markdownOperations(state *commandState) *cobra.Command {
 			if e := withInput(cmd, func(ctx context.Context, reader io.Reader) error {
 				var e error
 				saved, e = app.ImportMarkdownAgent(ctx, path, reader, state.deps.stderr)
+				if e == nil {
+					e = app.OfferImportedTools(ctx, saved, model, reader, state.deps.stderr)
+					if e != nil {
+						return fmt.Errorf("import saved to %s; tool suggestions failed: %w", saved, e)
+					}
+				}
 				return e
 			}); e != nil {
 				return nil, e
@@ -134,8 +140,14 @@ func markdownOperations(state *commandState) *cobra.Command {
 			return errors.New("import requires an interactive terminal; add front matter explicitly for scripts")
 		}
 		return withInput(cmd, func(ctx context.Context, reader io.Reader) error {
-			_, err := app.ImportMarkdownAgent(ctx, args[0], reader, state.deps.stderr)
-			return err
+			saved, err := app.ImportMarkdownAgent(ctx, args[0], reader, state.deps.stderr)
+			if err != nil {
+				return err
+			}
+			if err = app.OfferImportedTools(ctx, saved, model, reader, state.deps.stderr); err != nil {
+				return fmt.Errorf("import saved to %s; tool suggestions failed: %w", saved, err)
+			}
+			return nil
 		})
 	}})
 	group.AddCommand(&cobra.Command{Use: "show FILE", Short: "Read native instructions and paired tests offline", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {

@@ -53,7 +53,7 @@ func TestLocalAgentIDsCompleteWithoutExternalProbes(t *testing.T) {
 	if err = unix.Flock(int(lease.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		t.Fatal(err)
 	}
-	for _, command := range []string{"stop", "rm", "chat", "inspect", "run"} {
+	for _, command := range []string{"stop", "rm", "chat", "inspect", "run", "test"} {
 		var out, diag bytes.Buffer
 		deps, loads := testDependencies(&out, &diag)
 		if err = execute([]string{"__complete", command, short[:6]}, deps); err != nil {
@@ -80,6 +80,24 @@ func TestLocalAgentIDsCompleteWithoutExternalProbes(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), short) {
 		t.Fatal("rm does not complete stopped instance")
+	}
+	for _, command := range []string{"run", "test"} {
+		out.Reset()
+		if err = execute([]string{"__complete", command, short[:6]}, deps); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), short) {
+			t.Fatalf("%s omitted stopped ID", command)
+		}
+	}
+	for _, command := range []string{"run", "test"} {
+		out.Reset()
+		if err = execute([]string{"__complete", command, "./missing"}, deps); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), ":0") {
+			t.Fatalf("%s did not allow path completion: %s", command, &out)
+		}
 	}
 }
 

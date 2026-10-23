@@ -20,7 +20,7 @@ func newToolsCommand(state *commandState) *cobra.Command {
 		return nil
 	}}
 	var repo, model, output string
-	suggest := &cobra.Command{Use: "suggest FILE", Short: "Ask inference for a proposal from fixed GitHub read templates", Long: "Send the agent definition and a bounded capability catalog to the selected Copilot model. --repo pins the only proposed scope; suggestions cannot execute tools or grant access. Review separately to approve local bindings. No definition files are edited.", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	suggest := &cobra.Command{Use: "suggest FILE", Short: "Suggest up to three scoped CLI tools from agent instructions", Long: "Suggest bounded CLI bindings with fixed arguments and operand limits. Missing scope is reported, never guessed. Review adds selected declarations; tools approve separately grants execution. Optional --repo uses the fixed GitHub-template proposal flow instead.", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		if output != "text" && output != "json" {
 			return errors.New("output must be text, json or yaml")
 		}
@@ -36,13 +36,18 @@ func newToolsCommand(state *commandState) *cobra.Command {
 		for _, choice := range proposal.Choices {
 			fmt.Fprintf(cmd.OutOrStdout(), "  %s — %s\n", choice.Template, choice.Reason)
 		}
+		for _, choice := range proposal.CLIChoices {
+			if err := app.RenderCLIChoice(cmd.OutOrStdout(), choice); err != nil {
+				return err
+			}
+		}
 		for _, gap := range proposal.Gaps {
 			fmt.Fprintln(cmd.OutOrStdout(), "Unsupported need:", gap)
 		}
 		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Review: %s tools review %s\n", quoteShell(state.executable()), proposal.ID)
 		return err
 	}}
-	suggest.Flags().StringVar(&repo, "repo", "", "literal GitHub OWNER/REPO to scope suggestions (required)")
+	suggest.Flags().StringVar(&repo, "repo", "", "optional: use repository-bound GitHub templates instead of general CLI suggestions")
 	suggest.Flags().StringVar(&model, "model", "", "suggestion model override (otherwise definition/default)")
 	suggest.Flags().StringVarP(&output, "output", "o", "text", "output: text|json|yaml")
 	var reviewRepo, reviewOutput string
@@ -57,6 +62,57 @@ func newToolsCommand(state *commandState) *cobra.Command {
 		}
 		p, err := app.ReadMarkdownToolProposal(args[0])
 		if err != nil {
+			return err
+		}
+		if p.SchemaVersion == 2 {
+			if reviewRepo != "" {
+				return errors.New("--repo only applies to GitHub-template proposals")
+			}
+			if !apply {
+				if reviewOutput == "json" {
+					return json.NewEncoder(cmd.OutOrStdout()).Encode(p)
+				}
+				for _, choice := range p.CLIChoices {
+					if err := app.RenderCLIChoice(cmd.OutOrStdout(), choice); err != nil {
+						return err
+					}
+				}
+				_, err = fmt.Fprintln(cmd.OutOrStdout(), "Use --apply --select NAME,... to add declarations; no execution permission is granted.")
+				return err
+			}
+			names, err := app.CLIProposalSelection(p, selected)
+			if err != nil {
+				return err
+			}
+			for _, choice := range p.CLIChoices {
+				if choice.Tool != nil && containsToolName(names, choice.Tool.Name) {
+					if err = app.RenderCLIChoice(cmd.ErrOrStderr(), choice); err != nil {
+						return err
+					}
+				}
+			}
+			if !yes {
+				in := state.deps.stdin
+				if in == nil || !term.IsTerminal(int(in.Fd())) {
+					return errors.New("adding suggested tools requires a terminal or --apply --yes")
+				}
+				fmt.Fprint(cmd.ErrOrStderr(), "Add these declarations to the agent file? [y/N]: ")
+				scanner := bufio.NewScanner(createPromptReader{in})
+				if !scanner.Scan() {
+					return errors.New("review cancelled")
+				}
+				answer := strings.ToLower(strings.TrimSpace(scanner.Text()))
+				if answer != "y" && answer != "yes" {
+					return errors.New("review declined")
+				}
+			}
+			if err = app.AddSuggestedCLITools(cmd.Context(), p, names); err != nil {
+				return err
+			}
+			if reviewOutput == "json" {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"source": p.Source, "added": names, "granted": false})
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Added tool declarations. Review executable resolution before running:\n  %s tools approve %s --apply\n", quoteShell(state.executable()), quoteShell(p.Source))
 			return err
 		}
 		g, err := app.PrepareToolGrant(p, reviewRepo, selected)
@@ -159,4 +215,13 @@ func newToolsCommand(state *commandState) *cobra.Command {
 	approve.Flags().StringVarP(&cliOutput, "output", "o", "text", "output: text|json|yaml")
 	group.AddCommand(suggest, review, approve)
 	return group
+}
+
+func containsToolName(names []string, name string) bool {
+	for _, v := range names {
+		if v == name {
+			return true
+		}
+	}
+	return false
 }

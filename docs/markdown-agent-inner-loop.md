@@ -467,6 +467,13 @@ agent, invoked its mock with Wellington, and passed all three assertions.
 
 ## Proposed: infer and review scoped local tools
 
+The implemented import default is now a general, tool-free inference pass returning
+zero to three scoped CLI binding proposals. It asks no GitHub repository question
+up front; unknown scope blocks the affected proposal pending author clarification.
+Per-tool allow/deny adds declarations, not execution grants. Standalone tools suggest
+uses the same flow; explicit --repo retains the fixed GitHub template proposal mode.
+This supersedes the catalog-only default described in the original design below.
+
 Same-file explicit CLI bindings and compatibility probes are now implemented;
 see [the concrete format and activation flow](copilot-inference.md#same-file-cli-tools-and-compatibility-checks).
 These are user-authored reviewed commands; inference suggestions remain limited

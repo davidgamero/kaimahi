@@ -76,14 +76,14 @@ func completeTypedAgents(cmd *cobra.Command, args []string, prefix string) ([]st
 			clusterSelected = true
 		}
 	}
-	if clusterSelected && kind != "md" && cmd.Name() != "stop" && cmd.Name() != "rm" {
+	if clusterSelected && kind != "md" && cmd.Name() != "stop" && cmd.Name() != "rm" && cmd.Name() != "test" {
 		return completeLiveAgents(cmd, args, prefix)
 	}
 	values, err := app.AgentCompletionCandidates(prefix, cmd.Name() == "chat" || cmd.Name() == "stop")
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	if len(values) == 0 && (cmd.Name() == "run" || cmd.Name() == "inspect") {
+	if len(values) == 0 && (cmd.Name() == "run" || cmd.Name() == "inspect" || cmd.Name() == "test") {
 		return nil, cobra.ShellCompDirectiveDefault
 	}
 	return values, cobra.ShellCompDirectiveNoFileComp
