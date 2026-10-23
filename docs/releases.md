@@ -114,13 +114,22 @@ to publish a binary that does not report its own tag.
 Releases use the root `vX.Y.Z` tag for the repository and CLI. The root is the
 only Go module; no paired module release tag is needed.
 
-Every tag and manual dry run first requires the full read-only Orka worker.
-Its qualified commit must equal the release checkout, including an annotated
-tag's resolved commit. Passing nightly evidence at another SHA is not reused.
+Every tag and manual dry run first requires the full read-only Orka and kagent
+workers, in parallel. Each qualified commit must equal the release checkout,
+including an annotated tag's resolved commit. Passing nightly evidence at another SHA is not reused.
 A failed qualification blocks build, signing and publication, including native
 Copilot plugin assets. Inspect the failure and rerun the failed workflow jobs
 after addressing it; there is no automatic qualification retry or timeout increase.
-The live proof adds its ordinary runtime before release building begins.
+Both full live proofs must finish before release building begins. The hermetic
+kagent PR check is not live qualification and cannot replace either release gate.
+After signing, native Linux and macOS workers verify and configure the exact
+cross-built native plugin archive in an owned temporary directory, then
+install/uninstall/reinstall it in a fresh Copilot CLI profile. Publication waits
+for both workers. These checks do not exercise interactive desktop rendering or
+hosted inference. Dry-run artifacts contain `release-assets/` and
+`release-notes.md` under their common root.
+For Windows Copilot, use the [plain WSL plugin](../plugins/copilot-wsl/README.md):
+install the Linux binary in WSL, then install the plugin from the repository.
 
 ## Install
 
@@ -466,7 +475,8 @@ than the first.
    [GoReleaser](../.goreleaser.yaml), checks that exact artifact set, then
    publishes those same files together as one GitHub release. It refuses to
    publish if: the version is not semantic, the changelog has no section,
-   the built binary does not report the tag, or the checksums do not verify. The
+   the built binary does not report the tag, the checksums do not verify, or
+   either native plugin install check fails. The
    release also carries `kmx.rb`, GoReleaser's rendered formula for those exact checksums
    (`brews.skip_upload: true` keeps it from being pushed to the tap on its own
    — that stays a human's job, next). A failed asset upload can leave a GitHub

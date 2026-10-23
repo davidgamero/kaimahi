@@ -16,10 +16,14 @@ import (
 
 type FilePreviewOptions struct {
 	File, Operation, CaseID string
+	ToolBindings            string
 	Route, JudgeRoute       *modelaccess.Route
 	Input                   *string
 	ShowContent             bool
-	Progress                func(string) error
+	ShowFailedContent       bool
+	// FullPath keeps MCP's requested identity inside the shared redaction boundary.
+	FullPath bool
+	Progress func(string) error
 }
 
 type FilePreviewResult struct {
@@ -69,6 +73,7 @@ type FilePreviewCompletion struct {
 	Reason        string `json:"reason"`
 	AnswerExcerpt string `json:"answerExcerpt,omitempty"`
 	Truncated     bool   `json:"truncated,omitempty"`
+	ToolCalls     int    `json:"toolCalls,omitempty"`
 }
 type FilePreviewExample struct {
 	ID string `json:"id"`
@@ -128,11 +133,14 @@ func previewReason(code string) string {
 		"completion_ready": "Attributable completion available.",
 		"assertion_failed": "Assertion not satisfied.", "judge_unknown": "Assertion outcome is inconclusive.",
 		"not_run": "Execution is not complete.", "cancelled": "Local preview cancelled.", "deadline_exceeded": "Local preview deadline exceeded.",
-		"invalid_file":      "Invalid agent file; use the canonical charter format with required fields and nonempty examples.",
+		"invalid_file":      "Invalid agent file; use the canonical charter format with required fields and an Examples section.",
+		"no_tests":          "No tests yet — add or suggest one",
 		"invalid_selection": "Unknown example ID; select an authored example ID.", "invalid_options": "Invalid file preview options.",
-		"model_unavailable":  "Selected model route is unavailable or does not match the file model; select an exact trusted route.",
-		"runner_unavailable": "Embedded preview runner is not available; no inference was performed.",
-		"execution_failed":   "Local preview execution failed.", "invalid_completion": "Runner returned incomplete or mismatched execution metadata.",
+		"model_unavailable":   "Selected model route is unavailable or does not match the file model; select an exact trusted route.",
+		"tools_unavailable":   "Host-bound local tools are unavailable; Copilot tool support depends on #662.",
+		"unsafe_tool_content": "Unsafe tool preview content was withheld; nothing was journaled.",
+		"runner_unavailable":  "Embedded preview runner is not available; no inference was performed.",
+		"execution_failed":    "Local preview execution failed.", "invalid_completion": "Runner returned incomplete or mismatched execution metadata.",
 		"diagnostics_failed": "Cannot write local preview diagnostics.",
 		"journal_failed":     "Preview journal finalization failed; the result is unknown.",
 	}
@@ -146,7 +154,7 @@ func (a *App) PreviewAgentFile(ctx context.Context, opt FilePreviewOptions) (Fil
 }
 
 // PreviewAgentSnapshot executes a caller-owned parsed snapshot without reopening
-// source files. File is a display label only; rooted callers retain target authority.
+// source files. File is a display label only; callers retain target authority.
 // The caller must obtain parsed from agentfile.Parse/Load and not mutate it while
 // the operation runs. Preview results grant no native evidence/deploy authority.
 func (a *App) PreviewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent, opt FilePreviewOptions) (FilePreviewResult, error) {
@@ -154,8 +162,16 @@ func (a *App) PreviewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 }
 
 func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent, opt FilePreviewOptions, parseErr error) (FilePreviewResult, error) {
+	filePath := suiteDiagnosticIdentity(filepath.Base(opt.File), nil)
+	if opt.FullPath {
+		var safe bool
+		filePath, safe = suiteDiagnosticText(opt.File, len(opt.File), nil)
+		if !safe {
+			filePath = "withheld"
+		}
+	}
 	r := FilePreviewResult{SchemaVersion: 1, Kind: "kmx.agent-file-preview", Operation: opt.Operation,
-		File: FilePreviewIdentity{Path: suiteDiagnosticIdentity(filepath.Base(opt.File), nil)}, Selection: FilePreviewSelection{Scope: "full", CaseIDs: []string{}},
+		File: FilePreviewIdentity{Path: filePath}, Selection: FilePreviewSelection{Scope: "full", CaseIDs: []string{}},
 		State: "refused", Verdict: runtime.EvaluationUnknown, Examples: []FilePreviewExample{}, Retention: FilePreviewRetention{Status: "not_requested"}}
 	fail := func(code string, exit int) (FilePreviewResult, error) {
 		r.FullPass = false
@@ -190,8 +206,9 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 	}
 	r.File.Revision = parsed.Revision
 	r.Selection.TotalCases = len(parsed.Examples)
-	if len(parsed.Examples) == 0 {
-		return fail("invalid_file", 1)
+	// Zero authored examples permit only an explicit ad-hoc Run, never a Test.
+	if len(parsed.Examples) == 0 && opt.Input == nil {
+		return fail("no_tests", 1)
 	}
 	selected := parsed.Examples
 	if opt.CaseID != "" {
@@ -229,6 +246,12 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 	if opt.JudgeRoute != nil {
 		r.JudgeRoute = &FilePreviewRoute{judge.Provider, judge.Model}
 	}
+	if len(parsed.Tools) > 0 && (route.Provider == "copilot" || judge.Provider == "copilot") {
+		return fail("tools_unavailable", 1)
+	}
+	if len(parsed.Tools) == 0 && opt.ToolBindings != "" {
+		return fail("invalid_options", 1)
+	}
 	for _, ex := range selected {
 		r.Selection.CaseIDs = append(r.Selection.CaseIDs, ex.ID)
 		row := FilePreviewExample{ID: ex.ID, FilePreviewCompletion: previewCompletion("not_run", "not_run"), Verdict: runtime.EvaluationUnknown, Assertions: []FilePreviewAssertion{}}
@@ -257,8 +280,20 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 	if a.FileRunner == nil {
 		return fail("runner_unavailable", 1)
 	}
-	request := agentpreview.Request{Agent: parsed, Examples: selected, Route: route, JudgeRoute: opt.JudgeRoute, Input: opt.Input, Progress: opt.Progress}
+	request := agentpreview.Request{Agent: parsed, Examples: selected, Route: route, JudgeRoute: opt.JudgeRoute, Input: opt.Input, Progress: opt.Progress, ToolBindings: opt.ToolBindings, FileLabel: r.File.Path}
 	outcome, cause := a.FileRunner.Run(ctx, request)
+	if errors.Is(cause, agentpreview.ErrUnsafeToolContent) {
+		r.File = FilePreviewIdentity{Path: "[agent file]"}
+		r.ModelRoute = FilePreviewRoute{}
+		r.JudgeRoute = nil
+		r.Selection = FilePreviewSelection{CaseIDs: []string{}}
+		r.Examples = []FilePreviewExample{}
+		r.AdHoc = nil
+		return fail("unsafe_tool_content", 1)
+	}
+	if errors.Is(cause, agentpreview.ErrToolsUnavailable) {
+		return fail("tools_unavailable", 1)
+	}
 	if outcome.NoJournal {
 		r.Runner = "preview runner (no journal)"
 	}
@@ -266,7 +301,7 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 	// judge evidence and raw reasons), answers or journal handles directly.
 	seen := map[string]bool{}
 	validCompletion := func(c agentpreview.Completion) bool {
-		if c.State != agentpreview.Complete || c.ID == "" || seen[c.ID] || c.FileRevision != parsed.Revision || c.Provider != route.Provider || c.Model != route.Model || len(c.Answer) > 256*1024 || !utf8.ValidString(c.Answer) {
+		if c.ToolCalls < 0 || c.ToolCalls > 1 || len(parsed.Tools) == 0 && c.ToolCalls != 0 || c.State != agentpreview.Complete || c.ID == "" || seen[c.ID] || c.FileRevision != parsed.Revision || c.Provider != route.Provider || c.Model != route.Model || len(c.Answer) > 256*1024 || !utf8.ValidString(c.Answer) {
 			return false
 		}
 		seen[c.ID] = true
@@ -309,8 +344,9 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 		if malformed {
 			break
 		}
-		r.Examples[i].FilePreviewCompletion = previewCompleted(row.Completion, opt.ShowContent)
-		r.Examples[i].Verdict = runtime.EvaluationAssertionsVerdict(row.Assertions)
+		verdict := runtime.EvaluationAssertionsVerdict(row.Assertions)
+		r.Examples[i].FilePreviewCompletion = previewCompleted(row.Completion, opt.ShowContent || opt.ShowFailedContent && verdict == runtime.EvaluationFail)
+		r.Examples[i].Verdict = verdict
 		all = append(all, row.Assertions...)
 	}
 	r.State = "error"
@@ -349,6 +385,12 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 		return fail("invalid_completion", 1)
 	}
 	r.State = "complete"
+	if len(selected) == 0 {
+		// An ad-hoc answer is not evidence: no verdict and never a vacuous full pass.
+		r.Verdict, r.FullPass, r.ReasonCode = runtime.EvaluationUnknown, false, "completion_ready"
+		r.Reason = previewReason(r.ReasonCode)
+		return r, nil
+	}
 	r.Verdict = runtime.EvaluationAssertionsVerdict(all)
 	r.ReasonCode = "checks_passed"
 	if r.Verdict == runtime.EvaluationFail {
@@ -369,6 +411,7 @@ func previewCompletion(state, code string) FilePreviewCompletion {
 }
 func previewCompleted(c agentpreview.Completion, show bool) FilePreviewCompletion {
 	row := previewCompletion("complete", "completion_ready")
+	row.ToolCalls = c.ToolCalls
 	if show {
 		row.AnswerExcerpt, _ = suiteDiagnosticText(c.Answer, 4096, nil)
 		full, _ := suiteDiagnosticText(c.Answer, len(c.Answer), nil)

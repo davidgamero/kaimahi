@@ -12,6 +12,8 @@ import threading
 import unittest
 from unittest import mock
 
+import check_install
+
 HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location("copilot_package", HERE / "package.py")
 package = importlib.util.module_from_spec(SPEC)
@@ -54,15 +56,68 @@ class PackageTests(unittest.TestCase):
             self.assertEqual((self.out / "bin/kmx").stat().st_mode & 0o777, 0o700)
         self.assertEqual(list(self.root.iterdir()), [])
 
+    def test_optional_native_program_is_explicit_startup_only(self):
+        squad = self.base / "squad"
+        squad.write_bytes(b"qualified standalone fixture, never executed")
+        self.build(squad_program=squad, squad_release="1.1.0")
+        server = json.loads((self.out / "mcp.json").read_text())["mcpServers"]["kmx-agent-builder"]
+        self.assertEqual(server["args"], ["mcp", "--root", str(self.root.resolve()),
+                                        "--squad-program", str(squad.resolve()), "--squad-release", "1.1.0"])
+        self.assertEqual(check_install.validate_package(self.out, self.digest), self.root.resolve())
+        config = json.loads((self.out / "mcp.json").read_text())
+        startup = config["mcpServers"]["kmx-agent-builder"]
+        base, native = server["args"][:3], server["args"][3:]
+        for extra in (["--provider", "copilot", *native], [*native, "--provider", "copilot"]):
+            startup["args"] = [*base, *extra]
+            (self.out / "mcp.json").write_text(json.dumps(config))
+            self.assertEqual(check_install.validate_package(self.out, self.digest), self.root.resolve())
+        for extra in ([*native, "--provider", "compatible"], [*native, *native]):
+            startup["args"] = [*base, *extra]
+            (self.out / "mcp.json").write_text(json.dumps(config))
+            with self.assertRaises(ValueError):
+                check_install.validate_package(self.out, self.digest)
+        self.assertFalse((self.out / "bin/squad").exists())
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_incomplete_native_config_refuses_before_output(self):
+        for extra in ({"squad_release": "1.1.0"}, {"squad_program": Path("relative/squad")},
+                      {"squad_program": self.engine, "squad_release": "2.0.0"}):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                self.build(**extra)
+            self.assertFalse(self.out.exists())
+
+    def test_shared_sources_are_ordinary_wsl_files(self):
+        shared = HERE.with_name("copilot-wsl")
+        for name in (*package.NATIVE_FILES, *package.SKILL_FILES):
+            with self.subTest(name=name):
+                self.assertEqual(package.asset_source(name), shared / name)
+                self.assertTrue((shared / name).is_file(), name)
+                self.assertFalse((shared / name).is_symlink(), name)
+                self.assertFalse((HERE / name).exists(), name)
+
     def test_native_view_is_bundled_without_tests_or_dependencies(self):
         self.build()
         native = "com.github.copilot/extensions/agent-view"
-        names = {"extension.mjs", "view.mjs", "index.html", "app.js", "style.css"}
+        names = {"extension.mjs", "view.mjs", "open.mjs", "index.html", "app.js", "style.css", "authoring.mjs", "editor.mjs"}
         self.assertEqual({p.name for p in (self.out / native).iterdir()}, names)
         for name in names:
             self.assertEqual((self.out / native / name).read_bytes(),
-                             (HERE / native / name).read_bytes())
+                             package.asset_source(f"{native}/{name}").read_bytes())
         self.assertFalse((self.out / "node_modules").exists())
+
+    def test_both_skills_are_copied_exactly(self):
+        self.build()
+        for name in ("kmx-agent-builder", "kmx"):
+            path = Path("skills") / name / "SKILL.md"
+            self.assertEqual((self.out / path).read_bytes(),
+                             package.asset_source(path.as_posix()).read_bytes())
+
+    def test_native_local_sample_is_copied_without_installer_marker(self):
+        self.build()
+        self.assertEqual((self.out / "samples/release-writer.agent.md").read_bytes(),
+                         (HERE / "samples/release-writer.agent.md").read_bytes())
+        self.assertFalse((self.out / "try-it.json").exists())
+        self.assertEqual(list(self.root.iterdir()), [])
 
     def test_windows_command_is_explicit(self):
         self.build(target="windows/amd64")
@@ -208,7 +263,7 @@ class PackageTests(unittest.TestCase):
         skill = (self.out / "skills/kmx-agent-builder/SKILL.md").read_text()
         for required in ["schemaVersion", "fullPass", "selection.scope", "reasonCode",
                          "not_requested", "assertion", "unknown", "untrusted", "Explain",
-                         "Model", "Examples", "selected root", "Do not"]:
+                         "Model", "Examples", "agent files", "Do not"]:
             self.assertIn(required, skill)
         prose = " ".join(skill.split())
         self.assertIn("full pass only when fullPass is true, state is complete and verdict is pass", prose)
@@ -351,7 +406,14 @@ class ProcessTests(unittest.TestCase):
                                  ("complete", "pass", True))
                 self.assertEqual(passed["file"]["revision"], new_revision)
                 self.assertEqual(passed["modelRoute"], {"provider": "fake", "model": "fake"})
-                self.assertEqual(passed["runner"], "preview runner (no journal)")
+                self.assertNotIn("runner", passed)
+                journals = list((home / "local-preview" / "journals").glob("*.db"))
+                # Run, subset Test and full Test each own one journal. The
+                # packaged fake route must retain content without leaking handles.
+                self.assertEqual(len(journals), 3)
+                self.assertTrue(all(path.stat().st_size > 0 for path in journals))
+                for journal in journals:
+                    self.assertNotIn(journal.name, json.dumps(passed))
                 self.assertEqual(passed["retention"], {"status": "not_requested"})
 
                 # Mutation refusal must not change the bound charter or escape into the cache/cwd.

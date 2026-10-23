@@ -16,6 +16,7 @@ import (
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentfile"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsessions"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/localtools"
 	agentruntime "github.com/kaimahi-agents/kaimahi/internal/kmx/runtime"
 )
 
@@ -41,7 +42,8 @@ type Turn struct {
 
 // Execution is an attributable terminal result of one Turn.
 type Execution struct {
-	Answer string
+	Answer    string
+	ToolCalls int
 	// SessionUID identifies the journaled Session; empty for an Executor that
 	// does not journal.
 	SessionUID string
@@ -60,7 +62,10 @@ type Executor interface {
 // Options configures one preview. JournalDir must be an absolute owner-only
 // directory (normally config.LocalPreviewJournalDir()).
 type Options struct {
-	JournalDir string
+	// resolveRoute is private to the runner adapter's validated modelaccess routes.
+	// Standalone Run/Test retain the shared endpoint validation and canonicalization.
+	resolveRoute func(string, *Endpoint, http.RoundTripper, string) (route, error)
+	JournalDir   string
 	// Endpoint is the agent model's OpenAI-compatible route. It must be nil
 	// when Model.Preferred is fake and is required otherwise.
 	Endpoint *Endpoint
@@ -127,6 +132,9 @@ func prepare(agent *agentfile.Agent, options Options, examples bool) (*prepared,
 	if options.Executor == nil && options.JournalDir == "" {
 		return nil, refuse(RefusedJournal, "no journal directory was selected", "use the kmx local preview journal directory")
 	}
+	if len(agent.Tools) > 0 {
+		return nil, refuse(RefusedTools, "tool declarations require a host-bound file runner", "use file Run/Test with explicit tool bindings")
+	}
 	p := &prepared{agent: agent, options: options, timeout: options.ExampleTimeout}
 	if p.timeout <= 0 {
 		p.timeout = DefaultExampleTimeout
@@ -155,8 +163,12 @@ func prepare(agent *agentfile.Agent, options Options, examples bool) (*prepared,
 			p.cases = append(p.cases, c)
 		}
 	}
+	resolver := options.resolveRoute
+	if resolver == nil {
+		resolver = resolveRoute
+	}
 	var err error
-	if p.route, err = resolveRoute(agent.Model, options.Endpoint, options.Transport, "Model.Preferred"); err != nil {
+	if p.route, err = resolver(agent.Model, options.Endpoint, options.Transport, "Model.Preferred"); err != nil {
 		return nil, err
 	}
 	p.addCredential(p.route.key)
@@ -173,7 +185,7 @@ func prepare(agent *agentfile.Agent, options Options, examples bool) (*prepared,
 	if options.JudgeEndpoint != nil {
 		// An explicit override is a compatible endpoint; the judge model is
 		// each assertion's authored judgeModel, not Model.Preferred.
-		if judgeRoute, err = resolveRoute("", options.JudgeEndpoint, options.Transport, "the judge"); err != nil {
+		if judgeRoute, err = resolver("", options.JudgeEndpoint, options.Transport, "the judge"); err != nil {
 			return nil, err
 		}
 	}
@@ -192,19 +204,22 @@ func (p *prepared) addCredential(key string) {
 	}
 }
 
-// refuseJournalCredentials refuses when any content the journal would retain
-// contains a resolved agent or judge credential (exact value, any length).
+// refuseJournalCredentials refuses when journal content or returned assertion
+// metadata contains a resolved agent or judge credential (exact value, any length).
 // Sessions records the identities, instructions and input when a turn starts,
 // before any reply check runs, so this must precede the journal's creation.
 func (p *prepared) refuseJournalCredentials(examples []agentfile.Example) error {
 	fields := []string{p.agent.Identity.ID, p.agent.Revision, p.route.model, p.agent.Instructions}
 	for _, example := range examples {
 		fields = append(fields, example.ID, example.Input)
+		for _, assertion := range example.Assertions {
+			fields = append(fields, assertion.ID, assertion.Type, assertion.JudgeModel, assertion.JudgeVersion)
+		}
 	}
 	for _, key := range p.credentials {
 		for _, field := range fields {
 			if strings.Contains(field, key) {
-				return refuse(RefusedCredentialContent, "the instructions, an example, the input or the agent identity contains the endpoint or judge credential, so nothing was sent or journaled",
+				return refuse(RefusedCredentialContent, "the instructions, an example, assertion metadata, the input or the agent identity contains the endpoint or judge credential, so nothing was sent or journaled",
 					"remove the credential value; agent files and inputs must never contain secrets")
 			}
 		}
@@ -348,7 +363,8 @@ type journalExecutor struct {
 	slotMu  sync.Mutex
 	current *turnSlot
 	// lock marks the run as executing until Close.
-	lock *runLock
+	lock  *runLock
+	tools bool
 }
 
 type turnSlot struct {
@@ -364,6 +380,20 @@ func openJournalExecutor(dir, model string) (*journalExecutor, string, error) {
 	}
 	e := &journalExecutor{sessions: map[string]bool{}, lock: lock}
 	e.host, err = openHost(path, model, e.model)
+	if err != nil {
+		lock.release()
+		return nil, runID, err
+	}
+	return e, runID, nil
+}
+
+func openToolJournalExecutor(dir, model string, tool controller.ToolFunc) (*journalExecutor, string, error) {
+	runID, path, lock, err := newJournal(dir, time.Now())
+	if err != nil {
+		return nil, "", err
+	}
+	e := &journalExecutor{sessions: map[string]bool{}, lock: lock, tools: true}
+	e.host, err = openPreviewHost(path, localtools.HarnessName, localtools.Harness{Model: model}, e.model, tool)
 	if err != nil {
 		lock.release()
 		return nil, runID, err
@@ -399,10 +429,15 @@ func (e *journalExecutor) Execute(ctx context.Context, turn Turn) (Execution, er
 	slot := &turnSlot{call: turn.Call}
 	e.setSlot(slot)
 	defer e.setSlot(nil)
-	result, err := e.host.client.RunPreviewCase(ctx, agentsessions.PreviewCaseRequest{
+	request := agentsessions.PreviewCaseRequest{
 		Revision: turn.Revision, Agent: turn.AgentID, Example: turn.ExampleID,
 		Instructions: turn.Instructions, Model: turn.Model, Input: turn.Input, UsedSessionUIDs: e.sessions,
-	})
+	}
+	run := e.host.client.RunPreviewCase
+	if e.tools {
+		run = e.host.client.RunToolPreviewCase
+	}
+	result, err := run(ctx, request)
 	execution := Execution{SessionUID: result.SessionUID, Journaled: true}
 	if result.SessionUID != "" {
 		e.sessions[result.SessionUID] = true
@@ -422,6 +457,7 @@ func (e *journalExecutor) Execute(ctx context.Context, turn Turn) (Execution, er
 		return execution, err
 	}
 	execution.Answer = result.Output
+	execution.ToolCalls = result.ToolCalls[localtools.Operation]
 	return execution, nil
 }
 

@@ -97,8 +97,10 @@ Standalone packaged evaluation is unavailable.
 ## Repository layout
 
 Consult the [repository map](repository-map.md) for directory ownership and
-classification. Descendants inherit an owned directory's role; ordinary files
-and nested fixtures need no map entry, while new areas or ownership packages do.
+classification. Descendants inherit an owned directory's role; ordinary files,
+nested fixtures and new packages below `internal/kmx/` need no map entry. Only a
+new root area or immediate child of `cmd/`, `internal/` or `pkg/` does. Package
+behavior lives in the Go package doc comment.
 
 | Path | Responsibility |
 |---|---|
@@ -135,6 +137,24 @@ Tests that read or write KMX state must set `KMX_HOME` to `t.TempDir()`. Do not
 use `XDG_CONFIG_HOME` as the test boundary: Go uses it for the native Linux
 config location, while macOS uses `~/Library/Application Support`. `KMX_HOME`
 is the repository's explicit cross-platform isolation contract.
+
+`internal/kmx/fileaccess` has native Linux and Windows amd64 package tests for
+checked reads, security/identity inspection, protected private first creation,
+process-held locks and no-replace file/directory-flush publication. The package
+keeps opaque handles, repairs/adopts nothing and is unwired from operation
+adapters. `internal/kmx/config` separately exposes explicit creating and
+non-creating private state-root resolution; `StateDir` itself remains a pure
+locator. Windows defaults to machine-local `%LOCALAPPDATA%\kmx`. Windows arm64
+is compiled and vetted, not executed. These tests qualify only low-level local
+NTFS primitives, not the guarded Windows CLI; use WSL for the installed command
+until the later enablement phase lands.
+
+The hosted Windows test context is established by the test-only
+[`windows-tests` launcher](../scripts/ci/windows-tests/main_windows.go), whose
+native contract tests are in
+[`main_windows_test.go`](../scripts/ci/windows-tests/main_windows_test.go). It
+may change only a duplicated child token's default owner and never changes kmx,
+the parent token, accounts, privileges or machine policy.
 
 ```bash
 formatted=$(gofmt -l cmd internal pkg embed.go embed_test.go) && test -z "$formatted" && go vet ./... && go build ./... && go test ./...
@@ -300,18 +320,24 @@ Cloud cleanup has different [ownership rules](aks.md#teardown).
 The workflow emits `hygiene` and `e2e-hello-world` merge gates. The latter
 fail-closed aggregates four retained shards: `e2e-kagent-lift`,
 `e2e-orka-runtime`, `e2e-orka-helm` and `e2e-quickstart`, plus successful
-classification. Only intentional skips are accepted, never failed/cancelled
-shards. Orka runtime proof may skip only an explicitly safe PR or a main push;
-unknown changes and events default to full proof. Required contexts remain
+classification and the independent `kagent-contract` hermetic check. Only intentional skips are accepted, never failed/cancelled
+shards. Orka runtime proof runs for PRs matching the Orka-owned trigger list;
+valid paths outside it skip, as do ordinary main pushes. Unknown, empty or
+malformed diffs still run full proof. Main is re-verified nightly, not per merge. Required contexts remain
 `hygiene` and `e2e-hello-world`, without a ruleset change.
 
 The read-only [Orka worker](../.github/workflows/orka-runtime.yml) runs the same
 complete proof when invoked, including native evaluation, transfer, promotion,
-and pinned-update checks. It has no internal Markdown shortcut. Unrecognized
-Markdown and live instruction fixtures require qualification; root policy docs
-not explicitly listed also run. Its raw check is `e2e-orka-runtime / qualify`.
-Quickstart, stock Helm, kagent and clone-free qualification keep their existing
-routing; this change does not move every Orka-bearing job out of PR CI.
+and pinned-update checks. It has no internal Markdown shortcut. The independent
+`triggers` object in `scripts/ci/orka-routing.json` selects Orka-owned packages,
+command files, CI/build inputs and live fixtures; the generated caller manifest
+alone is exempt. Shared CLI/App/config/packaging and `pkg/kmx/` changes are
+verified by the nightly, not per PR. Its
+hygiene validation remains mandatory. The unchanged init/caller guard selections
+are narrower than all skipped paths, so other skipped changes rely on hygiene
+and nightly integration detection. Its raw check is `e2e-orka-runtime / qualify`.
+Quickstart, stock Helm and clone-free qualification keep their existing routing;
+not every Orka-bearing job is moved out of PR CI.
 
 [Orka nightly](../.github/workflows/orka-nightly.yml) runs the full main proof
 at 03:23 UTC and supports manual qualification after the workflow lands. That
@@ -328,8 +354,36 @@ last completed main nightly is older than 30 hours: an issue reporter cannot
 report a schedule that never started. The first scheduled run remains an
 operational check after merge, not evidence supplied by local fixtures.
 
-Every release/dry run requires a fresh full worker success at the exact built
-commit; no earlier nightly success is reused. The worker is read-only; only the
+### Fast kagent PR coverage and full live qualification
+
+All PRs, including runtime-relevant and unknown diffs, run **kagent contract —
+not live qualification**. The fast check executes the existing hermetic Python
+bootstrap, pinned-profile, fixture request-count, qualifier refusal and mutation
+audit contracts plus suite-lift contract tests. Focused offline Go tests cover
+kagent profile/version fences, evaluation parsing, ownership and drift,
+placement/provenance and refusal paths. These use local fakes/fixtures, not a
+live kagent cluster. All App shards and hygiene checks remain enabled.
+
+Live upstream MCP/A2A (one tool call, two model calls and one terminal answer),
+full packaged evaluation, evaluated push, source-free digest lift and private
+placement helpers run through the unchanged read-only
+[kagent worker](../.github/workflows/kagent-runtime.yml). It runs once in the
+existing 03:23 UTC scheduled CI, on manual CI and before every release/dry run.
+PRs and routine main pushes intentionally skip only that full worker, regardless
+of `kagent_changed`; the fast check must still pass. `e2e-hello-world` always
+evaluates both outcomes and refuses fast-check skips, failures, cancellations,
+missing results or unintended full-worker skips. Required contexts stay the same.
+
+The fast check does **not** qualify live A2A execution, upstream image/bootstrap
+compatibility, readiness, actual suite execution or cluster cleanup. Moving these
+checks delays detection until nightly (normally within 24 hours) or before release.
+Tom watches scheduled CI in Actions; there is no new kagent issue reporter or
+promise that an undispatched schedule can report itself. Manual CI remains the
+way to request immediate full qualification. Nothing changes runtime pins,
+assertions, retries or budgets, and no Helm/Quickstart cluster or image cache is shared.
+
+Every release/dry run requires fresh full **Orka and kagent** worker success at
+the exact built commit; no earlier nightly success is reused. The worker is read-only; only the
 scheduled-main issue reporter has issue-write permission. Reporter errors remain
 visible as workflow failures. Use `gh pr checks --required` for required contexts;
 a green gate does not establish human approval or resolved review threads.

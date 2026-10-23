@@ -68,6 +68,52 @@ func previewFile(t *testing.T) string {
 	return path
 }
 
+func TestFilePreviewFailureOnlyRequiresJoinedFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*agentpreview.ExampleOutcome)
+		want   bool
+		code   string
+	}{
+		{"failed", nil, true, "assertion_failed"},
+		{"passing", func(r *agentpreview.ExampleOutcome) { r.Assertions[0].Verdict = runtime.EvaluationPass }, false, "checks_passed"},
+		{"unknown", func(r *agentpreview.ExampleOutcome) { r.Assertions[0].Verdict = runtime.EvaluationUnknown }, false, "judge_unknown"},
+		{"incomplete", func(r *agentpreview.ExampleOutcome) { r.Completion.State = "" }, false, "invalid_completion"},
+		{"unmatched-case", func(r *agentpreview.ExampleOutcome) { r.ID = "other" }, false, "invalid_completion"},
+		{"unmatched-assertion", func(r *agentpreview.ExampleOutcome) { r.Assertions[0].ID = "other" }, false, "invalid_completion"},
+		{"unmatched-definition", func(r *agentpreview.ExampleOutcome) {
+			r.Assertions[0].DefinitionDigest = "sha256:" + strings.Repeat("0", 64)
+		}, false, "invalid_completion"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &scriptedPreview{verdict: runtime.EvaluationPass, mutate: func(out *agentpreview.Outcome) {
+				row := &out.Examples[1]
+				row.Assertions[0].Verdict = runtime.EvaluationFail
+				row.Completion.Answer = strings.Repeat("x", 4097)
+				if tc.mutate != nil {
+					tc.mutate(row)
+				}
+			}}
+			input := "ad-hoc"
+			r, _ := (&App{FileRunner: fake}).PreviewAgentFile(t.Context(), FilePreviewOptions{File: previewFile(t), Operation: "run", Input: &input, ShowFailedContent: true})
+			if r.ReasonCode != tc.code || fake.calls != 1 {
+				t.Fatalf("result: %+v / sends=%d", r, fake.calls)
+			}
+			if r.Examples[0].AnswerExcerpt != "" || r.AdHoc == nil || r.AdHoc.AnswerExcerpt != "" {
+				t.Fatal("passing or ad-hoc answer disclosed")
+			}
+			row := r.Examples[1]
+			if tc.want {
+				if row.AnswerExcerpt != strings.Repeat("x", 4096) || !row.Truncated {
+					t.Fatal("bounded failure excerpt lost")
+				}
+			} else if row.AnswerExcerpt != "" || row.Truncated {
+				t.Fatal("unvalidated failure answer disclosed")
+			}
+		})
+	}
+}
+
 func TestFilePreviewSelectionAndPrivacy(t *testing.T) {
 	for _, op := range []string{"run", "test"} {
 		for _, subset := range []bool{false, true} {
@@ -219,5 +265,51 @@ func TestFilePreviewAdHocAndJudgeRoute(t *testing.T) {
 	}
 	if result.AdHoc == nil || result.AdHoc.AnswerExcerpt == "" || result.AdHoc.Truncated || strings.Contains(result.AdHoc.AnswerExcerpt, "\x1b") || f.request.Input == nil || *f.request.Input != input || f.request.JudgeRoute == nil || *f.request.JudgeRoute != judge {
 		t.Fatalf("%+v", result)
+	}
+}
+
+func zeroPreviewFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.SplitAfter(string(data), "```yaml\n")[0] + "examples: []\n```\n"
+	if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Zero-test charters are runnable ad hoc but never evaluated or fully green.
+func TestFilePreviewZeroExamples(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opt  func(*FilePreviewOptions)
+		code string
+	}{
+		{"test", func(*FilePreviewOptions) {}, "no_tests"},
+		{"run without input", func(o *FilePreviewOptions) { o.Operation = "run" }, "no_tests"},
+		{"run case", func(o *FilePreviewOptions) { o.Operation = "run"; s := "Ada"; o.Input = &s; o.CaseID = "first" }, "invalid_selection"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &scriptedPreview{verdict: runtime.EvaluationPass}
+			opt := FilePreviewOptions{File: zeroPreviewFile(t, previewFile(t)), Operation: "test"}
+			tc.opt(&opt)
+			result, err := (&App{FileRunner: f}).PreviewAgentFile(context.Background(), opt)
+			var refusal *FilePreviewError
+			if !errors.As(err, &refusal) || refusal.ExitCode() != 1 || result.ReasonCode != tc.code || f.calls != 0 || result.FullPass || result.State != "refused" || result.Verdict != runtime.EvaluationUnknown {
+				t.Fatalf("%+v / %v / calls %d", result, err, f.calls)
+			}
+			if tc.code == "no_tests" && (result.Reason != "No tests yet — add or suggest one" || err.Error() != result.Reason || result.Selection.Scope != "full" || result.Selection.TotalCases != 0 || len(result.Selection.CaseIDs) != 0 || result.File.Revision == "" || len(result.Examples) != 0) {
+				t.Fatalf("no_tests projection: %+v", result)
+			}
+		})
+	}
+	f := &scriptedPreview{verdict: runtime.EvaluationPass}
+	input := "Ada"
+	result, err := (&App{FileRunner: f}).PreviewAgentFile(context.Background(), FilePreviewOptions{File: zeroPreviewFile(t, previewFile(t)), Operation: "run", Input: &input})
+	if err != nil || f.calls != 1 || len(f.request.Examples) != 0 || result.State != "complete" || result.Verdict != runtime.EvaluationUnknown || result.FullPass || result.ReasonCode != "completion_ready" || result.AdHoc == nil || result.AdHoc.State != "complete" || len(result.Examples) != 0 {
+		t.Fatalf("zero-example ad-hoc run: %+v / %v", result, err)
 	}
 }

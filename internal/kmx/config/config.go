@@ -1,5 +1,6 @@
-// Package config resolves kmx settings from CLI overrides, environment variables
-// and the saved context, and locates state and toolchain directories.
+// Package config resolves kmx settings and locates state and toolchain directories.
+// Operational destination selectors are separate from authored suite source.
+// Resolve selectors once and pass copied values through an operation.
 package config
 
 import (
@@ -170,20 +171,12 @@ func (c *Config) KindUnset() []string {
 	return []string{"KIND_EXPERIMENTAL_PROVIDER"}
 }
 
-// StateDir is where kmx keeps its local state and the binaries kmx had to
-// fetch. Without an override it follows os.UserConfigDir: the XDG config home
-// on Linux and Library/Application Support on macOS. KMX_HOME is the explicit
-// cross-platform override for tests and isolated invocations; app packages
-// should use this function rather than interpreting OS-specific variables.
+// StateDir locates, but does not create, kmx's local state directory. KMX_HOME
+// is the explicit cross-platform override for tests and isolated invocations.
+// Native defaults remain platform-owned; Windows uses machine-local
+// LocalAppData rather than roaming profile state.
 func StateDir() (string, error) {
-	if home := strings.TrimSpace(os.Getenv("KMX_HOME")); home != "" {
-		return home, nil
-	}
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot locate a config directory (set KMX_HOME): %w", err)
-	}
-	return filepath.Join(dir, "kmx"), nil
+	return stateDirPath()
 }
 
 func contextFile() (string, error) {
@@ -247,6 +240,16 @@ func LocalPreviewJournalDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "local-preview", "journals"), nil
+}
+
+// LocalAgentVersionDir is the bounded cleartext source history base, separate
+// from preview journals. Resolving its path does not create the directory.
+func LocalAgentVersionDir() (string, error) {
+	dir, err := StateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "local-preview", "versions"), nil
 }
 
 // ReadSelectedContext returns the context chosen by `kmx context use`, or "".

@@ -1,4 +1,5 @@
-// Package agentpreview defines the embedded runner boundary, not an execution engine.
+// Package agentpreview defines the request and outcome contract for agent-file
+// preview runners. It supplies the runner interface, not an execution engine.
 package agentpreview
 
 import (
@@ -23,6 +24,9 @@ type Request struct {
 	JudgeRoute *modelaccess.Route
 	Input      *string
 	Progress   func(string) error
+	// ToolBindings and FileLabel are operator-owned host inputs, never harness config.
+	ToolBindings string
+	FileLabel    string
 }
 
 // Report carries content-free diagnostics; a failed sink stops later execution.
@@ -46,6 +50,8 @@ const (
 )
 
 var (
+	ErrToolsUnavailable  = errors.New("host-bound local tools are unavailable")
+	ErrUnsafeToolContent = errors.New("unsafe tool preview content refused")
 	ErrJournalFailed     = errors.New("preview journal finalization failed")
 	ErrModelUnavailable  = errors.New("preview model unavailable")
 	ErrDiagnosticsFailed = errors.New("preview diagnostic output failed")
@@ -59,6 +65,7 @@ type Completion struct {
 	Provider     string
 	Model        string
 	Answer       string
+	ToolCalls    int
 }
 type ExampleOutcome struct {
 	ID         string

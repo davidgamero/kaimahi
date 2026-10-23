@@ -37,7 +37,7 @@ type dependencies struct {
 
 func productionDependencies() dependencies {
 	return dependencies{
-		fileRunner: app.NewDirectFileRunner(),
+		fileRunner: app.NewLocalFileRunner(),
 		stdin:      os.Stdin, stdout: os.Stdout, stderr: os.Stderr,
 		executable: invocationExecutable(os.Args[0]),
 		loadConfig: config.LoadWithOverrides, newApp: app.New, buildInfo: debug.ReadBuildInfo,
@@ -253,7 +253,7 @@ func newRootCommand(state *commandState) *cobra.Command {
 		newConsoleCommand(state), newOrkaCommand(state),
 		newStatusCommand(state), create, chat, run,
 		test, newAgentEvalCommand(state), newReleaseDeployCommand(state), newReleaseLiftCommand(state), newTaskCommand(state),
-		newSuiteCommand(state), newSuitePushCommand(state, true), newTargetsCommand(state),
+		newSuiteCommand(state), newSuitePushCommand(state, true), newTargetsCommand(state), newRunProfileCommand(state),
 		newListTypedAgentsCommand(state), newInspectAgentCommand(state), newTypedAgentCommand(state, "validate", "validate"), newInfoCommand(state), newStopAgentCommand(state), newRemoveAgentCommand(state), settings,
 		markdownOperation(state, "import"),
 		newToolsCommand(state),

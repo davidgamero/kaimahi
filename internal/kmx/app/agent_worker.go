@@ -4,11 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -47,103 +45,6 @@ type agentWorkerReply struct {
 	Ready         bool               `json:"ready,omitempty"`
 	Answer        string             `json:"answer,omitempty"`
 	Error         string             `json:"error,omitempty"`
-}
-
-// StartBackgroundAgent transfers a held lease to a child of this exact executable.
-// Success is reported only after the child starts Copilot and binds its private socket.
-func (s *MarkdownSession) startLegacyBackgroundAgent(ctx context.Context, a *MarkdownAgent) (AgentInstance, error) {
-	if len(a.Tools) > 0 {
-		return AgentInstance{}, errors.New("ordinary run requires tool-free agents; mocked tools are test-only")
-	}
-	if err := s.checkSelection(a); err != nil {
-		return AgentInstance{}, err
-	}
-	existing, err := FindAgentInstance(a.Path)
-	if err == nil && existing.State == "running" {
-		if existing.Version == a.Revision && existing.Model == s.effective(a).Model && existing.Socket != "" {
-			return existing, nil
-		}
-		return AgentInstance{}, fmt.Errorf("agent %s is already running a different version; run kmx stop %s before updating", a.Name, existing.ID)
-	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return AgentInstance{}, err
-	}
-	lease, _, err := beginAgentInstance(a, s.effective(a).Model)
-	if err != nil {
-		return AgentInstance{}, err
-	}
-	handedOff := false
-	defer func() {
-		if !handedOff {
-			_ = lease.finish(errors.New("worker startup failed"))
-		}
-	}()
-	exe, err := os.Executable()
-	if err != nil {
-		return AgentInstance{}, err
-	}
-	readyRead, readyWrite, err := os.Pipe()
-	if err != nil {
-		return AgentInstance{}, err
-	}
-	defer readyRead.Close()
-	defer readyWrite.Close()
-	command := exec.Command(exe, "__agent-worker")
-	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	command.ExtraFiles = []*os.File{lease.file, readyWrite}
-	input, err := command.StdinPipe()
-	if err != nil {
-		return AgentInstance{}, err
-	}
-	// The worker never inherits the invoking terminal or writes prompts/answers to logs.
-	command.Stdout, command.Stderr = io.Discard, io.Discard
-	if err = command.Start(); err != nil {
-		input.Close()
-		return AgentInstance{}, err
-	}
-	_ = readyWrite.Close()
-	if err = json.NewEncoder(input).Encode(agentWorkerConfig{Record: lease.record, RecordPath: lease.path}); err != nil {
-		input.Close()
-		_ = command.Process.Kill()
-		_ = command.Wait()
-		return AgentInstance{}, err
-	}
-	_ = input.Close()
-	replyCh := make(chan agentWorkerReply, 1)
-	go func() {
-		var reply agentWorkerReply
-		if json.NewDecoder(io.LimitReader(readyRead, 8192)).Decode(&reply) != nil {
-			reply.Error = "agent worker exited before becoming ready"
-		}
-		replyCh <- reply
-	}()
-	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	var reply agentWorkerReply
-	select {
-	case reply = <-replyCh:
-	case <-waitCtx.Done():
-		reply.Error = "agent startup cancelled or timed out"
-	}
-	if !reply.Ready {
-		_ = command.Process.Kill()
-		_ = command.Wait()
-		if reply.Error == "" {
-			reply.Error = "agent worker did not become ready"
-		}
-		return AgentInstance{}, errors.New(reply.Error)
-	}
-	// Close our descriptor without unlocking: the inherited open file description
-	// keeps the lease held in the worker until that process stops.
-	_ = lease.file.Close()
-	lease.file = nil
-	handedOff = true
-	go func() { _ = command.Wait() }()
-	var record AgentInstance
-	if err = mdStateRead(lease.path, &record); err != nil {
-		return AgentInstance{}, err
-	}
-	return record, nil
 }
 
 // RunAgentWorker is an internal child entry point, not a user-facing daemon setup.

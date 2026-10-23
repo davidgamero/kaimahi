@@ -20,7 +20,7 @@ import (
 )
 
 func TestMCPStartupRefusalsAndHelp(t *testing.T) {
-	for _, args := range [][]string{{"mcp"}, {"mcp", "--root", "."}, {"mcp", "--root", t.TempDir(), "--context", "private-context"}, {"mcp", "--root", t.TempDir(), "--container-engine", "docker"}, {"mcp", "--root", t.TempDir(), "--provider", "compatible"}, {"mcp", "--root", t.TempDir(), "--endpoint", "http://private.invalid"}} {
+	for _, args := range [][]string{{"mcp", "--root", ""}, {"mcp", "--root", "."}, {"mcp", "--root", t.TempDir(), "--context", "private-context"}, {"mcp", "--root", t.TempDir(), "--container-engine", "docker"}, {"mcp", "--root", t.TempDir(), "--provider", "compatible"}, {"mcp", "--root", t.TempDir(), "--endpoint", "http://private.invalid"}} {
 		var out, diag bytes.Buffer
 		deps, loads := testDependencies(&out, &diag)
 		if err := execute(args, deps); err == nil {
@@ -39,6 +39,17 @@ func TestMCPStartupRefusalsAndHelp(t *testing.T) {
 		t.Fatal("help is not inert/root explicit")
 	}
 }
+func TestMCPNativeSquadStillRequiresRoot(t *testing.T) {
+	for _, flags := range [][]string{{"--squad-program", "/missing/squad"}, {"--squad-release", "1.1.0"}, {"--squad-program", "/missing/squad", "--squad-release", "1.1.0"}} {
+		var out, diag bytes.Buffer
+		deps, loads := testDependencies(&out, &diag)
+		err := execute(append([]string{"mcp"}, flags...), deps)
+		if err == nil || err.Error() != `required flag(s) "root" not set` || *loads != 0 || out.Len() != 0 {
+			t.Fatalf("native root requirement changed: %v, loads=%d, out=%s", err, *loads, out.String())
+		}
+	}
+}
+
 func TestMCPCommandGracefulCancellation(t *testing.T) {
 	sr, cw, err := os.Pipe()
 	if err != nil {
@@ -78,6 +89,82 @@ func TestMCPCommandGracefulCancellation(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("server did not stop")
+	}
+}
+
+// Initialization and discovery without --root must not execute a model or load
+// cluster settings. One server can then author files in unrelated directories.
+func TestMCPCommandUnboundStartup(t *testing.T) {
+	sr, cw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr, sw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sr.Close()
+	defer cw.Close()
+	defer cr.Close()
+	defer sw.Close()
+	var ignored, diag bytes.Buffer
+	deps, loads := testDependencies(&ignored, &diag)
+	runner := &cliPreviewFake{verdict: runtime.EvaluationPass}
+	deps.stdin, deps.stdout, deps.fileRunner = sr, sw, runner
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cmd := newRootCommand(&commandState{deps: deps})
+	cmd.SetArgs([]string{"mcp"})
+	done := make(chan error, 1)
+	go func() { done <- cmd.ExecuteContext(ctx) }()
+	client := sdk.NewClient(&sdk.Implementation{Name: "unbound-startup-test", Version: "1"}, nil)
+	cs, err := client.Connect(ctx, &sdk.IOTransport{Reader: cr, Writer: cw}, nil)
+	if err != nil {
+		select {
+		case startupErr := <-done:
+			t.Fatalf("unbound startup: %v; connect: %v", startupErr, err)
+		default:
+			t.Fatal(err)
+		}
+	}
+	defer cs.Close()
+	tools, err := cs.ListTools(ctx, nil)
+	if err != nil || len(tools.Tools) != 4 || runner.calls != 0 || *loads != 0 {
+		t.Fatalf("startup effects: tools=%+v, err=%v, calls=%d, loads=%d", tools, err, runner.calls, *loads)
+	}
+	source, err := os.ReadFile(cliPreviewFile(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{filepath.Join(t.TempDir(), "one folder", "Agent café.agent.md"), filepath.Join(t.TempDir(), "greeter.agent.md")} {
+		result, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: "create", Arguments: map[string]any{"schemaVersion": 1, "path": p, "content": string(source)}})
+		if err != nil || result.IsError {
+			t.Fatalf("create: %+v, %v", result, err)
+		}
+		content, err := os.ReadFile(p)
+		if err != nil || !bytes.Equal(content, source) {
+			t.Fatal("unbound create did not save the requested file", err)
+		}
+	}
+	if runner.calls != 0 || *loads != 0 || diag.Len() != 0 {
+		t.Fatalf("authoring effects: calls=%d, loads=%d, diag=%s", runner.calls, *loads, diag.String())
+	}
+	path := filepath.Join(t.TempDir(), "claude.agent.md")
+	claude := bytes.ReplaceAll(source, []byte("**Preferred:** fake"), []byte("**Preferred:** claude-haiku-5.5"))
+	created, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: "create", Arguments: map[string]any{"schemaVersion": 1, "path": path, "content": string(claude)}})
+	if err != nil || created.IsError {
+		t.Fatalf("create Claude agent: %+v, %v", created, err)
+	}
+	for _, operation := range []string{"run", "test"} {
+		result, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: operation, Arguments: map[string]any{"schemaVersion": 1, "path": path}})
+		want := modelaccess.Route{Provider: "copilot", Model: "claude-haiku-5.5", Endpoint: modelaccess.CopilotEndpoint, Auth: "copilot"}
+		if err != nil || result.IsError || runner.request.Route != want || *loads != 0 {
+			t.Fatalf("default MCP route=%+v err=%v config=%d", runner.request.Route, err, *loads)
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -217,7 +304,7 @@ func TestMCPCommandSharedOperationParity(t *testing.T) {
 		}
 	}
 	// Real instruction edit/fail/fix/pass loop over the offline fake model route;
-	// this is not real-model or Sessions execution qualification.
+	// this exercises embedded Sessions, not real-model execution qualification.
 	var previous struct{ File struct{ Revision string } }
 	b, _ := json.Marshal(created.StructuredContent)
 	if err := json.Unmarshal(b, &previous); err != nil {
@@ -242,7 +329,7 @@ func TestMCPCommandSharedOperationParity(t *testing.T) {
 		t.Fatalf("instruction regression hidden: %+v", r)
 	}
 	summary := failed.Content[0].(*sdk.TextContent).Text
-	if !strings.Contains(summary, "greeting") || !strings.Contains(summary, "no journal") || strings.Contains(summary, "PRIVATE OPERAND") || strings.Contains(summary, "different response") || strings.Contains(summary, "schemaVersion") {
+	if !strings.Contains(summary, "greeting") || strings.Contains(summary, "no journal") || strings.Contains(summary, "PRIVATE OPERAND") || strings.Contains(summary, "different response") || strings.Contains(summary, "schemaVersion") {
 		t.Fatalf("failure summary lost or leaked content: %s", summary)
 	}
 	fixed := call("edit", map[string]any{"schemaVersion": 1, "path": "greeter.agent.md", "expectedRevision": changed.File.Revision, "content": string(source)})
@@ -254,7 +341,7 @@ func TestMCPCommandSharedOperationParity(t *testing.T) {
 	if err := json.Unmarshal(b, &r); err != nil {
 		t.Fatal(err)
 	}
-	if passed.IsError || !r.FullPass || r.File.Revision != previous.File.Revision || r.File.Revision == changed.File.Revision || r.Runner != "preview runner (no journal)" {
+	if passed.IsError || !r.FullPass || r.File.Revision != previous.File.Revision || r.File.Revision == changed.File.Revision || r.Runner != "" {
 		t.Fatalf("full pass/revision/runner label lost: %+v", r)
 	}
 	if *loads != 0 || diag.Len() != 0 {

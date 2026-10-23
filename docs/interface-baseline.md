@@ -46,6 +46,8 @@ kmx
 ├── push [reference]
 ├── deploy [<ref>@<digest>]
 ├── run --agent <name>
+├── run-profile
+│   └── export FILE
 ├── chat <name> [message...]
 ├── quickstart
 ├── status
@@ -84,17 +86,18 @@ kmx
 read-only reference extraction/export helpers. Cobra also supplies `help`.
 
 Unreleased `model list` defaults to local discovery; explicit Copilot listing
-uses explicit `COPILOT_GITHUB_TOKEN`, otherwise kmx's keychain item or an existing
-gh login when the keychain is unavailable. It never starts sign-in or saves
+uses explicit `COPILOT_GITHUB_TOKEN`, then an existing gh sign-in without keychain
+setup, then kmx's existing keychain item if gh is unavailable. It never starts sign-in or saves
 runtime tokens. `model login` uses GitHub device flow; `--gh` explicitly copies
 bounded private gh output to the OS keychain. Without a usable keychain, login
 explains runtime options instead. `model logout` clears only kmx's item/memory,
 not gh or environment credentials. There is no plaintext token-file fallback. Internal
 `modelaccess/copilot.New(Store).Client(ctx, Route)` returns an authenticated
-selected-route RoundTripper for direct Chat Completions JSON/SSE, not a proxy.
-Markdown-file Run/Test and shared MCP execution consume it only with explicit
-`--provider copilot`, prior sign-in and an exact authored model; the Copilot
-endpoint is fixed. This remains tool-free, no-journal preview, not a new harness.
+selected-route Chat-shaped RoundTripper with catalog-selected Chat/Responses
+JSON/SSE upstream access, not a proxy. Markdown-file Run/Test uses explicit
+`--provider copilot`; unbound MCP defaults authored real models to Copilot. Both
+use the exact authored model and existing runtime credentials, with no login
+step for a working gh sign-in. The Copilot endpoint is fixed. This remains tool-free, no-journal preview, not a new harness.
 No inference replay, model substitution or persisted selection. See
 [direct model access](copilot-inference.md#direct-model-access). Native package
 tests do not qualify the full Windows CLI.
@@ -129,6 +132,7 @@ Workspace --create/test--> AgentSuite artifact --push--> OCI location
 | `create` | Workspace | Author one offline member; no cluster or model call |
 | `test` | Workspace/prepared AgentSuite | Run full ordered native Orka/kagent cases, or pinned AgentSessions chat with explicit `--development-host FILE` and `--bindings FILE` (`AgentSessionsBinding`); stop later cases after the first non-pass |
 | `test export` | Latest completed exact-suite/member managed proof | Write new detached public evidence offline; captured tagged module/checksum or clean VCS provenance required, no evaluation or private-gate replacement |
+| `run-profile export FILE` | Canonical agent file | Content-bearing frozen JSON on stdout, with source/instruction/model/example hashes and target examples `not_run`; no configuration, execution, evidence, package or deployment authority |
 | `test verify` | Local single-manifest OCI layout + detached evidence + reviewed ExpectedEvaluation | State-free offline CI gate; digest input also requires explicit layout, text/JSON success exits0, coded refusal exits1; no private-gate authority |
 | `push` | Prepared AgentSuite | Transfer exact OCI graph with latest completed exact-S proof, explicit --evaluation override or --unevaluated opt-out; explicit tags unchanged, bare push uses saved `repository:s-<S>`; no deployment |
 | `deploy` | Workspace or exact supported packaged native AgentSuite | No-reference `--to NAME` composes missing Orka eval/push/Deploy with one frozen-plan confirmation and verified exact-version skips. Explicit reference stays deploy-only by digest with private evidence; Orka uses `--inference`, kagent uses `--bindings`; `--plan` has no execution/publication/admission; AgentSessions is a plan-only offline render with `--harness-image` and `--bindings` (apply refuses) |

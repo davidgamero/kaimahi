@@ -176,6 +176,7 @@ test('checkout-only references point to source while guide links stay local', as
 
   const repositoryMap = await readFile(path.join(dist, 'docs', 'repository-map.html'), 'utf8')
   assert.ok(repositoryMap.includes(`https://github.com/kaimahi-agents/kaimahi/blob/${sourceRef}/plugins/copilot/README.md`))
+  assert.ok(repositoryMap.includes(`https://github.com/kaimahi-agents/kaimahi/blob/${sourceRef}/plugins/copilot-wsl/README.md`))
 
   const index = await readFile(path.join(dist, 'docs', 'index.html'), 'utf8')
   assert.ok(index.includes(`href="${agentSuiteDocsURL}"`))

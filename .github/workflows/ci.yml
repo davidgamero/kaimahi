@@ -32,10 +32,11 @@ jobs:
   # Each process retains serial fixture isolation; top-level names are assigned
   # exactly once without splitting dynamic subtests from their parent.
   app-tests:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest]
         shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
@@ -51,21 +52,62 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: kmx-app-timings-${{ matrix.shard }}
+          name: kmx-app-timings-${{ matrix.os }}-${{ matrix.shard }}
           path: kmx-app-test.timings.json
           if-no-files-found: ignore
       - name: App test failure diagnostics
         if: failure() && steps.app_tests.outcome == 'failure' && hashFiles('kmx-app-test.json') != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: kmx-app-test-json-${{ matrix.shard }}
+          name: kmx-app-test-json-${{ matrix.os }}-${{ matrix.shard }}
           path: kmx-app-test.json
           retention-days: 3
 
+  windows-read-foundation:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - name: Build isolated user-owner test launcher
+        shell: pwsh
+        run: go build -trimpath -o "$env:RUNNER_TEMP\kmx-windows-tests.exe" ./scripts/ci/windows-tests
+      - name: Native checked filesystem, private mutation, and state tests
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP\kmx-windows-tests.exe" go test -race -count=1 -timeout=600s -v ./scripts/ci/windows-tests ./internal/kmx/fileaccess
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP\kmx-windows-tests.exe" go test -race -count=1 -timeout=600s -v `
+            -run '^(TestStateDirUsesPortableOverrideAndNativeDefault|TestWindowsStateAccessUsesLocalAppDataAndSeparatesCreation|TestWindowsStateAccessRefusesUnsafeRootWithoutRepair)$' `
+            ./internal/kmx/config
+          exit $LASTEXITCODE
+      - name: Windows amd64 package vet
+        shell: pwsh
+        run: go vet ./internal/kmx/fileaccess ./internal/kmx/config ./scripts/ci/windows-tests
+      - name: Windows arm64 compile and vet (not native execution)
+        shell: pwsh
+        env:
+          GOOS: windows
+          GOARCH: arm64
+          CGO_ENABLED: '0'
+        run: |
+          go test -c -o "$env:RUNNER_TEMP\fileaccess-arm64.test.exe" ./internal/kmx/fileaccess
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -c -o "$env:RUNNER_TEMP\config-arm64.test.exe" ./internal/kmx/config
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -c -o "$env:RUNNER_TEMP\windows-tests-arm64.test.exe" ./scripts/ci/windows-tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go vet ./internal/kmx/fileaccess ./internal/kmx/config ./scripts/ci/windows-tests
+          exit $LASTEXITCODE
+
   hygiene:
     runs-on: ubuntu-latest
-    needs: [app-tests]
-    if: ${{ !cancelled() }}
+    needs: [app-tests, windows-read-foundation]
+    if: always()
     steps:
       - uses: actions/checkout@v4
         with:
@@ -303,9 +345,16 @@ jobs:
           if "gh release create" not in release_text:
               print("release.yml must publish the already-checked artifact set in one draft-to-public release operation")
               sys.exit(1)
-          dry_run_artifact_path = "path: $" + "{{ runner.temp }}/release-assets/"
-          if "Stage the checked release artifacts" not in release_text or dry_run_artifact_path not in release_text:
-              print("release.yml must give dry runs the same flat checked assets used for publication")
+          uploads = [step["with"] for step in wf["jobs"]["release"]["steps"]
+                     if step.get("uses", "").startswith("actions/upload-artifact@")]
+          asset_path = "$" + "{{ runner.temp }}/release-assets/"
+          if len(uploads) != 1 or asset_path not in uploads[0].get("path", "").splitlines():
+              print("release.yml must upload the same checked assets for dry runs and native qualification")
+              sys.exit(1)
+          publish = wf["jobs"].get("publish", {})
+          if (set(publish.get("needs", [])) != {"release", "plugin-install"}
+                  or publish.get("if") != "needs.release.outputs.dry_run == 'false'"):
+              print("release.yml must wait for native install checks and publish only outside dry runs")
               sys.exit(1)
           if 'scripts/homebrew-formula.py "$VERSION" dist/checksums.txt' not in release_text:
               print("release.yml must reject an incomplete or unexpected checksum manifest before publication")
@@ -328,7 +377,12 @@ jobs:
           if 'if [ "$EVENT_NAME" = push ] && [ "$REF_TYPE" = tag ]; then' not in release_text:
               print("release.yml must publish only for tag pushes; manual dispatch is always a dry run")
               sys.exit(1)
-          decide = next(step["run"] for step in wf["jobs"]["release"]["steps"] if step.get("id") == "what")
+          decision = next(step for step in wf["jobs"]["release"]["steps"] if step.get("id") == "what")
+          if (decision["env"].get("RUN_ID") != "$" + "{{ github.run_id }}"
+                  or decision["env"].get("RUN_ATTEMPT") != "$" + "{{ github.run_attempt }}"):
+              print("synthetic release versions must bind the workflow run ID and attempt")
+              sys.exit(1)
+          decide = decision["run"]
           cases = [
               ({"EVENT_NAME": "push", "REF_TYPE": "tag", "REF_NAME": "v0.3.0", "INPUT_VERSION": "", "SHA": "a" * 40},
                {"version": "v0.3.0", "dry_run": "false", "prerelease": "false", "synthetic": "false"}),
@@ -337,11 +391,16 @@ jobs:
               ({"EVENT_NAME": "workflow_dispatch", "REF_TYPE": "branch", "REF_NAME": "main", "INPUT_VERSION": "v0.3.0", "SHA": "b" * 40},
                {"version": "v0.3.0", "dry_run": "true", "prerelease": "false", "synthetic": "false"}),
               ({"EVENT_NAME": "workflow_dispatch", "REF_TYPE": "tag", "REF_NAME": "v0.3.0", "INPUT_VERSION": "", "SHA": "c" * 40},
-               {"version": "v0.0.0-dryrun.cccccccccccc", "dry_run": "true", "prerelease": "true", "synthetic": "true"}),
+               {"version": "v0.0.0-dryrun.cccccccccccc.101.1", "dry_run": "true", "prerelease": "true", "synthetic": "true"}),
+              ({"EVENT_NAME": "workflow_dispatch", "REF_TYPE": "branch", "REF_NAME": "main", "INPUT_VERSION": "", "SHA": "c" * 40, "RUN_ID": "102"},
+               {"version": "v0.0.0-dryrun.cccccccccccc.102.1", "dry_run": "true", "prerelease": "true", "synthetic": "true"}),
+              ({"EVENT_NAME": "workflow_dispatch", "REF_TYPE": "branch", "REF_NAME": "main", "INPUT_VERSION": "", "SHA": "c" * 40, "RUN_ID": "102", "RUN_ATTEMPT": "2"},
+               {"version": "v0.0.0-dryrun.cccccccccccc.102.2", "dry_run": "true", "prerelease": "true", "synthetic": "true"}),
           ]
           for env_add, expected in cases:
               with tempfile.NamedTemporaryFile() as output:
-                  env = dict(os.environ, GITHUB_OUTPUT=output.name, **env_add)
+                  env = dict(os.environ, GITHUB_OUTPUT=output.name, RUN_ID="101", RUN_ATTEMPT="1")
+                  env.update(env_add)
                   run = subprocess.run(["bash", "-c", decide], env=env, text=True, capture_output=True)
                   if run.returncode:
                       print(run.stdout, run.stderr, sep="\n", file=sys.stderr)
@@ -352,7 +411,11 @@ jobs:
                   print(f"release decision mismatch for {env_add}: got {got}, want {expected}")
                   sys.exit(1)
           for name, job in wf["jobs"].items():
-              allowed = {"contents": "write", "id-token": "write"} if name == "release" else {"contents": "read"}
+              allowed = {"contents": "read"}
+              if name == "release":
+                  allowed["id-token"] = "write"
+              elif name == "publish":
+                  allowed["contents"] = "write"
               if job.get("permissions", {}) != allowed:
                   print(f"release job {name} permissions must be {allowed}, got {job.get('permissions', {})}")
                   sys.exit(1)
@@ -618,15 +681,27 @@ jobs:
                       print("the reusable Orka worker is missing required proof steps"); sys.exit(1)
                   total += len(steps)
                   continue
+              if job == "e2e-kagent-lift":
+                  caller = jobs[job]
+                  routed = "${" + "{ !cancelled() && github.event_name != 'pull_request' && !(github.event_name == 'push' && github.ref == 'refs/heads/main') }" + "}"
+                  if (caller.get("uses") != "./.github/workflows/kagent-runtime.yml" or
+                          caller.get("needs") != ["classify-change"] or caller.get("if") != routed or
+                          caller.get("permissions") != {"contents": "read"} or "secrets" in caller):
+                      print("kagent must delegate read-only to full nightly/manual qualification"); sys.exit(1)
+                  full = yaml.safe_load(open(".github/workflows/kagent-runtime.yml"))
+                  proof = full["jobs"]["qualify"]
+                  steps = proof["steps"]
+                  if ("workflow_call" not in full.get("on", full.get(True, {})) or "if" in proof or
+                          proof.get("permissions") != {"contents": "read"} or proof.get("timeout-minutes") != 35 or
+                          any(str(s.get("if", "")).strip() not in {"", "always()", "failure()"} for s in steps)):
+                      print("full kagent proof must not have path/step shortcuts"); sys.exit(1)
+                  commands = {s.get("run") for s in steps}
+                  if not {"bash scripts/ci/kagent-lift.sh", "mkdir -p bin && go build -o bin/kmx ./cmd/kmx"}.issubset(commands):
+                      print("full kagent worker is missing live qualification"); sys.exit(1)
+                  total += len(steps)
+                  continue
               steps = jobs[job]["steps"]
               total += len(steps)
-              if job == "e2e-kagent-lift":
-                  routed = "always() && (github.event_name != 'pull_request' || needs.classify-change.outputs.kagent_changed != 'false')"
-                  if jobs[job].get("if") != routed or jobs[job].get("needs") != ["classify-change"]:
-                      print(f"{job}: missing fail-closed job-level routing"); sys.exit(1)
-                  if any(str(s.get("if", "")).strip() not in {"", "always()", "failure()"} for s in steps):
-                      print(f"{job}: unexpected step guard can skip main/nightly proof"); sys.exit(1)
-                  continue
               bad = [s.get("name") or s.get("uses") for s in steps
                      if not exempt(s) and str(s.get("if", "")).strip() not in guards]
               if bad:
@@ -640,8 +715,21 @@ jobs:
                   if not co or str((co[0].get("with") or {}).get("fetch-depth", 1)) not in ("0", "2"):
                       print(f"{job}: checkout needs fetch-depth 2 so docs-only classification can resolve its base")
                       sys.exit(1)
+          fast = jobs.get("kagent-contract", {})
+          fast_steps = fast.get("steps", [])
+          fast_body = "\n".join(s.get("run", "") for s in fast_steps)
+          needed = {"python3 -m unittest discover -s scripts -p 'test_kagent_lift*.py'",
+                    "python3 scripts/test_suite_kagent.py",
+                    "python3 scripts/test_kagent_workflows.py",
+                    "go test ./internal/kmx/app -run '^(TestKagent|TestSuiteKagent|TestSuiteFailureKagent|TestReleaseLiftKagent|TestDestinationStatusKagent)' -skip '^TestLive' -count=1 -timeout=300s"}
+          if (fast.get("if") != "${" + "{ !cancelled() }" + "}" or "needs" in fast or
+                  fast.get("permissions") != {"contents": "read"} or
+                  "not live qualification" not in fast.get("name", "") or
+                  any(s.get("if") for s in fast_steps) or
+                  not all(command in fast_body for command in needed) or "bash scripts/ci/kagent-lift.sh" in fast_body):
+              print("fast kagent contracts must run without pretending live qualification"); sys.exit(1)
           agg = jobs[required]
-          if sorted(agg.get("needs", [])) != sorted(shards + ["classify-change"]):
+          if sorted(agg.get("needs", [])) != sorted(shards + ["classify-change", "kagent-contract"]):
               print(f"{required} must need all shards and classification, needs {agg.get('needs')}")
               sys.exit(1)
           if str(agg.get("if", "")).strip() != "always()":
@@ -708,6 +796,8 @@ jobs:
           "$(go env GOPATH)/bin/staticcheck" ./...
       - name: kmx — build
         run: go build ./...
+      - name: kmx — filesystem and state race tests
+        run: go test -race -count=1 ./internal/kmx/fileaccess ./internal/kmx/config
       - name: kmx — Windows libraries (CLI remains guarded)
         run: |
           GOOS=windows GOARCH=amd64 go build ./internal/... ./pkg/...
@@ -742,6 +832,8 @@ jobs:
               "pkg/suiteview": "public read-only suite member recipe views",
               # The reason this job is required at all.
               "internal/kmx/guard": "the context guard's port decisions",
+              "internal/kmx/fileaccess": "checked filesystem, private mutation and identity foundations",
+              "internal/kmx/config": "native state location and explicit creating/non-creating resolution",
               "internal/kmx/scaffold": "the scaffolder's key-shape refusals",
               "internal/kmx/orkaschema": "pinned Orka schemas and unknown-field refusals",
               # kmx downloads kind and kubectl. A binary it fetches
@@ -859,8 +951,8 @@ jobs:
           grep -q -- '--- PASS: TestSuiteDiffArtifactsEndToEnd' suite-diff-e2e.out
           ! grep -q -- '--- SKIP:' suite-diff-e2e.out
       # Preserve the required check's name and collect other hygiene diagnostics
-      # even if an app shard fails. Missing, skipped and cancelled shards refuse.
-      - name: Every app test shard succeeded
+      # even if a dependency fails. Missing, skipped and cancelled work refuses.
+      - name: Every required hygiene dependency succeeded
         if: always()
         env:
           SHARDS: ${{ toJSON(needs) }}
@@ -868,12 +960,17 @@ jobs:
           python3 - <<'EOF'
           import json, os, sys
           needs = json.loads(os.environ["SHARDS"])
-          if set(needs) != {"app-tests"}:
-              print("missing or unexpected app shard dependency — refusing success"); sys.exit(1)
-          result = needs["app-tests"].get("result", "unknown")
-          print(f"app-tests: {result}")
-          if result != "success":
-              print("app shards did not all succeed — refusing success"); sys.exit(1)
+          expected = {"app-tests", "windows-read-foundation"}
+          if set(needs) != expected:
+              print("missing or unexpected hygiene dependency — refusing success"); sys.exit(1)
+          bad = {}
+          for name in sorted(expected):
+              result = needs[name].get("result", "unknown")
+              print(f"{name}: {result}")
+              if result != "success":
+                  bad[name] = result
+          if bad:
+              print("required hygiene dependencies did not all succeed:", bad); sys.exit(1)
           EOF
 
   # Linux uses its XDG user-config location while macOS uses
@@ -1364,11 +1461,13 @@ jobs:
         id: docs-only-summary
         if: steps.changes.outputs.docs_only == 'true'
         run: echo "every changed file is documentation; no cluster booted"
-  e2e-kagent-lift:
-    needs: [classify-change]
-    if: always() && (github.event_name != 'pull_request' || needs.classify-change.outputs.kagent_changed != 'false')
+  kagent-contract:
+    name: kagent contract — not live qualification
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -1376,21 +1475,26 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
-      - name: Build kmx
-        run: mkdir -p bin && go build -o bin/kmx ./cmd/kmx
-      - name: Externally install pinned runtime and qualify native A2A plus suite lift
-        run: bash scripts/ci/kagent-lift.sh
-      - name: Payload-free qualification evidence (not a deployment receipt)
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: kagent-lift-qualification
-          path: ${{ runner.temp }}/kmx-kagent-lift/qualification.json
-          if-no-files-found: ignore
+      - name: Hermetic fixture and qualifier contracts — no live cluster
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_kagent_lift*.py'
+          python3 scripts/test_suite_kagent.py
+          python3 scripts/test_kagent_workflows.py
+      - name: Offline kagent Go contracts — not live qualification
+        run: go test ./internal/kmx/app -run '^(TestKagent|TestSuiteKagent|TestSuiteFailureKagent|TestReleaseLiftKagent|TestDestinationStatusKagent)' -skip '^TestLive' -count=1 -timeout=300s
+      - name: State the coverage boundary
+        run: echo "Hermetic kagent contracts passed; not live qualification. Live A2A, full evaluation, evaluated push and suite lift run nightly, manually and before release."
+
+  e2e-kagent-lift:
+    needs: [classify-change]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/kagent-runtime.yml
 
   e2e-hello-world:
     runs-on: ubuntu-latest
-    needs: [classify-change, e2e-kagent-lift, e2e-orka-runtime, e2e-orka-helm, e2e-quickstart]
+    needs: [classify-change, kagent-contract, e2e-kagent-lift, e2e-orka-runtime, e2e-orka-helm, e2e-quickstart]
     if: always()
     steps:
       - name: Every e2e shard succeeded
@@ -1402,13 +1506,12 @@ jobs:
           python3 - <<'EOF'
           import json, os, sys
           needs = json.loads(os.environ["SHARDS"])
-          expected = {"e2e-kagent-lift", "e2e-orka-runtime", "e2e-orka-helm", "e2e-quickstart"}
+          expected = {"kagent-contract", "e2e-kagent-lift", "e2e-orka-runtime", "e2e-orka-helm", "e2e-quickstart"}
           classifier = needs.pop("classify-change", {})
           if classifier.get("result") != "success":
               print("classification did not succeed — refusing to report success"); sys.exit(1)
           if set(needs) != expected:
               print("missing or unexpected e2e shard dependencies — refusing success"); sys.exit(1)
-          changed = classifier.get("outputs", {}).get("kagent_changed", "")
           orka_required = classifier.get("outputs", {}).get("orka_required", "")
           event = os.environ["EVENT"]
           ref = os.environ["REF"]
@@ -1416,10 +1519,10 @@ jobs:
           for job, outcome in sorted(needs.items()):
               result = outcome.get("result", "unknown")
               print(f"{job}: {result}")
-              intended_skip = job == "e2e-kagent-lift" and event == "pull_request" and changed == "false"
+              intended_skip = job == "e2e-kagent-lift" and (event == "pull_request" or (event == "push" and ref == "refs/heads/main"))
               orka_skip = job == "e2e-orka-runtime" and event == "pull_request" and orka_required == "false"
               main_skip = job == "e2e-orka-runtime" and event == "push" and ref == "refs/heads/main"
-              scheduled_skip = job != "e2e-kagent-lift" and event == "schedule"
+              scheduled_skip = job in {"e2e-orka-runtime", "e2e-orka-helm", "e2e-quickstart"} and event == "schedule"
               if result != "success" and not (result == "skipped" and (intended_skip or orka_skip or main_skip or scheduled_skip)):
                   bad[job] = result
           if bad:

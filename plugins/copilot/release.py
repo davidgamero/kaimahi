@@ -18,7 +18,8 @@ import package
 TARGETS = ("linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64")
 PREFIX = "kmx-agent-builder/"
 FILES = {"plugin.json", "mcp.json", "selected-root.json", "engine.json",
-         "skills/kmx-agent-builder/SKILL.md", "bin/kmx", "SETUP.md", *package.NATIVE_FILES}
+         "bin/kmx", "SETUP.md", *package.SKILL_FILES,
+         *package.NATIVE_FILES, *package.SAMPLE_FILES}
 SETUP = """# Configure before installation
 
 Verify this archive against the trusted release digest before extraction/execution.
@@ -28,9 +29,10 @@ Set the identical path in selected-root.json. Use valid JSON (escape Windows bac
 Never select the filesystem root or a path containing control characters,
 ${PLUGIN_ROOT} or ${PLUGIN_DATA}. Review both files before installing.
 These two local configuration edits are not covered by the original archive digest.
-The bundled engine and skill must remain unchanged; do not edit installed cache files.
+The bundled engine and skills must remain unchanged; do not edit installed cache files.
 Run copilot plugin install ./kmx-agent-builder, then copilot plugin list.
-Confirm the exact selected root in chat before allowing any kmx tool calls.
+Confirm the exact selected root in chat before allowing Create/Edit/Run/Test.
+Read-only /kmx opening reuses the root confirmed at setup.
 Changing root requires explicit reconfiguration, reinstall and server restart.
 An update must be verified and configured again, never silently rebound to cwd.
 """
@@ -68,7 +70,8 @@ def verify_archive(path: Path, digest: str, target: str, version: str, revision:
         for member in source:
             name = member.name.removeprefix(PREFIX)
             mode = 0o755 if name == "bin/kmx" else 0o644
-            maximum = package.MAX_BINARY if name == "bin/kmx" else 64 << 10
+            maximum = (package.MAX_BINARY if name == "bin/kmx" else
+                       256 << 10 if name in package.SAMPLE_FILES else 64 << 10)
             if (not member.name.startswith(PREFIX) or name not in FILES or name in files
                     or not member.isfile() or member.mode != mode
                     or member.uid != 0 or member.gid != 0 or member.mtime != 0
@@ -86,9 +89,9 @@ def verify_archive(path: Path, digest: str, target: str, version: str, revision:
             or server != {"type": "stdio", "command": "./bin/kmx",
                           "args": ["mcp", "--root", "__SELECTED_ROOT__"]}
             or json.loads(files["selected-root.json"]) != {"root": "__SELECTED_ROOT__"}
-            or files["skills/kmx-agent-builder/SKILL.md"] != (package.HERE / "skills/kmx-agent-builder/SKILL.md").read_bytes()
             or files["SETUP.md"] != SETUP.encode()
-            or any(files[name] != (package.HERE / name).read_bytes() for name in package.NATIVE_FILES)):
+            or any(files[name] != package.asset_source(name).read_bytes()
+                   for name in (*package.SKILL_FILES, *package.NATIVE_FILES, *package.SAMPLE_FILES))):
         raise ValueError("archive contract metadata mismatch")
 
 

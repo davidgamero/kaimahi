@@ -23,9 +23,9 @@ import (
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/runtime"
 )
 
-// NewDirectFileRunner is the temporary, unjournaled demo adapter. Remove this
-// implementation and constructor wiring when the embedded Sessions runner lands.
-// Its single-sample judgments are local preview only, never native evidence.
+// NewDirectFileRunner is the unjournaled adapter used when the agent or judge
+// selects Copilot. Its credential-owning transport has no pre-journal content
+// check. Single-sample judgments are local preview only, never native evidence.
 func NewDirectFileRunner() agentpreview.Runner {
 	return &directFileRunner{copilot: copilot.New(nil)}
 }
@@ -56,20 +56,30 @@ func (d *directFileRunner) Run(ctx context.Context, r agentpreview.Request) (age
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	out := agentpreview.Outcome{State: agentpreview.Failed, NoJournal: true}
+	var active *agentpreview.ExampleOutcome
+	var notRun agentpreview.ExampleOutcome
 	abort := func(err error) (agentpreview.Outcome, error) {
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		}
 		if errors.Is(err, context.Canceled) {
 			out.State = agentpreview.Cancelled
+			// A test is unfinished until all its checks finish. Discard its
+			// partial answer/checks on cancellation, not on other error paths.
+			if active != nil {
+				*active = notRun
+			}
 		}
 		return out, err
 	}
 	if ctx.Err() != nil {
 		return abort(ctx.Err())
 	}
-	if r.Agent == nil || len(r.Examples) == 0 || r.Route.Model != r.Agent.Model {
+	if r.Agent == nil || len(r.Examples) == 0 && r.Input == nil || r.Route.Model != r.Agent.Model {
 		return out, errDirectPreview
+	}
+	if len(r.Agent.Tools) > 0 || r.ToolBindings != "" {
+		return out, agentpreview.ErrToolsUnavailable
 	}
 	judge := r.Route
 	if r.JudgeRoute != nil {
@@ -139,6 +149,8 @@ func (d *directFileRunner) Run(ctx context.Context, r agentpreview.Request) (age
 		}
 	}
 	for i, ex := range r.Examples {
+		active = &out.Examples[i]
+		notRun = *active
 		completion, err := complete(fmt.Sprint(i), ex.ID, ex.Input)
 		if err != nil {
 			return abort(err)
@@ -184,6 +196,7 @@ func (d *directFileRunner) Run(ctx context.Context, r agentpreview.Request) (age
 				row.Assertions[j].Verdict = runtime.EvaluationFail
 			}
 		}
+		active = nil
 	}
 	if ctx.Err() != nil {
 		return abort(ctx.Err())
@@ -363,6 +376,9 @@ func parseDirectCompletion(body []byte, model string) (string, bool) {
 
 // Use the parser's real heading locations, not heading-looking text in fences.
 func directFakeInstructions(a *agentfile.Agent) string {
+	if a.NativeTaskInstructions != "" {
+		return strings.TrimSpace(a.NativeTaskInstructions)
+	}
 	lines := strings.Split(a.Instructions, "\n")
 	start := a.Locations["Accountable Responsibilities"].Line
 	end := len(lines)

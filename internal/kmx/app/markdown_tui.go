@@ -69,7 +69,6 @@ type markdownTUI struct {
 	events                   chan tea.Msg
 	autoTest                 bool
 	pendingAuto              bool
-	provider                 string
 	workers                  *sync.WaitGroup
 	runningPair              string
 	lastSave                 time.Time
