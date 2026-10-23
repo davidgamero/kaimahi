@@ -37,6 +37,13 @@ func MapMarkdownSuite(ctx context.Context, source, tests, destination, model, na
 	if err != nil {
 		return report, err
 	}
+	grant, _, err := readCurrentToolGrant(a.Path)
+	if err != nil {
+		return report, err
+	}
+	if grant != nil {
+		return report, errors.New("local tool bindings cannot be mapped to native Orka deployment")
+	}
 	if len(a.Tools) > 0 {
 		return report, errors.New("cannot map tool-enabled md agents: mock tools are not deployable tool bindings")
 	}

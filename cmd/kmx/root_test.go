@@ -365,6 +365,7 @@ func TestTheCommandTreeIsExactlyWhatIsListedHere(t *testing.T) {
 		"orka", "orka install", "orka status", "orka show", "orka list",
 		"quickstart", "quickstart-wizard",
 		"list", "inspect", "validate", "settings", "info", "stop", "rm", "import",
+		"tools", "tools suggest", "tools review", "tools approve",
 		"status", "suite", "suite build", "suite diff", "suite map", "suite policy", "suite pull", "suite push", "suite validate", "console", "targets", "task", "task result",
 		"version",
 	}

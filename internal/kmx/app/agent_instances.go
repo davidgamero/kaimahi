@@ -23,6 +23,8 @@ import (
 // AgentInstance describes an execution, never a merely discovered source file.
 // The process-held lease is authoritative for liveness; PID is informational.
 type AgentInstance struct {
+	BindingDigest   string             `json:"bindingDigest,omitempty"`
+	Tools           []string           `json:"tools,omitempty"`
 	SchemaVersion   int                `json:"schemaVersion"`
 	ID              string             `json:"id"`
 	Name            string             `json:"name"`
@@ -252,6 +254,7 @@ func CacheMarkdownVersion(a *MarkdownAgent) (*MarkdownAgent, error) {
 		return nil, err
 	}
 	frozen.TestsPath, frozen.TestsRevision, frozen.PairRevision = a.TestsPath, a.TestsRevision, a.PairRevision
+	frozen.Grant, frozen.BindingDigest = a.Grant, a.BindingDigest
 	return frozen, nil
 }
 
@@ -330,6 +333,10 @@ func beginAgentInstance(a *MarkdownAgent, model string) (*agentLease, *MarkdownA
 	}
 	frozen.Model = model
 	r := AgentInstance{SchemaVersion: 1, ID: id, Name: a.Name, Type: "md", Source: source, Version: a.Revision, PreviousVersion: old.Version, Generation: old.Generation + 1, State: "running", PID: os.Getpid(), Provider: "copilot", Model: model, Started: time.Now().UTC()}
+	r.BindingDigest = a.BindingDigest
+	if a.Grant != nil {
+		r.Tools = append([]string{}, a.Grant.Tools...)
+	}
 	if old.Version == r.Version {
 		r.PreviousVersion = old.PreviousVersion
 	}
@@ -632,6 +639,9 @@ func InspectAgentInstance(ctx context.Context, out io.Writer, selector, output s
 		fields = append(fields, cliui.Field{Label: "Stopped", Value: r.Finished.Format(time.RFC3339)})
 	}
 	fields = append(fields, cliui.Field{Label: "Age (since start)", Value: agentAge(r.Started, time.Now())})
+	if r.BindingDigest != "" {
+		fields = append(fields, cliui.Field{Label: "Tool binding", Value: r.BindingDigest}, cliui.Field{Label: "Approved tools", Value: strings.Join(r.Tools, ", ")})
+	}
 	if r.Reason != "" {
 		fields = append(fields, cliui.Field{Label: "Reason", Value: safeTerminal(r.Reason)})
 	}
@@ -701,6 +711,9 @@ func agentInstanceInventory(directory string) ([]agentTUIAgent, error) {
 		row := agentTUIAgent{Name: r.Name, Runtime: r.Type, Ready: r.State, Version: mdShort(r.Version), DefinitionPath: r.Source, TestsPath: MarkdownTestsPath(r.Source), Provider: r.Provider, Model: mdModelLabel(r.Model), PromptSource: "cached version " + r.Version, TestStatus: r.State + " · " + mdShort(r.Version)}
 		root, e := agentStateRoot()
 		row.InstanceID = r.ID
+		for _, tool := range r.Tools {
+			row.Tools = append(row.Tools, agentTUITool{Name: tool, Kind: "approved local read", Detail: "Frozen binding " + r.BindingDigest})
+		}
 		if e != nil {
 			return nil, e
 		}

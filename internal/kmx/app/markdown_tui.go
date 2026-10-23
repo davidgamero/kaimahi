@@ -45,6 +45,10 @@ type mdUpdateApplied struct {
 	agent   *MarkdownAgent
 	err     error
 }
+type mdToolSuggested struct {
+	proposal MarkdownToolProposal
+	err      error
+}
 type mdRuntimeProgress struct {
 	generation int
 	text       string
@@ -129,6 +133,13 @@ func (m *markdownTUI) refreshHeader() {
 	if len(a.Tools) > 0 {
 		tools = strings.Join(a.Tools, ", ") + " (mock tests only)"
 	}
+	if a.Grant != nil {
+		if a.Grant.Adapter == cliToolAdapter {
+			tools = strings.Join(a.Grant.Tools, ", ") + " · approved local executables"
+		} else {
+			tools = strings.Join(a.Grant.Tools, ", ") + " · " + a.Grant.Repository + " · read-only"
+		}
+	}
 	inference := "Copilot · " + mdModelLabel(m.session.effective(a).Model)
 	if m.session.conversationDisplay != "" {
 		inference += " · session " + m.session.conversationDisplay
@@ -190,10 +201,6 @@ func (m *markdownTUI) sendLocal(input string) tea.Cmd {
 		return nil
 	}
 	m.loaded = m.disk // test-only edits do not reset the conversation
-	if len(m.loaded.Tools) > 0 {
-		m.note("TOOLS", "Use /test for mock-bound tools; ordinary chat has no real bindings.")
-		return nil
-	}
 	m.sent = append(m.sent, input)
 	m.recall = len(m.sent)
 	m.draft = ""
@@ -233,7 +240,46 @@ func (m *markdownTUI) localCommand(input string) tea.Cmd {
 		}
 		return tea.Quit
 	case "/help":
-		m.note("COMMANDS", "/show /test [id] /tests /reload /update [yes|cancel] /reset /edit /edit-tests /diff /auto-test on|off /settings /cancel /quit")
+		m.note("COMMANDS", "/show /test [id] /tests /reload /update [yes|cancel] /reset /edit /edit-tests /suggest-tools OWNER/REPO /review-tools PROPOSAL_ID /diff /auto-test on|off /settings /cancel /quit")
+	case "/suggest-tools":
+		if m.busy {
+			m.note("BUSY", "Finish the current operation first.")
+			break
+		}
+		if err := validateGithubRepo(arg); err != nil {
+			m.note("SUGGEST TOOLS", err.Error())
+			break
+		}
+		m.busy = true
+		m.started = time.Now()
+		ctx, cancel := context.WithCancel(m.ctx)
+		m.stopJob = cancel
+		m.workers.Add(1)
+		path, model := m.loaded.Path, m.session.Model
+		m.note("SUGGEST TOOLS", "Sending definition and capability catalog to inference. No tools execute and no access is granted.")
+		return func() tea.Msg {
+			defer m.workers.Done()
+			p, err := SuggestMarkdownTools(ctx, path, arg, model)
+			return mdToolSuggested{p, err}
+		}
+	case "/review-tools":
+		if m.busy {
+			m.note("BUSY", "Finish the current operation first.")
+			break
+		}
+		p, err := ReadMarkdownToolProposal(arg)
+		if err != nil {
+			m.note("REVIEW TOOLS", err.Error())
+			break
+		}
+		g, err := PrepareToolGrant(p, "", nil)
+		if err != nil {
+			m.note("REVIEW TOOLS", err.Error())
+			break
+		}
+		var text strings.Builder
+		_ = RenderToolReview(&text, p, g)
+		m.note("REVIEW TOOLS", text.String()+"\nTo choose a subset, adjust scope and approve, use: kmx tools review "+p.ID+" --apply\nThen /update to activate the reviewed binding.")
 	case "/cancel":
 		if m.stopJob != nil {
 			m.stopJob()
@@ -405,6 +451,27 @@ func mdCaseDetails(a *MarkdownAgent, r MarkdownCaseResult) string {
 }
 func (m markdownTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
+	case mdToolSuggested:
+		m.busy = false
+		if m.stopJob != nil {
+			m.stopJob()
+			m.stopJob = nil
+		}
+		if v.err != nil {
+			m.note("SUGGEST TOOLS", v.err.Error())
+		} else {
+			var text strings.Builder
+			for _, c := range v.proposal.Choices {
+				fmt.Fprintf(&text, "%s — %s\n", c.Template, c.Reason)
+			}
+			for _, gap := range v.proposal.Gaps {
+				fmt.Fprintln(&text, "Unsupported:", gap)
+			}
+			fmt.Fprintf(&text, "\n/review-tools %s", v.proposal.ID)
+			m.note("TOOL PROPOSAL", text.String())
+		}
+		m.refreshHeader()
+		return m, nil
 	case mdUpdatePlanned:
 		m.busy = false
 		if v.err != nil {
@@ -601,7 +668,7 @@ func (m markdownTUI) View() tea.View {
 	return base
 }
 func (s *MarkdownSession) ChatTUI(ctx context.Context, a *MarkdownAgent, in *os.File) error {
-	if !s.InitialTest && len(a.Tools) == 0 {
+	if !s.InitialTest {
 		if err := s.StartAgent(ctx, a); err != nil {
 			return err
 		}
@@ -611,7 +678,7 @@ func (s *MarkdownSession) ChatTUI(ctx context.Context, a *MarkdownAgent, in *os.
 	defer cancel()
 	timeline := newChatTimeline(a.Name, "local", "", false)
 	timeline.commands = []slashCommand{}
-	for _, name := range []string{"/show", "/test", "/tests", "/edit", "/edit-tests", "/reload", "/update", "/reset", "/diff", "/auto-test", "/settings", "/cancel", "/quit"} {
+	for _, name := range []string{"/show", "/test", "/tests", "/edit", "/edit-tests", "/reload", "/update", "/reset", "/diff", "/auto-test", "/settings", "/suggest-tools", "/review-tools", "/cancel", "/quit"} {
 		timeline.commands = append(timeline.commands, slashCommand{name: name, usage: name})
 	}
 	timeline.ctx = ctx

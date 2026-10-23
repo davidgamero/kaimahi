@@ -34,6 +34,7 @@ type markdownCopilot struct {
 	progress     func(string)
 	borrowed     bool         // shared manager owns the client process and temporary directory
 	sessionID    atomic.Value // string, readable while a turn is executing
+	toolBudget   atomic.Int32
 }
 
 func (c *markdownCopilot) SessionIdentity() string {
@@ -121,10 +122,11 @@ func (d *markdownMockDispatch) handler(m MarkdownMock) copilot.ToolHandler {
 }
 func (c *markdownCopilot) Answer(ctx context.Context, a *MarkdownAgent, input string, mocks []MarkdownMock) (markdownAnswer, error) {
 	result := markdownAnswer{Calls: map[string]int{}}
+	c.toolBudget.Store(8)
 	if _, err := c.Start(ctx); err != nil {
 		return result, err
 	}
-	if len(a.Tools) > 0 && len(mocks) == 0 {
+	if len(a.Tools) > 0 && len(mocks) == 0 && a.Grant == nil {
 		return result, errors.New("agent requires tools; select a mocked test case (real tools are not configured)")
 	}
 	dispatch := &markdownMockDispatch{counts: map[string]int{}}
@@ -140,6 +142,22 @@ func (c *markdownCopilot) Answer(ctx context.Context, a *MarkdownAgent, input st
 				available = append(available, m.Name)
 				tools = append(tools, copilot.Tool{Name: m.Name, Description: m.Description, Parameters: m.Parameters, SkipPermission: true, Handler: dispatch.handler(m)})
 			}
+		}
+		declaredTools := a.Tools
+		if len(mocks) > 0 {
+			declaredTools = available
+		}
+		if mocks == nil && a.Grant != nil {
+			if validateToolGrant(*a.Grant) != nil || a.Grant.AgentDigest != a.Revision || mdJSONHash(*a.Grant) != a.BindingDigest {
+				return result, errors.New("invalid frozen tool approval")
+			}
+			if a.Grant.Adapter == cliToolAdapter {
+				tools = cliReadTools(*a.Grant, &c.toolBudget)
+			} else {
+				tools = githubReadTools(*a.Grant, &c.toolBudget)
+			}
+			available = append([]string{}, a.Grant.Tools...)
+			declaredTools = available
 		}
 		model := a.Model
 		if model != "" && model != "auto" {
@@ -161,6 +179,7 @@ func (c *markdownCopilot) Answer(ctx context.Context, a *MarkdownAgent, input st
 			return &rpc.PermissionDecisionDeniedInteractivelyByUser{}, nil
 		}}
 		var err error
+		cfg.CustomAgents[0].Tools = declaredTools
 		if model != "" && model != "auto" {
 			cfg.CustomAgents[0].ModelPolicy = "required"
 		}

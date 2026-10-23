@@ -28,6 +28,7 @@ type MarkdownCaseResult struct {
 	Answer  string                                   `json:"-"`
 }
 type MarkdownTestResult struct {
+	BindingDigest string               `json:"bindingDigest,omitempty"`
 	SchemaVersion int                  `json:"schemaVersion"`
 	ID            string               `json:"id"`
 	AgentDigest   string               `json:"agentDigest"`
@@ -129,8 +130,8 @@ func (s *MarkdownSession) StartAgent(ctx context.Context, a *MarkdownAgent) erro
 		s.NewSession = false
 		return nil
 	}
-	if len(a.Tools) > 0 {
-		return errors.New("agent tools require a mock test; ordinary run/chat has no real tool bindings")
+	if err := attachApprovedTools(a); err != nil {
+		return err
 	}
 	if s.instance != nil {
 		if s.instance.record.Version == a.Revision {
@@ -215,9 +216,6 @@ func (s *MarkdownSession) Run(ctx context.Context, a *MarkdownAgent, input strin
 	if strings.TrimSpace(input) == "" || len(input) > 64<<10 {
 		return errors.New("provide a nonempty prompt of at most 64 KiB")
 	}
-	if len(a.Tools) > 0 {
-		return errors.New("agent tools require a mock test; ordinary chat/run has no real tool bindings")
-	}
 	answer, err := s.AnswerAgent(ctx, a, input)
 	if err != nil {
 		return err
@@ -227,6 +225,23 @@ func (s *MarkdownSession) Run(ctx context.Context, a *MarkdownAgent, input strin
 }
 func (s *MarkdownSession) Evaluate(ctx context.Context, a *MarkdownAgent, selected string, emit func(MarkdownCaseResult)) (result MarkdownTestResult, err error) {
 	cases := a.Examples
+	grant, binding, grantErr := readCurrentToolGrant(a.Path)
+	if grantErr != nil {
+		return result, grantErr
+	}
+	if grant != nil {
+		if grant.AgentDigest != a.Revision {
+			return result, errors.New("tool approval is stale; suggest/review the edited definition before testing")
+		}
+		copy := *a
+		copy.Tools = append([]string{}, grant.Tools...)
+		a = &copy
+		for _, c := range cases {
+			if err := validateMarkdownMocks(a.Tools, a.Mocks[c.ID]); err != nil {
+				return result, fmt.Errorf("case %s needs mocks for the approved tool binding: %w", c.ID, err)
+			}
+		}
+	}
 	if len(cases) == 0 {
 		return result, errors.New("no tests: add cases to the paired .agent.test.md file")
 	}
@@ -249,8 +264,14 @@ func (s *MarkdownSession) Evaluate(ctx context.Context, a *MarkdownAgent, select
 	if len(a.Tools) > 0 {
 		mode = "mocked-tools"
 	}
+	for _, c := range cases {
+		if len(a.Mocks[c.ID]) > 0 {
+			mode = "mocked-tools"
+		}
+	}
 	result = MarkdownTestResult{SchemaVersion: 1, ID: fmt.Sprintf("%d", time.Now().UnixNano()), AgentDigest: a.Revision, TestsDigest: a.TestsRevision, PairDigest: a.PairRevision, Model: a.Model, Runtime: s.runtime, Adapter: markdownAdapterVersion, Mode: mode, Selected: selected, Started: time.Now().UTC(), Status: "running", Cases: []MarkdownCaseResult{}}
-	result.RunKey = mdJSONHash(struct{ Schema, Pair, Adapter, Runtime, Model, Mode string }{"kmx.md-test/v1", a.PairRevision, markdownAdapterVersion, s.runtime, a.Model, mode})
+	result.BindingDigest = binding
+	result.RunKey = mdJSONHash(struct{ Schema, Pair, Adapter, Runtime, Model, Mode, Binding string }{"kmx.md-test/v2", a.PairRevision, markdownAdapterVersion, s.runtime, a.Model, mode, binding})
 	defer func() {
 		s.executor.Reset()
 		result.Completed = time.Now().UTC()
@@ -285,7 +306,7 @@ func (s *MarkdownSession) Evaluate(ctx context.Context, a *MarkdownAgent, select
 			}
 			return result, e
 		}
-		row.Checks = agentruntime.EvaluateAssertions(c, agentruntime.EvaluationEvidence{Answer: answer.Text, AnswerAvailable: true, ToolSupported: len(a.Tools) > 0, ToolEvidenceComplete: true, ToolCalls: answer.Calls})
+		row.Checks = agentruntime.EvaluateAssertions(c, agentruntime.EvaluationEvidence{Answer: answer.Text, AnswerAvailable: true, ToolSupported: len(mocks) > 0, ToolEvidenceComplete: true, ToolCalls: answer.Calls})
 		row.Verdict = "pass"
 		for _, check := range row.Checks {
 			if check.Verdict != agentruntime.EvaluationPass {
@@ -419,6 +440,13 @@ func MarkdownStatus(a *MarkdownAgent, r *MarkdownTestResult) string {
 	}
 	if r == nil {
 		return "UNTESTED"
+	}
+	_, binding, err := readCurrentToolGrant(a.Path)
+	if err != nil {
+		return "BINDING UNAVAILABLE"
+	}
+	if r.BindingDigest != binding {
+		return "BINDING CHANGED · last " + r.Status
 	}
 	if r.PairDigest != a.PairRevision || r.Model != a.Model || r.Stale {
 		return "CHANGED · last " + r.Status

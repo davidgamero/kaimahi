@@ -21,8 +21,8 @@ type MarkdownUpdatePlan struct {
 
 func (s *MarkdownSession) PlanAgentUpdate(ctx context.Context, a *MarkdownAgent) (MarkdownUpdatePlan, error) {
 	var p MarkdownUpdatePlan
-	if len(a.Tools) > 0 {
-		return p, errors.New("update requires a tool-free agent")
+	if err := attachApprovedTools(a); err != nil {
+		return p, err
 	}
 	if err := s.checkSelection(a); err != nil {
 		return p, err
@@ -40,7 +40,7 @@ func (s *MarkdownSession) PlanAgentUpdate(ctx context.Context, a *MarkdownAgent)
 	if r.Manager != localAgentManagerVersion {
 		return p, errors.New("agent uses an older manager; stop and rerun once to enable update")
 	}
-	p = MarkdownUpdatePlan{Instance: r, Definition: a, Model: s.effective(a).Model, Noop: r.Version == a.Revision && r.Model == s.effective(a).Model, TestStatus: "untested"}
+	p = MarkdownUpdatePlan{Instance: r, Definition: a, Model: s.effective(a).Model, Noop: r.Version == a.Revision && r.Model == s.effective(a).Model && r.BindingDigest == a.BindingDigest, TestStatus: "untested"}
 	if p.Noop {
 		return p, nil
 	}
@@ -73,6 +73,20 @@ func ConfirmAgentUpdate(ctx context.Context, out io.Writer, in io.Reader, p Mark
 	if _, err := fmt.Fprintf(out, "Update %s (%s)\nUptime: %s (started %s)\nVersion: %s → %s\nModel: %s → %s\nSessions: %s open conversations will close\nTests: %s\n", p.Instance.Name, ShortAgentID(p.Instance.ID), agentAge(p.Instance.Started, time.Now()), started, mdShort(p.Instance.Version), mdShort(p.Definition.Revision), mdModelLabel(p.Instance.Model), mdModelLabel(p.Model), count, p.TestStatus); err != nil {
 		return err
 	}
+	if p.Instance.BindingDigest != p.Definition.BindingDigest {
+		if _, err := fmt.Fprintf(out, "Tool binding: %s → %s\n", mdShort(p.Instance.BindingDigest), mdShort(p.Definition.BindingDigest)); err != nil {
+			return err
+		}
+	}
+	if p.Definition.Grant != nil {
+		detail := "github.com/" + p.Definition.Grant.Repository + " · read-only"
+		if p.Definition.Grant.Adapter == cliToolAdapter {
+			detail = "local executable bindings"
+		}
+		if _, err := fmt.Fprintf(out, "Approved tools: %s · %s\n", strings.Join(p.Definition.Grant.Tools, ", "), detail); err != nil {
+			return err
+		}
+	}
 	if yes {
 		return ctx.Err()
 	}
@@ -103,7 +117,7 @@ func (s *MarkdownSession) ApplyAgentUpdate(ctx context.Context, p MarkdownUpdate
 		return AgentInstance{}, err
 	}
 	r := p.Instance
-	reply, err := agentSocketCall(ctx, r.Socket, agentWorkerRequest{AgentID: r.ID, Version: r.Version, Generation: r.Generation, Operation: "update", NewVersion: p.Definition.Revision, Model: p.Model, Source: p.Definition.TestsPath})
+	reply, err := agentSocketCall(ctx, r.Socket, agentWorkerRequest{AgentID: r.ID, Version: r.Version, Generation: r.Generation, Operation: "update", NewVersion: p.Definition.Revision, Model: p.Model, Source: p.Definition.TestsPath, BindingDigest: p.Definition.BindingDigest})
 	if err != nil {
 		return AgentInstance{}, err
 	}
