@@ -465,6 +465,217 @@ SDK docs demonstrate the API direction, not compatibility with installed CLI 1.0
 The implementation pins SDK v1.0.24. A live run with CLI 1.0.98 selected the weather
 agent, invoked its mock with Wellington, and passed all three assertions.
 
+## Proposed: infer and review scoped local tools
+
+Same-file explicit CLI bindings and compatibility probes are now implemented;
+see [the concrete format and activation flow](copilot-inference.md#same-file-cli-tools-and-compatibility-checks).
+These are user-authored reviewed commands; inference suggestions remain limited
+to the maintained GitHub read templates and cannot invent executable bindings.
+
+**First slice implemented.** Suggest/review supports the two fixed GitHub PR read
+templates, private definition-bound overlays, manager/session binding identity and
+mock/live separation. The [usage guide](copilot-inference.md#suggest-and-approve-pr-monitor-tools)
+records the concrete CLI and limits. The broader template catalog, project-owned
+binding files, direct TUI acceptance and generated mock cases remain future work.
+Unlike the original argv sketch below, live reads use fixed HTTPS GET routes with
+redirects disabled; gh supplies authentication through memory-only token capture.
+Acceptance leaves source unchanged and activates an explicitly reviewed overlay.
+
+### User journey
+
+Suppose an author writes a PR-monitor definition:
+
+```markdown
+---
+name: pr-monitor
+description: Summarizes open PRs and failing checks in kaimahi-agents/kaimahi
+tools: []
+---
+
+Review the open pull requests in kaimahi-agents/kaimahi.
+Summarize their review state and failing checks. Do not change any PRs.
+```
+
+Proposed commands and TUI action:
+
+```sh
+kmx tools suggest .github/agents/pr-monitor.agent.md
+kmx tools review PROPOSAL_ID
+```
+
+The editor exposes **Suggest tools** / `/suggest-tools`. This is an explicit model
+call, not part of ordinary validation, completion or every Run. After import or a
+relevant instruction edit, offer the action without starting it automatically.
+Use the selected inference route; disclose that the definition and a small tool
+catalog are sent to it. No provider fallback on failure.
+
+Example review:
+
+```text
+Suggested tools for pr-monitor
+Reason: the instructions require live pull-request and check data.
+
+github_pr_list   List open PRs
+github_pr_read   Read PR metadata, review state and check conclusions
+
+Host        github.com
+Repository  kaimahi-agents/kaimahi
+Effects     read-only
+Arguments   PR number and bounded pagination only
+Execution   gh, using its existing authentication
+Excluded    comments, edits, merge, workflow dispatch, arbitrary API/shell
+
+[Accept selected] [Adjust scope] [Reject]
+```
+
+The example does not need arbitrary repository-file access, check logs, or issue
+content. Add such capabilities only if the author actually needs them. If the
+repository is absent/ambiguous, ask the author to select it. An optional read-only
+local Git-remote hint can be displayed, but inference must not silently make that
+repository the approved scope. Multiple requested repositories require an explicit
+list, never automatic wildcard access.
+
+### Separate suggestion from execution authority
+
+1. **Snapshot and validate offline.** Capture the agent definition hash and existing
+   binding hash before any inference. Invalid input stops here.
+2. **Build a bounded capability catalog.** Start with maintained tool templates
+   (`github.pr.list`, `github.pr.read`), including argument schemas, effects and
+   required scope. Optional PATH detection says only whether `gh` is installed;
+   do not enumerate home files, tokens, repositories or account data.
+3. **Ask inference for structured proposals.** Its result selects catalog template
+   IDs, suggested literal scopes, source-section rationale, and unresolved needs.
+   It cannot supply executable paths, shell snippets, arbitrary flags, auth values,
+   permission decisions or auto-install instructions.
+4. **Validate the proposal deterministically.** Reject unknown templates, excessive
+   scopes, malformed arguments and incompatible effects. Model confidence and
+   prose are explanations, not permission checks. Agent text is analyzed as data;
+   instructions claiming approval do not establish approval.
+5. **Review one concrete diff.** Display operations, host/repository scope, data
+   exposed, executable choice, bounds and credential source. Let the user select,
+   narrow or reject proposals. Wider scope requires another explicit review.
+6. **Apply only on acceptance.** Recheck the definition and binding base hashes.
+   Persist accepted non-secret bindings and propose/update the agent's tool-name
+   list as a visible source change. No silent edits or grants during Suggest.
+7. **Test and activate explicitly.** Generate proposed companion mock cases, review
+   them, run tests, then update the agent. Existing sessions keep their old binding
+   snapshot until the explicit version/update transition.
+
+Suggestion runs use no agent tools. The only external request is inference through
+the selected model route. An unknown capability is reported as a gap, not filled
+with a generic shell tool. Installing a binary or signing in is a separate action.
+Automation may emit a proposal with `-o json|yaml`, but cannot silently accept it.
+
+### Repository-scoped GitHub implementation
+
+The reviewed proposal compiles into fixed operation templates. For example,
+`github_pr_read` accepts only `{number: positive integer}`. The model never supplies
+`repo`, host, URL, method, query, executable or extra arguments at invocation time.
+
+The executor builds argv directly using a verified `gh` executable, the approved
+literal host/repository and a fixed JSON field projection. It never invokes a
+shell or forwards model-authored `gh api` expressions. A template might implement
+list/read using `gh pr list --repo OWNER/REPO --json ...` and
+`gh pr view NUMBER --repo OWNER/REPO --json ...`; pin/qualify the supported CLI
+behavior before claiming those projections provide every required check field.
+Check-status retrieval can use an additional fixed read-only template if needed.
+
+Repository isolation is enforced by construction: all operation targets are formed
+from the reviewed binding; PR numbers are validated as numbers; returned links do
+not authorize subsequent requests. Avoid shell aliases and repository hooks, use
+an isolated working directory, and normalize routing-related environment variables
+such as GH_HOST/GH_REPO so ambient settings cannot redirect the request. Bound
+pagination, duration, output and response size; request only the fields used by the
+agent. Return structured data and never credential-bearing command diagnostics.
+
+This is **application-enforced tool scope**, not a reduction in the underlying
+`gh` token's permissions. The local CLI may authenticate as a user with access to
+many repositories. To require credential-level repository isolation, bind a GitHub
+App installation or fine-grained credential limited to the approved repository
+and required read permissions. Keep credentials in an approved credential facility,
+not Markdown, binding files, proposals, argv or test reports. The review explicitly
+distinguishes application enforcement from credential-enforced restrictions.
+
+Read-only here means no requested remote mutations. It does not mean offline:
+repository data reaches the agent and selected inference provider. Do not expose
+other generic shell, HTTP, file-read or Copilot built-in tools that could bypass
+the reviewed binding. Shared-manager sessions receive only their own approved
+handlers; no process-wide union of all agents' tools. Capability execution itself
+belongs in a small deterministic adapter, not in the LLM's policy interpretation.
+
+### Binding and identity sketch
+
+Illustrative accepted local binding (proposed schema, not yet loadable):
+
+```yaml
+schemaVersion: 1
+agent: pr-monitor
+tools:
+  - name: github_pr_list
+    template: github.pr.list/v1
+    scope:
+      host: github.com
+      repository: kaimahi-agents/kaimahi
+    approval: granted-scope
+    limits: {timeoutSeconds: 15, maxItems: 50, maxOutputBytes: 65536}
+  - name: github_pr_read
+    template: github.pr.read/v1
+    scope:
+      host: github.com
+      repository: kaimahi-agents/kaimahi
+    approval: granted-scope
+    limits: {timeoutSeconds: 15, maxOutputBytes: 65536}
+```
+
+`granted-scope` means the author approved these exact read-only operations for
+unattended execution; it is not a universal approval. The review records that
+choice. Other local tools can require allow-once/session approval, surfaced in the
+chat UI; a background session without an approval client refuses those calls.
+Selecting only read operations must not unexpectedly enable write operations
+because the binary or token also supports them.
+
+Keep proposals under private KMX state and persist accepted binding configuration
+separately from the definition; choose the user/project storage location explicitly
+in review. Machine-specific executable paths remain local. A shared project binding
+is a declaration to review on another machine, not a transferable permission grant.
+Bind the approval to canonical scope/template/limits, template implementation version
+and selected executable identity. Binary/template changes require revalidation;
+expanded capabilities require review.
+
+The proposed deployment identity becomes definition digest + binding digest +
+adapter identity. Test keys also include mocked/live mode and fixture identity.
+Permission-affecting binding edits invalidate old test status and require an explicit
+agent update even if the Markdown bytes are unchanged. Suggestion model identity,
+source hash and rationale belong in the proposal audit, not the deployed instructions.
+Applying a suggestion never claims that the agent passed or is deployable.
+The current AgentSuite mapper continues refusing tools until genuine native tool
+bindings are implemented; accepting a local gh binding must not bypass that gate.
+
+### Tests and useful first slice
+
+Start with one read-only PR-monitor vertical slice:
+
+1. Implement reviewed fixed GitHub list/read templates and schema/argv validation.
+2. Register per-session SDK handlers and surface tool/result events in chat.
+3. Add schema-constrained Suggest and review, using those templates only.
+4. Add definition/binding digest checks, explicit activation and status tool summary.
+5. Demonstrate one real repository-scoped read separately from mocked tests.
+
+Required checks: suggestion performs no tools or file edits; rejected/stale proposals
+make no grants; omitted/wildcard/foreign repositories refuse; auth/host environment
+cannot override the binding; model strings cannot inject argv/options; pagination
+and outputs stay bounded; no automatic retry after ambiguous execution; two agents
+cannot see each other's handlers. Verify the actual requests against a hermetic
+endpoint, not just the intended argv. A mock-only pass remains clearly labeled.
+
+Example companion test intent: PR 42 has one failing check; the mock supplies only
+that repository's PR/check response. Require the agent to call `github_pr_read`
+with `{number: 42}` and summarize the failing check. Separately test the binding
+executor rejects a forged `repository: other/repo` field before invoking gh.
+Repository content asking the agent to merge, post a comment or fetch another repo
+must never gain an undeclared operation. The author can later request a narrowly
+scoped write tool through another reviewed proposal.
+
 ## Delivery slices and checks
 
 1. **Pair + validation:** native supported agent subset, test Markdown parser,

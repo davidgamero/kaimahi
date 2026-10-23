@@ -24,16 +24,17 @@ type agentWorkerConfig struct {
 	RecordPath string        `json:"recordPath"`
 }
 type agentWorkerRequest struct {
-	NewVersion string `json:"newVersion,omitempty"`
-	Session    string `json:"session,omitempty"`
-	Label      string `json:"label,omitempty"`
-	AgentID    string `json:"agentID,omitempty"`
-	Source     string `json:"source,omitempty"`
-	Model      string `json:"model,omitempty"`
-	Operation  string `json:"operation"`
-	Prompt     string `json:"prompt,omitempty"`
-	Version    string `json:"version"`
-	Generation int    `json:"generation"`
+	BindingDigest string `json:"bindingDigest,omitempty"`
+	NewVersion    string `json:"newVersion,omitempty"`
+	Session       string `json:"session,omitempty"`
+	Label         string `json:"label,omitempty"`
+	AgentID       string `json:"agentID,omitempty"`
+	Source        string `json:"source,omitempty"`
+	Model         string `json:"model,omitempty"`
+	Operation     string `json:"operation"`
+	Prompt        string `json:"prompt,omitempty"`
+	Version       string `json:"version"`
+	Generation    int    `json:"generation"`
 }
 type agentWorkerReply struct {
 	Sessions      []AgentSessionInfo `json:"sessions,omitempty"`
@@ -313,6 +314,9 @@ func loadAgentVersion(r AgentInstance) (*MarkdownAgent, error) {
 		return nil, err
 	}
 	a.Model = r.Model
+	if err = loadToolSnapshot(a, r.BindingDigest); err != nil {
+		return nil, err
+	}
 	a.PairRevision = r.Version
 	return a, nil
 }

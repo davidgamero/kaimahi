@@ -9,6 +9,22 @@ changes in the package's Go doc comment.
 
 ## Command consistency
 
+- Native-header agents may declare final `yaml kmx-tool` blocks under Tool bindings.
+  Parse/validate strips bindings from model instructions and never executes them.
+  `tools approve FILE --apply` explicitly reviews PATH resolution, binary hashes,
+  fixed argv, operand constraints and optional fixed probes before saving a grant.
+  CLI granted-scope handlers use bounded direct exec/process-group cancellation,
+  not a shell or sandbox. Probes repeat on activation/update and failure preserves
+  the old running version. PATH/hash/source changes require reapproval. Unsupported
+  per-call/session approval policies refuse. Local tool bindings never qualify Deploy.
+
+- Local tools suggest/review is a separate scoped capability workflow, not retired
+  gateway administration. Inference proposes catalog IDs only; explicit review
+  approves a private definition/binary/repository-bound overlay. GitHub handlers
+  use fixed GET paths at api.github.com without redirects; gh auth token is captured
+  in memory only. Session handlers are per-agent, binding changes require update,
+  and mocks never fall through to live calls. Native mapping refuses local grants.
+
 - Experimental `--type md` adds persistent Copilot-native agents with YAML front
   matter and paired tests, alongside the canonical Squad charter preview. Root
   Run/Test dispatch canonical `# Name` charters to the upstream preview path;

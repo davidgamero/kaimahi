@@ -44,6 +44,9 @@ func mdError(path string, line int, code, repair string) error {
 // MarkdownAgent owns a frozen native definition and its separately authored tests.
 // Hashes identify source bytes, not model determinism or deployment authority.
 type MarkdownAgent struct {
+	CLITools                                                                                       []CLIToolSpec
+	Grant                                                                                          *MarkdownToolGrant
+	BindingDigest                                                                                  string
 	Path, TestsPath, Name, Description, Model, Instructions, Revision, TestsRevision, PairRevision string
 	Tools                                                                                          []string
 	Examples                                                                                       []agentruntime.EvaluationCase
@@ -268,7 +271,20 @@ func parseMarkdownAgent(path string, raw []byte) (*MarkdownAgent, error) {
 		a.Tools = append(a.Tools, v)
 		seen[v] = true
 	}
-	a.Instructions = strings.TrimSpace(strings.Join(lines[end+1:], "\n"))
+	a.Instructions, a.CLITools, err = extractCLITools(path, lines, end+1)
+	if err != nil {
+		return nil, err
+	}
+	if len(a.CLITools) > 0 {
+		if len(a.CLITools) != len(a.Tools) {
+			return nil, mdError(path, end+2, "tools", "every declared tool needs exactly one CLI binding")
+		}
+		for _, tool := range a.CLITools {
+			if !containsString(a.Tools, tool.Name) {
+				return nil, mdError(path, end+2, "tools", "CLI binding name must be in front-matter tools")
+			}
+		}
+	}
 	if a.Instructions == "" || utf8.RuneCountInString(a.Instructions) > 30000 {
 		return nil, mdError(path, end+2, "instructions", "provide 1-30000 characters of instructions")
 	}
@@ -350,11 +366,17 @@ func parseMarkdownTests(a *MarkdownAgent, raw []byte) error {
 			return mdError(a.TestsPath, start+1, "case-id", "use unique case IDs and at most 32 cases")
 		}
 		seen[c.ID] = true
-		if err := validateMarkdownMocks(a.Tools, c.Mocks.Tools); err != nil {
+		caseTools := append([]string{}, a.Tools...)
+		for _, mock := range c.Mocks.Tools {
+			if !containsString(caseTools, mock.Name) && githubToolTemplate(mock.Name) != "" {
+				caseTools = append(caseTools, mock.Name)
+			}
+		}
+		if err := validateMarkdownMocks(caseTools, c.Mocks.Tools); err != nil {
 			return mdError(a.TestsPath, start+1, "mock", err.Error())
 		}
 		for _, check := range c.Assertions {
-			if check.Tool != "" && !containsString(a.Tools, check.Tool) {
+			if check.Tool != "" && !containsString(caseTools, check.Tool) {
 				return mdError(a.TestsPath, start+1, "tool", "assertion tool must be declared by the agent")
 			}
 		}

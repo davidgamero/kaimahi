@@ -259,6 +259,7 @@ func newRootCommand(state *commandState) *cobra.Command {
 		newSuiteCommand(state), newSuitePushCommand(state, true), newTargetsCommand(state), newRunProfileCommand(state),
 		newListTypedAgentsCommand(state), newInspectAgentCommand(state), newTypedAgentCommand(state, "validate", "validate"), newInfoCommand(state), newStopAgentCommand(state), newRemoveAgentCommand(state), settings,
 		markdownOperation(state, "import"),
+		newToolsCommand(state),
 		retiredCommand("quickstart-wizard", "kmx quickstart --interactive"),
 	)
 	installPlatformGate(root, state)

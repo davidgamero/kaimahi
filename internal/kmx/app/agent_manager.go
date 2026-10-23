@@ -21,7 +21,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const localAgentManagerVersion = "copilot-sessions/v2"
+const localAgentManagerVersion = "copilot-sessions/v4"
 
 var ErrAgentVersionChanged = errors.New("agent is running a different version; use --update to update the agent definition")
 
@@ -105,17 +105,17 @@ type localAgentManager struct {
 }
 
 func (s *MarkdownSession) StartBackgroundAgent(ctx context.Context, a *MarkdownAgent) (AgentInstance, error) {
-	if len(a.Tools) > 0 {
-		return AgentInstance{}, errors.New("ordinary run requires tool-free agents; mocked tools are test-only")
+	if err := attachApprovedTools(a); err != nil {
+		return AgentInstance{}, err
 	}
 	if err := s.checkSelection(a); err != nil {
 		return AgentInstance{}, err
 	}
 	if existing, err := FindAgentInstance(a.Path); err == nil && existing.State == "running" {
 		if existing.Manager != localAgentManagerVersion {
-			return AgentInstance{}, fmt.Errorf("%s uses a dedicated worker; stop it and run again to use the shared manager", existing.Name)
+			return AgentInstance{}, fmt.Errorf("%s uses an older manager protocol; stop it and run again to use scoped tool bindings", existing.Name)
 		}
-		if existing.Version != a.Revision || existing.Model != s.effective(a).Model {
+		if existing.Version != a.Revision || existing.Model != s.effective(a).Model || existing.BindingDigest != a.BindingDigest {
 			return AgentInstance{}, fmt.Errorf("%s: %w", existing.Name, ErrAgentVersionChanged)
 		}
 		if _, err = agentWorkerCall(ctx, existing, "ping", ""); err != nil {
@@ -141,7 +141,7 @@ func (s *MarkdownSession) StartBackgroundAgent(ctx context.Context, a *MarkdownA
 	if err != nil {
 		return AgentInstance{}, err
 	}
-	reply, err := agentManagerCall(ctx, manager.Socket, agentWorkerRequest{Operation: "start", Source: source, Version: a.Revision, Model: s.effective(a).Model})
+	reply, err := agentManagerCall(ctx, manager.Socket, agentWorkerRequest{Operation: "start", Source: source, Version: a.Revision, Model: s.effective(a).Model, BindingDigest: a.BindingDigest})
 	if err != nil {
 		return AgentInstance{}, err
 	}
@@ -412,7 +412,7 @@ func (m *localAgentManager) handle(ctx context.Context, req agentWorkerRequest) 
 		id := agentInstanceID(req.Source)
 		if active := m.agents[id]; active != nil {
 			r := active.lease.record
-			if r.Version != req.Version || r.Model != req.Model {
+			if r.Version != req.Version || r.Model != req.Model || r.BindingDigest != req.BindingDigest {
 				return fail(errors.New("agent is running a different version; use --update to update the agent definition"))
 			}
 			return agentWorkerReply{Ready: true, Instance: &r}
@@ -424,8 +424,14 @@ func (m *localAgentManager) handle(ctx context.Context, req agentWorkerRequest) 
 		if a.Revision != req.Version {
 			return fail(errors.New("source changed before manager start; run again"))
 		}
-		if len(a.Tools) > 0 {
-			return fail(errors.New("background agents must be tool-free"))
+		if err = attachApprovedTools(a); err != nil {
+			return fail(err)
+		}
+		if a.BindingDigest != req.BindingDigest {
+			return fail(errors.New("tool binding changed before start; run again"))
+		}
+		if err = validateActivatedTools(ctx, a); err != nil {
+			return fail(err)
 		}
 		lease, frozen, err := beginAgentInstance(a, req.Model)
 		if err != nil {
@@ -507,9 +513,21 @@ func (m *localAgentManager) handle(ctx context.Context, req agentWorkerRequest) 
 			m.mu.Unlock()
 			return fail(err)
 		}
-		if a.Revision != req.NewVersion || len(a.Tools) > 0 {
+		if a.Revision != req.NewVersion {
 			m.mu.Unlock()
 			return fail(errors.New("source changed or tools unsupported; running agent unchanged"))
+		}
+		if err = attachApprovedTools(a); err != nil {
+			m.mu.Unlock()
+			return fail(err)
+		}
+		if a.BindingDigest != req.BindingDigest {
+			m.mu.Unlock()
+			return fail(errors.New("tool bindings changed after review; running agent unchanged"))
+		}
+		if err = validateActivatedTools(ctx, a); err != nil {
+			m.mu.Unlock()
+			return fail(err)
 		}
 		frozen, err := CacheMarkdownVersion(a)
 		if err != nil {
@@ -517,7 +535,7 @@ func (m *localAgentManager) handle(ctx context.Context, req agentWorkerRequest) 
 			return fail(err)
 		}
 		frozen.Model = req.Model
-		if r.Version == a.Revision && r.Model == req.Model {
+		if r.Version == a.Revision && r.Model == req.Model && r.BindingDigest == a.BindingDigest {
 			m.mu.Unlock()
 			return agentWorkerReply{Ready: true, Instance: &r}
 		}
@@ -536,6 +554,11 @@ func (m *localAgentManager) handle(ctx context.Context, req agentWorkerRequest) 
 		next.Version = a.Revision
 		next.Name = a.Name
 		next.Model = req.Model
+		next.BindingDigest = a.BindingDigest
+		next.Tools = nil
+		if a.Grant != nil {
+			next.Tools = append([]string{}, a.Grant.Tools...)
+		}
 		next.Generation++
 		next.Started = time.Now().UTC()
 		next.Finished = nil

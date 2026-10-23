@@ -2,6 +2,186 @@
 
 ## Markdown-agent spike (unreleased)
 
+The [scoped tool design](markdown-agent-inner-loop.md#proposed-infer-and-review-scoped-local-tools)
+now has a first implementation: explicit inference-assisted proposals and reviewed
+repository-bound GitHub PR reads, plus explicitly authored local CLI bindings.
+
+## Same-file CLI tools and compatibility checks
+
+Keep native tool names in front matter and put executable metadata in a final
+`## Tool bindings` section. KMX extracts this section before sending instructions
+to Copilot. This section is a KMX extension; loading the file directly in another
+host does not install or implement its tools.
+
+````markdown
+---
+name: dg-cluster-reader
+description: Inspects approved development clusters
+tools: [get_dg_cluster]
+---
+
+Use get_dg_cluster for development cluster questions.
+Explain when a cluster is outside the allowed scope; do not invent results.
+
+## Tool bindings
+
+```yaml kmx-tool
+name: get_dg_cluster
+description: Read one approved dg development cluster
+command: az
+args:
+  - aks
+  - show
+  - --subscription
+  - YOUR-SUBSCRIPTION
+  - --resource-group
+  - dg-development
+  - --name
+  - argument: cluster
+  - --output
+  - json
+  - --only-show-errors
+parameters:
+  cluster:
+    type: string
+    pattern: '^dg-[a-z0-9][a-z0-9-]{0,59}$'
+    max-length: 63
+execution:
+  timeout: 15s
+  max-output-bytes: 65536
+  approval: granted-scope
+validation:
+  args: [version, --output, json]
+  exit-code: 0
+  stdout-pattern: '"azure-cli"\s*:\s*"2\.'
+  timeout: 5s
+```
+````
+
+Replace the example's subscription/resource group with your intended scope. The
+regex applies only to the model-supplied cluster operand; the model cannot select
+another executable, subscription, resource group, flags or arbitrary arguments.
+All parameters are required, and undeclared parameters refuse before execution.
+String arguments require a Go/RE2 anchored pattern or explicit enum, default to
+256 bytes (up to 4096 via max-length), and refuse control characters or option-like
+leading hyphens. Integers require nonnegative minimum/maximum bounds. Argument
+placeholders are individual argv entries, never shell interpolation; the first
+argument must be a reviewed literal subcommand/flag. Up to eight bindings, sixteen
+parameters and sixty-four argv entries are supported.
+
+### Resolve, review, validate, activate
+
+```sh
+kmx validate dg-cluster-reader.agent.md
+kmx tools approve dg-cluster-reader.agent.md
+kmx tools approve dg-cluster-reader.agent.md --apply
+kmx run dg-cluster-reader.agent.md
+# Or apply the reviewed binding to a running instance:
+kmx run dg-cluster-reader.agent.md --update
+```
+
+`command: az` resolves using your PATH, so different users can keep different
+installation paths without editing the file. Review displays the resolved absolute
+path and SHA-256 along with the exact argv, constraints and validation command.
+Plain validate/approve is offline inspection: no command, probe or login runs.
+`--apply` asks before executing the declared probes and saving the grant. Scripts
+must explicitly use `--apply --yes`. Output can be text/JSON/YAML.
+
+Validation always uses the same resolved executable with **fixed args**, an expected
+exit code and Go-regex stdout match. It has its own default five-second timeout
+(maximum fifteen seconds) and 16 KiB output bound. The probe is optional; absence
+is reported as "no probe declared". Failure, timeout, malformed output or source
+changes prevent approval. Approved probes run again on start/update before tools
+activate; failure leaves an existing running version unchanged. A version probe
+establishes only its declared compatibility check—not login, API reachability or
+cluster health. A probe can itself have side effects: review it as executable code.
+
+The local grant binds the whole definition (including probes/constraints) and each
+resolved executable. PATH resolving elsewhere or launcher bytes changing requires
+reapproval. Interpreter-backed launchers may depend on untracked interpreter/modules;
+the hash does not attest that entire installation. Calls run as your user with
+inherited credentials, in an isolated temporary working directory. There is no
+filesystem/network sandbox and no automatic read-only guarantee for arbitrary
+binaries. Use native Azure/GitHub authorization for credential-level restrictions.
+This first slice supports **granted-scope** only: explicit approval enables the
+reviewed commands unattended. Per-call and once-per-session approval UI is not yet
+implemented; unsupported approval modes refuse rather than silently auto-approve.
+
+Execution has a default 15-second deadline (up to two minutes), bounded stdout,
+withheld stderr and process-group cancellation. Credential-shaped outputs are
+withheld. At most eight tool calls run per model turn. No binary is auto-installed,
+no shell aliases/functions are resolved, and no automatic retry is performed.
+
+The checked-in [Go-version agent](../.github/agents/local-go-version.agent.md)
+demonstrates a harmless fixed CLI call with a compatibility probe; its
+[mock tests](../.github/agent-tests/local-go-version.agent.test.md) validate response
+handling without executing the binary. A live exercise resolved Go from PATH,
+passed the probe, invoked the actual tool through Copilot and reported its version;
+the separate mocked suite passed. Native deployment still refuses local tools.
+
+## Suggest and approve PR-monitor tools
+
+Start with the checked-in [PR monitor](../.github/agents/pr-monitor.agent.md) and
+its [mock tests](../.github/agent-tests/pr-monitor.agent.test.md):
+
+```sh
+kmx tools suggest .github/agents/pr-monitor.agent.md \
+  --repo kaimahi-agents/kaimahi
+kmx tools review p-PROPOSAL_ID
+kmx tools review p-PROPOSAL_ID --apply
+kmx run .github/agents/pr-monitor.agent.md
+kmx chat pr-monitor
+```
+
+Suggest sends only the definition and a bounded capability catalog to a tool-free
+Copilot planner. It requires an explicit literal OWNER/REPO and can select only
+`github.pr.list/v1` and `github.pr.read/v1`. It cannot run tools, grant permissions,
+modify the agent file or invent executable commands. It reports unsupported needs
+as gaps. Review shows exact scope, tools, auth executable/digest and limits; apply
+requires confirmation (default No) or explicit `--apply --yes` for scripts.
+`--select github_pr_read` approves a subset; `--repo OWNER/REPO` adjusts scope
+explicitly before approval. Definition/binding edits during review refuse.
+
+Accepted grants are private overlays under `KMX_HOME/agents/tools/`, keyed by source
+path and bound to the definition hash, adapter, repository, tool set and gh binary
+hash. No source rewrite is needed: `tools: []` is valid for the portable definition;
+KMX supplies only approved overlay handlers to its session. A project copy does not
+carry permission grants. Existing instances stay on their frozen binding until
+`kmx run FILE --update`; a binding-only change replaces sessions too. Definition
+edits require another suggestion/review. Changing the gh executable refuses until
+reviewed again. `inspect` shows the binding digest and approved tool names.
+
+In chat, `/suggest-tools OWNER/REPO` runs the same isolated planner;
+`/review-tools PROPOSAL_ID` displays the scope and CLI acceptance command. Apply
+in the terminal, then `/update` to activate. Suggestion results never auto-approve.
+
+### Exact GitHub execution boundary
+
+- `github_pr_list` accepts an empty object and lists up to 20 open PRs.
+- `github_pr_read` accepts only a positive integer `number`, then reads PR metadata,
+  up to 20 reviews and up to 20 check runs. Truncation/limits are reported.
+- The executor constructs fixed HTTPS GET routes beneath the approved repository
+  at `api.github.com`. Redirects refuse; returned URLs never become request targets.
+  It projects metadata/review state/check conclusions, excluding bodies and logs.
+- The pinned gh executable supplies `gh auth token --hostname github.com` through
+  bounded capture into memory; no token is stored in proposals, grants, source,
+  argv or output. Host/repo/debug/pager and ambient token overrides are removed
+  for this subprocess. Sign in explicitly with `gh auth login` beforehand.
+- The installed gh credential can have broader access. This is application-enforced
+  repository scope, not a token permission reduction. Use a separately constrained
+  credential when credential-level repository isolation is required.
+- Requests have a 15-second budget and 64 KiB response/output limits; each model
+  turn has at most eight tool invocations. No automatic inference/tool retry.
+  No generic shell, MCP, file-read, write or Copilot built-in tools are exposed.
+
+Mock Test never uses live grants as a fallback. Every approved tool needs a fixture
+in each case; results bind the grant digest and stay labeled mocked-tools. The
+checked-in PR test makes a real model call to a mock `github_pr_read` handler.
+The live path was separately exercised against PR #654: inferred list/read tools,
+approved only read, and returned observed checks with the 20-of-22 limit disclosed.
+Neither mock nor live local results authorize AgentSuite Deploy; the mapper refuses
+agents with local grants until native cluster tool bindings exist.
+
 This branch's Copilot-native front-matter format is an explicit additional spike
 alongside the canonical Squad charter preview on main. Canonical charters starting
 with `# Name` retain upstream Run/Test/MCP behavior. Use `--type md` to select the
