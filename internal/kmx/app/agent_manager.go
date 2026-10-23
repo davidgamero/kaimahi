@@ -17,8 +17,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 const localAgentManagerVersion = "copilot-sessions/v4"
@@ -170,11 +168,11 @@ func ensureAgentManager(ctx context.Context) (agentManagerRecord, error) {
 	deadline := time.NewTimer(30 * time.Second)
 	defer deadline.Stop()
 	for {
-		err = unix.Flock(int(lease.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		err = mdLock(lease)
 		if err == nil {
 			break
 		}
-		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+		if !mdLockBusy(err) {
 			lease.Close()
 			return agentManagerRecord{}, err
 		}
@@ -210,7 +208,9 @@ func ensureAgentManager(ctx context.Context) (agentManagerRecord, error) {
 	defer read.Close()
 	defer write.Close()
 	cmd := exec.Command(exe, "__agent-manager")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err = mdDetachProcess(cmd); err != nil {
+		return agentManagerRecord{}, err
+	}
 	cmd.ExtraFiles = []*os.File{lease, write}
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	// State paths passed as data, never shell interpolation; no credentials copied.
@@ -303,7 +303,7 @@ func RunAgentManager() error {
 		notify(err)
 		return err
 	}
-	if err = unix.Flock(int(lease.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err = mdLock(lease); err != nil {
 		notify(err)
 		return err
 	}

@@ -10,10 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
-	"golang.org/x/sys/unix"
 )
 
 type MarkdownPreferences struct {
@@ -49,8 +47,7 @@ func mdPrivateDir(path string) error {
 	if err != nil {
 		return err
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat.Uid != uint32(os.Geteuid()) || info.Mode().Perm()&0022 != 0 {
+	if !mdOwned(info, false) || info.Mode().Perm()&0022 != 0 {
 		return errors.New("KMX state directory must be owned by you and not writable by other users")
 	}
 	return nil
@@ -60,8 +57,7 @@ func mdStateRead(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || st.Uid != uint32(os.Geteuid()) || st.Nlink != 1 {
+	if !mdOwned(info, true) || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
 		return errors.New("unsafe local state file; expected owner-only regular file")
 	}
 	b, err := mdRead(path, 256<<10)
@@ -83,24 +79,15 @@ func mdStateUpdate(path string, update func() ([]byte, error)) error {
 	if err := mdPrivateDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	fd, err := unix.Open(path+".lock", unix.O_CREAT|unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
+	lock, err := openAgentLease(path+".lock", true)
 	if err != nil {
 		return err
 	}
-	lock := os.NewFile(uintptr(fd), path+".lock")
 	defer lock.Close()
-	info, err := lock.Stat()
-	if err != nil {
-		return err
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.Mode().IsRegular() || stat.Uid != uint32(os.Geteuid()) || stat.Nlink != 1 || info.Mode().Perm() != 0600 {
-		return errors.New("unsafe local state lock")
-	}
-	if err = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err = mdLock(lock); err != nil {
 		return errors.New("local state busy; try again")
 	}
-	defer unix.Flock(fd, unix.LOCK_UN)
+	defer mdUnlock(lock)
 	b, err := update()
 	if err != nil {
 		return err

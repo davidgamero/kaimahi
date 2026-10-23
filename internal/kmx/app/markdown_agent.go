@@ -19,7 +19,6 @@ import (
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/secretshapes"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"go.yaml.in/yaml/v3"
-	"golang.org/x/sys/unix"
 )
 
 const markdownAgentLimit = 64 << 10
@@ -70,11 +69,10 @@ func mdHash(raw []byte) string { return fmt.Sprintf("sha256:%x", sha256.Sum256(r
 func mdJSONHash(v any) string  { b, _ := json.Marshal(v); b, _ = jcs.Transform(b); return mdHash(b) }
 
 func mdRead(path string, limit int) ([]byte, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	f, err := mdOpenRead(path)
 	if err != nil {
 		return nil, err
 	}
-	f := os.NewFile(uintptr(fd), path)
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() > int64(limit) {

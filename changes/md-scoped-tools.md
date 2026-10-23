@@ -1,5 +1,8 @@
 ### Added
 
+- Keep canonical Windows parser/MCP builds independent of Unix-only Markdown
+  instance primitives; native Windows instance IO/execution refuses with WSL guidance.
+
 - Post-import inference proposes up to three scoped CLI commands with fixed argv,
   bounded operands/time/output and per-tool allow/deny, without a GitHub-first
   question. Missing scope blocks acceptance; accepted declarations still require
