@@ -240,13 +240,13 @@ func (m *markdownTUI) localCommand(input string) tea.Cmd {
 		}
 		return tea.Quit
 	case "/help":
-		m.note("COMMANDS", "/show /test [id] /tests /reload /update [yes|cancel] /reset /edit /edit-tests /suggest-tools OWNER/REPO /review-tools PROPOSAL_ID /diff /auto-test on|off /settings /cancel /quit")
+		m.note("COMMANDS", "/show /test [id] /tests /reload /update [yes|cancel] /reset /edit /edit-tests /suggest-tools [OWNER/REPO] /review-tools PROPOSAL_ID /diff /auto-test on|off /settings /cancel /quit")
 	case "/suggest-tools":
 		if m.busy {
 			m.note("BUSY", "Finish the current operation first.")
 			break
 		}
-		if err := validateGithubRepo(arg); err != nil {
+		if err := validateGithubRepo(arg); arg != "" && err != nil {
 			m.note("SUGGEST TOOLS", err.Error())
 			break
 		}
@@ -270,6 +270,14 @@ func (m *markdownTUI) localCommand(input string) tea.Cmd {
 		p, err := ReadMarkdownToolProposal(arg)
 		if err != nil {
 			m.note("REVIEW TOOLS", err.Error())
+			break
+		}
+		if p.SchemaVersion == 2 {
+			var text strings.Builder
+			for _, choice := range p.CLIChoices {
+				_ = RenderCLIChoice(&text, choice)
+			}
+			m.note("REVIEW TOOLS", text.String()+"\nAdd selected declarations: kmx tools review "+p.ID+" --apply\nThen tools approve FILE --apply before /update.")
 			break
 		}
 		g, err := PrepareToolGrant(p, "", nil)
@@ -463,6 +471,9 @@ func (m markdownTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var text strings.Builder
 			for _, c := range v.proposal.Choices {
 				fmt.Fprintf(&text, "%s — %s\n", c.Template, c.Reason)
+			}
+			for _, c := range v.proposal.CLIChoices {
+				_ = RenderCLIChoice(&text, c)
 			}
 			for _, gap := range v.proposal.Gaps {
 				fmt.Fprintln(&text, "Unsupported:", gap)

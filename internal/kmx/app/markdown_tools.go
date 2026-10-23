@@ -32,6 +32,7 @@ type MarkdownToolChoice struct {
 	Reason   string `json:"reason"`
 }
 type MarkdownToolProposal struct {
+	CLIChoices    []MarkdownCLIChoice  `json:"cliChoices,omitempty"`
 	SchemaVersion int                  `json:"schemaVersion"`
 	ID            string               `json:"id"`
 	Source        string               `json:"source"`
@@ -209,6 +210,9 @@ func decodeToolSuggestions(raw string) ([]MarkdownToolChoice, []string, error) {
 }
 
 func SuggestMarkdownTools(ctx context.Context, path, repo, model string) (MarkdownToolProposal, error) {
+	if repo == "" {
+		return SuggestCLICommandTools(ctx, path, model)
+	}
 	return suggestMarkdownTools(ctx, path, repo, model, &markdownCopilot{})
 }
 func suggestMarkdownTools(ctx context.Context, path, repo, model string, executor markdownExecutor) (MarkdownToolProposal, error) {
@@ -270,8 +274,14 @@ func ReadMarkdownToolProposal(id string) (MarkdownToolProposal, error) {
 	if err = mdStateRead(filepath.Join(root, "proposals", id+".json"), &p); err != nil {
 		return p, err
 	}
-	if p.SchemaVersion != 1 || p.ID != id || !filepath.IsAbs(p.Source) || !agentVersionDigest.MatchString(p.AgentDigest) {
+	if (p.SchemaVersion != 1 && p.SchemaVersion != 2) || p.ID != id || !filepath.IsAbs(p.Source) || !agentVersionDigest.MatchString(p.AgentDigest) {
 		return p, errors.New("invalid tool proposal")
+	}
+	if p.SchemaVersion == 2 {
+		if p.Repository != "" || len(p.Choices) > 0 {
+			return p, errors.New("CLI proposal cannot contain GitHub-template overrides")
+		}
+		return p, validateCLIChoices(p.CLIChoices, p.Gaps)
 	}
 	raw, _ := json.Marshal(map[string]any{"choices": p.Choices, "gaps": p.Gaps})
 	if _, _, err = decodeToolSuggestions(string(raw)); err != nil {

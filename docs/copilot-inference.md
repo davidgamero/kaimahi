@@ -121,6 +121,34 @@ the separate mocked suite passed. Native deployment still refuses local tools.
 
 ## Suggest and approve PR-monitor tools
 
+### General suggestions (default)
+
+`kmx tools suggest FILE` now analyzes the definition once and proposes **zero to
+three scoped CLI commands**, not a GitHub-only catalog. Each proposal includes a
+reason, literal resource scope, fixed argv/subcommands, validated operands, an
+explicit timeout of at most 30 seconds and at most 16 KiB output. String operands
+need regex/enum limits and a maximum length of 1–256 bytes. Missing repository,
+subscription, resource-group or other required scope is returned as clarification
+items; an incomplete tool cannot be selected. A persona agent can receive no tools.
+No commands or compatibility probes execute during suggestion.
+
+```sh
+kmx tools suggest agent.agent.md
+kmx tools review p-PROPOSAL_ID
+kmx tools review p-PROPOSAL_ID --apply --select tool_name
+kmx tools approve agent.agent.md --apply
+```
+
+The review applies only selected declarations to `tools: []` and a final Tool
+bindings section, preserving the instruction body. Existing tool-enabled files
+require explicit manual merging rather than automatic replacement. Runtime access
+still requires the separate local executable approval. Paired tests must acquire
+mock coverage for new tools. The planner is advisory: the reviewer must verify that
+the displayed command scope matches the intended work; regex/argv validation does
+not prove a generic binary has no other side effects.
+
+### Fixed GitHub templates (explicit --repo)
+
 Start with the checked-in [PR monitor](../.github/agents/pr-monitor.agent.md) and
 its [mock tests](../.github/agent-tests/pr-monitor.agent.test.md):
 
@@ -265,6 +293,16 @@ The instruction bytes are preserved.
 Run/Chat continues with the saved path. Cancelling or declining changes nothing;
 scripts get the import command instead of prompts. Validate remains read-only.
 
+After saving an imported definition, interactive import/Run/Chat runs one inference
+pass for up to three scoped CLI tool suggestions. There is no GitHub-first question.
+Each complete proposal shows its command, scope, operand constraints and execution
+limits, then asks **allow/deny** (default deny). Only allowed declarations are added
+after the complete review; cancelling midway adds nothing. Missing scope is shown
+as a clarification request and cannot be allowed until supplied in the definition.
+Import stays saved if suggestion fails or returns no tools. Accepting declarations
+grants no execution permissions: review PATH resolution and probes separately with
+`tools approve FILE --apply`. Existing tools are retained rather than auto-merged.
+
 ```markdown
 ---
 name: frogagent
@@ -364,11 +402,15 @@ are preserved. Private lock/generation bookkeeping remains to prevent stale
 clients from acquiring authority over a later run of the same source. This is not
 a cluster-resource or cache-pruning command. `-o json|yaml` reports removal.
 
-ID/name completion is available for run, chat, inspect, stop and rm (and run's
---agent flag). Stop/chat suggest running instances; rm/inspect/run include stopped
+ID/name completion is available for run, test, chat, inspect, stop and rm (and run's
+--agent flag). Stop/chat suggest running instances; rm/inspect/run/test include stopped
 ones. Ambiguous names are omitted in favor of unique IDs. Local completion reads
 records/leases only, never Copilot or source content. Explicit Orka selection keeps
 the existing live-agent completion.
+
+Run/Test accept the completed short ID and resolve it to the tracked source path.
+Test evaluates the current saved working copy (not the cached running version).
+If no instance matches a partial file path, Run/Test allow shell file completion.
 
 For the current zsh session, enable completion for the checkout binary:
 
