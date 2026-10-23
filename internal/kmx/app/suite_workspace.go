@@ -97,6 +97,19 @@ func (a *App) CreateSuiteMember(ctx context.Context, root string, opt workspace.
 	return err
 }
 
+// CreateSuiteFlow authors a complete experimental suite offline. It requires an
+// exact new workspace root and never resolves operational configuration.
+func (a *App) CreateSuiteFlow(ctx context.Context, root string, opt workspace.FlowCreateOptions) error {
+	if strings.TrimSpace(root) == "" {
+		return errors.New("experimental flow creation requires --workspace DIR")
+	}
+	if err := workspace.CreateFlow(ctx, root, opt); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(a.Out, "Created experimental offline AgentSuite workspace %s (not deployed)\n", workspacePathLabel(root))
+	return err
+}
+
 func nativeSuiteLabel(profile workspace.RuntimeProfile) string {
 	if profile.ID == "kagent" {
 		return "native-kagent v0.10.3 Go"
@@ -313,7 +326,7 @@ func (a *App) pushSuiteWorkspaceSelected(ctx context.Context, root, reference, l
 		}
 	}
 	if expectedS != nil && prepared.Descriptor.Digest != expected {
-		return oras.PushResult{}, fmt.Errorf("prepared suite does not match the expected publication identity")
+		return oras.PushResult{}, fmt.Errorf("prepared suite does not match the expected publication identity; rebuilding can change the artifact identity; rerun kmx test and kmx push for this artifact, without editing or reusing receipts for a different artifact")
 	}
 	if receipt != nil {
 		if _, err := canonicalSuitePassingReceipt(ctx, receipt, suite); err != nil {

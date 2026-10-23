@@ -10,7 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	agentsuite "github.com/agent-primitives/suite"
+	suitecore "github.com/agent-primitives/suite/core"
+	suiteoci "github.com/agent-primitives/suite/oci"
 	suiteoras "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/oras"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"
@@ -45,7 +46,14 @@ func SourceFiles(ctx context.Context, root string, prepared *Prepared) (map[stri
 	return s.source, nil
 }
 
+// ErrCacheMigration is payload-free so offline consumers can retain the remedy
+// when redacting untrusted preparation errors.
+var ErrCacheMigration = errors.New("prepared cache uses an earlier or unknown packaging policy; move aside only the affected prepared cache entry and retry; if the rebuilt artifact identity changes, rerun kmx test before kmx push; keep existing receipts and managed passing evidence")
+
+const cachePackaging = "kmx.directory-modes/v1"
+
 type cacheRecord struct {
+	Packaging   string             `json:"packaging"`
 	Fingerprint string             `json:"fingerprint"`
 	Descriptor  ocispec.Descriptor `json:"descriptor"`
 	Name        string             `json:"name"`
@@ -66,33 +74,7 @@ func within(parent, child string) bool {
 	rel, err := filepath.Rel(parent, child)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
-func privateTree(root string, setMode bool) error {
-	return filepath.WalkDir(root, func(name string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.Type()&os.ModeSymlink != 0 {
-			return errors.New("cache symlinks are not supported")
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() && !info.Mode().IsRegular() {
-			return errors.New("cache contains nonregular file")
-		}
-		if d.IsDir() {
-			if setMode {
-				return os.Chmod(name, 0o700)
-			}
-			if info.Mode().Perm() != 0o700 {
-				return errors.New("cache directories must be private (0700)")
-			}
-		}
-		return nil
-	})
-}
-func cached(ctx context.Context, key string, s *snapshot) (*Prepared, error) {
+func cached(ctx context.Context, key string, s *snapshot, flowMode bool) (*Prepared, error) {
 	if err := privateTree(key, false); err != nil {
 		return nil, err
 	}
@@ -106,14 +88,17 @@ func cached(ctx context.Context, key string, s *snapshot) (*Prepared, error) {
 		return nil, fmt.Errorf("incomplete/corrupt prepared cache: %w", err)
 	}
 	var rec cacheRecord
-	if err := agentsuite.Unmarshal(b, &rec); err != nil {
+	if err := suitecore.Unmarshal(b, &rec); err != nil {
 		return nil, err
+	}
+	if rec.Packaging != cachePackaging {
+		return nil, fmt.Errorf("%w (entry %q)", ErrCacheMigration, key)
 	}
 	if rec.Fingerprint != s.fingerprint || rec.Name != s.name {
 		return nil, errors.New("prepared cache source identity mismatch")
 	}
 	p := &Prepared{filepath.Join(key, "layout"), rec.Fingerprint, rec.Descriptor, rec.Name}
-	files, err := verify(ctx, p)
+	files, err := verifyMode(ctx, p, flowMode)
 	if err != nil {
 		return nil, fmt.Errorf("corrupt prepared cache: %w", err)
 	}
@@ -126,6 +111,10 @@ func cached(ctx context.Context, key string, s *snapshot) (*Prepared, error) {
 // Prepare atomically publishes a complete private cache entry. Concurrent
 // candidates may duplicate work; only a verified complete winner is reused.
 func Prepare(ctx context.Context, root, cacheDir string) (*Prepared, error) {
+	return prepare(ctx, root, cacheDir, false)
+}
+
+func prepare(ctx context.Context, root, cacheDir string, flowMode bool) (*Prepared, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -140,7 +129,7 @@ func Prepare(ctx context.Context, root, cacheDir string) (*Prepared, error) {
 	if within(root, cacheDir) || within(cacheDir, root) {
 		return nil, errors.New("prepared cache must be outside and not contain the workspace")
 	}
-	s, err := loadSource(ctx, root)
+	s, err := loadSourceMode(ctx, root, flowMode)
 	if err != nil {
 		return nil, err
 	}
@@ -156,11 +145,11 @@ func Prepare(ctx context.Context, root, cacheDir string) (*Prepared, error) {
 	}
 	key := filepath.Join(cacheDir, strings.TrimPrefix(s.fingerprint, "sha256:"))
 	if _, err := os.Lstat(key); err == nil {
-		p, err := cached(ctx, key, s)
+		p, err := cached(ctx, key, s, flowMode)
 		if err != nil {
 			return nil, err
 		}
-		if err := CheckCurrent(ctx, root, p); err != nil {
+		if err := checkCurrent(ctx, root, p, flowMode); err != nil {
 			return nil, err
 		}
 		return p, nil
@@ -176,7 +165,11 @@ func Prepare(ctx context.Context, root, cacheDir string) (*Prepared, error) {
 	if err := writeFiles(source, s.files); err != nil {
 		return nil, err
 	}
-	result, err := suiteoras.Push(ctx, source, filepath.Join(stage, "layout"), "prepared")
+	pack := suiteoras.Push
+	if flowMode {
+		pack = suiteoras.PrepareFlowV1Alpha1Layout
+	}
+	result, err := pack(ctx, source, filepath.Join(stage, "layout"), "prepared")
 	if err != nil {
 		return nil, err
 	}
@@ -187,31 +180,31 @@ func Prepare(ctx context.Context, root, cacheDir string) (*Prepared, error) {
 		return nil, err
 	}
 	p := &Prepared{result.Path, s.fingerprint, result.Descriptor, s.name}
-	if err := Verify(ctx, p); err != nil {
+	if _, err := verifyMode(ctx, p, flowMode); err != nil {
 		return nil, err
 	}
-	record, err := agentsuite.Marshal(cacheRecord{p.Fingerprint, p.Descriptor, p.Name})
+	record, err := suitecore.Marshal(cacheRecord{Packaging: cachePackaging, Fingerprint: p.Fingerprint, Descriptor: p.Descriptor, Name: p.Name})
 	if err != nil {
 		return nil, err
 	}
 	if err := os.WriteFile(filepath.Join(stage, "prepared.json"), record, 0o600); err != nil {
 		return nil, err
 	}
-	if err := CheckCurrent(ctx, root, p); err != nil {
+	if err := checkCurrent(ctx, root, p, flowMode); err != nil {
 		return nil, err
 	}
 	if err := os.Rename(stage, key); err != nil {
 		if _, statErr := os.Lstat(key); statErr != nil {
 			return nil, err
 		}
-		p, err = cached(ctx, key, s)
+		p, err = cached(ctx, key, s, flowMode)
 		if err != nil {
 			return nil, err
 		}
 	} else {
 		p.Path = filepath.Join(key, "layout")
 	}
-	if err := CheckCurrent(ctx, root, p); err != nil {
+	if err := checkCurrent(ctx, root, p, flowMode); err != nil {
 		return nil, err
 	}
 	return p, nil
@@ -220,10 +213,14 @@ func Prepare(ctx context.Context, root, cacheDir string) (*Prepared, error) {
 // CheckCurrent refuses a silently substituted publication candidate. It does
 // not reinterpret source identity as a PortableAgent digest or evidence.
 func CheckCurrent(ctx context.Context, root string, p *Prepared) error {
+	return checkCurrent(ctx, root, p, false)
+}
+
+func checkCurrent(ctx context.Context, root string, p *Prepared, flowMode bool) error {
 	if p == nil {
 		return errors.New("prepared artifact is required")
 	}
-	s, err := loadSource(ctx, root)
+	s, err := loadSourceMode(ctx, root, flowMode)
 	if err != nil {
 		return err
 	}
@@ -235,11 +232,22 @@ func CheckCurrent(ctx context.Context, root string, p *Prepared) error {
 
 // Verify validates both the public OCI graph and the closed native profile.
 func Verify(ctx context.Context, p *Prepared) error { _, err := verify(ctx, p); return err }
+func verifyMode(ctx context.Context, p *Prepared, flowMode bool) (map[string][]byte, error) {
+	if !flowMode {
+		return verify(ctx, p)
+	}
+	a, err := readPreparedFlow(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	return a.Files(), nil
+}
+
 func verify(ctx context.Context, p *Prepared) (map[string][]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if p == nil || !agentsuite.IsValidDigest(p.Fingerprint) {
+	if p == nil || !suitecore.IsValidDigest(p.Fingerprint) {
 		return nil, errors.New("valid prepared artifact identity is required")
 	}
 	root, err := safeAbsolute(p.Path)
@@ -249,7 +257,7 @@ func verify(ctx context.Context, p *Prepared) (map[string][]byte, error) {
 	if err := privateTree(root, false); err != nil {
 		return nil, err
 	}
-	if _, err := agentsuite.ValidatePath(root); err != nil {
+	if _, err := suiteoci.ValidatePath(root); err != nil {
 		return nil, err
 	}
 	r, err := os.OpenRoot(root)
@@ -262,7 +270,7 @@ func verify(ctx context.Context, p *Prepared) (map[string][]byte, error) {
 		return nil, err
 	}
 	var index ocispec.Index
-	if err := agentsuite.Unmarshal(b, &index); err != nil {
+	if err := suitecore.Unmarshal(b, &index); err != nil {
 		return nil, err
 	}
 	if len(index.Manifests) != 1 || !content.Equal(index.Manifests[0], p.Descriptor) || index.Manifests[0].ArtifactType != p.Descriptor.ArtifactType {

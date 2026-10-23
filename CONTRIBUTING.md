@@ -37,10 +37,11 @@ artifact.
 Root `kmx create NAME` authors one tool-free native workspace member offline,
 Orka by default, exact v0.10.3 Go/linux-amd64 kagent or pinned AgentSessions
 chat explicitly. AgentSessions prepare/load/ordinary push and explicit private
-literal-loopback `eval --development-host FILE` remain independent of deleted
+literal-loopback `test --development-host FILE` remain independent of deleted
 bundle Sessions evaluation/replay: one fresh Session/config/Exec per declared run of each ordered
-case, full-pass private proof and exact-S evaluated push, no cluster settings,
-tools, auth, Lift/chat/status or remote lifecycle. Receipt diff refuses
+case, a required `AgentSessionsBinding` serving the packaged model, full-pass
+private proof and exact-S evaluated push, a plan-only offline Deploy render, no
+cluster settings, tools, auth, apply, chat/status or remote lifecycle. Receipt diff refuses
 AgentSessions proof. Runtime-core assertions/llmJudge and all their test groups
 remain retained; native Orka/kagent and development AgentSessions eval supports authored llmJudge with an
 explicit endpoint, two threshold-side samples and payload-free declared identity
@@ -51,7 +52,7 @@ AgentSessions shares the same judge and repeat policy. Exact model and
 file-valued instructions are required: terminal create prompts for omitted inputs,
 while nonterminal use requires both flags. Core authoring stays strict;
 create/push share workspace discovery.
-No runtime/model bootstrap belongs in workspace create. Root eval registers
+No runtime/model bootstrap belongs in workspace create. Root test registers
 completed exact-suite passing metadata in private managed state; --out is optional.
 Root push requires that proof by default, or explicit --evaluation FILE without
 fallback; --unevaluated retains ordinary publication. Explicit REPO:TAG is preserved,
@@ -67,9 +68,9 @@ not suite-source evaluation or a retired-state reader. Preserve public AgentSuit
 build/pull/extracted-directory transfer and alpha `pkg/kmx` interfaces.
 
 Quickstart/console use native source → full eval → exact publication → reviewed
-Lift Apply/Verify. Quickstart then sends a separate fresh answer Task; console
-Ready means placement only. Chat `/lift` and console Lift only print
-`Lift moved: kmx lift <ref>@<digest> --to-context … --evidence …`.
+Deploy Apply/Verify. Quickstart then sends a separate fresh answer Task; console
+Ready means placement only. Chat `/lift` and console Deploy only print
+`Deploy moved: kmx deploy <ref>@<digest> --to-context … --evidence …`.
 No release GUI/live-copy fallback. Wizard tools/host modes and live tools/inference
 editing are retired; host Foundry/Copilot chat controls remain independent.
 Standalone AKS up/down and internal App.Lift are independent operations.
@@ -80,7 +81,7 @@ one fresh blocking A2A Task per declared case run without retry. Optional KMX
 configured deadline independently per run, with summed budget disclosure;
 AgentSessions uses fresh Session/config/Exec per run. Draft #497's JSON
 case schema does not yet accept those fields. Evidence is full-passing and
-runtime-specific. Digest Lift refuses every occupied kagent primary/child; Orka
+runtime-specific. Digest Deploy refuses every occupied kagent primary/child; Orka
 permits exact evaluated reuse. No Python/RemoteMCP or kagent standalone chat/run.
 Keep privacy/current identity ResourceVersion/Secret metadata bracketing intact;
 readiness is not execution. See the [workspace guide](docs/suite-workspace.md).
@@ -106,6 +107,10 @@ python3 scripts/check-agentsuite-fixtures.py --selftest && python3 scripts/check
 python3 scripts/check-legacy-runtime.py --selftest && python3 scripts/check-legacy-runtime.py
 python3 scripts/check-comment-history.py --selftest && python3 scripts/check-comment-history.py
 python3 scripts/test_check_mutations.py
+python3 scripts/test_orka_routing.py
+go run scripts/ci/orka-boundary.go
+python3 scripts/test_orka_callers.py
+go run scripts/ci/orka-callers.go
 python3 scripts/test_app_tests.py
 python3 scripts/check-mutations.py
 python3 scripts/check-readme-front-door.py
@@ -140,14 +145,17 @@ job runs each checker, each checker's self-test, and a set of inline
 meta-checks over CI's own guards; it is the authority on what gates a
 merge, not this list.
 
-The Linux app tests run in four process-isolated CI shards, assigned by SHA-256
-of each compiled top-level test name. Subtests stay with their parent. The
+The Linux and macOS app tests each run in four process-isolated CI shards,
+assigned by SHA-256 of each compiled top-level test name. Subtests stay with their parent. The
 required `hygiene` check requires every shard to succeed and still runs the other
 packages and focused app regressions. Each shard retains the 600-second package
 limit and publishes payload-free per-test timings. To run one shard locally,
 use `python3 scripts/ci/app-tests.py --shard 0 --shards 4`; ordinary
 `go test ./...` still runs the complete suite without sharding.
 Use `make test-app` locally to run all four CI shards; an unsharded local run can reach the 600s limit.
+The App test harness resolves macOS's temporary root before creating fixtures,
+so `/var` aliases do not trip the source loaders' symlink-ancestor refusals.
+Each CI timing/failure artifact names its operating system and shard.
 
 The retired-command scanner checks concrete removed commands and assets, not
 kagent API/image identifiers or runtime-version support. Its small exact
@@ -169,16 +177,73 @@ change classification is uncertain. It runs the harness in full on main pushes
 and in the nightly hygiene job. Its inexpensive runner/routing tests and other
 hygiene checks run regardless of that mutation gate.
 
+The classifier exposes an independent `orka_required` decision for the Orka
+runtime worker. Only explicitly safe PRs and ordinary main pushes skip it;
+full nightly, relevant/unknown PR, manual and release qualification remain.
+Quickstart and stock Helm schedules and guards are unchanged; kagent uses the separate hermetic/live policy below. The checkout helper accepts
+full commit IDs as `python3 scripts/ci/orka-routing.py --base SHA --head SHA`.
+It prints only `true` or `false`; unknown, empty, malformed or failed diffs mean
+`true`. PR classification uses the synthetic merge commit's actual first parent,
+not the event's possibly stale base. NUL-delimited, no-renames Git output keeps
+deletions and both sides of moves visible.
+
+The exact exceptions live in `scripts/ci/orka-routing.json`: directory prefixes,
+exact leaves and direct `changes/*.md` notes. Shared runtime/build/module/script
+paths and unknown paths require Orka, including shared fixture Markdown; there
+is no blanket Markdown exception. Production command builders, file-flag helpers
+and the direct file-runner constructor remain outside the exceptions. The
+Copilot subtree also requires full proof: its provider constructor now runs at
+CLI startup. Model-access exceptions are limited to the four audited root files,
+not new files or subpackages.
+Hygiene checks safe production Go files and safe App test files for `init()`
+functions and active global initializers, across build tags. App test initializers
+also run in the live-test binary, even when `-run` selects another test. Only
+literal `errors.New` and `regexp.MustCompile` setup with verified imports, and
+passive same-file pointer-to-nil type assertions, are permitted.
+
+The separate typed caller guard compares source references with the audited
+`scripts/ci/orka-callers.json` manifest. It catches a safe path calling a new
+runtime object, a new runtime caller of safe code, and new calling declarations
+or closures even in a file already on the boundary. Multi-value initializer
+expressions get separate identities. Named imports in analyzed safe files are
+also pinned, including standard packages whose initialization runs even when a
+preview handler is never called. Static graph walks also
+catch safe-to-safe changes that extend an existing runtime dependency in either
+direction. Methods, function values, fields and same-package private references
+are resolved with Go types, not names guessed from source text.
+
+The guard targets the qualifier's Linux/amd64 build without race/custom tags,
+includes App tests linked into that binary, and excludes other packages' tests.
+It compiles export metadata but never executes initializers or tests. Missing,
+stale or malformed manifests, unresolved definitions, unsupported owned CGO,
+source-file aliases and nested modules fail closed. Owned source containing
+`//line` or `/*line` directives is rejected so adjusted positions cannot relabel
+callers or imported definitions as another routing path. Existing init checks still
+inspect all build tags. This is a conservative source-reference tripwire, not a
+proof of dynamic dispatch, value flow or arbitrary Go effects, and not a sandbox.
+
+For an intentional boundary change, inspect the output of
+`go run scripts/ci/orka-callers.go --audit` and review the affected callers before
+updating the manifest;
+hygiene never refreshes it automatically. Remove obsolete entries too. Narrow
+the routing exceptions when a path is no longer independent. Changes to either
+manifest or helper require full qualification themselves. Both boundary helpers
+have dedicated negative/positive fixtures rather than top-level checker mutation
+discovery. Expanding the safe policy requires reviewed evidence and routing tests.
+
 One Go module contains the root CLI (`cmd/kmx`, `internal/kmx`), concrete
 read-only suite member recipe view (`pkg/suiteview`) and alpha application
-interfaces (`pkg/kmx`). Portable AgentSuite validation is a separate dependency:
-`agentsuite "github.com/agent-primitives/suite"`, pinned to the published minor release
-`v0.5.0` in `go.mod` with verified module sums.
+interfaces (`pkg/kmx`). Portable AgentSuite validation is a separate dependency,
+`github.com/agent-primitives/suite`, pinned to published `v0.7.0` in `go.mod`
+with verified module sums. Import its focused `core`, `oci`, `evidence` and
+`experimental/flow` packages, not the deprecated root. Use the `suitecore`,
+`suiteoci`, `suiteevidence` and `suiteflow` aliases described in the
+[development guide](docs/development.md#agentsuite-dependency-and-consumer-fixtures).
 Public runtime-profile format acceptance enables offline packaging/selection, not
 qualified image execution; see [runtime profiles](docs/suite-workspace.md#explicit-runtime-profiles-offline-only).
 Root `go test ./...` covers kmx consumers, including first-class Orka paths and
 exact-v0.10.3 Go packaged workspace evaluation/evaluated push and create-only
-digest Lift; portable conformance tests run in the suite repository.
+digest Deploy; portable conformance tests run in the suite repository.
 
 Run release verification with `GOWORK=off` against the published dependency
 and its checked-in sums. For coordinated local development, select an external
@@ -205,9 +270,13 @@ clears inherited Helm connection/auth overrides, and pulls charts without caller
 Helm/Docker credentials or plugins. Docker daemon access is preserved. It removes
 only its owned cluster and temporary work. A failed kind create is ambiguous and
 left for inspection. Bootstrap checks readiness and MCP discovery, not suite
-Lift or native A2A execution qualification; it is not an installed CLI installer.
+Deploy or native A2A execution qualification; it is not an installed CLI installer.
 Hygiene runs hermetic bootstrap, qualification, audit, shell, CI-routing and
 loopback fixture tests without creating a cluster.
+
+Full runs emit closed `kagent timing:` markers on saved stderr, with a fixed span
+(`bootstrap`, `qualify`, `suite-evaluation`, `suite-helpers` or `cleanup`),
+start/end boundary, numeric UTC epoch seconds and integer end status.
 
 With no argument (or explicit `qualify`), the shell runs the full qualification.
 Build the final Go state first with `go build -o bin/kmx ./cmd/kmx`, then run
@@ -216,20 +285,42 @@ separately from tool-free packaged-suite qualification.
 Native A2A execution is independently verified with exactly one MCP tool call,
 two model calls and one terminal answer, with no resend. A separate packaged
 workspace phase runs two tool-free cases, self-diff and evaluated push with
-stale-evidence refusal, then source-free digest Lift into a fresh namespace with
+stale-evidence refusal, then source-free digest Deploy into a fresh namespace with
 GET-only planning, ordered creation and occupied repeat refusal without another
 native execution. Only payload-free `qualification.json` and
 `suite-qualification.json` survive under `${RUNNER_TEMP:-/tmp}/kmx-kagent-lift/`;
 raw logs, manifests, credentials, prompts and answers are not artifacts.
 Qualifier diagnostics expose only whitelisted subphase and reason codes through
 saved shell stderr; bootstrap and tool output remain private.
-The `e2e-kagent-lift` shard runs for relevant or unknown PR changes and always
-on main pushes, nightly and manual runs. Its required aggregator accepts only
-intentional skipped outcomes, never failed or cancelled shards.
+Every PR and routine main push instead runs `kagent contract — not live qualification`:
+hermetic Python bootstrap/qualifier/audit/fixture contracts, suite-lift contracts,
+and focused offline Go kagent profile, evaluation, placement, provenance and
+ownership/refusal tests. It creates no live cluster and proves no live A2A, image
+pull, controller rollout or real suite execution. Existing hygiene and all App
+shards remain; their overlapping tests are not removed.
 
-The existing `e2e-orka-runtime` shard also runs
-`python3 scripts/ci/suite-native.py kind-kmx-orka "$RUNNER_TEMP/kmx-suite-native"`
-after its raw upstream Orka Tool/Task and model-answer proof. The checkout-only qualifier requires the
+Full `e2e-kagent-lift / qualify` moves to the existing 03:23 UTC scheduled CI,
+manual CI and fresh exact-commit pre-release/dry-run qualification. Its unchanged
+worker retains live one-shot A2A, packaged two-case evaluation, evaluated push,
+source-free digest lift and private helper proof. `e2e-hello-world` always
+evaluates the fast check and full-worker outcome; it permits full-proof skips
+only on PRs or ordinary main pushes, never a failed, cancelled or missing proof.
+The legacy classifier `kagent_changed` output no longer controls qualification.
+Tom monitors scheduled CI failures; no kagent issue reporter is added. Integration
+failures not caught by hermetic PR coverage may wait until nightly (normally up
+to 24 hours), or block the next release. Use manual CI for immediate live proof.
+
+The read-only `orka-runtime.yml` worker runs the complete raw Orka Tool/Task,
+model-answer and native suite proof. Its CI check appears as
+`e2e-orka-runtime / qualify`; required contexts stay `hygiene` and
+`e2e-hello-world`. Routine main-push proof moves to the daily main nightly;
+manual CI and every release/dry run still require fresh full qualification.
+There is no blanket Markdown shortcut inside the worker: unknown Markdown,
+including live instructions, requires proof. See [CI qualification](docs/development.md#what-ci-proves).
+
+Inside its two owned contexts the command is
+`python3 scripts/ci/suite-native.py kind-kmx-orka kind-kmx-orka-promote "$RUNNER_TEMP/kmx-suite-native"`.
+The checkout-only qualifier requires the
 shard's exclusive cluster-creation flag and a matching `KIND_CLUSTER`, refuses
 existing work/model fixtures, and uses a fresh private KMX home. It adds the pinned
 CPU AIKit model inside that owned cluster, warms it, then attempts two independent
@@ -238,7 +329,12 @@ exact registry/layout transfer, verified
 candidate root/child absence, source-withheld explicit promotion and no-effect
 refusal audits gate its metadata artifacts. Source answer/verdict/judge metadata
 is product-observed after cleanup, not re-fetched from deleted Tasks. Only passing
-metadata and scalar `qualification.json` are uploaded; raw captures are private.
+metadata and scalar `qualification.json` are uploaded as qualification evidence;
+raw captures are private. Separate `${RUNNER_TEMP}/native-suite-timings.json`
+records closed phase codes, monotonic elapsed seconds and scalar outcomes, and is
+uploaded even on qualification failure. Candidate-cleanup timing measures independent
+absence checks; deletion stays inside evaluation. Abrupt process termination may
+leave only the last closed phases with a `running` outcome, never passing evidence.
 Existing cluster deletion owns all runtime/model cleanup.
 The shard also runs `TestReleaseUpdatePinnedRV` and `TestReleaseStatePinnedCAS`
 against the pinned controller after native qualification. The native qualifier
@@ -255,7 +351,7 @@ forward. Independent receipt checks bind declared model/version, policy, thresho
 endpoint configuration digest and both scores; they do not attest model identity.
 No job, case or subprocess timeout is increased. The existing 660s outer limit
 bounds three sequential cases; it does not allow three full 5m waits. A successful
-run qualifies this fixed three-case native workspace and explicit-promoted Lift
+run qualifies this fixed three-case native workspace and explicit-promoted Deploy
 into absent canonical pairs, including a second exclusively owned kind cluster.
 The destination has its own Provider/Secret in orka-system, sharing the same
 source AIKit workload through a fixture-only private-network NodePort, never a
@@ -270,7 +366,7 @@ Harness tests alone are not evidence of real execution.
 Comments describe what the code does and why, as it works now. Keep them tied
 to behavior or constraints that remain true. Put what changed, which effort
 made the change, and what it replaced in the commit message, pull request
-description or CHANGELOG instead.
+description or release-note fragment instead.
 
 ## Pull requests
 
@@ -283,3 +379,56 @@ description or CHANGELOG instead.
   registry names, cluster addresses, or unsanitized user data.
 
 Every change lands through a pull request with required checks green.
+
+### Release-note fragments
+
+Add one `changes/<PR>.md` fragment rather than editing `CHANGELOG.md`'s shared
+Unreleased section. Until the PR number is known, use a unique flat lowercase
+slug, replacing branch-name `/` separators with `-` or choosing another valid name. See [the fragment format](changes/README.md). Keep existing Unreleased
+entries and released history intact; maintainers combine notes at release time.
+
+Documentation/test-only changes are automatically exempt. This means `docs/**`,
+Markdown files, Go `_test.go` files, `testdata/` trees, and the test scripts named
+`scripts/test_*.py` or `scripts/*-test.py` / `scripts/*-test.sh`. Other changes,
+including CI, tooling, dependency and shipped-asset changes, need a new valid
+fragment. Do not rename, edit or delete another pending fragment in a product
+PR; the docs-only release-preparation PR removes the notes it includes.
+
+Validate pending notes locally:
+
+```bash
+python3 scripts/check-changelog-fragments.py
+python3 scripts/check-changelog-fragments.py --selftest
+python3 scripts/test_changelog_ci.py
+```
+
+After committing, check the complete authored branch range, not just its last
+commit:
+
+```bash
+base=$(git merge-base origin/main HEAD)
+python3 scripts/check-changelog-fragments.py --base "$base" --head HEAD
+```
+
+CI uses the synthetic PR merge's actual first parent instead of a stale event
+base. Exemption skips only the requirement for a new note, not validation of
+pending notes. Rendering and release preparation are described in
+[Cutting a release](docs/releases.md#cutting-a-release).
+
+### Repository-map changes
+
+Files inherit the responsibility and classification of their documented
+directory. Adding a file below an existing responsibility does not require a
+map edit. Update [the map](docs/repository-map.md) only when adding, removing or
+moving a top-level responsibility directory: a root area or an immediate child
+of `cmd/`, `internal/` or `pkg/`. Behavior changes go in the package's Go doc
+comment (`doc.go` or the existing package comment), and every `internal/kmx/*`
+package needs one. Do not add file totals or exhaustive file/caller inventories.
+The checker enforces named paths, top-level directory coverage, package doc
+comments and the retired-module boundary; editorial classifications remain
+reviewable.
+
+```bash
+python3 scripts/check-repository-map.py --selftest
+python3 scripts/check-repository-map.py
+```

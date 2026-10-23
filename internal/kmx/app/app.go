@@ -1,5 +1,9 @@
-// Package app orchestrates kmx commands using resolved configuration,
+// Package app orchestrates kmx operations using resolved configuration,
 // context guards, runtime adapters and external tools.
+//
+// App coordinates consent, side effects and runtime-specific evidence.
+// Placement observations are distinct from evaluation proof; successful
+// placement alone must not be treated as proof of agent behavior.
 package app
 
 import (
@@ -12,6 +16,7 @@ import (
 	"time"
 
 	kaimahi "github.com/kaimahi-agents/kaimahi"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentpreview"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/guard"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/orkaschema"
@@ -30,9 +35,18 @@ type progressPresenter interface {
 	Info(string) string
 }
 
+func (a *App) testCommandVerb() string {
+	if a.TestPresentation {
+		return "test"
+	}
+	return "eval"
+}
+
 // App carries the resolved configuration and the streams every command
 // writes to.
 type App struct {
+	// FileRunner is the embedded preview dependency; nil refuses file execution.
+	FileRunner      agentpreview.Runner
 	chatClusterName string
 	// kagentProfile is invocation-local; nil keeps the exact create profile.
 	kagentProfile *kagentProfile
@@ -45,6 +59,12 @@ type App struct {
 	// commands retain it so a checkout binary cannot redirect to an older kmx
 	// earlier on PATH. Empty keeps the installed-command spelling "kmx".
 	Executable string
+	// DeployPresentation selects current CLI stage labels only. Historical JSON,
+	// plan identities and consent-bound data remain unchanged; zero preserves Lift.
+	DeployPresentation bool
+	// TestPresentation selects canonical test recovery advice only; zero keeps
+	// the legacy eval spelling. Evidence and execution are unaffected.
+	TestPresentation bool
 	// InvocationCommand is the shell-quoted CLI invocation used for guard retry
 	// advice. Interactive sub-operations leave it empty and supply their own.
 	InvocationCommand string
@@ -116,7 +136,7 @@ func New(cfg *config.Config) *App {
 	r := run.Default()
 	r.Env = cfg.KindEnv()
 	r.Unset = cfg.KindUnset()
-	return &App{Cfg: cfg, Run: r, Out: os.Stdout, Err: os.Stderr, Stdin: os.Stdin}
+	return &App{Cfg: cfg, Run: r, Out: os.Stdout, Err: os.Stderr, Stdin: os.Stdin, TestPresentation: true}
 }
 
 // operationContext is shared by commands, network requests, and retry waits.

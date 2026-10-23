@@ -1,5 +1,6 @@
-// Command kmx is the CLI entry point for Kaimahi's developer workflows.
-// Cobra owns syntax and help; internal/kmx/app owns all operations.
+// Package main implements kmx command parsing, help and presentation.
+// Cobra handles CLI syntax; command adapters connect user requests to
+// application operations.
 package main
 
 import (
@@ -18,6 +19,10 @@ func main() {
 }
 
 func exitCode(err error) int {
+	var preview *app.FilePreviewError
+	if errors.As(err, &preview) {
+		return preview.ExitCode()
+	}
 	if errors.Is(err, app.ErrTaskPending) || errors.Is(err, app.ErrDestinationStatusPending) {
 		return 2
 	}

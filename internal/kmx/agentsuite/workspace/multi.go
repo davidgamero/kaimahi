@@ -6,7 +6,8 @@ import (
 	"slices"
 	"strings"
 
-	agentsuite "github.com/agent-primitives/suite"
+	suitecore "github.com/agent-primitives/suite/core"
+	suiteflow "github.com/agent-primitives/suite/experimental/flow"
 	suiteoras "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/oras"
 )
 
@@ -28,14 +29,20 @@ type multiRecord struct {
 	Members         []nativeRecord `json:"members"`
 }
 
-func nativeBounds(files map[string][]byte) error {
+func nativeBounds(files map[string][]byte) error { return nativeBoundsMode(files, false) }
+
+func nativeBoundsMode(files map[string][]byte, flowMode bool) error {
 	if len(files) > suiteoras.MaxArtifactFiles {
 		return errors.New("native artifact exceeds file count limit")
 	}
 	total := 0
-	for _, b := range files {
+	for name, b := range files {
+		limit := maxFile
+		if flowMode && name == suiteflow.FlowPathV1Alpha1 {
+			limit = maxFlowFile
+		}
 		total += len(b)
-		if len(b) > maxFile || total > maxNativeBytes {
+		if len(b) > limit || total > maxNativeBytes {
 			return errors.New("native artifact exceeds size limit")
 		}
 	}
@@ -52,7 +59,7 @@ func resolveMulti(name string, members []normalizedMember, profile []byte) (map[
 	slices.SortFunc(members, func(a, b normalizedMember) int { return strings.Compare(a.member.ID, b.member.ID) })
 	files := map[string][]byte{}
 	metadata := multiRecord{SchemaVersion: multiRecordVersion, RendererVersion: multiRendererVersion, Members: []nativeRecord{}}
-	var suite agentsuite.Suite
+	var suite suitecore.Suite
 	caseCount := 0
 	for i, m := range members {
 		if i > 0 && members[i-1].member.ID == m.member.ID {
@@ -70,8 +77,8 @@ func resolveMulti(name string, members []normalizedMember, profile []byte) (map[
 		if err != nil {
 			return nil, err
 		}
-		var root agentsuite.Suite
-		if err := agentsuite.Unmarshal(single["agentsuite.json"], &root); err != nil {
+		var root suitecore.Suite
+		if err := suitecore.Unmarshal(single["agentsuite.json"], &root); err != nil {
 			return nil, err
 		}
 		if i == 0 {
@@ -92,12 +99,12 @@ func resolveMulti(name string, members []normalizedMember, profile []byte) (map[
 		}
 		metadata.Members = append(metadata.Members, record)
 	}
-	root, err := agentsuite.Marshal(suite)
+	root, err := suitecore.Marshal(suite)
 	if err != nil {
 		return nil, err
 	}
 	files["agentsuite.json"] = root
-	b, err := agentsuite.Marshal(metadata)
+	b, err := suitecore.Marshal(metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -110,13 +117,18 @@ func resolveMulti(name string, members []normalizedMember, profile []byte) (map[
 
 // Regeneration compares the entire file map, including every reference, digest,
 // metadata field and public case. Extra public extensions cannot be silently dropped.
-func validateMulti(files map[string][]byte) (string, error) {
-	var suite agentsuite.Suite
-	if err := agentsuite.Unmarshal(files["agentsuite.json"], &suite); err != nil {
+func validateMulti(files map[string][]byte) (string, error) { return validateMultiMode(files, false) }
+
+func validateMultiMode(files map[string][]byte, flowMode bool) (string, error) {
+	if err := nativeBoundsMode(files, flowMode); err != nil {
+		return "", err
+	}
+	var suite suitecore.Suite
+	if err := suitecore.Unmarshal(files["agentsuite.json"], &suite); err != nil {
 		return "", err
 	}
 	var metadata multiRecord
-	if err := agentsuite.Unmarshal(files[multiNativePath], &metadata); err != nil {
+	if err := suitecore.Unmarshal(files[multiNativePath], &metadata); err != nil {
 		return "", err
 	}
 	if metadata.SchemaVersion != multiRecordVersion || metadata.RendererVersion != multiRendererVersion || len(metadata.Members) < 2 || len(metadata.Members) > maxMembers {
@@ -124,8 +136,8 @@ func validateMulti(files map[string][]byte) (string, error) {
 	}
 	members := make([]normalizedMember, 0, len(metadata.Members))
 	for _, record := range metadata.Members {
-		var agent agentsuite.Agent
-		if err := agentsuite.Unmarshal(files["agents/"+record.Member+".json"], &agent); err != nil {
+		var agent suitecore.Agent
+		if err := suitecore.Unmarshal(files["agents/"+record.Member+".json"], &agent); err != nil {
 			return "", err
 		}
 		m := sourceMember{ID: agent.ID, Description: agent.Description}
@@ -151,6 +163,11 @@ func validateMulti(files map[string][]byte) (string, error) {
 	expected, err := resolveMulti(suite.Name, members, files["build-profiles/default.json"])
 	if err != nil {
 		return "", err
+	}
+	if flowMode {
+		if err := attachFlow(expected, files[suiteflow.FlowPathV1Alpha1]); err != nil {
+			return "", err
+		}
 	}
 	if !equalFiles(expected, files) {
 		return "", errors.New("unsupported native graph or incomplete case coverage")

@@ -7,8 +7,8 @@ For work **on** Kaimahi; contribution/PR expectations are in
 New contributors should read the [codebase overview](codebase-overview.md) for
 package boundaries and data flows, then the [interface baseline](interface-baseline.md)
 before changing commands or public contracts. The [repository map](repository-map.md)
-is the mechanical inventory of what is installed, embedded, historical or test
-scaffolding.
+describes directory responsibilities and boundaries between installed tooling,
+checkout support, historical records and test scaffolding.
 
 ## Direction and current implementation
 
@@ -20,10 +20,10 @@ Create and push share workspace discovery; exact `--workspace` initializes
 without prompting. Live create/previews/wizard and user bundle commands,
 readers/writers/receipts are removed, not converted. Old receipts are unreadable;
 no files/resources are deleted. Quickstart/console compose native authoring,
-full eval, exact publication and reviewed Lift. Quickstart verifies placement
+full eval, exact publication and reviewed Deploy. Quickstart verifies placement
 before a separate fresh answer Task; console Ready means placement only.
 Kagent uses exact v0.10.3 Go/linux-amd64 packaged eval/evaluated push/create-only
-Lift; no installer, discovery, standalone chat/run or suite status/retirement.
+Deploy; no installer, discovery, standalone chat/run or suite status/retirement.
 KMX installs Orka's chart in harness-v2 controller mode, not the upstream harness
 ABI. Runtimes and harnesses own execution, enforcement and model access. Orka
 already supplies OTLP telemetry using GenAI conventions; extend that upstream
@@ -64,14 +64,14 @@ exclusive hard link, not history or replacement. The private receipt-file push
 consumer parses before cache writes, compares exact S, and validates packaged
 subject/render/inventory coherence before provenance or transfer. Source
 fingerprint is authored spelling, not a durable publication lock. These unsigned
-observations prove neither authenticity nor cross-object atomicity. Root `eval`
+observations prove neither authenticity nor cross-object atomicity. Root `test`
 prepares workspace/inventory/export offline before configuration, then consents
 once to native pair placement and all ordered one-shot Tasks. Public Orka eval
 also covers bounded UID/RV cleanup and verified owner-UID child closure before
 full-pass export. Startup reports never delete or block a fresh eval. Explicit
-`eval cleanup [run-id]` lists or confirms a frozen run/UID snapshot, refusing
+`test cleanup [run-id]` lists or confirms a frozen run/UID snapshot, refusing
 unattributable orphans; it creates no execution or passing-evidence authority.
-No cleanup journal, lease or later-publication blockade is implemented. Root eval
+No cleanup journal, lease or later-publication blockade is implemented. Root test
 registers completed proof in private immutable per-workspace/per-S state, with optional
 standalone --out. Root push selects the latest exact-S pass; --evaluation FILE
 explicitly overrides lookup without fallback and --unevaluated explicitly retains
@@ -90,14 +90,17 @@ from deleted Tasks. Exact-S layout/registry transfer and source-withheld explici
 promotion qualify absent canonical destinations and fresh destination answers.
 Private captures are not artifacts; only passing metadata and a scalar report
 are uploaded. This fixed scenario does not qualify every creation, promotion,
-orphan-recovery or partial-outcome path. Hermetic tests are not live execution. The kagent qualifier proves source-free Lift into a
+orphan-recovery or partial-outcome path. Hermetic tests are not live execution. The kagent qualifier proves source-free Deploy into a
 fresh namespace and occupied repeat refusal without additional native execution.
 Standalone packaged evaluation is unavailable.
 
 ## Repository layout
 
-Consult the [repository map](repository-map.md) for tracked membership and caller
-classification.
+Consult the [repository map](repository-map.md) for directory ownership and
+classification. Descendants inherit an owned directory's role; ordinary files,
+nested fixtures and new packages below `internal/kmx/` need no map entry. Only a
+new root area or immediate child of `cmd/`, `internal/` or `pkg/` does. Package
+behavior lives in the Go package doc comment.
 
 | Path | Responsibility |
 |---|---|
@@ -111,7 +114,7 @@ classification.
 
 The root CLI is the only Go module. Plain `make` builds `bin/kmx` only. The
 supported kagent surface is exact-v0.10.3 Go/linux-amd64 packaged workspace
-evaluation/evaluated push/create-only digest Lift through private App seams,
+evaluation/evaluated push/create-only digest Deploy through private App seams,
 not a user-bundle conversion layer. Public alpha ports remain unwired.
 
 For a narrative architecture view, including workspace preparation, native
@@ -135,6 +138,24 @@ use `XDG_CONFIG_HOME` as the test boundary: Go uses it for the native Linux
 config location, while macOS uses `~/Library/Application Support`. `KMX_HOME`
 is the repository's explicit cross-platform isolation contract.
 
+`internal/kmx/fileaccess` has native Linux and Windows amd64 package tests for
+checked reads, security/identity inspection, protected private first creation,
+process-held locks and no-replace file/directory-flush publication. The package
+keeps opaque handles, repairs/adopts nothing and is unwired from operation
+adapters. `internal/kmx/config` separately exposes explicit creating and
+non-creating private state-root resolution; `StateDir` itself remains a pure
+locator. Windows defaults to machine-local `%LOCALAPPDATA%\kmx`. Windows arm64
+is compiled and vetted, not executed. These tests qualify only low-level local
+NTFS primitives, not the guarded Windows CLI; use WSL for the installed command
+until the later enablement phase lands.
+
+The hosted Windows test context is established by the test-only
+[`windows-tests` launcher](../scripts/ci/windows-tests/main_windows.go), whose
+native contract tests are in
+[`main_windows_test.go`](../scripts/ci/windows-tests/main_windows_test.go). It
+may change only a duplicated child token's default owner and never changes kmx,
+the parent token, accounts, privileges or machine policy.
+
 ```bash
 formatted=$(gofmt -l cmd internal pkg embed.go embed_test.go) && test -z "$formatted" && go vet ./... && go build ./... && go test ./...
 npm --prefix docs ci --ignore-scripts && npm --prefix docs run docs:check
@@ -152,9 +173,23 @@ python3 scripts/test_model_fixtures.py -v
 
 ### AgentSuite dependency and consumer fixtures
 
-Import the separate module as `agentsuite "github.com/agent-primitives/suite"`.
-The internal builder uses `kmxsuite` and the ORAS adapter uses `suiteoras`.
-`go.mod` pins the published release `v0.5.0`, with its sums in `go.sum`.
+Import only the focused packages a file needs from the separate module:
+
+```go
+import (
+    suitecore "github.com/agent-primitives/suite/core"
+    suiteevidence "github.com/agent-primitives/suite/evidence"
+    suiteflow "github.com/agent-primitives/suite/experimental/flow"
+    suiteoci "github.com/agent-primitives/suite/oci"
+)
+```
+
+Use `suitecore` for portable models and JSON/identity helpers, `suiteoci` for
+artifact validation and diff, `suiteevidence` for claims and both verifiers,
+and `suiteflow` for explicit stored-flow types and validation. The standalone
+`policy` import is unchanged. Do not import the deprecated module root.
+The internal builder keeps `kmxsuite` and its ORAS adapter keeps `suiteoras`.
+`go.mod` pins the published release `v0.7.0`, with its sums in `go.sum`.
 Use the [complete release-pinned schema bundle](docs-site.md#current-agentsuite-schema-selection)
 for editors and external validators; the historical hosted schemas are not the
 current consumer contract.
@@ -217,7 +252,7 @@ runtime selection and supported-operation validation.
 
 ### Release retention boundary
 
-Complete fresh Orka Lift creates retain a shared UID-bound baseline and a new
+Complete fresh Orka Deploy creates retain a shared UID-bound baseline and a new
 explicit private ownership proof; reused/mixed placements never enroll. Private
 observation slots `intent.json` through `3.json` alone remain non-authoritative.
 Pre-reserved `4.json` binds an acknowledged shared completion, but is only a
@@ -234,11 +269,11 @@ live writer whose object writes have ceased may persist a known partial and
 release its reservation. Pending/partial shared proof never rolls; completed
 history rolls at ten entries within 64 KiB. See
 [retention and operator recovery](suite-workspace.md#release-retention-and-operator-recovery).
-The public `lift --update` route uses the retained Orka backend. Tests must
+The public `deploy --update` route uses the retained Orka backend. Tests must
 distinguish same-digest no-write, fresh-RV-without-new-authority, old/new
 known partials, a separate client/private home, and lost final acknowledgments.
 Pinned API characterization is necessary but does not substitute for complete
-Lift/retention qualification or prove a model answer. The existing native Python
+Deploy/retention qualification or prove a model answer. The existing native Python
 qualifier now independently evaluates and publishes v2, then drives the public
 CLI v1→v2→original-evidence v1→v2 and status-only dependency-RV no-op against its
 owned pair. It checks current status, stable UIDs, fresh mutation IDs, original
@@ -263,14 +298,14 @@ bin/kmx local down
 A bare `bin/kmx local up` installs the runtime without an Agent: kind, Ollama, the
 model and pinned Orka with its keyless `local` Provider. Author source with
 `bin/kmx create NAME --workspace DIR --model MODEL --instructions FILE`, then
-full eval, evaluated push and digest Lift with private evidence; or use guided
+full eval, evaluated push and digest Deploy with private evidence; or use guided
 `bin/kmx quickstart --interactive`. `orka status` is table-only runtime state;
 root `status --to NAME` independently observes destination Agent placement and
-unsigned Lift provenance with GETs only. It does not read suite member content,
+unsigned Deploy provenance with GETs only. It does not read suite member content,
 private history or Secrets, and does not imply retirement.
 
 KMX never installs/upgrades kagent. Its exact-v0.10.3 Go/linux-amd64 packaged
-profile uses author-owned `--bindings` for root eval/Lift, without runtime/model
+profile uses author-owned `--bindings` for root test/Deploy, without runtime/model
 overrides. Profiles never fall back between installed runtimes. Live create and
 all bundle lifecycle/readers/receipts are removed.
 
@@ -285,9 +320,67 @@ Cloud cleanup has different [ownership rules](aks.md#teardown).
 The workflow emits `hygiene` and `e2e-hello-world` merge gates. The latter
 fail-closed aggregates four retained shards: `e2e-kagent-lift`,
 `e2e-orka-runtime`, `e2e-orka-helm` and `e2e-quickstart`, plus successful
-classification. Its existing #315 skip/failure policy remains: only intentional
-skips are accepted, never failed/cancelled shards. Required-check rules are
-managed separately on GitHub; deleting a workflow job does not update a ruleset.
+classification and the independent `kagent-contract` hermetic check. Only intentional skips are accepted, never failed/cancelled
+shards. Orka runtime proof may skip only an explicitly safe PR or a main push;
+unknown changes and events default to full proof. Required contexts remain
+`hygiene` and `e2e-hello-world`, without a ruleset change.
+
+The read-only [Orka worker](../.github/workflows/orka-runtime.yml) runs the same
+complete proof when invoked, including native evaluation, transfer, promotion,
+and pinned-update checks. It has no internal Markdown shortcut. Unrecognized
+Markdown and live instruction fixtures require qualification; root policy docs
+not explicitly listed also run. Its raw check is `e2e-orka-runtime / qualify`.
+Quickstart, stock Helm and clone-free qualification keep their existing routing;
+not every Orka-bearing job is moved out of PR CI.
+
+[Orka nightly](../.github/workflows/orka-nightly.yml) runs the full main proof
+at 03:23 UTC and supports manual qualification after the workflow lands. That
+schedule shares the existing CI cron but owns a separate full worker. Its summary
+is red for failure, cancellation or missing qualification. Scheduled main failures
+maintain one workflow-owned issue assigned to `gambtho`, containing only run link,
+commit and safe status. Current success closes it; older success cannot close a
+newer failure. Manual branch qualification does not alter main health.
+
+Moving main-push runtime proof to nightly trades immediate post-merge detection
+for detection on the next nightly (normally within 24 hours) or before release.
+Individually passing PRs can still interact after merging. Check Actions when the
+last completed main nightly is older than 30 hours: an issue reporter cannot
+report a schedule that never started. The first scheduled run remains an
+operational check after merge, not evidence supplied by local fixtures.
+
+### Fast kagent PR coverage and full live qualification
+
+All PRs, including runtime-relevant and unknown diffs, run **kagent contract —
+not live qualification**. The fast check executes the existing hermetic Python
+bootstrap, pinned-profile, fixture request-count, qualifier refusal and mutation
+audit contracts plus suite-lift contract tests. Focused offline Go tests cover
+kagent profile/version fences, evaluation parsing, ownership and drift,
+placement/provenance and refusal paths. These use local fakes/fixtures, not a
+live kagent cluster. All App shards and hygiene checks remain enabled.
+
+Live upstream MCP/A2A (one tool call, two model calls and one terminal answer),
+full packaged evaluation, evaluated push, source-free digest lift and private
+placement helpers run through the unchanged read-only
+[kagent worker](../.github/workflows/kagent-runtime.yml). It runs once in the
+existing 03:23 UTC scheduled CI, on manual CI and before every release/dry run.
+PRs and routine main pushes intentionally skip only that full worker, regardless
+of `kagent_changed`; the fast check must still pass. `e2e-hello-world` always
+evaluates both outcomes and refuses fast-check skips, failures, cancellations,
+missing results or unintended full-worker skips. Required contexts stay the same.
+
+The fast check does **not** qualify live A2A execution, upstream image/bootstrap
+compatibility, readiness, actual suite execution or cluster cleanup. Moving these
+checks delays detection until nightly (normally within 24 hours) or before release.
+Tom watches scheduled CI in Actions; there is no new kagent issue reporter or
+promise that an undispatched schedule can report itself. Manual CI remains the
+way to request immediate full qualification. Nothing changes runtime pins,
+assertions, retries or budgets, and no Helm/Quickstart cluster or image cache is shared.
+
+Every release/dry run requires fresh full **Orka and kagent** worker success at
+the exact built commit; no earlier nightly success is reused. The worker is read-only; only the
+scheduled-main issue reporter has issue-write permission. Reporter errors remain
+visible as workflow failures. Use `gh pr checks --required` for required contexts;
+a green gate does not establish human approval or resolved review threads.
 
 The v0.10.2 live-create shard `e2e-kagent-create` and clusterless bundle recorded
 Sessions/judge/reference-verify shard `e2e-eval-loop` are removed, along with the
@@ -314,7 +407,7 @@ pinned chart/controller and a verified loopback API. They characterize status-on
 resourceVersion churn, isolated generation/spec preconditions, current-generation
 readiness and a shared ConfigMap reservation's UID/RV/data CAS. A synthetic
 local-only prerequisite and unusable inference endpoint keep these checks free of
-model execution; they do not authorize or enable user-facing Lift updates.
+model execution; they do not authorize or enable user-facing Deploy updates.
 For local qualification, use a separately owned `kind-kmx-update-proof` cluster
 with the pinned installer, never a demo or shared destination. The tests leave
 freshly named fixtures for the owned cluster's teardown; they never delete an
@@ -323,10 +416,10 @@ occupied record or take over a reservation.
 The checkout-only [kagent qualification shell](../scripts/ci/kagent-lift.sh)
 retains exact v0.10.3 bootstrap, raw upstream Tool smoke and a direct single A2A
 MCP proof, separately from tool-free packaged-suite two-case evaluation,
-evaluated push and source-withheld digest Lift into a fresh namespace, with
+evaluated push and source-withheld digest Deploy into a fresh namespace, with
 occupied-repeat refusal. No legacy bundle receipts/status/judge proof is claimed.
 A2A proof requires one Tool call, two model calls and one terminal answer without
-resend. Suite Lift sends no native execution calls. Python/RemoteMCP, managed
+resend. Suite Deploy sends no native execution calls. Python/RemoteMCP, managed
 clusters and hosted providers remain unqualified.
 
 Build the final Go state with `go build -o bin/kmx ./cmd/kmx`, then run
@@ -342,7 +435,7 @@ alone are not execution evidence.
 
 Clone-free main/manual CI authors an exact-answer assertion inside full eval,
 checks completed candidate cleanup and independent Task absence, then performs
-evaluated layout publication and explicit-promoted digest Lift. It neither reads
+evaluated layout publication and explicit-promoted digest Deploy. It neither reads
 a deleted evaluation Task nor resends it, and claims no separate answer Task.
 No Azure credentials belong in fork-exposed CI. A docs-only skip is not a live rerun.
 
@@ -383,6 +476,20 @@ Check coverage against existing image references and digests, including
 Hub; reports do not call that a mirror success. Existing Postgres ECR pins stay
 unchanged. Model-weight downloads from `registry.ollama.ai` are separate from
 OCI pulls and do not use these mirrors.
+
+## Operation contexts
+
+Operational Cobra adapters use `operationApplication(cmd)` to bind
+`cmd.Context()` to a Runner copy on the invocation's App. Subprocesses,
+network requests and waits using `App.operationContext()` inherit the caller's
+cancellation, deadline and values without mutating the original shared Runner.
+The invocation's App identity and recovery metadata remain unchanged.
+`targets --detect` uses the same adapter; offline capability listing remains
+configuration-free. Help and completion do not construct an operational App.
+
+Keep narrower operation/case deadlines and explicitly scoped cleanup contexts.
+This binding does not add a global signal handler, change command-specific
+signal ownership, or detach work from cancellation.
 
 ## Invariants to preserve
 

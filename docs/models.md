@@ -15,10 +15,124 @@ the selected provider and runtime.
 For the single-node AKS CPU test template and its explicit-context runbook, see
 [Azure CPU-model sample](azure/cpu-model/README.md#single-node-cpu-inference-test).
 
+## Installed local model discovery
+
+`kmx model list` reports Foundry Local and Ollama inventory without cluster
+configuration, prompts, runtime startup, installation or model downloads. Use
+`kmx model list -o json` for the same bounded reports and non-secret model routes.
+It distinguishes `absent`, `empty`, `installed` and `failure`; an installed but
+stopped runtime is not an empty inventory. A failure reports a safe reason, not
+raw runtime output. Both table and JSON output print the complete report before
+exiting nonzero if any provider reports `failure`; `absent` and `empty` remain
+successful. Discovery does not select a model or change a saved endpoint.
+
+Foundry Local CLI preview 0.11 supplies its dynamic endpoint through
+`foundry server status`; KMX then reads cached `/openai/models`. It never guesses
+a Foundry port or runs `model list`, which can download a catalog. Ollama uses
+loopback port 11434 and reads `/api/tags`. Local discovery is separate from the
+legacy kind-reuse checks below. The route includes provider, exact model,
+OpenAI-compatible endpoint and a non-secret authentication selector; it does not
+implement local agent execution or a runner.
+
+Missing/empty/unavailable runtimes show official install links, platform
+requirements and download estimates (unknown where not published). Foundry Local
+is suggested on supported Windows. CLI 0.11.0 download estimates are dated
+2026-10-07: Windows x64/ARM64 about 24 MB, macOS Apple Silicon about 48 MB, Linux
+x64/ARM64 about 55–58 MB. Models and execution providers need additional space;
+model memory requirements depend on the chosen model. Ollama on Windows needs
+at least 4 GB installed binary space, not a 4 GB download. Nothing is installed
+when listing or declining an install link.
+
+Sources: [Foundry CLI reference](https://learn.microsoft.com/en-us/azure/foundry-local/reference/reference-cli),
+[Foundry CLI downloads](https://github.com/microsoft/Foundry-Local/releases/tag/cli-preview-0.11.0),
+[Ollama downloads](https://ollama.com/download),
+[Windows requirements](https://docs.ollama.com/windows),
+[macOS requirements](https://docs.ollama.com/macos) and
+[Linux installation](https://docs.ollama.com/linux).
+
+The independent model-access package has native Windows/macOS/Linux tests.
+The installed Windows CLI remains blocked until native CLI support lands; these
+package tests do not qualify the full Windows executable.
+
+## Explicit Copilot model access
+
+```bash
+kmx model login                     # GitHub device code; URI/code on stderr
+kmx model login --gh                # explicitly copy existing github.com gh auth
+kmx model list --provider copilot -o json
+kmx model logout                    # only kmx's credential; not gh/editor logout
+```
+
+These unreleased, config-free commands are independent of the installed-CLI
+chat adapter. Device flow uses VS Code's public OAuth client
+`Iv1.b507a08c87ecfe98` with `read:user`. The reusable GitHub credential is stored
+in kmx's OS keychain item, never workspace/config files or a plaintext cache.
+Only native Windows Credential Manager, macOS Keychain and Linux Secret
+Service are allowed, via `github.com/zalando/go-keyring v0.2.8`, with no file/pass
+fallback. macOS works with the release's `CGO_ENABLED=0`: explicit credential
+operations invoke `/usr/bin/security`; writes send the secret only on stdin,
+never argv, environment or files. macOS credentials over 2048 bytes are refused
+before starting the utility. The macOS item uses the security utility's keychain
+access controls, not a kmx-binary-specific application ACL; other processes
+running as the same user may access it through that utility.
+
+Linux requires an existing session bus and login/default keyring collection. Explicit
+credential operations use no-autostart D-Bus discovery before native access;
+unavailable keychains do not launch a bus or create a token file. Custom
+sessions must supply a `unix:` `DBUS_SESSION_BUS_ADDRESS`; `XDG_RUNTIME_DIR`
+alone does not direct upstream discovery to a custom socket. Autolaunch,
+non-Unix and multi-address values are refused. The owned item uses service
+`kmx-model-copilot` and account `github-reusable-token`, not a dedicated
+collection. Logout deletes only that item. Access may show OS unlock UI;
+native keychain calls have no context-cancellation guarantee. Initialization,
+help, completion and default local model listing do not access the keychain or
+session bus. Copilot listing never initiates OAuth, reads editor credentials
+or selects a model.
+
+At runtime, an explicit `COPILOT_GITHUB_TOKEN` takes precedence without opening
+kmx's keychain. An empty or malformed value is an error, not a reason to switch
+accounts. Otherwise kmx reads its owned keychain item. Only when that facility
+is unavailable does it try an existing github.com GitHub CLI login through
+`gh auth token --hostname github.com`, bounded to five seconds and 16 KiB of
+private stdout. This runtime child excludes `GH_TOKEN` and `GITHUB_TOKEN`, so
+those variables cannot override the stored login; explicit `login --gh` retains
+normal gh environment precedence. Missing owned credentials and authentication, subscription,
+policy or quota refusals never trigger another credential source. Neither
+runtime source is copied into kmx storage or a token file.
+
+With an unavailable keychain, `kmx model login` (including `--gh`) prints these
+options instead of starting device sign-in or failing. It does not sign in gh,
+claim a credential was saved, or verify the runtime credential. When a token
+variable is set, login warns that it takes precedence over stored credentials.
+Logout cannot disable external credentials: unset the variable or end the gh
+session separately to stop runtime access. To recover a revoked runtime gh
+credential without a usable OS keychain, supply a fresh environment token.
+`gh auth login --hostname github.com` can renew gh auth with secure storage,
+but gh may write a plaintext token file when its credential store is unavailable;
+kmx never invokes that login command automatically.
+
+Copilot JSON output is an array of non-secret shared routes: provider `copilot`,
+exact available Chat model, endpoint `https://api.githubcopilot.com`, auth
+selector `copilot`. Only enabled Chat models supporting `/chat/completions` are
+listed. The default local list and its report shape are unchanged. There is no
+persisted/global selection, automatic model substitution or proxy.
+Markdown-file `kmx run FILE --provider copilot` and
+`kmx test FILE --provider copilot` consume this route through the temporary
+tool-free preview runner; set the file's `Model.Preferred` to an exact listed
+model first. The endpoint defaults to the fixed Copilot endpoint, and execution
+never initiates login. Instructions and inputs are sent to the hosted service.
+Unbound MCP uses the same route by default for the authored non-fake model;
+trusted startup provider overrides still take precedence. Legacy root-bound MCP
+requires an explicit route for real models. This is not a new harness or native
+workspace/deployment integration. See
+[file preview](kmx.md#agent-file-local-preview-unreleased-integration) and
+[direct Copilot transport](copilot-inference.md#direct-model-access)
+for usage, refusal codes and authentication behavior.
+
 ## Storing an API key
 
 Native Orka Providers reference an existing namespaced Kubernetes Secret.
-Provision it separately; native evaluation/Lift accepts only name/key references,
+Provision it separately; native evaluation/Deploy accepts only name/key references,
 not key bytes. Never put keys in command arguments, checked-in YAML, ConfigMaps
 or logs. Offline workspace create neither provisions credentials nor bootstraps a model.
 

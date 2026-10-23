@@ -16,6 +16,37 @@ The official Homebrew namespace is limited to the public
 claimed; the remaining publication constraints are recorded in
 [NAMING.md](NAMING.md).
 
+## Test command (unreleased)
+
+Current main uses `kmx test` and all six helpers (`cleanup`, `diff`, `explain`,
+`export`, `verify`, `from-sessions`). The `explain` helper is also unreleased and
+is not available in v0.8.1 under either spelling. This rename is unreleased; v0.8.1 uses `kmx eval`
+with the same arguments. Hidden `eval` and its helpers remain callable for at
+least one released version, adding exactly one stderr line per legacy invocation:
+`kmx eval is deprecated; use kmx test (same arguments).`
+Arguments, flags, stdout, existing stderr labels, exit codes and state remain
+unchanged apart from that notice. No data migration is needed: `eval/`/`evals/`,
+`evalTarget`/`evaluationTarget`, schemas, APIs and machine JSON remain unchanged.
+Removal requires a later announced breaking release. See
+[Test compatibility](kmx.md#test-compatibility-unreleased).
+
+Run still invokes an existing live Orka Agent; Test evaluates workspace cases;
+Publish still transfers an OCI graph with `kmx push`. These names do not add
+local workspace Run, numbered local versions, a plugin or a new Publish command.
+
+## Deploy command (unreleased)
+
+Current main calls packaged-suite deployment `kmx deploy`. This rename is not in
+v0.8.1: use `kmx lift` there with the same arguments. In builds with Deploy,
+`kmx lift` remains hidden but callable for at least one released version. It adds
+exactly one stderr line per legacy invocation:
+`kmx lift is deprecated; use kmx deploy (same arguments).`
+Legacy arguments, flags, stdout, stderr stage labels and exit codes remain
+unchanged. Machine JSON, public Go/API/internal `Lift` names, evidence, storage
+and annotations are unchanged. Removal requires a later announced breaking
+release. See [Deploy compatibility](kmx.md#deploy-compatibility-unreleased).
+The tagged-release and upgrade records below retain their original command names.
+
 ## Verify a release
 
 Releases built with checksum signing include `checksums.txt.sigstore.json`, a
@@ -50,6 +81,13 @@ The signature covers the four binaries, **not** the separately published
 `kmx.rb` formula. `install.sh` and Homebrew check checksums only; they do not
 automatically verify this bundle.
 
+Copilot plugin archives use a separate `plugin-checksums.txt` and Sigstore
+bundle, signed by the same workflow identity after exact engine/archive checks.
+They do not change the four-binary checksum inventory above. Verify the archive
+before extraction/execution, then explicitly configure the selected root before
+installation; see the [plugin package guide](../plugins/copilot/README.md#release-archives-and-explicit-setup).
+Windows plugin delivery remains unavailable while native CLI builds are guarded.
+
 ## Versions
 
 Tags are `vMAJOR.MINOR.PATCH`, and **the tag is the source of truth** — the
@@ -75,6 +113,23 @@ to publish a binary that does not report its own tag.
 
 Releases use the root `vX.Y.Z` tag for the repository and CLI. The root is the
 only Go module; no paired module release tag is needed.
+
+Every tag and manual dry run first requires the full read-only Orka and kagent
+workers, in parallel. Each qualified commit must equal the release checkout,
+including an annotated tag's resolved commit. Passing nightly evidence at another SHA is not reused.
+A failed qualification blocks build, signing and publication, including native
+Copilot plugin assets. Inspect the failure and rerun the failed workflow jobs
+after addressing it; there is no automatic qualification retry or timeout increase.
+Both full live proofs must finish before release building begins. The hermetic
+kagent PR check is not live qualification and cannot replace either release gate.
+After signing, native Linux and macOS workers verify and configure the exact
+cross-built native plugin archive in an owned temporary directory, then
+install/uninstall/reinstall it in a fresh Copilot CLI profile. Publication waits
+for both workers. These checks do not exercise interactive desktop rendering or
+hosted inference. Dry-run artifacts contain `release-assets/` and
+`release-notes.md` under their common root.
+For Windows Copilot, use the [plain WSL plugin](../plugins/copilot-wsl/README.md):
+install the Linux binary in WSL, then install the plugin from the repository.
 
 ## Install
 
@@ -193,6 +248,31 @@ from:
 | `v0.0.0-dev+fb456eb.dirty (development build from a MODIFIED checkout)` | a clone with uncommitted changes |
 
 ## Upgrading kmx
+
+### Moving to main's Test spelling (unreleased)
+
+Use `kmx test` in maintained commands and scripts, including all six helpers.
+Keep `kmx eval` when running v0.8.1. In newer builds the hidden compatibility
+route remains callable for at least one released version with only the stderr
+notice described [above](#test-command-unreleased); stdout, arguments, exit
+codes and saved state are unchanged. Do not rename authored `eval/` cases,
+packaged `evals/` files or configuration fields.
+
+### AgentSessions bindings (unreleased)
+
+AgentSessions `kmx test --development-host FILE` also requires `--bindings FILE`:
+an [`AgentSessionsBinding`](suite-workspace.md#agentsessionsbinding) whose
+`model.name` equals the packaged model. Evidence records the binding digest.
+AgentSessions passing receipts are now v2 (`kmx.agentsessions-suite.passing/v2`);
+push and deploy refuse v1 receipts and managed v1 proofs, with no fallback.
+Evaluate again with `--development-host FILE --bindings FILE`. Orka and kagent
+receipts are unchanged.
+
+The new plan-only `kmx deploy REF@sha256:DIGEST --harness-image IMAGE@sha256:DIGEST
+--bindings FILE --evidence FILE --plan` renders a substrate ActorTemplate and
+HarnessRegistration offline and applies nothing; receipt diff still refuses
+AgentSessions evidence. See the
+[AgentSessions deploy plan](suite-workspace.md#agentsessions-deploy-plan).
 
 ### Upgrading from v0.6.0
 
@@ -349,11 +429,40 @@ requires an operator-owned runtime; v0.10.2 live create is removed.
 For maintainers. The point of this list is that the second release is cheaper
 than the first.
 
-1. Write the section. Move what is under `## Unreleased` in
-   [CHANGELOG.md](../CHANGELOG.md) into a `## vX.Y.Z — <date>` heading, and
-   leave `## Unreleased` empty behind it. Anything breaking goes under
-   **Breaking** with what to do about it; anything that changes an operator's
-   day goes under **Upgrading**.
+1. Prepare the notes from a clean, up-to-date `main` checkout. Render the
+   existing Unreleased entries plus pending [per-PR fragments](../changes/README.md)
+   into a candidate [CHANGELOG.md](../CHANGELOG.md):
+
+   ```bash
+   notes=$(mktemp)
+   python3 scripts/check-changelog-fragments.py --render vX.Y.Z --date YYYY-MM-DD > "$notes"
+   python3 scripts/check-changelog-fragments.py --list
+   git diff --no-index -- CHANGELOG.md "$notes"
+   ```
+
+   Substitute the real stable version and calendar date. Stop if rendering or
+   listing fails; the helper itself never writes or removes a note. Inspect the
+   candidate and the included-path list before changing tracked files. The diff
+   command exits 1 when it shows differences, which is expected.
+
+   The candidate keeps the root preamble, leaves `## Unreleased` empty, preserves
+   released history byte-for-byte, and combines old Unreleased entries followed
+   by filename-sorted fragments under one heading per category. Anything breaking
+   goes under **Breaking** with what to do about it; anything that changes an
+   operator's day goes under **Upgrading**. RC tags continue to use their base
+   version's section; prepare that stable section rather than a separate RC one.
+
+   After review, copy the candidate over `CHANGELOG.md` and use `git rm --` with
+   exactly the fragment paths printed by `--list` in the same release-preparation
+   PR. Keep `changes/README.md`; never remove notes with a wildcard. Delete the
+   temporary candidate after copying it. Re-render and review again after any
+   intervening merge or note edit, so newly arrived fragments are not lost or
+   removed without inclusion. Leaving an included fragment behind would repeat
+   it in the next release, so check the deletion list in the PR diff.
+
+   Release dry runs still read `Unreleased` only, not pending fragments. An empty
+   section is the existing tolerated no-section result; this does not change tag
+   publication or the release-notes extractor's exit codes.
 2. Merge that to `main`. Releases are cut from `main`.
 3. Tag the root CLI release and push:
 
@@ -366,7 +475,8 @@ than the first.
    [GoReleaser](../.goreleaser.yaml), checks that exact artifact set, then
    publishes those same files together as one GitHub release. It refuses to
    publish if: the version is not semantic, the changelog has no section,
-   the built binary does not report the tag, or the checksums do not verify. The
+   the built binary does not report the tag, the checksums do not verify, or
+   either native plugin install check fails. The
    release also carries `kmx.rb`, GoReleaser's rendered formula for those exact checksums
    (`brews.skip_upload: true` keeps it from being pushed to the tap on its own
    — that stays a human's job, next). A failed asset upload can leave a GitHub

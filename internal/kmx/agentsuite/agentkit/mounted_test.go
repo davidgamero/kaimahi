@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	agentsuite "github.com/agent-primitives/suite"
+	suitecore "github.com/agent-primitives/suite/core"
 	kmxsuite "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
 )
 
@@ -21,11 +21,11 @@ func TestMountedImageOmitsSelectedModelAndUsesRuntimeConfigABI(t *testing.T) {
 	plan.BuildProfile.ID = "default"
 	plan.BuildProfileDigest = testDigest
 	plan.Agent.Model.Model = ""
-	plan.Agent.Model.Capabilities = &agentsuite.InferenceRequirements{API: "openai-chat-completions-v1", ContextTokens: 8192, OutputTokens: 1024}
+	plan.Agent.Model.Capabilities = &suitecore.InferenceRequirements{API: "openai-chat-completions-v1", ContextTokens: 8192, OutputTokens: 1024}
 	plan.Instructions = []byte("immutable instructions")
 	plan.Harness.ImageRef = "ghcr.io/orka-agents/agentkit/serve-pydantic-ai@sha256:8c4c17dc3d778c02097ad7e1ea88e9084b3f1aad6c36458829ff9cec9b4d043c"
-	plan.BuildProfile.Execution = &agentsuite.ExecutionContract{Configuration: agentsuite.AgentKitMountedConfig, Kind: agentsuite.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []agentsuite.ExecutionInput{}}
-	plan.BuildProfile.Execution.Inputs = []agentsuite.ExecutionInput{{Name: "listen", Environment: "AGENTKIT_BIND"}, {Name: "agent-auth", Environment: "AGENTKIT_AUTH_TOKEN", Secret: true}}
+	plan.BuildProfile.Execution = &suitecore.ExecutionContract{Configuration: suitecore.AgentKitMountedConfig, Kind: suitecore.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []suitecore.ExecutionInput{}}
+	plan.BuildProfile.Execution.Inputs = []suitecore.ExecutionInput{{Name: "listen", Environment: "AGENTKIT_BIND"}, {Name: "agent-auth", Environment: "AGENTKIT_AUTH_TOKEN", Secret: true}}
 	var captured agentImage
 	builder := New(Options{SuiteReference: "registry.example/source@" + testDigest, SuiteDigest: testDigest, exporter: ociExporterFunc(func(_ context.Context, image agentImage, _ io.Writer) error { captured = image; return nil })})
 	if _, err := builder.Build(context.Background(), plan, io.Discard); err != nil {
@@ -56,7 +56,7 @@ func TestMountedImageOmitsSelectedModelAndUsesRuntimeConfigABI(t *testing.T) {
 		t.Fatal("mounted serving inputs/config not represented together")
 	}
 	first := string(captured.AgentkitFile)
-	for _, inputs := range [][]agentsuite.ExecutionInput{nil, {{Name: "listen", Environment: "AGENTKIT_BIND"}}, {{Name: "auth", Environment: "AGENTKIT_AUTH_TOKEN", Secret: true}}} {
+	for _, inputs := range [][]suitecore.ExecutionInput{nil, {{Name: "listen", Environment: "AGENTKIT_BIND"}}, {{Name: "auth", Environment: "AGENTKIT_AUTH_TOKEN", Secret: true}}} {
 		bad := plan
 		execution := *plan.BuildProfile.Execution
 		execution.Inputs = inputs
@@ -89,9 +89,9 @@ func TestAgentKitCredentialDeclarationMatchesGeneratedConfig(t *testing.T) {
 			plan.CompositionDigest = testDigest
 			plan.BuildProfileDigest = testDigest
 			plan.BuildProfile.ID = "default"
-			plan.BuildProfile.Execution = &agentsuite.ExecutionContract{Kind: agentsuite.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []agentsuite.ExecutionInput{}}
+			plan.BuildProfile.Execution = &suitecore.ExecutionContract{Kind: suitecore.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []suitecore.ExecutionInput{}}
 			if declared {
-				plan.BuildProfile.Execution.Inputs = []agentsuite.ExecutionInput{{Name: "model-key", Environment: "MODEL_API_KEY", Secret: true}}
+				plan.BuildProfile.Execution.Inputs = []suitecore.ExecutionInput{{Name: "model-key", Environment: "MODEL_API_KEY", Secret: true}}
 			}
 			calls := 0
 			b := New(Options{SuiteReference: "registry.example/suite@" + testDigest, SuiteDigest: testDigest, ModelBaseURL: "https://model.example/v1", ModelAPIKeyEnv: "MODEL_API_KEY", exporter: ociExporterFunc(func(_ context.Context, img agentImage, _ io.Writer) error {
@@ -137,13 +137,13 @@ func TestExactModelBuildRefusesUnsupportedServingBeforeExport(t *testing.T) {
 		{"supported", 8080, "/healthz", "", true},
 		{"port", 9090, "/healthz", "", false},
 		{"health", 8080, "/different-health", "", false},
-		{"mounted", 8080, "/healthz", agentsuite.AgentKitMountedConfig, false},
+		{"mounted", 8080, "/healthz", suitecore.AgentKitMountedConfig, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			plan := minimalPlan()
 			plan.CompositionDigest, plan.BuildProfileDigest = testDigest, testDigest
 			plan.BuildProfile.ID = "default"
-			plan.BuildProfile.Execution = &agentsuite.ExecutionContract{Kind: agentsuite.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: tc.port, HealthPath: tc.path, Configuration: tc.configuration, Inputs: []agentsuite.ExecutionInput{}}
+			plan.BuildProfile.Execution = &suitecore.ExecutionContract{Kind: suitecore.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: tc.port, HealthPath: tc.path, Configuration: tc.configuration, Inputs: []suitecore.ExecutionInput{}}
 			calls := 0
 			builder := New(Options{SuiteReference: "registry.example/source@" + testDigest, SuiteDigest: testDigest, ModelBaseURL: "https://model.example/v1", exporter: ociExporterFunc(func(_ context.Context, image agentImage, _ io.Writer) error {
 				calls++

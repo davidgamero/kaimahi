@@ -12,7 +12,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -29,8 +28,6 @@ const maxFile = 1 << 20
 
 // AgentSessionsVersion pins the host/chat config contract, not a floating release.
 const AgentSessionsVersion = "ca85f47a2ec17ca6e16029cfa69419cfe29442b3"
-
-var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 
 // RuntimeProfile is KMX-private selection metadata, not a public AgentSuite SPI.
 // The zero value is accepted only as the historical Orka authoring default.
@@ -81,6 +78,7 @@ type sourceWorkspace struct {
 	BuildProfile  string          `yaml:"buildProfile"`
 	Members       []string        `yaml:"members,omitempty"`
 	Profiles      []sourceProfile `yaml:"profiles,omitempty"`
+	Flow          string          `yaml:"flow,omitempty"`
 }
 
 type sourceProfile struct {
@@ -188,7 +186,9 @@ func confined(r *os.Root, name string) error {
 	}
 	return nil
 }
-func readBounded(r *os.Root, name string) ([]byte, error) {
+func readBounded(r *os.Root, name string) ([]byte, error) { return readLimited(r, name, maxFile) }
+
+func readLimited(r *os.Root, name string, limit int) ([]byte, error) {
 	if err := confined(r, name); err != nil {
 		return nil, fmt.Errorf("read %s: %w", name, err)
 	}
@@ -197,8 +197,8 @@ func readBounded(r *os.Root, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Size() > maxFile {
-		return nil, errors.New("source must be a regular file of at most 1 MiB")
+	if !info.Mode().IsRegular() || info.Size() > int64(limit) {
+		return nil, fmt.Errorf("source must be a regular file of at most %d MiB", limit>>20)
 	}
 	f, err := r.Open(name)
 	if err != nil {
@@ -209,14 +209,14 @@ func readBounded(r *os.Root, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Size() > maxFile {
-		return nil, errors.New("source must be a regular file of at most 1 MiB")
+	if !info.Mode().IsRegular() || info.Size() > int64(limit) {
+		return nil, fmt.Errorf("source must be a regular file of at most %d MiB", limit>>20)
 	}
-	b, err := io.ReadAll(io.LimitReader(f, maxFile+1))
+	b, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(b) > maxFile || int64(len(b)) != info.Size() {
+	if len(b) > limit || int64(len(b)) != info.Size() {
 		return nil, errors.New("source size changed or exceeds limit")
 	}
 	return b, nil
@@ -281,28 +281,6 @@ func Create(ctx context.Context, root string, opt CreateOptions) error {
 	if err != nil {
 		return err
 	}
-	root, err = safeAbsolute(root)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return err
-	}
-	r, err := os.OpenRoot(root)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-	for _, name := range []string{"workspace.yaml", "agent.yaml", "agentsuite.json", "agents", "eval", "build-profiles"} {
-		if _, err := r.Lstat(name); !os.IsNotExist(err) {
-			return fmt.Errorf("refusing existing workspace/member/bundle path %s", name)
-		}
-	}
-	stage, err := os.MkdirTemp(root, ".kmx-create-*")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(stage)
 	w := sourceWorkspace{SchemaVersion: 1, Name: opt.Name, Member: "agents/" + opt.Name + "/member.yaml", BuildProfile: "build-profiles/default.json"}
 	wb, err := yaml.Marshal(w)
 	if err != nil {
@@ -313,57 +291,7 @@ func Create(ctx context.Context, root string, opt CreateOptions) error {
 		return err
 	}
 	files := map[string][]byte{"workspace.yaml": wb, w.Member: mb, "agents/" + opt.Name + "/instructions.md": instructions, w.BuildProfile: defaultProfile, "eval/example.yaml": []byte("id: example\ninput: What is 2+2?\nexpectContains: [\"4\"]\n")}
-	if err := writeFiles(stage, files); err != nil {
-		return err
-	}
-	var owned []string
-	published := false
-	defer func() {
-		if !published {
-			for _, name := range owned {
-				_ = r.RemoveAll(name)
-			}
-		}
-	}()
-	for _, name := range []string{"agents", "build-profiles", "eval"} {
-		if err := r.Mkdir(name, 0o700); err != nil {
-			return err
-		}
-		owned = append(owned, name)
-	}
-	if err := r.Mkdir("agents/"+opt.Name, 0o700); err != nil {
-		return err
-	}
-	for name := range files {
-		if name == "workspace.yaml" {
-			continue
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := r.Link(filepath.Base(stage)+"/"+name, name); err != nil {
-			return err
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := r.Link(filepath.Base(stage)+"/workspace.yaml", "workspace.yaml"); err != nil {
-		return err
-	}
-	published = true
-	return nil
-}
-func writeFiles(root string, files map[string][]byte) error {
-	for name, b := range files {
-		if err := os.MkdirAll(filepath.Join(root, filepath.Dir(name)), 0o700); err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(root, name), b, 0o600); err != nil {
-			return err
-		}
-	}
-	return nil
+	return createSourceFiles(ctx, root, files)
 }
 
 func strictYAML(b []byte, out any) error { return strictSourceYAML(b, out, false) }

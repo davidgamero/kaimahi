@@ -2,11 +2,12 @@ package agentsuite
 
 import (
 	"encoding/json"
-	agentsuite "github.com/agent-primitives/suite"
-	"github.com/google/jsonschema-go/jsonschema"
 	"os"
 	"strings"
 	"testing"
+
+	suitecore "github.com/agent-primitives/suite/core"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 func TestImageDeclarationSchemaParity(t *testing.T) {
@@ -23,7 +24,7 @@ func TestImageDeclarationSchemaParity(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := "sha256:" + strings.Repeat("a", 64)
-	r := ImageDeployment{SchemaVersion: agentsuite.SpecVersion, MediaType: ImageDeploymentMediaType, SuiteDigest: d, Agent: "hello", Platform: agentsuite.Platform{OS: "linux", Architecture: "amd64"}, CompositionDigest: d, BuildProfile: "default", BuildProfileDigest: d, Execution: agentsuite.ExecutionContract{Kind: agentsuite.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []agentsuite.ExecutionInput{}}}
+	r := ImageDeployment{SchemaVersion: suitecore.SpecVersion, MediaType: ImageDeploymentMediaType, SuiteDigest: d, Agent: "hello", Platform: suitecore.Platform{OS: "linux", Architecture: "amd64"}, CompositionDigest: d, BuildProfile: "default", BuildProfileDigest: d, Execution: suitecore.ExecutionContract{Kind: suitecore.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []suitecore.ExecutionInput{}}}
 	base, err := EncodeImageDeployment(r)
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +40,7 @@ func TestImageDeclarationSchemaParity(t *testing.T) {
 		{"missing execution", false, func(m map[string]any) { delete(m, "execution") }},
 		{"missing inputs", false, func(m map[string]any) { delete(m["execution"].(map[string]any), "inputs") }},
 		{"mounted without inference", false, func(m map[string]any) {
-			m["execution"].(map[string]any)["configuration"] = agentsuite.AgentKitMountedConfig
+			m["execution"].(map[string]any)["configuration"] = suitecore.AgentKitMountedConfig
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -60,7 +61,7 @@ func TestImageDeclarationSchemaParity(t *testing.T) {
 
 func TestImageDeclarationRoundTripAndBindingRefusal(t *testing.T) {
 	d := "sha256:" + strings.Repeat("a", 64)
-	r := ImageDeployment{SchemaVersion: agentsuite.SpecVersion, MediaType: ImageDeploymentMediaType, SuiteReference: "registry.example/source@" + d, SuiteDigest: d, Agent: "hello", Platform: agentsuite.Platform{OS: "linux", Architecture: "amd64"}, CompositionDigest: d, BuildProfile: "default", Execution: agentsuite.ExecutionContract{Kind: agentsuite.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []agentsuite.ExecutionInput{}}}
+	r := ImageDeployment{SchemaVersion: suitecore.SpecVersion, MediaType: ImageDeploymentMediaType, SuiteReference: "registry.example/source@" + d, SuiteDigest: d, Agent: "hello", Platform: suitecore.Platform{OS: "linux", Architecture: "amd64"}, CompositionDigest: d, BuildProfile: "default", Execution: suitecore.ExecutionContract{Kind: suitecore.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []suitecore.ExecutionInput{}}}
 	r.BuildProfileDigest = d
 	label, err := EncodeImageDeployment(r)
 	if err != nil {

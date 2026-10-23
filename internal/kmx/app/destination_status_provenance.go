@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	agentsuite "github.com/agent-primitives/suite"
+	suitecore "github.com/agent-primitives/suite/core"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/workspace"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/scaffold"
 )
@@ -50,11 +50,16 @@ func statusOwnership(runtime string, meta map[string]any) (*destinationStatusOwn
 		}
 	}
 	if runtime == "orka" {
-		owner := &orkaSuiteOwnership{v[0], v[1], v[2], v[3], v[4], v[5], run}
-		if !owner.valid() || owner.check(ann) != nil {
+		owner := &orkaSuiteOwnership{v[0], v[1], v[2], v[3], v[4], v[5], run, nil}
+		var err error
+		owner.FlowCandidate, err = flowCandidateOwner(ann)
+		if err != nil || !owner.valid() || owner.check(ann) != nil {
 			return nil, "unknown"
 		}
 	} else {
+		if _, flow := ann[flowCandidateMarker]; flow {
+			return nil, "unknown"
+		}
 		owner := &suiteKagentOwnership{v[0], v[1], v[2], v[3], v[4], v[5], workspace.RuntimeProfile{ID: "kagent", Version: "v0.10.3", Engine: "go"}}
 		labels, _ := meta["labels"].(map[string]any)
 		if !owner.valid() || labels["app.kubernetes.io/managed-by"] != "kmx" {
@@ -77,13 +82,13 @@ func statusRecord(raw string, runtime string) *destinationStatusRecord {
 	}
 	var fields map[string]any
 	var r releaseLiftProvenance
-	if agentsuite.Unmarshal([]byte(raw), &fields) != nil || agentsuite.Unmarshal([]byte(raw), &r) != nil {
+	if suitecore.Unmarshal([]byte(raw), &fields) != nil || suitecore.Unmarshal([]byte(raw), &r) != nil {
 		return nil
 	}
 	if _, ok := fields["evaluatedOnTarget"].(bool); !ok {
 		return nil
 	}
-	if (r.Version != 1 && (r.Version != 2 || runtime != "orka")) || !evaluationRunID(r.LiftID) || !evaluationRunID(r.ReceiptRunID) || !agentsuite.IsValidDigest(r.SuiteDigest) || !agentsuite.IsValidDigest(r.ReceiptDigest) || !statusTargetValid(r.Target) || !statusTargetValid(r.Evaluation) || r.EvaluationName != "" && !statusSafeText(r.EvaluationName) || r.Actor != "" && !statusSafeText(r.Actor) {
+	if (r.Version != 1 && (r.Version != 2 || runtime != "orka")) || !evaluationRunID(r.LiftID) || !evaluationRunID(r.ReceiptRunID) || !suitecore.IsValidDigest(r.SuiteDigest) || !suitecore.IsValidDigest(r.ReceiptDigest) || !statusTargetValid(r.Target) || !statusTargetValid(r.Evaluation) || r.EvaluationName != "" && !statusSafeText(r.EvaluationName) || r.Actor != "" && !statusSafeText(r.Actor) {
 		return nil
 	}
 	if r.Gate != "promotion" && r.Gate != "same-subject" || r.EvaluatedOnTarget != (r.Gate == "same-subject") || r.Gate == "same-subject" && !statusSameTarget(r.Evaluation, r.Target) {
@@ -102,7 +107,7 @@ func statusRecord(raw string, runtime string) *destinationStatusRecord {
 	// Match the producer's typed-ID exemption, not a blanket secret exemption.
 	masked := r
 	masked.LiftID, masked.ReceiptRunID = "lift", "run"
-	checked, err := agentsuite.Marshal(masked)
+	checked, err := suitecore.Marshal(masked)
 	if err != nil || scaffold.RefuseKeyShapes(string(checked)) != nil {
 		return nil
 	}

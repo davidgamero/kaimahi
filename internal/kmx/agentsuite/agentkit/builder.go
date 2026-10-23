@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	agentsuite "github.com/agent-primitives/suite"
+	suitecore "github.com/agent-primitives/suite/core"
 	"github.com/distribution/reference"
 	kmxsuite "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
 )
@@ -95,10 +95,10 @@ func (b *Builder) Build(
 	label := ""
 	if b.options.SuiteReference != "" {
 		if plan.BuildProfile.Execution == nil {
-			return kmxsuite.BuildResult{}, errors.New("liftable image requires an execution contract")
+			return kmxsuite.BuildResult{}, errors.New("source-linked image requires an execution contract")
 		}
 		label, err = kmxsuite.EncodeImageDeployment(kmxsuite.ImageDeployment{
-			SchemaVersion: agentsuite.SpecVersion, MediaType: kmxsuite.ImageDeploymentMediaType,
+			SchemaVersion: suitecore.SpecVersion, MediaType: kmxsuite.ImageDeploymentMediaType,
 			SuiteDigest: b.options.SuiteDigest,
 			Agent:       plan.Agent.ID, Platform: plan.Composition.Platform, CompositionDigest: plan.CompositionDigest,
 			BuildProfile: plan.BuildProfile.ID, BuildProfileDigest: plan.BuildProfileDigest, Execution: *plan.BuildProfile.Execution, Inference: plan.Agent.Model.Capabilities,
@@ -155,7 +155,7 @@ func (b *Builder) validate(plan kmxsuite.SandboxPlan) error {
 	}
 	var errs []error
 	if execution := plan.BuildProfile.Execution; execution != nil {
-		errs = append(errs, agentsuite.ValidateExecutionContract(*execution))
+		errs = append(errs, suitecore.ValidateExecutionContract(*execution))
 		if execution.Port != 8080 || execution.HealthPath != "/healthz" {
 			errs = append(errs, errors.New("AgentKit builder supports only port 8080 and /healthz"))
 		}
@@ -189,7 +189,7 @@ func (b *Builder) validate(plan kmxsuite.SandboxPlan) error {
 			errs = append(errs, errors.New("execution declaration must include the configured model credential environment as a secret input"))
 		}
 	}
-	if b.options.SuiteReference != "" && (agentsuite.ValidateImageReference(b.options.SuiteReference) != nil || !agentsuite.IsValidDigest(b.options.SuiteDigest) || !strings.HasSuffix(b.options.SuiteReference, "@"+b.options.SuiteDigest)) {
+	if b.options.SuiteReference != "" && (suitecore.ValidateImageReference(b.options.SuiteReference) != nil || !suitecore.IsValidDigest(b.options.SuiteDigest) || !strings.HasSuffix(b.options.SuiteReference, "@"+b.options.SuiteDigest)) {
 		errs = append(errs, errors.New("published source reference must pin the exact suite manifest digest"))
 	}
 	if b.options.DisableAttestations && b.options.RequireAttestations {
@@ -205,7 +205,7 @@ func (b *Builder) validate(plan kmxsuite.SandboxPlan) error {
 		if b.options.ModelBaseURL != "" || b.options.ModelAPIKeyEnv != "" {
 			errs = append(errs, errors.New("capability-based builds take model and credentials only at deployment; omit model build flags"))
 		}
-		if b.options.SuiteReference == "" || plan.BuildProfile.Execution == nil || plan.BuildProfile.Execution.Configuration != agentsuite.AgentKitMountedConfig {
+		if b.options.SuiteReference == "" || plan.BuildProfile.Execution == nil || plan.BuildProfile.Execution.Configuration != suitecore.AgentKitMountedConfig {
 			errs = append(errs, errors.New("capability-based builds require --suite-ref and agentkit-v0-mounted-v1 configuration"))
 		}
 		if plan.Harness.ImageRef != "ghcr.io/orka-agents/agentkit/serve-pydantic-ai@sha256:8c4c17dc3d778c02097ad7e1ea88e9084b3f1aad6c36458829ff9cec9b4d043c" {
@@ -257,7 +257,7 @@ func (b *Builder) validate(plan kmxsuite.SandboxPlan) error {
 }
 
 func validateDigestReference(name, value string) error {
-	if err := agentsuite.ValidateImageReference(value); err != nil {
+	if err := suitecore.ValidateImageReference(value); err != nil {
 		return fmt.Errorf("%s must be a registry-qualified, digest-addressed image reference: %w", name, err)
 	}
 	return nil

@@ -25,11 +25,25 @@ permissions:
   contents: read
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  orka-qualification:
     permissions:
-      # Creating the release. Nothing else is written.
-      contents: write
+      contents: read
+    uses: ./.github/workflows/orka-runtime.yml
+
+  kagent-qualification:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/kagent-runtime.yml
+
+  release:
+    needs: [orka-qualification, kagent-qualification]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.what.outputs.version }}
+      dry_run: ${{ steps.what.outputs.dry_run }}
+      prerelease: ${{ steps.what.outputs.prerelease }}
+    permissions:
+      contents: read
       # Obtain a GitHub OIDC certificate for keyless checksum signing.
       id-token: write
     defaults:
@@ -42,6 +56,32 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Release commit has fresh Orka qualification
+        env:
+          QUALIFIED_SHA: ${{ needs.orka-qualification.outputs.qualified_sha }}
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$QUALIFIED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EVENT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          actual=$(git rev-parse HEAD)
+          expected=$(git rev-parse "$EVENT_SHA^{commit}")
+          test "$actual" = "$expected"
+          test "$actual" = "$QUALIFIED_SHA"
+
+      - name: Release commit has fresh kagent qualification
+        env:
+          QUALIFIED_SHA: ${{ needs.kagent-qualification.outputs.qualified_sha }}
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$QUALIFIED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EVENT_SHA" =~ ^[0-9a-f]{40}$ ]]
+          actual=$(git rev-parse HEAD)
+          expected=$(git rev-parse "$EVENT_SHA^{commit}")
+          test "$actual" = "$expected"
+          test "$actual" = "$QUALIFIED_SHA"
+
       - name: Decide what is being built
         id: what
         env:
@@ -50,13 +90,17 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_VERSION: ${{ inputs.version }}
           SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           # `synthetic` marks the one case where the version was invented by
           # this job rather than chosen by a person: a manual dry run with no
           # version given. It exists so the notes step can tell "rehearse a
-          # release" from "rehearse the machinery" — v0.0.0-dryrun.<sha> has
-          # no changelog section and never will.
+          # release" from "rehearse the machinery". Run ID and attempt make
+          # the stamped binaries/checksums distinct even for the same commit;
+          # repeated rehearsals must not re-sign an identical log payload.
+          # Synthetic versions have no changelog section and never will.
           synthetic=false
           if [ "$EVENT_NAME" = push ] && [ "$REF_TYPE" = tag ]; then
             version="$REF_NAME"
@@ -65,7 +109,7 @@ jobs:
             version="$INPUT_VERSION"
             dry_run=true
           else
-            version="v0.0.0-dryrun.${SHA:0:12}"
+            version="v0.0.0-dryrun.${SHA:0:12}.${RUN_ID}.${RUN_ATTEMPT}"
             dry_run=true
             synthetic=true
           fi
@@ -97,7 +141,7 @@ jobs:
       # That refusal applies to every version a PERSON named — a tag, or a
       # dry run given an explicit version, which is how you rehearse a
       # release before cutting it. It cannot apply to a version this job
-      # invented for a dry run: v0.0.0-dryrun.<sha> has no section, so
+      # invented for a dry run: v0.0.0-dryrun.<sha>.<run>.<attempt> has no section, so
       # requiring one would make the "debug the release job without burning
       # a version number" path fail before it built anything. That case
       # reads the Unreleased section instead — the extractor still runs, and
@@ -339,20 +383,116 @@ jobs:
             --bundle "$artifact_dir/checksums.txt.sigstore.json" \
             "$artifact_dir/checksums.txt"
 
-      # Only now, with every check above green, does anything get published.
-      # Create the GitHub release with the exact files just checked rather
-      # than asking GoReleaser to rebuild them. `gh release create` keeps the
-      # release as a draft while it uploads every named asset, then publishes
-      # it, so a failed formula upload cannot expose a partial public release.
-      - name: Publish the checked release artifacts
-        if: steps.what.outputs.dry_run == 'false'
+      # The binary inventory has just been signature-verified. Package those
+      # exact staged bytes, never another build or a path in dist/.
+      - name: Package and validate Copilot plugin archives
         env:
-          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.what.outputs.version }}
-          PRERELEASE: ${{ steps.what.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          python3 plugins/copilot/release.py \
+            --assets "$RUNNER_TEMP/release-assets" \
+            --version "$VERSION" --revision "$GITHUB_SHA"
+
+      - name: Sign the checked plugin checksum manifest
         run: |
           set -euo pipefail
           artifact_dir="$RUNNER_TEMP/release-assets"
+          cosign sign-blob --yes \
+            --bundle "$artifact_dir/plugin-checksums.txt.sigstore.json" \
+            "$artifact_dir/plugin-checksums.txt"
+
+      - name: Verify the plugin checksum signature
+        env:
+          CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+        run: |
+          set -euo pipefail
+          artifact_dir="$RUNNER_TEMP/release-assets"
+          cosign verify-blob \
+            --certificate-identity "$CERTIFICATE_IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --bundle "$artifact_dir/plugin-checksums.txt.sigstore.json" \
+            "$artifact_dir/plugin-checksums.txt"
+
+      - name: Include checked plugin digests in release guidance
+        run: |
+          set -euo pipefail
+          {
+            printf '\n### Copilot plugin archives\n\n'
+            printf 'Verify the archive SHA256 below before extraction or execution. Configure the selected root in both mcp.json and selected-root.json before installing; see plugins/copilot/README.md in the tagged source.\n\n```text\n'
+            cat "$RUNNER_TEMP/release-assets/plugin-checksums.txt"
+            printf '```\n'
+          } >> "$RUNNER_TEMP/release-notes.md"
+
+      # Native install checks consume these exact cross-built bytes before any
+      # release can publish. Dry runs retain the same complete artifact layout.
+      - name: Upload checked artifacts for native qualification
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmx-${{ steps.what.outputs.version }}
+          path: |
+            ${{ runner.temp }}/release-assets/
+            ${{ runner.temp }}/release-notes.md
+          if-no-files-found: error
+          overwrite: true
+
+  plugin-install:
+    needs: release
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v4
+        with:
+          name: kmx-${{ needs.release.outputs.version }}
+          path: ${{ runner.temp }}/checked-release
+      - name: Install pinned Copilot CLI without dependency scripts
+        run: npm install --prefix "$RUNNER_TEMP/copilot" --ignore-scripts --no-save @github/copilot@1.0.102
+      - name: Verify native archive and run real isolated install cycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$(uname -s)" in Darwin) os=darwin;; Linux) os=linux;; *) exit 1;; esac
+          case "$(uname -m)" in arm64|aarch64) arch=arm64;; x86_64) arch=amd64;; *) exit 1;; esac
+          export KMX_NATIVE_ARCHIVE="$RUNNER_TEMP/checked-release/release-assets/kmx-agent-builder-$os-$arch.tar.gz"
+          export KMX_NATIVE_COPILOT="$RUNNER_TEMP/copilot/node_modules/.bin/copilot"
+          python3 -m unittest discover -s plugins/copilot -p test_native_install.py -v
+
+  publish:
+    needs: [release, plugin-install]
+    if: needs.release.outputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: kmx-${{ needs.release.outputs.version }}
+          path: ${{ runner.temp }}/checked-release
+      # Publish only after Linux AND macOS executed the exact staged engine and
+      # checked an install/uninstall/reinstall in a fresh host profile.
+      - name: Publish the checked release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.release.outputs.version }}
+          PRERELEASE: ${{ needs.release.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          artifact_dir="$RUNNER_TEMP/checked-release/release-assets"
           assets=(
             "$artifact_dir/kmx-linux-amd64"
             "$artifact_dir/kmx-linux-arm64"
@@ -361,19 +501,14 @@ jobs:
             "$artifact_dir/checksums.txt"
             "$artifact_dir/checksums.txt.sigstore.json"
             "$artifact_dir/kmx.rb"
+            "$artifact_dir/kmx-agent-builder-linux-amd64.tar.gz"
+            "$artifact_dir/kmx-agent-builder-linux-arm64.tar.gz"
+            "$artifact_dir/kmx-agent-builder-darwin-amd64.tar.gz"
+            "$artifact_dir/kmx-agent-builder-darwin-arm64.tar.gz"
+            "$artifact_dir/plugin-checksums.txt"
+            "$artifact_dir/plugin-checksums.txt.sigstore.json"
           )
           for asset in "${assets[@]}"; do test -f "$asset"; done
-          flags=(--title "$VERSION" --notes-file "$RUNNER_TEMP/release-notes.md" --verify-tag)
+          flags=(--title "$VERSION" --notes-file "$RUNNER_TEMP/checked-release/release-notes.md" --verify-tag)
           if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
           gh release create "$VERSION" "${flags[@]}" "${assets[@]}"
-
-      # A dry run publishes nothing; the artifacts are how its output is
-      # inspected (and how a clean machine can be handed the exact bytes a
-      # release would have contained).
-      - name: Upload the dry-run artifacts
-        if: steps.what.outputs.dry_run == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: kmx-${{ steps.what.outputs.version }}
-          path: ${{ runner.temp }}/release-assets/
-          if-no-files-found: error

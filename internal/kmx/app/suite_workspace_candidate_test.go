@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	agentsuite "github.com/agent-primitives/suite"
+	suitecore "github.com/agent-primitives/suite/core"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/workspace"
 	agentruntime "github.com/kaimahi-agents/kaimahi/internal/kmx/runtime"
 )
@@ -105,6 +105,19 @@ func TestCandidateExecutionAbortSummary(t *testing.T) {
 			}
 			if _, _, e := p.store.latest(t.Context(), p.suite); !errors.Is(e, errSuitePassMissing) {
 				t.Fatal("abort registered proof", e)
+			}
+			retained, e := openSuiteFailureStore(opt.Workspace, false)
+			if e != nil {
+				t.Fatal(e)
+			}
+			rows, scanErr := retained.scan()
+			closeErr := retained.Close()
+			if scanErr != nil || closeErr != nil || len(rows) != 1 {
+				t.Fatal("abort did not retain metadata", scanErr, closeErr)
+			}
+			detail := rows[0].record.Detail
+			if detail.Verdict != "unknown" || detail.Attributed || detail.Complete || detail.Answer != "" {
+				t.Fatal("aborted run retained attributable content")
 			}
 		})
 	}
@@ -448,7 +461,7 @@ func TestCandidateCorePrivateLifecycleOrderingAndCancellation(t *testing.T) {
 					t.Fatal("candidate selfdiff", diffErr, out)
 				}
 				normalized, ok := normalizeSuitePassingEvaluation(receipt)
-				raw, _ := agentsuite.Marshal(suitePassingDiffSubject{receipt.Subject, receipt.Provider, receipt.Agent, receipt.Kagent})
+				raw, _ := suitecore.Marshal(suitePassingDiffSubject{receipt.Subject, receipt.Provider, receipt.Agent, receipt.Kagent})
 				if !ok || normalized.SuiteIdentity != agentruntime.RenderedBundleDigest([][]byte{[]byte("kmx.native-suite.diff-subject/v1"), raw}) {
 					t.Fatal("selfdiff hashed scanner mask")
 				}

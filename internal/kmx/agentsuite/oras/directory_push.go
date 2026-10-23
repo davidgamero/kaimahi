@@ -14,7 +14,9 @@ import (
 	"strings"
 	"time"
 
-	agentsuite "github.com/agent-primitives/suite"
+	suitecore "github.com/agent-primitives/suite/core"
+	suiteflow "github.com/agent-primitives/suite/experimental/flow"
+	suiteoci "github.com/agent-primitives/suite/oci"
 	kmxsuite "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
 	godigest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -27,7 +29,7 @@ type PushResult struct {
 	Reference  string
 	Updated    bool
 	Descriptor ocispec.Descriptor
-	Report     *agentsuite.Report
+	Report     *suitecore.Report
 	// Provenance is set for registry pushes only; a layout holds one manifest.
 	Provenance *Provenance
 	Warnings   []string
@@ -42,6 +44,16 @@ func Push(
 	destination string,
 	reference string,
 ) (result PushResult, err error) {
+	return pushDirectoryLayout(ctx, source, destination, reference, false)
+}
+
+// PrepareFlowV1Alpha1Layout packages the fixed experimental flow contract into
+// a filesystem OCI layout only. It does not enable registry publication.
+func PrepareFlowV1Alpha1Layout(ctx context.Context, source, destination, reference string) (PushResult, error) {
+	return pushDirectoryLayout(ctx, source, destination, reference, true)
+}
+
+func pushDirectoryLayout(ctx context.Context, source, destination, reference string, flowMode bool) (result PushResult, err error) {
 	if reference == "" {
 		return PushResult{}, errors.New("AgentSuite push reference is required")
 	}
@@ -74,7 +86,7 @@ func Push(
 		return PushResult{}, errors.New("AgentSuite target must be outside the source directory")
 	}
 
-	packedRoot, packedStore, packed, err := packDirectory(ctx, sourcePath)
+	packedRoot, packedStore, packed, err := packDirectoryMode(ctx, sourcePath, flowMode)
 	if err != nil {
 		return PushResult{}, err
 	}
@@ -109,7 +121,7 @@ func Push(
 	} else {
 		updatedTarget = true
 	}
-	target, err := oci.New(targetPath)
+	target, err := newOCIStore(targetPath)
 	if err != nil {
 		return PushResult{}, fmt.Errorf("open AgentSuite OCI target: %w", err)
 	}
@@ -135,12 +147,27 @@ func packDirectory(
 	ctx context.Context,
 	source string,
 ) (string, *oci.Store, kmxsuite.PackResult, error) {
+	return packDirectoryMode(ctx, source, false)
+}
+
+func packDirectoryMode(ctx context.Context, source string, flowMode bool) (string, *oci.Store, kmxsuite.PackResult, error) {
 	sourceRoot, err := os.MkdirTemp("", "agentsuite-source-cas-*")
 	if err != nil {
 		return "", nil, kmxsuite.PackResult{}, err
 	}
 	defer os.RemoveAll(sourceRoot)
-	sourceStore, err := oci.New(sourceRoot)
+	// The public loose reader is the conformance authority. It accepts only a
+	// path, so it cannot share pushDirectory's handle transactionally; the
+	// packed archive is validated again below.
+	if flowMode {
+		_, err = suiteflow.ValidateDirectoryFlowV1Alpha1(source)
+	} else {
+		_, err = suiteoci.ValidateDirectory(source)
+	}
+	if err != nil {
+		return "", nil, kmxsuite.PackResult{}, fmt.Errorf("validate AgentSuite directory: %w", err)
+	}
+	sourceStore, err := newOCIStore(sourceRoot)
 	if err != nil {
 		return "", nil, kmxsuite.PackResult{}, fmt.Errorf("create AgentSuite source CAS: %w", err)
 	}
@@ -153,12 +180,16 @@ func packDirectory(
 	if err != nil {
 		return "", nil, kmxsuite.PackResult{}, fmt.Errorf("create staged AgentSuite artifact: %w", err)
 	}
-	packedStore, err := oci.New(packedRoot)
+	packedStore, err := newOCIStore(packedRoot)
 	if err != nil {
 		_ = os.RemoveAll(packedRoot)
 		return "", nil, kmxsuite.PackResult{}, fmt.Errorf("create staged AgentSuite artifact: %w", err)
 	}
-	packed, err := New(nil).Pack(ctx, sourceStore, packedStore, contentDescriptor)
+	var validator kmxsuite.Validator = LayoutValidator{}
+	if flowMode {
+		validator = flowV1Alpha1LayoutValidator{}
+	}
+	packed, err := New(validator).Pack(ctx, sourceStore, packedStore, contentDescriptor)
 	if err != nil {
 		_ = os.RemoveAll(packedRoot)
 		return "", nil, kmxsuite.PackResult{}, err
@@ -215,6 +246,10 @@ func pushDirectory(
 		return ocispec.Descriptor{}, fmt.Errorf("open AgentSuite directory: %w", err)
 	}
 	defer rootHandle.Close()
+	modes, err := kmxsuite.DirectoryModes(rootHandle)
+	if err != nil {
+		return ocispec.Descriptor{}, fmt.Errorf("read AgentSuite payload declarations: %w", err)
+	}
 
 	var names []string
 	if err := fs.WalkDir(rootHandle.FS(), ".", func(name string, _ fs.DirEntry, walkErr error) error {
@@ -239,7 +274,7 @@ func pushDirectory(
 	}
 	archivePath := archive.Name()
 	defer os.Remove(archivePath)
-	if err := writeArchive(ctx, rootHandle, names, archive); err != nil {
+	if err := writeArchive(ctx, rootHandle, names, modes, archive); err != nil {
 		archive.Close()
 		return ocispec.Descriptor{}, err
 	}
@@ -266,7 +301,7 @@ func pushDirectory(
 		return ocispec.Descriptor{}, err
 	}
 	descriptor := ocispec.Descriptor{
-		MediaType: agentsuite.MediaTypeContent,
+		MediaType: suitecore.MediaTypeContent,
 		Digest:    digest,
 		Size:      size,
 	}
@@ -285,6 +320,7 @@ func writeArchive(
 	ctx context.Context,
 	root *os.Root,
 	names []string,
+	modes map[string]uint32,
 	dst io.Writer,
 ) (err error) {
 	gzipWriter := gzip.NewWriter(dst)
@@ -315,13 +351,10 @@ func writeArchive(
 		case mode.IsDir():
 			header.Name += "/"
 			header.Typeflag = tar.TypeDir
-			header.Mode = 0o755
+			header.Mode = declaredMode(modes, name, 0o755)
 		case mode.IsRegular():
 			header.Typeflag = tar.TypeReg
-			header.Mode = 0o644
-			if mode.Perm()&0o111 != 0 {
-				header.Mode = 0o755
-			}
+			header.Mode = declaredMode(modes, name, 0o644)
 			header.Size = info.Size()
 			file, err := root.Open(name)
 			if err != nil {
@@ -358,7 +391,7 @@ func writeArchive(
 				return fmt.Errorf("read AgentSuite symlink %s: %w", name, err)
 			}
 			header.Typeflag = tar.TypeSymlink
-			header.Mode = 0o777
+			header.Mode = declaredMode(modes, name, 0o777)
 			header.Linkname = filepath.ToSlash(target)
 		default:
 			return fmt.Errorf("AgentSuite content %s has unsupported file type %s", name, mode.Type())
@@ -368,6 +401,15 @@ func writeArchive(
 		}
 	}
 	return nil
+}
+
+// declaredMode applies an authored payload mode, including zero, or the
+// portable default. Host permission bits are never consulted.
+func declaredMode(modes map[string]uint32, name string, fallback int64) int64 {
+	if mode, ok := modes[filepath.ToSlash(name)]; ok {
+		return int64(mode)
+	}
+	return fallback
 }
 
 type contextReader struct {

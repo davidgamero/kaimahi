@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,14 +12,17 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentpreview"
 	kmxsuite "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
 	agentkitbuilder "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/agentkit"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/app"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/modelaccess"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/version"
 )
 
 type dependencies struct {
+	fileRunner         agentpreview.Runner
 	stdin              *os.File
 	stdout             io.Writer
 	stderr             io.Writer
@@ -27,11 +31,14 @@ type dependencies struct {
 	newApp             func(*config.Config) *app.App
 	buildInfo          func() (*debug.BuildInfo, bool)
 	newAgentKitBuilder func(agentkitbuilder.Options) kmxsuite.SandboxBuilder
+	discoverModels     func(context.Context) []modelaccess.Report
+	newCopilot         func() copilotAccess
 }
 
 func productionDependencies() dependencies {
 	return dependencies{
-		stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr,
+		fileRunner: app.NewLocalFileRunner(),
+		stdin:      os.Stdin, stdout: os.Stdout, stderr: os.Stderr,
 		executable: invocationExecutable(os.Args[0]),
 		loadConfig: config.LoadWithOverrides, newApp: app.New, buildInfo: debug.ReadBuildInfo,
 		newAgentKitBuilder: func(options agentkitbuilder.Options) kmxsuite.SandboxBuilder {
@@ -60,6 +67,7 @@ type commandState struct {
 	containerEngineFlag string
 	app                 *app.App
 	argv                []string
+	evalNoticeShown     bool
 }
 
 func (s *commandState) executable() string {
@@ -85,13 +93,16 @@ func (s *commandState) application() (*app.App, error) {
 	return a, nil
 }
 
-// operationApplication adds invocation identity to a configured App. Keep it
-// separate from application(): help and completion need no operation.
+// operationApplication binds context and identity to this invocation's App.
+// Copy its Runner so shared runners retain their context.
 func (s *commandState) operationApplication(cmd *cobra.Command) (*app.App, error) {
 	a, err := s.application()
 	if err != nil {
 		return nil, err
 	}
+	runner := *a.Run
+	runner.Context = cmd.Context()
+	a.Run = &runner
 	// Chat slash commands are separate operations; replaying the outer chat
 	// command would not repeat the mutation they are asking to confirm.
 	if cmd.Name() != "chat" && cmd.Name() != "console" && len(s.argv) > 0 {
@@ -109,8 +120,26 @@ func execute(argv []string, deps dependencies) error {
 	contextFlag := ""
 	var err error
 	if len(argv) == 0 || argv[0] != "__complete" && argv[0] != "__completeNoDesc" {
+		original := argv
 		argv, contextFlag, err = extractContext(argv)
 		if err != nil {
+			// No Cobra hook runs after preprocessing refuses. Preserve that
+			// refusal, but still disclose a recognizable legacy invocation.
+			notice := ""
+			if legacyCommandInvocation(original, "lift") {
+				notice = "kmx lift is deprecated; use kmx deploy (same arguments)."
+			} else if legacyCommandInvocation(original, "eval") {
+				notice = evalDeprecationNotice
+			}
+			if notice != "" {
+				diagnostics := deps.stderr
+				if diagnostics == nil {
+					diagnostics = os.Stderr
+				}
+				if _, noticeErr := fmt.Fprintln(diagnostics, notice); noticeErr != nil {
+					return errors.Join(err, noticeErr)
+				}
+			}
 			return err
 		}
 	}
@@ -119,14 +148,51 @@ func execute(argv []string, deps dependencies) error {
 	root.InitDefaultHelpCmd()
 	help, _, _ := root.Find([]string{"help"})
 	// Cobra otherwise reports an unknown help topic on stdout but exits zero.
-	help.Args = func(_ *cobra.Command, args []string) error {
+	help.Args = func(cmd *cobra.Command, args []string) error {
 		if len(args) > 0 && args[0] == "agent" {
 			return fmt.Errorf("unknown command %q for %q", args[0], root.Name())
 		}
+		if legacyCommandInvocation(argv, "eval") {
+			return state.noticeLegacyEval(cmd)
+		}
 		return nil
 	}
+	// Explicit help parses its own flags and validates global flags before
+	// dispatching to a topic's HelpFunc. Cover those refusals without hooks.
+	help.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		if legacyCommandInvocation(argv, "eval") {
+			return errors.Join(state.noticeLegacyEval(cmd), err)
+		}
+		return err
+	})
 	root.SetArgs(argv)
 	return root.Execute()
+}
+
+// Recognize only the root command (or explicit help topic) after known global
+// flags. Unknown flags, other commands and -- stop discovery: their arguments
+// may contain an opaque value equal to a legacy verb and are never searched.
+func legacyCommandInvocation(argv []string, verb string) bool {
+	helpTopic := false
+	for i := 0; i < len(argv); i++ {
+		name, _, inline := strings.Cut(argv[i], "=")
+		switch name {
+		case "--context", "-context", "--container-engine":
+			if !inline {
+				i++
+			}
+		case "--help", "-h":
+			continue
+		case "help":
+			if inline || helpTopic {
+				return false
+			}
+			helpTopic = true
+		default:
+			return argv[i] == verb
+		}
+	}
+	return false
 }
 
 func newRootCommand(state *commandState) *cobra.Command {
@@ -148,12 +214,12 @@ func newRootCommand(state *commandState) *cobra.Command {
 	_ = root.RegisterFlagCompletionFunc("context", completeContexts)
 	_ = root.RegisterFlagCompletionFunc("container-engine", staticCompletion([]string{"docker", "podman"}))
 	root.AddCommand(
-		newVersionCommand(state), newCompletionCommand(root), newContextCommand(state), newLocalCommand(state), newDestinationsCommand(state),
+		newVersionCommand(state), newMCPCommand(state), newCompletionCommand(root), newModelCommand(state), newContextCommand(state), newLocalCommand(state), newDestinationsCommand(state),
 		newQuickstartCommand(state), newAKSCommand(state),
 		newConsoleCommand(state), newOrkaCommand(state),
 		newStatusCommand(state), newAgentCreateCommand(state), newAgentChatCommand(state), newAgentRunCommand(state),
-		newAgentEvalCommand(state), newReleaseLiftCommand(state), newTaskCommand(state),
-		newSuiteCommand(state), newSuitePushCommand(state, true), newTargetsCommand(state),
+		newAgentTestCommand(state), newAgentEvalCommand(state), newReleaseDeployCommand(state), newReleaseLiftCommand(state), newTaskCommand(state),
+		newSuiteCommand(state), newSuitePushCommand(state, true), newTargetsCommand(state), newRunProfileCommand(state),
 		retiredCommand("quickstart-wizard", "kmx quickstart --interactive"),
 	)
 	return root

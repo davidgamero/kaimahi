@@ -6,7 +6,7 @@ import (
 	"errors"
 	"strings"
 
-	agentsuite "github.com/agent-primitives/suite"
+	suitecore "github.com/agent-primitives/suite/core"
 )
 
 const (
@@ -18,19 +18,19 @@ const (
 // ImageDeployment is a digest-bound publisher declaration, not a conformant
 // sandbox binding, filesystem inventory or signed build provenance.
 type ImageDeployment struct {
-	Inference     *agentsuite.InferenceRequirements `json:"inference,omitempty"`
-	SchemaVersion string                            `json:"schemaVersion"`
-	MediaType     string                            `json:"mediaType"`
+	Inference     *suitecore.InferenceRequirements `json:"inference,omitempty"`
+	SchemaVersion string                           `json:"schemaVersion"`
+	MediaType     string                           `json:"mediaType"`
 	// SuiteReference is an optional legacy retrieval hint, never source identity.
 	// New builds omit it so copying a suite repository does not change the image.
-	SuiteReference     string                       `json:"suiteReference,omitempty"`
-	SuiteDigest        string                       `json:"suiteDigest"`
-	Agent              string                       `json:"agent"`
-	Platform           agentsuite.Platform          `json:"platform"`
-	CompositionDigest  string                       `json:"compositionDigest"`
-	BuildProfile       string                       `json:"buildProfile"`
-	BuildProfileDigest string                       `json:"buildProfileDigest"`
-	Execution          agentsuite.ExecutionContract `json:"execution"`
+	SuiteReference     string                      `json:"suiteReference,omitempty"`
+	SuiteDigest        string                      `json:"suiteDigest"`
+	Agent              string                      `json:"agent"`
+	Platform           suitecore.Platform          `json:"platform"`
+	CompositionDigest  string                      `json:"compositionDigest"`
+	BuildProfile       string                      `json:"buildProfile"`
+	BuildProfileDigest string                      `json:"buildProfileDigest"`
+	Execution          suitecore.ExecutionContract `json:"execution"`
 }
 
 func DecodeImageDeployment(data []byte) (*ImageDeployment, error) {
@@ -39,7 +39,7 @@ func DecodeImageDeployment(data []byte) (*ImageDeployment, error) {
 	}
 	var r ImageDeployment
 	var fields map[string]json.RawMessage
-	if err := agentsuite.Unmarshal(data, &fields); err != nil {
+	if err := suitecore.Unmarshal(data, &fields); err != nil {
 		return nil, err
 	}
 	for _, name := range []string{"schemaVersion", "mediaType", "suiteDigest", "agent", "platform", "compositionDigest", "buildProfile", "buildProfileDigest", "execution"} {
@@ -52,30 +52,30 @@ func DecodeImageDeployment(data []byte) (*ImageDeployment, error) {
 			return nil, errors.New("optional image declaration fields must not be null")
 		}
 	}
-	if err := agentsuite.Unmarshal(data, &r); err != nil {
+	if err := suitecore.Unmarshal(data, &r); err != nil {
 		return nil, err
 	}
 	if _, present := fields["suiteReference"]; present && r.SuiteReference == "" {
 		return nil, errors.New("suiteReference must not be empty when present")
 	}
-	if r.SchemaVersion != agentsuite.SpecVersion || r.MediaType != ImageDeploymentMediaType || !agentsuite.IsValidDigest(r.SuiteDigest) || !agentsuite.IsValidDigest(r.CompositionDigest) || !agentsuite.IsValidDigest(r.BuildProfileDigest) || !builderIdentifierPattern.MatchString(r.Agent) || !builderIdentifierPattern.MatchString(r.BuildProfile) {
+	if r.SchemaVersion != suitecore.SpecVersion || r.MediaType != ImageDeploymentMediaType || !suitecore.IsValidDigest(r.SuiteDigest) || !suitecore.IsValidDigest(r.CompositionDigest) || !suitecore.IsValidDigest(r.BuildProfileDigest) || !builderIdentifierPattern.MatchString(r.Agent) || !builderIdentifierPattern.MatchString(r.BuildProfile) {
 		return nil, errors.New("invalid image deployment identity")
 	}
 	if r.SuiteReference != "" {
 		if !strings.HasSuffix(r.SuiteReference, "@"+r.SuiteDigest) {
 			return nil, errors.New("suiteReference must pin suiteDigest")
 		}
-		if err := agentsuite.ValidateImageReference(r.SuiteReference); err != nil {
+		if err := suitecore.ValidateImageReference(r.SuiteReference); err != nil {
 			return nil, err
 		}
 	}
 	if err := validateBindingPlatform(r.Platform); err != nil {
 		return nil, err
 	}
-	if err := agentsuite.ValidateExecutionContract(r.Execution); err != nil {
+	if err := suitecore.ValidateExecutionContract(r.Execution); err != nil {
 		return nil, err
 	}
-	if (r.Inference != nil) != (r.Execution.Configuration == agentsuite.AgentKitMountedConfig) {
+	if (r.Inference != nil) != (r.Execution.Configuration == suitecore.AgentKitMountedConfig) {
 		return nil, errors.New("mounted configuration requires inference capabilities")
 	}
 	if r.Inference != nil {
@@ -87,7 +87,7 @@ func DecodeImageDeployment(data []byte) (*ImageDeployment, error) {
 }
 
 func EncodeImageDeployment(r ImageDeployment) (string, error) {
-	data, err := agentsuite.Marshal(r)
+	data, err := suitecore.Marshal(r)
 	if err != nil {
 		return "", err
 	}

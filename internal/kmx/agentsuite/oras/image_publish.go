@@ -10,7 +10,7 @@ import (
 	"io"
 	"os"
 
-	agentsuite "github.com/agent-primitives/suite"
+	suitecore "github.com/agent-primitives/suite/core"
 	kmxsuite "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/content"
@@ -20,7 +20,7 @@ import (
 
 // PushImage publishes an already-built OCI archive unchanged. Image and suite
 // publishing are distinct: this never repackages an image as suite content.
-func PushImage(ctx context.Context, archive, reference string, platform agentsuite.Platform, plainHTTP, force bool) (string, error) {
+func PushImage(ctx context.Context, archive, reference string, platform suitecore.Platform, plainHTTP, force bool) (string, error) {
 	file, err := os.Open(archive)
 	if err != nil {
 		return "", err

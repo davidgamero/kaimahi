@@ -1,15 +1,9 @@
-// Package agentsuite implements kmx construction support for AgentSuite.
-//
-// AgentSuite is definition and packaging data. It does not contain sessions,
-// checkpoints, runtime snapshots, credentials, or secret values.
-//
-// The portable data model, serializer, schemas, and validator live in the
-// top-level agentsuite package. This internal package owns builder-specific
-// bindings, packing, transfer, and sandbox construction used by kmx.
-//
-// Provider-specific behavior belongs behind these contracts. Filesystem,
-// ORAS, registry, Azure Storage, and other service bindings live in
-// implementation packages and remain independently replaceable. The CAS
-// contracts intentionally match ORAS method shapes structurally without
-// importing ORAS.
+// Package agentsuite provides KMX's AgentSuite construction and transfer contracts.
+// It owns builder-specific plans and bindings; the portable format and its
+// validation belong to the separate github.com/agent-primitives/suite module.
+// Experimental image declarations bind published source and generated configuration;
+// they grant no evaluation or deployment authority and are not sandbox conformance.
+// The AgentKit adapter builds model-independent mounted configurations, while the
+// ORAS adapter verifies source through localartifact and publishes complete image
+// and attestation graphs with explicit different-digest tag replacement.
 package agentsuite

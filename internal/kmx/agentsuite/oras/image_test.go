@@ -11,7 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	agentsuite "github.com/agent-primitives/suite"
+	suitecore "github.com/agent-primitives/suite/core"
+	suiteoci "github.com/agent-primitives/suite/oci"
 	kmxsuite "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
@@ -28,7 +29,7 @@ func TestPushImagePreservesGraphWithoutDeploymentAdmission(t *testing.T) {
 			t.Setenv("DOCKER_CONFIG", t.TempDir())
 			archive, image, root, blobs := publicationArchive(t, nested, "first", "", false)
 			ref := strings.TrimPrefix(server.URL, "http://") + "/team/image:v1"
-			platform := agentsuite.Platform{OS: "linux", Architecture: "amd64"}
+			platform := suitecore.Platform{OS: "linux", Architecture: "amd64"}
 			result, err := PushImage(t.Context(), archive, ref, platform, true, false)
 			if err != nil || result != strings.TrimSuffix(ref, ":v1")+"@"+image {
 				t.Fatalf("result=%s error=%v", result, err)
@@ -63,7 +64,7 @@ func TestPushImagePreservesGraphWithoutDeploymentAdmission(t *testing.T) {
 			if _, err := PushImage(t.Context(), changed, ref, platform, true, false); err == nil || !strings.Contains(err.Error(), "--force") {
 				t.Fatalf("tag replacement accepted: %v", err)
 			}
-			if _, err := PushImage(t.Context(), archive, ref, agentsuite.Platform{OS: "linux", Architecture: "arm64"}, true, true); err == nil {
+			if _, err := PushImage(t.Context(), archive, ref, suitecore.Platform{OS: "linux", Architecture: "arm64"}, true, true); err == nil {
 				t.Fatal("wrong platform accepted")
 			}
 			reg.mu.RLock()
@@ -162,7 +163,7 @@ func TestImagePublicationMetadataBudget(t *testing.T) {
 	for _, nested := range []bool{false, true} {
 		archive, _, _, _ := publicationArchive(t, nested, "large-index", "", false)
 		ref := strings.TrimPrefix(server.URL, "http://") + fmt.Sprintf("/large/image:v%t", nested)
-		if _, err := PushImage(t.Context(), archive, ref, agentsuite.Platform{OS: "linux", Architecture: "amd64"}, true, false); err != nil {
+		if _, err := PushImage(t.Context(), archive, ref, suitecore.Platform{OS: "linux", Architecture: "amd64"}, true, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -172,10 +173,10 @@ func TestPushAndResolveImageWithoutDescriptorPlatform(t *testing.T) {
 	server, _ := newTestRegistryServer("", "")
 	defer server.Close()
 	t.Setenv("DOCKER_CONFIG", t.TempDir())
-	platform := agentsuite.Platform{OS: "linux", Architecture: "amd64"}
+	platform := suitecore.Platform{OS: "linux", Architecture: "amd64"}
 	suiteDigest := "sha256:" + strings.Repeat("a", 64)
 	record := kmxsuite.ImageDeployment{
-		SchemaVersion:      agentsuite.SpecVersion,
+		SchemaVersion:      suitecore.SpecVersion,
 		MediaType:          kmxsuite.ImageDeploymentMediaType,
 		SuiteDigest:        suiteDigest,
 		Agent:              "hello",
@@ -183,12 +184,12 @@ func TestPushAndResolveImageWithoutDescriptorPlatform(t *testing.T) {
 		CompositionDigest:  suiteDigest,
 		BuildProfile:       "default",
 		BuildProfileDigest: suiteDigest,
-		Execution: agentsuite.ExecutionContract{
-			Kind:       agentsuite.ExecutionHTTPV1,
+		Execution: suitecore.ExecutionContract{
+			Kind:       suitecore.ExecutionHTTPV1,
 			Protocol:   "openai-chat-v1",
 			Port:       8080,
 			HealthPath: "/healthz",
-			Inputs:     []agentsuite.ExecutionInput{},
+			Inputs:     []suitecore.ExecutionInput{},
 		},
 	}
 	label, err := kmxsuite.EncodeImageDeployment(record)
@@ -224,13 +225,10 @@ func TestImageBuildSourceBindsSupplementalContent(t *testing.T) {
 		}
 	}
 	ref := strings.TrimPrefix(server.URL, "http://") + "/team/suite:v1"
-	executable := filepath.Join(source, "metadata", "helper")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(executable, 0755); err != nil {
-		t.Fatal(err)
-	}
+	payloadRoot := addModeProvider(t, source, "image-source", [][]payloadEntry{{
+		{InventoryEntry: suitecore.InventoryEntry{Path: "bin/tool", Type: "file", Mode: 0755}, data: "#!/bin/sh\nexit 0\n", host: 0644},
+	}})
+	executable := filepath.Join(source, payloadRoot, "bin", "tool")
 	pushed, err := PushRegistry(t.Context(), source, ref, true, false, PushOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -243,18 +241,16 @@ func TestImageBuildSourceBindsSupplementalContent(t *testing.T) {
 	if err := PrepareImageBuildSource(t.Context(), source, pinned, output, true); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(filepath.Join(output, "metadata", "helper"))
+	info, err := os.Stat(filepath.Join(output, payloadRoot, "bin", "tool"))
 	if err != nil || info.Mode().Perm() != 0755 {
 		t.Fatalf("packaged executable mode was not retained: %v %v", info, err)
 	}
-	if err := os.Chmod(executable, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := PrepareImageBuildSource(t.Context(), source, pinned, filepath.Join(t.TempDir(), "mode-drift"), true); err == nil {
-		t.Fatal("mode-only source drift accepted")
-	}
 	if err := os.Chmod(executable, 0755); err != nil {
 		t.Fatal(err)
+	}
+	// Portable declarations, not incidental host execute bits, own packed modes.
+	if err := PrepareImageBuildSource(t.Context(), source, pinned, filepath.Join(t.TempDir(), "host-mode-change"), true); err != nil {
+		t.Fatal("host chmod changed declared packaged content", err)
 	}
 	for _, name := range []string{"eval/case.yaml", "metadata/kmx/profile.json"} {
 		t.Run(name, func(t *testing.T) {
@@ -262,7 +258,7 @@ func TestImageBuildSourceBindsSupplementalContent(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer os.WriteFile(filepath.Join(source, name), []byte("original"), 0o600)
-			if _, err := agentsuite.ValidatePath(source); err != nil {
+			if _, err := suiteoci.ValidatePath(source); err != nil {
 				t.Fatal("supplemental change must remain public-graph valid", err)
 			}
 			destination := filepath.Join(t.TempDir(), "refused")
@@ -301,9 +297,9 @@ func TestResolveImageVerifiesContractAndPlatform(t *testing.T) {
 				}
 				return d
 			}
-			platform := agentsuite.Platform{OS: "linux", Architecture: "amd64"}
+			platform := suitecore.Platform{OS: "linux", Architecture: "amd64"}
 			digest := "sha256:" + strings.Repeat("a", 64)
-			record := kmxsuite.ImageDeployment{SchemaVersion: agentsuite.SpecVersion, MediaType: kmxsuite.ImageDeploymentMediaType, Agent: "hello", Platform: platform, SuiteReference: "registry.example/suite@" + digest, SuiteDigest: digest, CompositionDigest: digest, BuildProfile: "default", Execution: agentsuite.ExecutionContract{Kind: agentsuite.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []agentsuite.ExecutionInput{}}}
+			record := kmxsuite.ImageDeployment{SchemaVersion: suitecore.SpecVersion, MediaType: kmxsuite.ImageDeploymentMediaType, Agent: "hello", Platform: platform, SuiteReference: "registry.example/suite@" + digest, SuiteDigest: digest, CompositionDigest: digest, BuildProfile: "default", Execution: suitecore.ExecutionContract{Kind: suitecore.ExecutionHTTPV1, Protocol: "openai-chat-v1", Port: 8080, HealthPath: "/healthz", Inputs: []suitecore.ExecutionInput{}}}
 			record.BuildProfileDigest = digest
 			label, err := kmxsuite.EncodeImageDeployment(record)
 			if err != nil {
@@ -323,7 +319,7 @@ func TestResolveImageVerifiesContractAndPlatform(t *testing.T) {
 			}
 			manifest := ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, Config: push(ocispec.MediaTypeImageConfig, config), Layers: []ocispec.Descriptor{layer}}
 			if scenario == "suite artifact" {
-				manifest.ArtifactType = agentsuite.MediaTypeArtifact
+				manifest.ArtifactType = suitecore.MediaTypeArtifact
 			}
 			root := push(ocispec.MediaTypeImageManifest, manifest)
 			root.Platform = &ocispec.Platform{OS: "linux", Architecture: "amd64"}

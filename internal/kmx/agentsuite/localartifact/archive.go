@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	agentsuite "github.com/agent-primitives/suite"
+	suitecore "github.com/agent-primitives/suite/core"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -22,12 +22,16 @@ const (
 )
 
 // ReadArchive freezes and reads an uncompressed OCI image-layout tar.
-func ReadArchive(ctx context.Context, source io.ReaderAt, size int64, digest string) (a *Artifact, err error) {
+func ReadArchive(ctx context.Context, source io.ReaderAt, size int64, digest string) (*Artifact, error) {
+	return readArchive(ctx, source, size, digest, false)
+}
+
+func readArchive(ctx context.Context, source io.ReaderAt, size int64, digest string, flowMode bool) (a *Artifact, err error) {
 	defer func() { err = artifactError(ctx, err) }()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if source == nil || size < 0 || digest != "" && !agentsuite.IsValidDigest(digest) {
+	if source == nil || size < 0 || digest != "" && !suitecore.IsValidDigest(digest) {
 		return nil, ErrArtifact
 	}
 	if size > outerArchiveBytes {
@@ -41,7 +45,7 @@ func ReadArchive(ctx context.Context, source io.ReaderAt, size int64, digest str
 	if err != nil {
 		return nil, err
 	}
-	return readSource(ctx, archiveSource{files: files}, digest)
+	return readSource(ctx, archiveSource{files: files}, digest, flowMode)
 }
 
 type archiveSource struct{ files map[string][]byte }
@@ -68,7 +72,7 @@ func (s archiveSource) Fetch(ctx context.Context, descriptor ocispec.Descriptor)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !agentsuite.IsValidDigest(descriptor.Digest.String()) {
+	if !suitecore.IsValidDigest(descriptor.Digest.String()) {
 		return nil, ErrArtifact
 	}
 	raw, ok := s.files["blobs/sha256/"+descriptor.Digest.Encoded()]

@@ -10,20 +10,24 @@ import tempfile
 import unittest
 import yaml
 
+from test_workflow_helpers import runtime_job, kagent_runtime_job
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class RetirementCITests(unittest.TestCase):
     def setUp(self):
         self.jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+        self.jobs["e2e-orka-runtime"] = runtime_job(ROOT)
+        self.jobs["e2e-kagent-lift"] = kagent_runtime_job(ROOT)
 
     def test_required_aggregator_retains_native_shards_not_removed_products(self):
-        expected = {"classify-change", "e2e-kagent-lift", "e2e-orka-runtime", "e2e-orka-helm", "e2e-quickstart"}
+        expected = {"classify-change", "kagent-contract", "e2e-kagent-lift", "e2e-orka-runtime", "e2e-orka-helm", "e2e-quickstart"}
         self.assertEqual(set(self.jobs["e2e-hello-world"]["needs"]), expected)
         self.assertNotIn("e2e-kagent-create", self.jobs)
         self.assertNotIn("e2e-eval-loop", self.jobs)
         check = "\n".join(s.get("run", "") for s in self.jobs["e2e-hello-world"]["steps"])
-        self.assertIn('expected = {"e2e-kagent-lift", "e2e-orka-runtime", "e2e-orka-helm", "e2e-quickstart"}', check)
+        self.assertIn('expected = {"kagent-contract", "e2e-kagent-lift", "e2e-orka-runtime", "e2e-orka-helm", "e2e-quickstart"}', check)
         self.assertIn('if result != "success" and not (result == "skipped"', check)
 
     def test_aggregator_executes_fail_closed(self):
@@ -36,7 +40,7 @@ class RetirementCITests(unittest.TestCase):
             if failure:
                 sample["e2e-orka-runtime"]["result"] = failure
             result = subprocess.run([sys.executable, "-c", program], capture_output=True,
-                                    env={**os.environ, "SHARDS": json.dumps(sample), "EVENT": "pull_request"})
+                                    env={**os.environ, "SHARDS": json.dumps(sample), "EVENT": "pull_request", "REF": "refs/heads/main"})
             self.assertEqual(result.returncode, 0 if failure is None else 1)
 
     def test_live_shards_do_not_invoke_removed_lifecycle(self):
@@ -108,7 +112,7 @@ class RetirementCITests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, "embedded hygiene failed to enforce " + fragment)
         changed = copy.deepcopy(workflow)
         changed["jobs"]["kmx-clone-free"]["steps"][index]["run"] = clone[index]["run"].replace("--promote", "") + "\nfalse --promote\n"
-        self.assertNotEqual(check(changed).returncode, 0, "promotion flag must be attached to Lift, not merely mentioned")
+        self.assertNotEqual(check(changed).returncode, 0, "promotion flag must be attached to Deploy, not merely mentioned")
 
     def test_clonefree_authored_regex_preserves_only_trailing_lf_bash_semantics(self):
         body = next(s["run"] for s in self.jobs["kmx-clone-free"]["steps"] if s.get("name", "").startswith("create — native Orka"))
@@ -132,7 +136,7 @@ if pathlib.Path(sys.argv[0]).name == "kubectl":
     print(os.environ.get("SURVIVING", ""), end="")
 elif args[0] == "create":
     pathlib.Path("workspace/eval").mkdir()
-elif args[0] == "eval":
+elif args[0] == "test":
     pathlib.Path("evidence/passing.json").write_text(json.dumps({
         "candidateCleanup": os.environ.get("CLEANUP", "complete"), "result": "pass",
         "cases": [{"taskName": "candidate-task", "assertions": [{"verdict": "pass"}]}]}))
@@ -156,7 +160,7 @@ elif args[0] == "push":
                 authored = yaml.safe_load((root / "workspace/eval/example.yaml").read_bytes())
                 self.assertEqual(authored["assertions"], [{"id": "exact-answer", "type": "regex", "pattern": "(?s)^Orka says hello[.]\\n*$"}])
                 calls = [json.loads(line) for line in (root / "calls.jsonl").read_text().splitlines()]
-                lifted = [c for c in calls if c[:2] == ["kmx", "lift"]]
+                lifted = [c for c in calls if c[:2] == ["kmx", "deploy"]]
                 pushed = [c for c in calls if c[:2] == ["kmx", "push"]]
                 self.assertEqual(bool(lifted), success)
                 self.assertEqual(bool(pushed), success)

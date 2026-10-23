@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	agentsuite "github.com/agent-primitives/suite"
+	suitecore "github.com/agent-primitives/suite/core"
 	kmxsuite "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -50,11 +50,11 @@ func PrepareImageBuildSource(ctx context.Context, source, reference, output stri
 
 // ResolveImageRegistry reads verified manifests and config without extracting or
 // executing the image. Kubernetes pulls its layers by the selected digest.
-func ResolveImageRegistry(ctx context.Context, reference string, platform agentsuite.Platform) (ResolvedImage, error) {
+func ResolveImageRegistry(ctx context.Context, reference string, platform suitecore.Platform) (ResolvedImage, error) {
 	return ResolveImageRegistryTransport(ctx, reference, platform, false)
 }
 
-func ResolveImageRegistryTransport(ctx context.Context, reference string, platform agentsuite.Platform, plainHTTP bool) (ResolvedImage, error) {
+func ResolveImageRegistryTransport(ctx context.Context, reference string, platform suitecore.Platform, plainHTTP bool) (ResolvedImage, error) {
 	repository, ref, err := newRegistryRepositoryLimit(reference, plainHTTP, nil, 4<<20)
 	if err != nil {
 		return ResolvedImage{}, err
@@ -71,7 +71,7 @@ func ResolveImageRegistryTransport(ctx context.Context, reference string, platfo
 	return result, nil
 }
 
-func ResolveImage(ctx context.Context, source kmxsuite.ReadOnlyTarget, reference string, platform agentsuite.Platform) (ResolvedImage, error) {
+func ResolveImage(ctx context.Context, source kmxsuite.ReadOnlyTarget, reference string, platform suitecore.Platform) (ResolvedImage, error) {
 	root, err := source.Resolve(ctx, reference)
 	if err != nil {
 		return ResolvedImage{}, fmt.Errorf("resolve agent image: %w", err)
@@ -105,14 +105,14 @@ func ResolveImage(ctx context.Context, source kmxsuite.ReadOnlyTarget, reference
 		}
 	}
 	if root.MediaType != ocispec.MediaTypeImageManifest {
-		return ResolvedImage{}, errors.New("lift requires a runnable OCI image manifest or index")
+		return ResolvedImage{}, errors.New("image resolution requires a runnable OCI image manifest or index")
 	}
 	var manifest ocispec.Manifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return ResolvedImage{}, err
 	}
 	if manifest.SchemaVersion != 2 || manifest.ArtifactType != "" || manifest.Config.MediaType != ocispec.MediaTypeImageConfig || len(manifest.Layers) == 0 {
-		return ResolvedImage{}, errors.New("lift requires a built runnable image, not an AgentSuite definition artifact")
+		return ResolvedImage{}, errors.New("image resolution requires a built runnable image, not an AgentSuite definition artifact")
 	}
 	for _, layer := range manifest.Layers {
 		if err := imageDescriptor(layer); err != nil {
@@ -147,7 +147,7 @@ func ResolveImage(ctx context.Context, source kmxsuite.ReadOnlyTarget, reference
 	if len(config.Config.Entrypoint) == 0 {
 		return ResolvedImage{}, errors.New("agent image requires an explicit entrypoint")
 	}
-	if record.Execution.Configuration == agentsuite.AgentKitMountedConfig {
+	if record.Execution.Configuration == suitecore.AgentKitMountedConfig {
 		if len(config.Config.Cmd) != 4 || config.Config.Cmd[0] != "--config" || config.Config.Cmd[1] != kmxsuite.AgentKitConfigPath || config.Config.Cmd[2] != "--protocol" || config.Config.Cmd[3] != "openai" {
 			return ResolvedImage{}, errors.New("image does not activate the declared mounted configuration ABI")
 		}
@@ -160,7 +160,7 @@ func ResolveImage(ctx context.Context, source kmxsuite.ReadOnlyTarget, reference
 	if config.RootFS.Type != "layers" || len(config.RootFS.DiffIDs) != len(manifest.Layers) {
 		return ResolvedImage{}, errors.New("image rootfs does not match layer count")
 	}
-	// Builders must expose the service without lift overriding baked configuration.
+	// Declared secret inputs must remain unbound in the built configuration.
 	for _, input := range record.Execution.Inputs {
 		for _, value := range config.Config.Env {
 			if strings.HasPrefix(value, input.Environment+"=") && input.Secret && value != input.Environment+"=" {
@@ -171,7 +171,7 @@ func ResolveImage(ctx context.Context, source kmxsuite.ReadOnlyTarget, reference
 	return ResolvedImage{Descriptor: root, Deployment: *record}, nil
 }
 
-func imageDescriptorMatchesPlatform(ctx context.Context, source kmxsuite.Fetcher, candidate ocispec.Descriptor, platform agentsuite.Platform) (bool, error) {
+func imageDescriptorMatchesPlatform(ctx context.Context, source kmxsuite.Fetcher, candidate ocispec.Descriptor, platform suitecore.Platform) (bool, error) {
 	if candidate.MediaType != ocispec.MediaTypeImageManifest || candidate.Annotations["vnd.docker.reference.type"] == "attestation-manifest" {
 		return false, nil
 	}

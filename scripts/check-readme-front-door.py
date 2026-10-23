@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the current suite-first workflow and its stable-release boundary."""
+"""Check the README entry point and linked workflow/release boundaries."""
 from __future__ import annotations
 
 import re
@@ -7,9 +7,7 @@ import sys
 from pathlib import Path
 
 ORDER = [
-    ("ketu icon", r'src="brand/ketu\.svg"'),
-    ("product line", r"^\*\*Agent Builder CLI for Kubernetes\.\*\*$"),
-    ("journey heading", r"^## Create, Prove, Lift$"),
+    ("journey heading", r"^## Run, Test, Publish$"),
     ("first-answer heading", r"^## Getting Started: Get Your First Answer$"),
     ("workspace/live heading", r"^## Workspace And Live Paths$"),
     ("runtime boundaries heading", r"^## Runtime Boundaries$"),
@@ -35,9 +33,9 @@ FIRST_ANSWER_COMMANDS = [
 ]
 JOURNEY_ROWS = [
     ("Create", r"`kmx create NAME\b"),
-    ("Prove", r"`kmx eval --workspace DIR\b"),
+    ("Test", r"`kmx test --workspace DIR\b"),
     ("Publish", r"`kmx push --workspace DIR --evaluation RECEIPT REF`"),
-    ("Lift", r"`kmx lift REF@sha256:DIGEST --to-context CTX --evidence RECEIPT`"),
+    ("Deploy", r"`kmx deploy REF@sha256:DIGEST --to-context CTX --evidence RECEIPT`"),
 ]
 FENCE = re.compile(r"^```[^\n]*\n(.*?)^```", re.M | re.S)
 NEXT_SECTION = re.compile(r"^## ", re.M)
@@ -116,8 +114,8 @@ def path_rows(section: str) -> dict[str, str]:
     return rows
 
 
-def check(text: str) -> str | None:
-    """Return a failure message, or None when the hierarchy is valid."""
+def check_workflow(text: str) -> str | None:
+    """Keep the detailed workflow and safety contract in the linked guide."""
     position = 0
     matches: dict[str, re.Match[str]] = {}
     for label, pattern in ORDER:
@@ -136,7 +134,7 @@ def check(text: str) -> str | None:
     blocks = list(FENCE.finditer(preamble))
     if not blocks or ordered_in(blocks[0].group(1), [
         ("create", r"^kmx create NAME --workspace \. --model MODEL --instructions FILE$"),
-        ("composed Lift", r"^kmx lift --to NAME$"),
+        ("composed Deploy", r"^kmx deploy --to NAME$"),
     ]) is not None:
         return "README front door: two-command workspace path must precede manual stages"
     prerequisites = " ".join(preamble[:blocks[0].start()].split())
@@ -153,8 +151,8 @@ def check(text: str) -> str | None:
         if marker not in prerequisites.replace("`", ""):
             return f"README front door: {label} must accompany the two-command path"
     if "source-only promotion" not in preamble or "not destination evaluation" not in preamble:
-        return "README front door: composed Lift must disclose source-only promotion"
-    release = "The table below describes v0.8.1's one-member workflow; these docs follow main and may also describe unreleased behavior."
+        return "README front door: composed Deploy must disclose source-only promotion"
+    release = "The table below describes main's one-member workflow. Test and Deploy are unreleased; v0.8.1 uses `eval` and `lift` with the same arguments."
     release_at = journey.find(release)
     if not 0 <= release_at < table_at:
         return "README front door: v0.8.1 release note must precede the suite journey table"
@@ -162,30 +160,30 @@ def check(text: str) -> str | None:
         if rows[index][0] != label or re.search(purpose_pattern, rows[index][1]) is None:
             return f"README front door: {label} row is missing or out of order"
     if "only when the full policy passes" not in rows[1][1]:
-        return "README front door: Prove row must require a full pass"
+        return "README front door: Test row must require a full pass"
     if "optional `runs`/`minPasses` (default once)" not in rows[1][1]:
-        return "README front door: Prove row must describe declared repeats"
+        return "README front door: Test row must describe declared repeats"
     if "stops after a case misses its threshold or any unknown/error" not in rows[1][1]:
-        return "README front door: Prove row must preserve fail-fast execution"
+        return "README front door: Test row must preserve fail-fast execution"
     if "Neither form deploys" not in rows[2][1]:
         return "README front door: Publish row must say it does not deploy"
     if "Plain `kmx push REF` requires passing evidence; `--unevaluated` explicitly opts out" not in rows[2][1]:
         return "README front door: Publish row must require evidence or explicit opt-out"
     if "without building, repacking, or publishing" not in rows[3][1]:
-        return "README front door: Lift row must stay deploy-only"
+        return "README front door: Deploy row must stay deploy-only"
     if "`--plan` is GET-only" not in rows[3][1]:
-        return "README front door: Lift row must preserve the GET-only plan boundary"
+        return "README front door: Deploy row must preserve the GET-only plan boundary"
     if "Orka `--inference provider:NAME --promote` for candidate evidence or kagent `--bindings FILE`" not in rows[3][1]:
-        return "README front door: Lift row must preserve runtime-specific bindings"
+        return "README front door: Deploy row must preserve runtime-specific bindings"
     if "kagent refuses occupied targets" not in rows[3][1]:
-        return "README front door: Lift row must preserve kagent create-only placement"
+        return "README front door: Deploy row must preserve kagent create-only placement"
     if "Orka candidate evidence requires `--promote`, even in the same environment" not in rows[3][1]:
-        return "README front door: Lift row must describe candidate evidence promotion"
+        return "README front door: Deploy row must describe candidate evidence promotion"
     normalized_preamble = " ".join(preamble.split())
-    if "qualifies root Lift for Orka exact reuse, bounded absent-pair registry promotion and kagent fresh-target creation" not in normalized_preamble:
-        return "README front door: Lift qualification scope is missing"
+    if "qualifies root Deploy for Orka exact reuse, bounded absent-pair registry promotion and kagent fresh-target creation" not in normalized_preamble:
+        return "README front door: Deploy qualification scope is missing"
     if "it does not prove every promotion, creation or partial-outcome path" not in normalized_preamble:
-        return "README front door: Lift qualification limits are missing"
+        return "README front door: Deploy qualification limits are missing"
 
     answer = section_after(text, matches["first-answer heading"])
     blocks = list(FENCE.finditer(answer))
@@ -202,7 +200,7 @@ def check(text: str) -> str | None:
     if list(paths) != PATH_ROWS:
         return "README front door: workspace/live paths must contain the exact four rows"
     for label, required in {
-        "Workspace": ["`kmx create`", "root `eval`", "root `push`", "does not consume workspace source", "separate private evidence"],
+        "Workspace": ["`kmx create`", "root `test`", "root `push`", "does not consume workspace source", "separate private evidence"],
         "Local environment": ["`kmx local up`", "without creating an Agent", "setup-only", "not wired"],
         "Live Agent": ["`kmx run --agent NAME --prompt TEXT`", "`kmx chat NAME`", "including suite-owned Agents", "neither is workspace-local execution or suite evaluation"],
         "Legacy bundle": ["Removed outright", "`agent.yaml` readers/writers", "Old receipts are unreadable", "no conversion, migration or on-disk/resource deletion", "Public AgentSuite implementation bundles"],
@@ -215,34 +213,60 @@ def check(text: str) -> str | None:
     if runtime_boundary not in " ".join(runtime.split()):
         return "README front door: runtime/inference distinction is missing"
     for label, pattern in [
-        ("Orka default", r"\*\*Orka\*\* is the default runtime\..*packaged workspace path supports\s+evaluation, evaluated publication and root digest Lift with exact evaluated\s+reuse;.*independent live Orka run and chat remain"),
-        ("kagent version boundary", r"\*\*kagent\*\* support is exact-version.*v0\.10\.3\s+Go/linux-amd64 packaged workspace authoring, `eval --bindings`, evaluated\s+publication and create-only root digest Lift\. Standalone run/chat, Python,\s+RemoteMCP and retirement remain unavailable\. Read-only destination status\s+observes placement without enabling those execution/lifecycle capabilities\."),
-        ("agentsessions boundary", r"\*\*agentsessions\*\* supports pinned-chat offline suite create/prepare/load/ordinary\s+push and explicit private `eval --development-host FILE`: one fresh\s+Session/config/Exec per declared run, full-pass private proof and exact-S evaluated\s+push\..*literal-loopback development path loads no cluster\s+settings; explicit judging and repeated cases share Orka/kagent semantics\. It supports no tools, Lift/chat/status or remote lifecycle\.\s+Receipt diff refuses its proof\."),
+        ("Orka default", r"\*\*Orka\*\* is the default runtime\..*packaged workspace path supports\s+evaluation, evaluated publication and root digest Deploy with exact evaluated\s+reuse;.*independent live Orka run and chat remain"),
+        ("kagent version boundary", r"\*\*kagent\*\* support is exact-version.*v0\.10\.3\s+Go/linux-amd64 packaged workspace authoring, `test --bindings`, evaluated\s+publication and create-only root digest Deploy\. Standalone run/chat, Python,\s+RemoteMCP and retirement remain unavailable\. Read-only destination status\s+observes placement without enabling those execution/lifecycle capabilities\."),
+        ("agentsessions boundary", r"\*\*agentsessions\*\* supports pinned-chat offline suite create/prepare/load/ordinary\s+push and explicit private `test --development-host FILE`: one fresh\s+Session/config/Exec per declared run, full-pass private proof and exact-S evaluated\s+push\..*literal-loopback development path loads no cluster\s+settings; explicit judging and repeated cases share Orka/kagent semantics\. It supports no tools, chat/status or remote lifecycle\.\s+Eval\s+requires an `AgentSessionsBinding` \(`--bindings FILE`\) serving the packaged\s+model and records its digest; Deploy is a plan-only offline render\.\s+Receipt diff refuses its proof\."),
     ]:
         if re.search(pattern, runtime, re.S) is None:
             return f"README front door: {label} is missing"
 
-    if re.search(r"\]\(docs/agent-lift\.md(?:#[^)]+)?\)", text):
+    if re.search(r"\]\((?:docs/)?agent-lift\.md(?:#[^)]+)?\)", text):
         return "README front door: removed agent-lift guide remains linked"
 
     development = section_after(text, matches["development heading"])
     for label, link in DEVELOPER_LINKS:
-        if link not in development:
+        if link.replace("](docs/", "](") not in development:
             return f"README front door: {label} link is missing"
 
-    for label, pattern in BADGE_PATTERNS:
-        if re.search(pattern, text) is None:
-            return f"README front door: {label} is missing"
     return None
 
 
+def check(text: str, workflow: str) -> str | None:
+    """Check the short entry point without requiring technical tables in it."""
+    for label, pattern in [("ketu icon", r'src="brand/ketu\.svg"'), *BADGE_PATTERNS]:
+        if re.search(pattern, text) is None:
+            return f"README front door: {label} is missing"
+    answer = re.search(r"^## Try it locally$", text, re.M)
+    guides = re.search(r"^## Go deeper$", text, re.M)
+    if answer is None or guides is None or guides.start() < answer.end():
+        return "README front door: local trial must precede deeper guides"
+    status = r"^\*\*Status: experimental\. Not recommended for production use\.\*\*$"
+    if re.search(status, text[:answer.start()], re.M) is None:
+        return "README front door: experimental status must precede the local trial"
+    blocks = list(FENCE.finditer(section_after(text, answer)))
+    if not blocks:
+        return "README front door: local trial command block is missing"
+    missing = ordered_in(blocks[0].group(1), INSTALL_COMMANDS[:1] + FIRST_ANSWER_COMMANDS)
+    if missing is not None:
+        return f"README front door: {missing} is missing from the local trial"
+    if "](docs/workflow-overview.md)" not in section_after(text, guides):
+        return "README front door: linked workflow guide is missing"
+    return check_workflow(workflow)
+
+
 def main(path: Path) -> int:
-    """Check one README path and return a process exit status."""
-    problem = check(path.read_text())
+    """Check the README and its required operator guide; missing inputs refuse."""
+    try:
+        text = path.read_text()
+        workflow = (path.parent / "docs/workflow-overview.md").read_text()
+    except (OSError, UnicodeError) as error:
+        print(f"README front door: cannot read required documentation: {error}", file=sys.stderr)
+        return 1
+    problem = check(text, workflow)
     if problem:
         print(problem, file=sys.stderr)
         return 1
-    print("README front door: stable quickstart, suite stages, runtime boundaries and developer path valid")
+    print("README front door: local trial and linked workflow boundaries valid")
     return 0
 
 

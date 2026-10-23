@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	agentsuite "github.com/agent-primitives/suite"
+	suitecore "github.com/agent-primitives/suite/core"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/workspace"
 	agentruntime "github.com/kaimahi-agents/kaimahi/internal/kmx/runtime"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/scaffold"
@@ -23,6 +23,11 @@ const suitePassingEvaluatorVersion = "kmx.text-assertions/v1"
 const suitePassingJudgeVersion = "kmx.llm-judge/v2"
 
 var errSuitePassingReceipt = errors.New("invalid native passing receipt")
+
+// errSuiteSessionsReceiptV1 classifies an AgentSessions passing receipt v1,
+// which does not record the AgentSessionsBinding digest. It is never eligible
+// proof; it only gets a clearer error.
+var errSuiteSessionsReceiptV1 = fmt.Errorf("%w: AgentSessions passing receipt v1 does not record an AgentSessionsBinding; evaluate again with --development-host FILE --bindings FILE", errSuitePassingReceipt)
 
 // errPreviousSuiteReceipt marks receipts for the old case layout.
 var errPreviousSuiteReceipt = fmt.Errorf("%w: recorded against cases under metadata/kmx/eval by an earlier kmx; rerun kmx eval and kmx push with this kmx", errSuitePassingReceipt)
@@ -93,7 +98,7 @@ func suitePassingInventory(suite *workspace.NativeSuite) ([]suitePassingInventor
 	files := make([]agentruntime.EvaluationCaseFile, 0, len(suite.Cases))
 	// Identity fields accept at most 256 printable ASCII bytes. Reserve their
 	// escaped representation plus the bounded endpoint; model size is known.
-	modelJSON, err := agentsuite.Marshal(suite.Model)
+	modelJSON, err := suitecore.Marshal(suite.Model)
 	if err != nil {
 		return nil, "", errSuitePassingReceipt
 	}
@@ -132,7 +137,7 @@ func suitePassingInventory(suite *workspace.NativeSuite) ([]suitePassingInventor
 			projected.TaskName, projected.TaskUID = "", ""
 			projected.SessionsExecution = &suiteSessionsCaseExecution{SessionUID: strings.Repeat("x", 256), ExecutionID: strings.Repeat("x", 256), Harness: "chat", HarnessVersion: "1", HeadHash: strings.Repeat("0", 64), HeadSeq: 5}
 		}
-		wire, err := agentsuite.Marshal(projected)
+		wire, err := suitecore.Marshal(projected)
 		if err != nil {
 			return nil, "", errSuitePassingReceipt
 		}
@@ -174,7 +179,7 @@ func newSuitePassingCandidateReceipt(ctx context.Context, prepared *workspace.Pr
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if placement == nil || !evaluationRunID(runID) || placement.Subject.EvaluationRun != runID || !placement.Subject.validPhysicalMember() {
+	if placement == nil || placement.Subject.FlowCandidate != nil || !evaluationRunID(runID) || placement.Subject.EvaluationRun != runID || !placement.Subject.validPhysicalMember() {
 		return nil, errSuitePassingReceipt
 	}
 	return newSuitePassingReceiptRun(ctx, prepared, placement, observations, runID)
@@ -231,6 +236,64 @@ func newSuitePassingReceiptRun(ctx context.Context, prepared *workspace.Prepared
 }
 
 func parseSuitePassingReceipt(raw []byte) (*suitePassingReceipt, error) {
+	r, sessionsV1, err := classifySuitePassingReceipt(raw)
+	if sessionsV1 {
+		return nil, errSuiteSessionsReceiptV1
+	}
+	return r, err
+}
+
+// classifySuitePassingReceipt parses raw strictly. When raw is an otherwise
+// complete AgentSessions passing receipt v1, it reports sessionsV1 with the
+// receipt parsed as v2 under a placeholder binding digest, so a caller can
+// check its identity before classifying the refusal. That receipt is never
+// eligible proof.
+func classifySuitePassingReceipt(raw []byte) (r *suitePassingReceipt, sessionsV1 bool, err error) {
+	r, err = parseSuitePassingReceiptStrict(raw)
+	if err == nil {
+		return r, false, nil
+	}
+	if old := suiteSessionsReceiptV1(raw); old != nil {
+		return old, true, err
+	}
+	return nil, false, err
+}
+
+// suiteSessionsReceiptV1 returns raw parsed as v2 with a placeholder
+// agentsessions.subject.bindingDigest when raw is an AgentSessions passing
+// receipt v1 that would otherwise parse, and nil otherwise. It accepts
+// nothing: the placeholder only classifies the refusal.
+func suiteSessionsReceiptV1(raw []byte) *suitePassingReceipt {
+	if len(raw) > maxSuitePassingReceiptBytes {
+		return nil
+	}
+	var document map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&document) != nil || document["executionMode"] != "native-agentsessions" || document["domain"] != suiteSessionsPassingDomainV1 {
+		return nil
+	}
+	sessions, _ := document["agentsessions"].(map[string]any)
+	subject, _ := sessions["subject"].(map[string]any)
+	if subject == nil {
+		return nil
+	}
+	document["domain"] = suiteSessionsPassingDomain
+	if _, ok := subject["bindingDigest"]; !ok {
+		subject["bindingDigest"] = "sha256:" + strings.Repeat("0", 64)
+	}
+	placeholder, err := suitecore.Marshal(document)
+	if err != nil {
+		return nil
+	}
+	r, err := parseSuitePassingReceiptStrict(placeholder)
+	if err != nil {
+		return nil
+	}
+	return r
+}
+
+func parseSuitePassingReceiptStrict(raw []byte) (*suitePassingReceipt, error) {
 	r, parseErr := parseSuitePassingWire(raw)
 	if len(raw) > maxSuitePassingReceiptBytes || parseErr != nil {
 		return nil, errSuitePassingReceipt
@@ -243,11 +306,11 @@ func parseSuitePassingReceipt(raw []byte) (*suitePassingReceipt, error) {
 	if decoder.Decode(&document) != nil {
 		return nil, errSuitePassingReceipt
 	}
-	original, err := agentsuite.Marshal(document)
+	original, err := suitecore.Marshal(document)
 	if err != nil {
 		return nil, errSuitePassingReceipt
 	}
-	typed, err := agentsuite.Marshal(r)
+	typed, err := suitecore.Marshal(r)
 	if err != nil || !bytes.Equal(original, typed) {
 		return nil, errSuitePassingReceipt
 	}
@@ -363,7 +426,7 @@ func basicSuitePassingReceipt(r *suitePassingReceipt) error {
 		// basic validation above proved the exact projection and receipt run.
 		masked.Subject.EvaluationRun = "run"
 	}
-	raw, err := agentsuite.Marshal(masked)
+	raw, err := suitecore.Marshal(masked)
 	if err != nil || scaffold.RefuseKeyShapes(string(raw)) != nil {
 		return errors.New("refusing credential-shaped native receipt metadata")
 	}
@@ -410,7 +473,7 @@ func canonicalSuitePassingInventory(ctx context.Context, r *suitePassingReceipt,
 			return nil, errSuitePassingReceipt
 		}
 	}
-	raw, err := agentsuite.Marshal(r)
+	raw, err := suitecore.Marshal(r)
 	if err != nil || len(raw) > maxSuitePassingReceiptBytes {
 		return nil, errSuitePassingReceipt
 	}
@@ -421,7 +484,7 @@ func canonicalSuitePassingInventory(ctx context.Context, r *suitePassingReceipt,
 }
 
 func validSuitePassingSubject(s suiteNativeSubject) bool {
-	if !s.validPhysicalMember() {
+	if s.FlowCandidate != nil || !s.validPhysicalMember() {
 		return false
 	}
 	for _, d := range []string{s.SuiteDigest, s.GraphDigest, s.MemberDigest, s.InstructionsDigest, s.CompositionDigest, s.BuildProfileDigest} {
@@ -450,7 +513,7 @@ func validSuitePassingSubject(s suiteNativeSubject) bool {
 }
 
 func coherentSuitePassingSubject(s suiteNativeSubject, suite *workspace.NativeSuite) error {
-	if !s.validPhysicalMember() || !suiteNativeOrkaInput(suite) || s.Suite != suite.Name || s.SuiteDigest != suite.Digest || s.GraphDigest != suite.GraphDigest || s.Member != suite.MemberID || s.MemberDigest != suite.MemberDigest || s.InstructionsDigest != suite.InstructionsDigest || s.CompositionDigest != suite.CompositionDigest || s.BuildProfileDigest != suite.BuildProfileDigest || s.Model != suite.Model || s.Renderer != suite.RendererVersion || !reflect.DeepEqual(s.RequiredImages, suite.RequiredImages) {
+	if s.FlowCandidate != nil || !s.validPhysicalMember() || !suiteNativeOrkaInput(suite) || s.Suite != suite.Name || s.SuiteDigest != suite.Digest || s.GraphDigest != suite.GraphDigest || s.Member != suite.MemberID || s.MemberDigest != suite.MemberDigest || s.InstructionsDigest != suite.InstructionsDigest || s.CompositionDigest != suite.CompositionDigest || s.BuildProfileDigest != suite.BuildProfileDigest || s.Model != suite.Model || s.Renderer != suite.RendererVersion || !reflect.DeepEqual(s.RequiredImages, suite.RequiredImages) {
 		return errSuitePassingReceipt
 	}
 	binding, err := suiteNativeDigest("kmx.native-orka.binding/v1", struct {

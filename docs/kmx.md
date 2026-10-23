@@ -3,7 +3,7 @@
 [Orka](orka.md) remains the default runtime. Root `create` authors one tool-free
 native workspace member offline; `--runtime kagent` selects exact v0.10.3
 Go/linux-amd64. Both profiles support full-workspace evaluation, evaluated
-publication and digest Lift with runtime-specific evidence. Kagent Lift creates
+publication and digest Deploy with runtime-specific evidence. Kagent Deploy creates
 absent objects only and refuses occupied targets. Runtime/model are packaged,
 never overridden; Orka inference uses Ready `openai` Providers.
 
@@ -16,8 +16,8 @@ retirement remain unavailable, without replacement. Public AgentSuite/ToolProvid
 implementation bundles, build/pull and extracted-directory transfer are unrelated
 formats and remain supported; so do alpha `pkg/kmx` interfaces.
 
-Chat `/lift` and console Lift only print
-`Lift moved: kmx lift <ref>@<digest> --to-context … --evidence …`.
+Chat `/lift` and console Deploy only print
+`Deploy moved: kmx deploy <ref>@<digest> --to-context … --evidence …`.
 No release GUI or source-less live-copy fallback remains. Host Foundry/Copilot
 chat controls remain independent; live tools/inference editing and automatic
 wizard tool attachment are retired. Independent AKS setup/teardown and internal
@@ -25,6 +25,50 @@ App.Lift remain. Plane and `kmx agent` commands remain removed. Native
 suite-owned resources remain reserved against legacy adoption, copying and
 retirement; direct live invocation is separate. Readiness is not an answer or
 evaluated execution.
+
+## Local model inventory
+
+`kmx model list [-o table|json]` reads installed Foundry Local/Ollama inventory
+without loading cluster configuration or prompting. It reports absent, empty,
+installed and failure separately, with explicit install guidance when needed.
+It never starts a runtime, downloads a model, changes a saved selection or runs
+an agent. Foundry Local supplies its own endpoint; Ollama defaults to loopback
+port 11434. See [model discovery](models.md#installed-local-model-discovery) for
+requirements, sizes and the non-secret route contract. These commands are
+unreleased; native Windows package tests do not yet qualify the Windows CLI.
+
+## Copilot model access
+
+`kmx model login` starts GitHub device-code sign-in, printing the verification
+URI and user code on stderr. `kmx model login --gh` explicitly copies only the
+existing `gh auth token --hostname github.com` credential through private bounded
+stdout capture. If the OS keychain is unavailable, login prints runtime options
+instead of starting device sign-in or failing. No editor credentials are read.
+
+`kmx model list --provider copilot [-o table|json]` lists enabled Chat-compatible
+models as non-secret routes at `https://api.githubcopilot.com`; it never starts
+sign-in and fails clearly without auth. Local discovery remains the default.
+`kmx model logout` deletes only kmx's reusable credential and clears its memory;
+gh/editor sign-in and caller environment are unchanged. Runtime authentication
+prefers explicit `COPILOT_GITHUB_TOKEN`, otherwise kmx's native keychain item.
+Only if the keychain is unavailable does it read an existing github.com gh login
+through bounded private `gh auth token` capture. These runtime sources are never
+saved by kmx; an invalid explicit token or service refusal does not switch
+credentials. Remove the variable or end the gh session separately to disable
+external credentials. There is no plaintext token-file fallback. macOS release builds work without CGO; explicit access uses
+`/usr/bin/security`, with secrets on stdin only and a 2048-byte write limit.
+Linux uses an existing session bus and login/default keyring collection, never
+autolaunching a bus. Custom buses require an explicit `unix:` session address.
+The exact owned item is service `kmx-model-copilot`, account
+`github-reusable-token`, not a dedicated collection. Help, completion and default
+local listing perform no keychain or bus I/O. Explicit credential access may
+show OS unlock UI, with no context-cancellation guarantee. These commands are
+unreleased. File Run/Test can explicitly consume the saved credential with
+`--provider copilot`; listing alone selects nothing. No proxy or change to
+existing Copilot chat is introduced. See
+[storage and model routes](models.md#explicit-copilot-model-access)
+and [direct transport](copilot-inference.md#direct-model-access). Native package
+tests are not full Windows CLI qualification.
 
 ## Install
 
@@ -90,6 +134,526 @@ cluster, so a silent switch can target the wrong one.
 
 ## Commands
 
+### Test compatibility (unreleased)
+
+**Test is unreleased.** v0.8.1 uses `kmx eval` with the same arguments.
+Current main uses canonical `kmx test`; `kmx eval` remains hidden but callable
+for at least one released version. All six helpers are available under both
+roots: `cleanup`, `diff`, `explain`, `export`, `verify` and `from-sessions`.
+The `explain` helper is also unreleased; it is not available in v0.8.1 under either spelling.
+Each legacy invocation adds exactly one stderr line:
+
+```text
+kmx eval is deprecated; use kmx test (same arguments).
+```
+
+Existing workspace arguments, flags, stdout, exit codes, state and stderr labels
+remain unchanged apart from that notice. File preview uses canonical `run FILE`
+and `test FILE`; neither is added to the legacy `eval` route. Help and completion
+remain inert; root help/completion advertises `test`, not `eval`. Removal requires a later
+announced breaking release.
+
+This is a command rename, not a data migration. Authored `eval/` and packaged
+`evals/` directories, `evalTarget`/`evaluationTarget`, schemas, APIs, receipt and
+storage names, and machine JSON keys/values (including the `eval` stage) remain
+unchanged. `run --agent` still targets an existing live Orka Agent, not local
+workspace execution. Publish still uses `kmx push` to transfer an OCI graph; no local
+numbered versions or new publication command are introduced.
+
+### Agent-file local preview (unreleased integration)
+
+`kmx run FILE` and `kmx test FILE` select one canonical markdown agent file,
+without workspace discovery, cluster configuration, Docker or a daemon. Both
+check the file's saved examples in authored order. Run additionally accepts
+`--prompt TEXT` or `--prompt-file FILE|-` for a separately attributed ad-hoc
+answer; without either it checks examples only. Test accepts no ad-hoc input.
+Input is bounded to 16 KiB. The five-minute preview execution deadline starts
+after prompt collection. Ctrl-C/SIGTERM retain their default behavior during
+intake, including when a pipe's writer stays open without EOF; no background
+reader is started. Prompt-file/stdin intake errors are pre-operation CLI errors
+on stderr, with no result document. Rooted API callers can pass an already-parsed
+snapshot without reopening its filename; the CLI path is a thin load-and-delegate
+wrapper.
+Neither operation changes source or produces native evaluation/deploy evidence.
+An optional canonical Tools declaration and explicit `--tool-bindings FILE` select
+one [host-owned read-only GitHub MCP operation](local-preview.md#host-tool-foundation).
+The operator binds one repository and an explicit environment credential name;
+no endpoint/credential comes from the agent or model. Only a selected call reads
+up to 20 merged PRs through the fixed Streamable-HTTP endpoint. Missing authority,
+foreign/unmerged results and transport/schema failures refuse, without retries.
+Copilot agent or judge plus tools remains unsupported. The opt-in hosted smoke
+uses a scripted model; it is not real-LLM qualification.
+
+File mode uses embedded Sessions for fake/local routes, with one fresh Session
+per ad-hoc input/example and one private SQLite journal for the invocation.
+Optional ad-hoc input runs first, followed by only the selected examples in order.
+Each turn has a two-minute deadline, including judging, within the five-minute
+overall budget. Execution errors stop later sends. Journal close failure prevents
+a full pass. [Journal content, retention and clearing](local-preview.md#journal-retention-and-clearing)
+are disclosed separately: instructions, inputs and answers are retained in cleartext.
+
+**Tool-free Copilot exception:** when either the agent or judge uses Copilot, the whole
+invocation keeps the direct **preview runner (no journal)** and reports `NoJournal`
+at the runner boundary. It creates no Sessions journal. Fully journaled Copilot
+is follow-up work: its credential-owning transport does not yet provide the
+pre-journal content check. No tokens are exposed to the runner. Declared tools
+with a Copilot agent or judge refuse; Copilot tool support depends on
+[#662](https://github.com/kaimahi-agents/kaimahi/issues/662).
+There are no retries, redirects or provider/model fallback. A nil dependency
+still refuses `runner_unavailable`. Hermetic tests do not qualify real local
+models or native Windows.
+
+The offline `fake` route is deliberately small: it recognizes
+``Reply with exactly `Hello, ` followed by the input`` (the prefix can change),
+or ``Reply with exactly `literal response`.`` in the instructions. A fake judge
+checks every backtick-quoted rubric phrase against the answer; a rubric without
+quoted phrases is unknown, not an automatic pass. This is orientation, not a
+general model. Real compatible/local
+routes use an explicit keyless local endpoint (HTTP or HTTPS on literal loopback/localhost).
+Compatible/local transport waits at most 30 seconds for response headers, within
+the five-minute overall budget; slow non-streaming generation can hit that limit.
+Agent completions require an exact model-ID echo, with no automatic aliasing.
+Explicit `--provider copilot` uses the existing authenticated model-access
+transport at the fixed `https://api.githubcopilot.com` endpoint. Other remote
+endpoints still refuse. Copilot requires prior explicit sign-in and an exact
+enabled Chat model from `kmx model list --provider copilot`; it never falls back
+to another model or starts login during execution.
+
+Journaled fake/local judging uses the shared native two-sample evaluator: both
+scores must agree on the threshold side. Split, unavailable, malformed, refused
+or mismatched-model replies are unknown. This makes two judge calls per authored
+`llmJudge` assertion, within the same deadlines. The Copilot direct exception
+retains one judge call and applies the authored threshold to one valid score.
+Neither path produces native evaluation evidence.
+
+```text
+kmx run ./greeter.agent.md --prompt Ada
+kmx test ./greeter.agent.md --case greeting -o json
+kmx test ./greeter.agent.md
+```
+
+Add `--verbose` to file Run or Test for content-free diagnostics on stderr.
+Journaled fake/local execution reports completion and judge start/end. The direct
+Copilot exception also reports selected endpoints, received HTTP status,
+per-request timings and total elapsed time. Revision, model, runner label,
+assertion verdicts and final outcome remain in the normal report, not repeated
+in verbose diagnostics.
+Local endpoint origins and standard `/v1` paths are shown; custom paths are
+withheld. The direct exception distinguishes connection refusal, response timeout,
+HTTP errors and malformed or mismatched completions with safe diagnostic
+categories, never raw provider errors. Journaled execution uses fixed-text
+refusals without HTTP-status or network-subclass diagnostics; neither path
+invents a status for requests without a response.
+Both paths refuse absent, null, empty or different returned model identities.
+The direct exception distinguishes a different nonempty model as a model mismatch.
+Verbose is off by default and does not imply `--show-content`: instructions,
+inputs, answers, assertion operands, judge rationale and response bodies stay
+private. JSON stdout and exit contracts are unchanged. A failed diagnostic
+write stops later sends and cannot report a full pass.
+
+```text
+kmx run ./greeter.agent.md --provider ollama --endpoint http://127.0.0.1:11434/v1 --prompt Ada --verbose --show-content
+```
+
+For this Ollama example, first set `Model.Preferred` in your own copy of the
+charter to an exact installed Ollama model, rather than the sample's `fake`.
+
+To use Copilot, sign in explicitly, list available models, then set the file's
+`Model.Preferred` to an exact listed model ID:
+
+```bash
+kmx model login
+kmx model list --provider copilot
+kmx run ./greeter.agent.md --provider copilot --prompt Ada --show-content
+kmx test ./greeter.agent.md --provider copilot
+```
+
+Selecting Copilot sends the authored instructions and each input/example to the
+hosted service; judging also sends the answer and rubric. Review the file before
+running it and account for subscription, policy and quota limits. The endpoint
+is pinned: omit `--endpoint` or supply exactly `https://api.githubcopilot.com`.
+Known authentication, entitlement, policy, quota and service failures produce
+safe `copilot_*` reasons and stop later sends, including after a judge failure.
+This remains tool-free preview, not a Copilot SDK harness, Sessions execution or
+native deployment evidence. See [Copilot access](copilot-access.md).
+
+`--case ID` selects one stable saved example and always reports **partial**, even
+if the file contains only that example. Unknown/blank IDs refuse before inference.
+An explicit `examples: []` can be saved and loaded while authoring. Ad-hoc Run
+with an input still works; Test refuses with “No tests yet — add or suggest one”.
+Missing/empty examples cannot pass, export a run profile or supply the evidence
+required for packaging/deployment. The exact model comes from `Model.Preferred`;
+`fake` selects only the built-in fake route. A real model additionally requires
+an explicit trusted `--provider` and, for local routes, `--endpoint`, validated by model access;
+there is no discovery, installation, sign-in or fallback inside Run/Test. The
+caller supplies any judge-route override through the App API; otherwise the
+judge uses the exact agent route, never an independently chosen route. Conflicting
+authored judge models refuse rather than silently switching.
+
+Output defaults to text; `-o json` returns one versioned `schemaVersion: 1`,
+`kind: kmx.agent-file-preview` document. Both preserve operation, exact source-byte
+SHA-256 revision, provider/model, full/subset selection, terminal state and
+example/assertion IDs with pass/fail/unknown and safe reasons. JSON includes
+`fullPass`, which is false for every subset, incomplete or unknown result. The Copilot direct
+exception additionally includes `runner: "preview runner (no journal)"`; its
+underlying journal handle is empty and no journal is retained. Fake/local
+execution retains a private journal handle internally, never in this safe result.
+Neither a journaled local pass nor the direct exception is deploy evidence. Paths
+are sanitized display basenames, not a file-targeting API. The optional structured
+`diagnostic` names safe parser fields, source line/column and repair advice.
+Default output contains no instructions, inputs, answers, operands, provider error
+text, endpoint or journal handle. `--show-content` explicitly adds sanitized answer
+excerpts, at most 4096 UTF-8 bytes each; treat them as untrusted content.
+
+File-mode exits: 0 means the selected checks completed and passed (a partial
+selection is **not** a full pass); 2 means completed assertion fail/unknown;
+1 means refusal, execution/deadline/journal/output failure; 130 means cancellation.
+Journal-finalization failure preserves available rows but makes the overall
+verdict unknown and returns an error, never a pass. Source edits do not rebind
+an in-flight result to a new revision. No file failure retention or file-scoped
+Explain is available here; workspace Explain remains unchanged.
+
+Do not mix FILE with `--agent`, workspace, destination, evidence, native judge or
+cluster flags, including explicitly supplied defaults. Existing live
+`run --agent` and full-workspace Test contracts remain separate and unchanged.
+
+### Frozen run-profile export (unreleased)
+
+This is a **temporary demo bridge**, not the deploy contract. That contract is
+the tested AgentSuite artifact by digest (kmx pushes; the host pulls); this
+command neither implements that deployment path nor defines a host-side API.
+
+```bash
+kmx run-profile export ./release-writer.agent.md
+```
+
+Export one canonical agent file offline as deterministic JSON on stdout. It
+contains authored instructions, the exact model, ordered examples/assertions,
+source/instruction/model/example SHA-256 hashes and `targetStatus: not_run` for
+every example. No configuration, credential, provider, model, runtime or registry
+is accessed. Unsupported declarations still refuse through the canonical parser;
+there is no model override. This source-file projection is not a tested package,
+evaluation receipt, AgentSuite runtime profile or deployment authorization.
+
+Stdout is explicitly content-bearing, including inputs and judge rubrics: keep
+it private. Shell redirection can truncate an existing file before validation;
+it is caller-owned and has no kmx privacy/exclusive-create guarantee. There is
+no `--out` writer. Exit0 means complete output, exit1 means refusal/output failure;
+a failed writer may have received partial bytes. Hashes establish unsigned byte
+consistency, not source provenance, model weights, serving availability or target
+execution. Target examples and model compatibility require separate qualification.
+See the [wire format and hash rules](agent-file.md#frozen-run-profile-export-unreleased).
+
+### Local stdio MCP
+
+`kmx mcp` serves exactly `create`, `edit`, `run` and `test`, using the canonical
+parser and the same App snapshot operation as file Run/Test. One server accepts
+agent files in any directory. Prefer an absolute WSL path when calling it from
+Windows; relative paths resolve against the server's working directory. It does
+not listen on a network socket or load cluster/workspace configuration.
+Optional `--root /absolute/project` retains the old bound mode for existing
+plugins and separately configured native Squad operations; the default is unbound.
+
+Canonical tool input requires integer `schemaVersion: 1`. MCP initialization also
+negotiates its protocol version and advertises the engine build version.
+Stdout carries protocol only; no request/result logging or banners. Inbound
+frames are bounded to 2 MiB and source files to 256 KiB.
+
+| Tool | Input in addition to schemaVersion | Result |
+|---|---|---|
+| `create` | `path`, `content` | Saved path and exact-byte revision |
+| `edit` | `path`, `content`, `expectedRevision` | Saved path and new revision |
+| `run` | `path`; optional `input`, `caseId`, `showContent`, `showFailedContent` | Shared `kmx.agent-file-preview` v1 result |
+| `test` | `path`; optional `caseId`, `showContent`, `showFailedContent` | Same shared result, no ad-hoc input |
+
+#### Optional native Squad chat flow
+
+Trusted startup may add `--squad-program /absolute/qualified/squad --squad-release 1.1.0`
+(`squad.exe` on Windows). This selects a separately qualified standalone dependency;
+it does not install, authenticate or upgrade it. With neither flag, discovery,
+canonical v1 validation/results and v2 refusal remain unchanged. With both flags,
+the same four tools advertise a flat object schema for model-host compatibility,
+with separately enforced closed v1/v2 validation; no fifth tool or shell runner.
+Startup/discovery does not initialize the project or run a model.
+
+| Native v2 target | Tool | Additional input |
+|---|---|---|
+| `squad-members` | `create` | `lead`, `specialists` (0–7); each has `memberId`, native `role`, exact `displayRole`, `taskInstructions`, concrete `model`, fenced YAML `examples` |
+| `squad-member` | `edit` | `memberId`, `expectedRevision`, all owned `taskInstructions`, `model`, `examples` |
+| `squad-member` | `run` / `test` | `memberId`; optional `caseId`, `showContent`; Run additionally accepts `input` |
+
+Chat proposes and adjusts the team before effects. Approved native Create runs
+conditional `init --no-workflows --no-vscode-default`, then fixed cast and
+byte-preserving enrichment; users do not type Squad commands. Init creates native
+built-ins/state/templates/skills and local MCP configuration, and can append
+`.gitignore`/`.gitattributes`. New setup refuses prior `.mcp.json`, `.copilot`,
+`.github/skills`, linked targets, worktree pointers and partial/unsupported state;
+supported initialized roots are validated/reused, never reinitialized. The child
+has a bounded lifetime/private output and disabled personal lookup. It is trusted
+ambient execution, not a sandbox. Root-bound Git/environment policy prevents
+ancestor-root setup and origin/platform discovery; no npx dependency is installed.
+
+Native Create returns `kmx.squad-create` v2 with `result.setup`, per-member states,
+retained `changedPaths` and `effectsUnknown`. Acknowledged enrichment is not
+execution; inspect partial/unknown effects rather than auto-retrying or rolling
+back. Native Edit/Run/Test return a v2 `kmx.squad-member-operation`; Run/Test's
+`preview` is the existing safe App result. Completed assertion failures remain
+normal results, and subset pass is not full pass. Native real-model prompts retain
+native plus task instructions, excluding Examples; fake uses Task Instructions.
+No canonical file or missing native Purpose is synthesized.
+
+Read `kmx://squad-member/{memberId}` for current native-owned mapping and editable
+fields/revision. It revalidates the managed casting registry/history/commit,
+active ID/name/role, roster and charter under the configured release on every
+read and operation, including after restart. Failed validation shows
+**not set up by kmx** and disables native Edit/Run/Test. Valid state is not
+an authenticated origin claim, saved draft, prior pass or initial-enrichment
+receipt. There is no kmx-owned durable mapping. Native flow is chat-only; the
+existing canonical read-only canvas is unchanged. Member preview proves only the
+exact source revision, not a package digest, team dispatch or deployment.
+
+#### Canonical v1 file paths and publication
+
+Without `--root`, paths can name `*.agent.md` files or
+`.squad/agents/<member>/charter.md` files anywhere, including nested directories
+with spaces or Unicode names. Both the requested and resolved target must be
+agent files. Links to agent files and symlinked parent directories work; an
+agent-looking link to a non-agent target does not. Saved paths retain the
+requested spelling, while latest-preview matching uses the resolved target.
+The resource and canvas can use the same full path as Create/Edit.
+
+Create makes missing parent directories. No roster or other team metadata is
+touched. Existing explicit-root installations retain their relative-path and
+confinement behavior during the plugin transition. Filesystem resolution is not
+a hostile concurrent-filesystem sandbox. Create validates before publishing a same-directory staged file with
+no-replace rename. Edit validates old/new source,
+checks the expected `sha256:…` revision under an OS-held writer lock, then renames
+the staged replacement. Busy/unavailable locks and failed renames report safe
+errors; no lockfile, filesystem-type detection or direct-write fallback.
+Locks exclude cooperating writers, not outside editors that ignore them.
+
+Create respects umask. Edit preserves mode bits but does not copy ownership,
+ACLs or extended attributes; replacement follows normal ownership/directory
+inheritance. This is intended for the user's own files. Invalid existing charters
+must be repaired manually. Crash leftovers may include this operation's non-agent
+temp file or empty parent directories; no stale-file sweeping is performed.
+
+Run/Test parse the selected snapshot once and never reopen the source through
+its display path. Structured results preserve revision, route, full/subset, state,
+verdict, diagnostics and retention status even when the App returns an error.
+Completed assertion failures and inconclusive assertions are normal MCP results
+(`isError: false`), not tool errors. Parse, model, execution, cancellation and
+journal-finalization errors still set `isError: true`. A successful subset still
+has `fullPass: false`; App results and CLI exit codes are unchanged.
+
+#### Stopping an in-flight preview
+
+Stop the existing `run` or `test` call using MCP request cancellation, not a
+second tool call or a tool argument. A UI's stop button or typing handler should
+cancel that call's context. With the MCP Go SDK, cancel the context passed to
+`ClientSession.CallTool`; the SDK sends `notifications/cancelled` with that
+request's ID. A raw protocol client sends, for example:
+
+```json
+{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":42,"reason":"User stopped the preview"}}
+```
+
+Use the ID of the in-flight `tools/call`, not a test ID, file revision or a new
+request ID. This cancels the model/judge request and prevents later tests from
+starting; it does not undo work already performed by a provider. The server keeps
+only fully finished tests, including their pass or failure results. The
+interrupted test and later tests are `not_run`, with unknown assertions and no
+answer excerpt, even if the interrupted test had an answer or some passing
+checks before its judge was cancelled. Both local Sessions and direct Copilot
+previews follow this cancellation rule. A finished optional Run ad-hoc answer
+also remains available under the existing content opt-in. The overall result is
+`state: cancelled`, `reasonCode: cancelled`, `fullPass: false`; CLI cancellation
+remains exit 130. Deadline and non-cancellation error behavior is unchanged.
+
+The SDK's cancelled call returns before server finalization and does not deliver
+the partial result. Read the existing `kmx://agent/{path}` resource with a fresh,
+uncancelled context to recover `latest.result`. Encode the whole requested
+path as one URI component, including an absolute path's leading slash:
+`kmx://agent/%2Fhome%2Fme%2Fproject%2Fgreeter.agent.md`, or
+`kmx://agent/.squad%2Fagents%2Fgreeter%2Fcharter.md` for a nested charter. Until the
+handler finishes, the resource may show `latest.status: none`. A UI can perform
+bounded repeat reads while waiting for a cancelled result for the expected
+revision; it must not treat the client-side cancellation error as proof that
+server finalization is complete. If no result arrives, report unavailable results
+rather than inventing passes or reusing older results. Cancellation before the
+snapshot may leave no observation at all. A new preview supersedes the older
+observation, and a source edit marks an old result stale and withholds details.
+Keep a pending draft separate from the observed saved revision; never present a
+result for another revision as current. There is no Stop tool, completion push
+notification or persistent run history. Recovery and model-request cancellation
+are covered by hermetic MCP/loopback tests, not live Copilot or canvas UI proof.
+
+Run/Test text is a compact summary rather than a second copy of the result JSON.
+It identifies non-passing examples/assertions with safe reasons, preserves scope
+and any no-journal qualifier, and limits details to 10 rows within 8 KiB, reporting
+omitted rows. The full safe result remains in `structuredContent`.
+`showContent` is explicit and defaults false; answers and authored assertion
+operands are not included by default. Optional `showFailedContent` also defaults
+false and includes only validated failing saved-example answers, not passing,
+unknown or ad-hoc answers. Existing clients keep their current behavior. The
+canvas requests failure-only excerpts and keeps passing answers opt-in. These
+controls do not change existing runner journal retention. Excerpts are bounded and
+labeled untrusted data, never tool instructions. Use Create's returned path to
+open the agent; legacy preview results can carry only a display basename.
+
+The read-only resource template `kmx://agent/{path}` returns a typed
+`kmx.agent-view` v1 projection: original revision, title, instructions, model,
+examples/expected checks and the process's latest safe preview observation.
+Encode the whole requested path as one component, including slashes.
+Only supported agent files are readable; there is no fifth tool, generic file
+read or directory listing. Authored content is visible without folder
+confirmation; answer excerpts
+require an explicit Run/Test disclosure option: `showContent` or failure-only
+`showFailedContent`. The optional authoring snapshot carries exact source from
+the same descriptor read as its revision; strict canonical parsing controls
+editability. A restart has no current result;
+a revision change marks the old observation stale and withholds its details.
+Reads perform no inference, mutation or journal retrieval.
+
+The [WSL Copilot plugin](../plugins/copilot-wsl/README.md) adds a
+native authoring canvas and read-only `/agent-view PATH` text fallback over this
+resource. Canvas Edit/Test/Run use existing same-session MCP tools; only explicit
+Suggest more starts chat. Saves require the original revision; changed result
+revisions are labelled stale rather than silently rebasing the draft.
+Inspection can show a minimal titled agent as well as a canonical Squad charter;
+this display-only support does not change Run/Test parser acceptance.
+
+Unbound `kmx mcp` uses Copilot for non-fake authored models when no startup route
+is selected. Authored `fake` remains offline. Explicit trusted `--provider` and,
+for local routes, `--endpoint` override that default; the exact model still comes
+from the parsed file. Legacy `--root` mode retains its existing fake-only behavior
+without an explicit route. Copilot uses the fixed endpoint and existing runtime
+credentials, without an installation-time model or login step. Hosted-content
+disclosure still applies; startup itself performs no sign-in, credential access
+or model request. Tools accept no endpoint, credential or arbitrary-command fields.
+Run/Test use the same
+[file preview runner](#agent-file-local-preview-unreleased-integration) as the
+CLI: fake/local routes use embedded Sessions and one private journal; an agent
+or judge using Copilot keeps direct execution with `NoJournal` and the explicit
+no-journal runner label. A nil runner still returns `runner_unavailable`, never
+a fallback. Hermetic checks do not qualify real models or native Windows.
+There is no fifth Explain/model/install tool; offline Explain stays a CLI action.
+
+#### Saved source versions and restore
+
+Canonical MCP Edit keeps best-effort, source-only history on Linux and macOS.
+It captures the valid saved content being replaced, not drafts or the proposed
+new content. The first Edit captures the file's initial contents; Create needs
+no redundant history copy. A snapshot's `capturedAt` is when its content was
+captured for replacement, not its original save time or proof that replacement
+succeeded. External-editor saves are captured only
+when a later MCP Edit replaces them. Native Squad v2 edits are not captured;
+canonical v1 charters at `.squad/agents/ID/charter.md` are eligible.
+
+A history problem **never refuses an otherwise valid save**. Successful Edit
+results add `file.history.status`: `retained` or `unavailable`, with a safe
+`reasonCode` and `reason`. The MCP text includes the same fields. Clients must
+show an unavailable warning separately from save success, for example:
+“Saved, but the previous version could not be confirmed in history.” Do not
+infer successful retention from `isError: false`. Source validation, stale
+revision, cancellation and publication failures still fail normally; they never
+return a Saved confirmation. Normal history growth evicts oldest snapshots,
+not saves. Busy, unsafe or inaccessible history produces the explicit warning.
+
+The existing `kmx://agent/{path}` view adds optional `history`, containing
+`status: available|unavailable` and `versions`, newest first. Each metadata entry
+has `versionId`, exact source `revision`, `capturedAt`, `sourceBytes` and `uri`;
+old source is not included in this list. Missing history is an empty available
+list. Damaged snapshot payloads are omitted from lists and refuse individual
+reads; they still count toward root entry/byte bounds and can be evicted normally.
+Unsafe filesystem objects and oversized state still refuse history access. A
+history error does not prevent reading the current authored view. History-free
+library embeddings omit this optional field.
+
+To restore, without a new tool or alternate filesystem writer:
+
+1. Read the current agent view and keep its current `file.revision`.
+2. Read the selected entry's `uri`, a read-only
+   `kmx://agent-version/{path}/{versionId}` resource. Its `kmx.agent-version` v1
+   JSON contains `file`, version metadata in `version`, and exact `source`.
+   Encode the entire requested absolute or relative path as one component,
+   including slashes. Relative paths use the server cwd or legacy `--root`.
+3. Call the existing `edit` with `schemaVersion: 1`, the same `path`,
+   `content` set to that old source, and `expectedRevision` set to the **current**
+   view's revision, not the old version's revision.
+
+Restore is a new Edit: it retains the displaced current source for undo, subject
+to the same best-effort warning. Existing snapshots are never rewritten. Source
+SHA values can repeat after restore; a `versionId` identifies a captured
+occurrence, not a new kind of source revision. Consecutive identical preimages
+are deduplicated. Failed publication may leave a snapshot of unchanged existing
+source, never a claim that the proposed content was saved. Restoring neither
+runs tests nor creates an execution result; per-version test results are not
+retained here.
+
+History lives outside the project by default, under
+`<kmx state>/local-preview/versions/<hash-of-canonical-root>/`, beside but separate
+from `journals/`. History matches the canonical target, not a requested alias:
+ordinary agent files use their canonical directory as the history root; canonical
+`.squad/agents/ID/charter.md` files share the directory above `.squad`. This keeps
+legacy history readable and aliases consistent without repository discovery.
+Requested paths stay unchanged in responses. `KMX_HOME` selects the state directory; use an absolute path
+outside version control. Records contain original authored source in cleartext,
+not resolved model credentials or run answers. Keep that directory private:
+0700 directories, 0600 regular single-link files. Existing unsafe state is
+refused rather than chmod-repaired. The operator-selected state directory may
+be a symlink, but owned history components may not. No native Windows history
+qualification is implied. Filesystem IO is bounded but synchronous.
+
+Retention is at most 20 snapshots per file, 200 per operation root and 32 MiB of
+encoded records per root; source is bounded to 256 KiB. The oldest eligible
+snapshots are evicted to make room. Roots have independent locks and budgets;
+there is no global cap across arbitrarily many roots. Root/file moves do not
+migrate history, and reusing the same canonical root/file path reuses its history
+namespace. A restart preserves source history, not preview observations.
+
+Clear one existing root's retained source history without starting MCP:
+
+```bash
+kmx mcp --root /absolute/root --clear-history
+```
+
+Clear needs no model route, credentials or protocol stdin; provider/endpoint and
+native-Squad flags cannot be combined with it. It changes no current source,
+preview journals or other root's history. Missing history is a no-op. Unsafe or
+busy state refuses clear rather than deleting broadly. With MCP processes
+stopped, damaged or orphaned history can instead be removed from the private
+`versions` tree; do not remove current agent files or the sibling `journals` tree.
+Unlike normal `kmx mcp` startup, clear requires an explicit existing history
+root via `--root`, so moved/deleted roots need that manual cleanup. List/get also
+require current agent-file inspection: deleting the
+current file disables historical reads through this API. There is no alternate
+Create-based recovery. Pruned, cleared, foreign or unavailable version reads use
+the existing generic MCP `protocol_failed` error. Old source rejected by the
+current validator, or an invalid current file, cannot bypass Edit validation.
+These APIs have hermetic filesystem/MCP coverage, not canvas UI qualification.
+
+### Deploy compatibility (unreleased)
+
+**Deploy is unreleased.** v0.8.1 uses `kmx lift` with the same arguments.
+Current main uses canonical `kmx deploy`; `kmx lift` remains a hidden deprecated
+compatibility command for at least one released version. It keeps its accepted
+arguments, flags, stdout, exit codes and stderr stage labels, adding exactly one
+stderr line per legacy invocation:
+
+```text
+kmx lift is deprecated; use kmx deploy (same arguments).
+```
+
+Only Deploy appears in normal help and completion. Help and completion remain
+operationally inert. Deploy uses the same evaluation, publication, consent and
+runtime guards. JSON keys and values stay unchanged, including stage/result
+`lift` fields and the `targets` operation value `"lift"`; public Go/API and
+internal `Lift` identifiers, evidence, storage paths and
+`kaimahi.dev/lift-record` annotations are not renamed. Generated recovery commands
+use `deploy`; legacy result stdout is not rewritten. Removal requires a later
+announced breaking release.
+
 Use `kmx --help` and `kmx <command> --help` for flags and defaults. The Cobra tree
 also generates completion; this guide describes contracts rather than duplicating
 every flag. Command definitions are in [`cmd/kmx`](../cmd/kmx).
@@ -105,7 +669,7 @@ These routes and root workspace `push` are available in v0.7.0;
 historical v0.5.1 uses the `agent` routes.
 The provisional [multi-member source](suite-workspace.md#provisional-multi-member-source-offline-only)
 format supports internal offline preparation/inventory loading only. Root workspace
-push (including `--unevaluated`), eval and workspace Lift refuse it; existing
+push (including `--unevaluated`), eval and workspace Deploy refuse it; existing
 single-member authoring/create prompts and public-case receipt rules are unchanged.
 
 Single-member [source v3](suite-workspace.md#explicit-runtime-profiles-offline-only)
@@ -114,17 +678,17 @@ packages explicit runtime profiles under one S. Offline root push requires
 Legacy workspace push rejects these selectors. Suite build resolves exact profile
 tuples with the same selector names, but AgentKit refuses profiled plans. No
 profiled execution, proof creation/export, evaluated publication, image association
-or Lift is enabled, including for a declared Orka profile. External portable
-`eval verify` remains a separate consistency check.
+or Deploy is enabled, including for a declared Orka profile. External portable
+`test verify` remains a separate consistency check.
 
-Root `eval` evaluates a full packaged native Orka/kagent workspace, or pinned
+Root `test` evaluates a full packaged native Orka/kagent workspace, or pinned
 AgentSessions chat through explicit `--development-host FILE`, and retains offline `diff` and
 `from-sessions` helpers. Public Orka eval uses fresh candidates and verifies cleanup
-before passing export; private Quickstart/console remain canonical. `eval cleanup`
+before passing export; private Quickstart/console remain canonical. `test cleanup`
 lists possible leftovers; a full run ID selects confirmed, identity-safe deletion.
 See [candidate cleanup](suite-workspace.md#inspect-and-clean-candidate-leftovers).
 Standalone packaged evaluation remains unimplemented.
-Root `lift <ref>@<digest>` deploys an evaluated native suite from a registry or
+Root `deploy <ref>@<digest>` deploys an evaluated native suite from a registry or
 `--from-layout`, with a destination context (explicit `--to-context` or named
 `--to`) and private `--evidence FILE`.
 Orka requires `--inference provider:NAME`; packaged kagent instead requires
@@ -132,21 +696,25 @@ author-owned `--bindings FILE`. Kagent is create-only and refuses occupied targe
 even when evaluation UIDs match; evidence never crosses runtimes. `--plan` is GET-only; `--promote` explicitly selects
 source-only evidence for an eligible destination; candidate evidence requires it
 even in the same environment, with absent canonical resources. No model/runtime
-override, build, repack, publish, update or adoption. Reports support `-o json`.
-`eval/lift --to NAME` may supply selectors from workspace `kmx.yaml`; Lift has no
+override, build, repack, publish or adoption. Plain Deploy stays create-only;
+explicit `--update` supports only eligible retained Orka placements and rollback
+with original passing evidence. Kagent refuses updates. See
+[update and rollback](suite-workspace.md#update-and-rollback). Reports support `-o json`.
+`test/deploy --to NAME` may supply selectors from workspace `kmx.yaml`; Deploy has no
 default destination. Concrete values are resolved once and retained, never reread
-during confirmation. Explicit-reference Lift without `--to` is workspace-independent.
-Without a positional reference, `kmx lift --to NAME` composes missing Orka
-workspace evaluation, exact-version publication and destination Lift. It requires
+during confirmation. Explicit-reference Deploy without `--to` is workspace-independent.
+Without a positional reference, `kmx deploy --to NAME` composes missing Orka
+workspace evaluation, exact-version publication and destination Deploy. It requires
 saved `publishRepository` and the destination's `evaluationTarget`, selects and
 discloses source-only promotion automatically, and confirms the frozen plan once.
-Four default stderr lines report Plan/Eval/Push/Lift; `-v` and `-o json` expose
+Four default stderr lines report Plan/Eval/Push/Deploy; `-v` and `-o json` expose
 details. Verified private exact-version records permit GET-only skips, never
-adoption, repair or update. See [composed Lift](suite-workspace.md#composed-workspace-lift).
-Root eval/push remain individually available; explicit-reference Lift still requires
+adoption, repair or update. See [composed Deploy](suite-workspace.md#composed-workspace-lift).
+Root test/push remain individually available; explicit-reference Deploy still requires
 its digest/private evidence. Kagent cannot join composition until its own
-candidate-scoped placement/cleanup is qualified.
-See [digest lift](suite-workspace.md#digest-lift) for gates and partial outcomes. See the
+candidate-scoped placement/cleanup is qualified; AgentSessions workspaces and
+`--harness-image` refuse it before evaluation or publication.
+See [digest deploy](suite-workspace.md#digest-lift) for gates and partial outcomes. See the
 [alignment record](command-semantics.md) for current versus proposed names.
 
 ### Current Orka path and explicit version-qualified operations
@@ -157,15 +725,16 @@ See [digest lift](suite-workspace.md#digest-lift) for gates and partial outcomes
 | `kmx targets [-o table\|json] [--detect] [--sessions <host:port>]` | offline compiled support by default; explicit read-only probes report present/absent/unreadable separately from qualified versions. No runtime selection, installation or deployment. [Target view and support matrix](runtime-adapters.md#read-only-target-view) |
 | `kmx orka install` | verify the pinned v0.2.0 release chart; apply its CRDs; install harness-v2 with fullname `orka-api` on the selected context; keep the chart-generated snapshot key private; optionally create a keyless Provider. Refuses old v0.1.3 installs rather than upgrading. [Orka](orka.md) |
 | `kmx orka status` | Table-only Orka runtime report: running controller version, Deployments, CRDs and Providers; distinguish unreadable from absent and running version from pin. `-o table` only; root status is separate destination inventory. |
-| `kmx create <name> [--model <model>] [--instructions <file>] [--workspace <directory>]` | default offline authoring of one tool-free native suite member; terminal prompts complete missing model/file inputs, scripts require both flags. Orka by default, or exact kagent v0.10.3 Go/linux-amd64 with `--runtime kagent`. `--runtime agentsessions` separately authors pinned chat offline only; ordinary push is supported; eval requires an explicit development host; evaluated push consumes matching passing evidence offline, while Lift/chat/status refuse. Private metadata only; authoring itself does not deploy/evaluate. Discover the nearest ancestor workspace, or select/initialize an exact root with `--workspace`. Optional `--description`; live-only flags and a second member refuse. No cluster configuration or image construction. [Workspace guide](suite-workspace.md) |
+| `kmx create <name> [--model <model>] [--instructions <file>] [--workspace <directory>]` | default offline authoring of one tool-free native suite member; terminal prompts complete missing model/file inputs, scripts require both flags. Orka by default, or exact kagent v0.10.3 Go/linux-amd64 with `--runtime kagent`. `--runtime agentsessions` separately authors pinned chat offline only; ordinary push is supported; eval requires an explicit development host and `AgentSessionsBinding`; evaluated push consumes matching passing evidence offline; Deploy is a plan-only render, while chat/status refuse. Private metadata only; authoring itself does not deploy/evaluate. Discover the nearest ancestor workspace, or select/initialize an exact root with `--workspace`. Optional `--description`; live-only flags and a second member refuse. No cluster configuration or image construction. [Workspace guide](suite-workspace.md) |
 | `kmx push [--workspace <directory>] [reference]` | discover the nearest ancestor `workspace.yaml`, or select an exact root without fallback with `--workspace`; prepare its validated one-member native suite and authored cases (packaged as public AgentSuite evaluations under `evals/<member>/`), then copy its exact OCI graph to a registry or `--to-layout` target. Require latest completed managed exact-S proof unless --evaluation explicitly overrides or --unevaluated explicitly opts out. Preserve explicit tags; bare registry push derives `s-<full-S-hex>` from saved publishRepository. Local layouts require a reference. Print selected proof, absolute workspace and OCI manifest digest on stderr. Legacy required member images are empty. V3 uses explicit --runtime-profile and optional --platform with --unevaluated only, retaining all public declarations and compositions. Does not evaluate or deploy. Existing registry policy applies. [Workspace guide](suite-workspace.md) |
-| `kmx eval [--workspace <directory>] --to-context <ctx> (--inference provider:NAME\|--bindings FILE) [--out <private.json>] [--show-content] [-o text\|json]` | evaluate every ordered native Orka case through one fresh Task per declared run (default one); optional KMX `runs`/`minPasses` requires the threshold with no unknown run, each run receiving its own deadline and repeat preflight showing the total execution budget; packaged kagent requires `--bindings FILE`, unsecure auth and fresh blocking A2A Tasks (no `--inference` or `--result-port`), without retry; non-pass summaries show assertion IDs/types and judge scores/threshold; --show-content opts into sanitized bounded excerpts, expected values and rationale on stderr; `llmJudge` requires explicit `--judge-base-url` and optional credential-variable `--judge-key-env`, with two independent samples inside each run's deadline, using `max_completion_tokens` (1024) without a temperature override; the receipt binds this request style (old judge receipts require fresh evaluation), with no default content output or endpoint recovery echo; the diagnostics-only policy clarification preserves existing evidence identities; defaults: namespace `orka-system`, case timeout 5m (max 9m), automatically selected free IPv4 loopback result port (explicit `--result-port` is honored without fallback). Both require a preinstalled runtime and model-binding prerequisites; Orka also requires result access. Output defaults to text for all runtimes; Orka-only `-o json` emits one payload-free outcome document on success or execution abort, with diagnostics on stderr. Abort counts distinguish executed Tasks from planned runs and assertion passes; fully executed threshold misses remain ordinary run-pass summaries. Offline unsupported/budget/output checks precede configuration; one guard covers owned pair placement and execution. Only full passing metadata is exported once, privately outside workspace/cache. Hermetic tests and pinned runtime CLI qualification cover the bounded scenarios. [Workspace evaluation](suite-workspace.md#evaluate-the-whole-workspace) |
-| `kmx eval --to <name> [--out <private.json>]` / `kmx lift <ref>@<digest> --to <name> --evidence FILE [--promote] [--plan]` | resolve workspace `kmx.yaml` selectors once; invocation flags override saved fields. Runtime expectation is checked against packaged runtime. Eval may omit `--to` only when `evalTarget` is saved; Lift has no default destination. Explicit-reference evidence/gates/remote guards remain unchanged. [Named destinations](suite-workspace.md#named-destinations) |
-| `kmx lift --to <name> [--plan] [-v] [--show-content] [-o json]` | compose missing Orka workspace evaluation → publication → Lift; require saved repository and explicit evaluationTarget, freeze selectors/source once, automatically disclose source-only promotion and obtain one scoped confirmation. Verify exact-version skips read-only; failure detail matches standalone eval. --show-content opts into sanitized bounded failure content; --verbose alone does not. Explicit-reference and plan-only Lift refuse --show-content. [Composed Lift](suite-workspace.md#composed-workspace-lift) |
-| `kmx eval export [--workspace <directory>] --member <id> --out <file>` | export portable evidence for the latest complete exact-suite/member evaluation, offline and without configuration/model/cluster/registry calls. Requires captured tagged Go module version/checksum or full clean VCS provenance; modified/unstamped builds and old records without metadata refuse. New detached file only, never replacement or private-gate authority. [Public evidence](suite-workspace.md#export-portable-evaluation-evidence) |
-| `kmx eval verify --suite <layout-or-digest> [--from-layout <layout>] --evidence <file> --expect <file> [-o text\|json]` | offline public-evidence CI gate with a complete, independently reviewed ExpectedEvaluation committed beside the suite. Digest input requires explicit local layout. No state/cache/config/model/cluster/registry access. Success-only summary exits0; safe typed refusal code exits1. Does not replace private push/Lift gates. [CI verification](suite-workspace.md#verify-portable-evaluation-evidence-in-ci) |
-| `kmx eval cleanup [<run-id>] --to <name>` | without a run, read-only candidate listing; with one full run ID, preview exact UIDs, confirm even on local kind, then identity-safe cleanup. Explicit context/namespace works without source or inference. Liveness is unknown; unanchored or unverifiable orphans refuse. [Cleanup contract](suite-workspace.md#inspect-and-clean-candidate-leftovers) |
-| `kmx eval [--workspace <directory>] --development-host <host.json> [--out <private.json>]` | evaluate one packaged AgentSessions chat member on explicit literal-loopback, unauthenticated operator-observed development host; no cluster configuration or selectors, registry/auth/lift/chat. One fresh Session/config/Exec per declared run; optional `runs`/`minPasses` and explicit `llmJudge` share Orka/kagent semantics, including per-run deadlines and unknown veto. Full-policy-pass-only private metadata. [Development host contract](suite-workspace.md#agentsessions-development-evaluation) |
+| `kmx test [--workspace <directory>] --to-context <ctx> (--inference provider:NAME\|--bindings FILE) [--out <private.json>] [--show-content] [-o text\|json]` | evaluate every ordered native Orka case through one fresh Task per declared run (default one); optional KMX `runs`/`minPasses` requires the threshold with no unknown run, each run receiving its own deadline and repeat preflight showing the total execution budget; packaged kagent requires `--bindings FILE`, unsecure auth and fresh blocking A2A Tasks (no `--inference` or `--result-port`), without retry; non-pass summaries show assertion IDs/types and judge scores/threshold; --show-content opts into sanitized bounded excerpts, expected values and rationale on stderr; `llmJudge` requires explicit `--judge-base-url` and optional credential-variable `--judge-key-env`, with two independent samples inside each run's deadline, using `max_completion_tokens` (1024) without a temperature override; the receipt binds this request style (old judge receipts require fresh evaluation), with no default content output or endpoint recovery echo; the diagnostics-only policy clarification preserves existing evidence identities; defaults: namespace `orka-system`, case timeout 5m (max 9m), automatically selected free IPv4 loopback result port (explicit `--result-port` is honored without fallback). Both require a preinstalled runtime and model-binding prerequisites; Orka also requires result access. Output defaults to text for all runtimes; Orka-only `-o json` emits one payload-free outcome document on success or execution abort, with diagnostics on stderr. Abort counts distinguish executed Tasks from planned runs and assertion passes; fully executed threshold misses remain ordinary run-pass summaries. Offline unsupported/budget/output checks precede configuration; one guard covers owned pair placement and execution. Only full passing metadata is exported once, privately outside workspace/cache. Hermetic tests and pinned runtime CLI qualification cover the bounded scenarios. [Workspace evaluation](suite-workspace.md#evaluate-the-whole-workspace) |
+| `kmx test --to <name> [--out <private.json>]` / `kmx deploy <ref>@<digest> --to <name> --evidence FILE [--promote] [--plan]` | resolve workspace `kmx.yaml` selectors once; invocation flags override saved fields. Runtime expectation is checked against packaged runtime. Eval may omit `--to` only when `evalTarget` is saved; Deploy has no default destination. Explicit-reference evidence/gates/remote guards remain unchanged. [Named destinations](suite-workspace.md#named-destinations) |
+| `kmx deploy --to <name> [--plan] [-v] [--show-content] [-o json]` | compose missing Orka workspace evaluation → publication → Deploy; require saved repository and explicit evaluationTarget, freeze selectors/source once, automatically disclose source-only promotion and obtain one scoped confirmation. Verify exact-version skips read-only; failure detail matches standalone eval. --show-content opts into sanitized bounded failure content; --verbose alone does not. Explicit-reference and plan-only Deploy refuse --show-content. [Composed Deploy](suite-workspace.md#composed-workspace-lift) |
+| `kmx test export [--workspace <directory>] --member <id> --out <file>` | export portable evidence for the latest complete exact-suite/member evaluation, offline and without configuration/model/cluster/registry calls. Requires captured tagged Go module version/checksum or full clean VCS provenance; modified/unstamped builds and old records without metadata refuse. New detached file only, never replacement or private-gate authority. [Public evidence](suite-workspace.md#export-portable-evaluation-evidence) |
+| `kmx test verify --suite <layout-or-digest> [--from-layout <layout>] --evidence <file> --expect <file> [-o text\|json]` | offline public-evidence CI gate with a complete, independently reviewed ExpectedEvaluation committed beside the suite. Digest input requires explicit local layout. No state/cache/config/model/cluster/registry access. Success-only summary exits0; safe typed refusal code exits1. Does not replace private push/Deploy gates. [CI verification](suite-workspace.md#verify-portable-evaluation-evidence-in-ci) |
+| `kmx test cleanup [<run-id>] --to <name>` | without a run, read-only candidate listing; with one full run ID, preview exact UIDs, confirm even on local kind, then identity-safe cleanup. Explicit context/namespace works without source or inference. Liveness is unknown; unanchored or unverifiable orphans refuse. [Cleanup contract](suite-workspace.md#inspect-and-clean-candidate-leftovers) |
+| `kmx test [--workspace <directory>] --development-host <host.json> --bindings <binding.yaml> [--out <private.json>]` | evaluate one packaged AgentSessions chat member on explicit literal-loopback, unauthenticated operator-observed development host; no cluster configuration or selectors, registry/auth/chat. The [`AgentSessionsBinding`](suite-workspace.md#agentsessionsbinding) must serve exactly the packaged model; evidence records its digest, covering every judged or repeated run. One fresh Session/config/Exec per declared run; optional `runs`/`minPasses` and explicit `llmJudge` share Orka/kagent semantics, including per-run deadlines and unknown veto. Full-policy-pass-only private metadata. [Development host contract](suite-workspace.md#agentsessions-development-evaluation) |
+| `kmx deploy <ref>@<digest> --harness-image <image>@sha256:<digest> --bindings <binding.yaml> --evidence <private.json> --plan [-o json]` | plan-only AgentSessions deploy: from full-passing AgentSessions evidence for exactly this suite and an `AgentSessionsBinding` serving the packaged model, render a substrate ActorTemplate (harnessnode chat) and HarnessRegistration offline. Loads no cluster configuration, contacts no substrate or host and applies nothing; `--plan` is required and cluster/inference/promotion selectors and `--update` refuse. [AgentSessions deploy plan](suite-workspace.md#agentsessions-deploy-plan) |
 | `kmx push --evaluation <private.json> [--workspace <directory>] <reference>` | consume a strict private full-passing Orka/kagent or development AgentSessions suite receipt; evidence must match the packaged runtime and require exact suite manifest identity plus complete offline coherence before transfer/provenance. Explicit evidence overrides managed lookup without fallback. Root push otherwise requires a completed exact-S pass, unless --unevaluated explicitly opts out; unsigned observations are not authentication or a policy gate. [Workspace guide](suite-workspace.md) |
 | `kmx suite build <directory> ...` | resolve one agent/platform composition and build an OCI image-layout tar through AgentKit using Docker buildx. The current implementation is explicitly experimental and non-conformant because it treats the selected harness image as a monolithic AgentKit adapter and does not compose the runtime-base image. |
 | `kmx suite push <directory> <registry/repository:tag>` | deterministically archive and validate an extracted AgentSuite, then push it to an OCI registry. An existing tag with the same digest is a no-op; a different digest requires `--force`. It also attaches unsigned [suite provenance](#suite-provenance) before moving the tag; `--provenance=false` skips it and `--require-provenance` fails without moving the tag if it cannot be attached. Prints the pushed and provenance digests. See [registry safety](#registry-authentication). |
@@ -175,12 +744,13 @@ See [digest lift](suite-workspace.md#digest-lift) for gates and partial outcomes
 | `kmx suite policy FILE [--administrative-policy FILE]` | resolve a portable v1 deny-write or v2 IPv4/TCP egress policy offline; print canonical effective JSON then its digest. Administrative deny paths union; administrative network allowances intersect (empty denies all). Inputs and output are bounded to 4 MiB; explicit empty administrative flags refuse. No operational configuration, enforcement or provider selection. [Policy contract](portable-policy.md) |
 | `kmx suite validate <path>` | validate an extracted AgentSuite content directory or OCI image layout offline, including strict JSON, canonical identities, closed references, tool locks, build profiles and archive safety. `-o json` emits the validated summary. [AgentSuite specification](https://github.com/agent-primitives/suite/blob/main/spec.md) |
 | `kmx suite diff <before> <after>` | validate and semantically compare two extracted AgentSuites or local OCI image layouts, including supplemental packaged content and artifact identities. The default unified view uses `-` and `+` field lines; `--view split` renders before and after values side by side, and `-o json` emits the versioned change and affected-agent report. [Suite artifact diff](#suite-artifact-diff). |
-| `kmx eval from-sessions UID... --sessions SOURCE --assertions CASE.yaml --out MANIFEST.json` | Independent private reference extraction/export only. [Reference extraction](#reference-extraction) |
-| `kmx eval diff BEFORE AFTER` | Offline strict full-passing native suite evidence only; old bundle receipts unreadable. [Native receipt diff](#native-receipt-diff) |
+| `kmx test from-sessions UID... --sessions SOURCE --assertions CASE.yaml --out MANIFEST.json` | Independent private reference extraction/export only. [Reference extraction](#reference-extraction) |
+| `kmx test explain [failure-id] [--workspace DIR] [--show-content\|--clear]` | inspect private local failures offline without operational config or model calls; metadata by default, bounded content only with --show-content. --clear removes one ID, or all only with explicit --workspace, never passing proof or runtime history. Owner-only retention keeps the last 10 non-pass runs across suite revisions, 64 KiB answers and 128 KiB records. [Local failure inspection](suite-workspace.md#inspect-or-clear-local-evaluation-failures) |
+| `kmx test diff BEFORE AFTER` | Offline strict full-passing native suite evidence only; old bundle receipts unreadable. [Native receipt diff](#native-receipt-diff) |
 | `kmx run --agent NAME --prompt TEXT` | One Task on a live Orka Agent, including suite-owned Agents, with answer-only stdout; not workspace-local execution or suite evaluation. [Task execution and results](#task-execution-and-results) |
 | `kmx task result TASK [--wait 5m]` | Read existing Task phase/answer without resending; retain context/namespace. [Task execution and results](#task-execution-and-results) |
 | `kmx context show` / `kmx context use <context>` | read effective context/source/posture or remember KMX's guarded access selection; never change kubectl current-context |
-| `kmx console` | Live Orka inventory and source-reviewed native workspace creation/eval/push/Lift. Ready is placement only. Interactive Lift and bundle comparison are retired; `--demo` uses sample data. |
+| `kmx console` | Live Orka inventory and source-reviewed native workspace creation/eval/push/Deploy. Ready is placement only. Interactive Deploy and bundle comparison are retired; `--demo` uses sample data. |
 
 #### Experimental AgentSuite image build
 
@@ -378,9 +948,12 @@ AgentSuite resolution.
 #### Experimental image contracts and publication
 
 `suite build --suite-ref <registry/repository@sha256:...>` compares every local
-packaged file, entry type and mode with a bounded, digest-verified published
+packaged file, entry type, mode and link target with a bounded, digest-verified published
 snapshot, including cases and supplemental metadata, then builds from the fetched
-content. Executable permissions are preserved; group/world write bits are masked
+content. Loose directories use the shared portable packing policy: undeclared
+files default to non-executable, and ToolProvider inventory owns declared modes,
+independently of host execute bits. Published executable permissions are preserved;
+group/world write bits are masked
 when materializing build sources. Capability-based agents omit model build flags:
 selected inference is supplied through the `agentkit-v0-mounted-v1` configuration
 ABI. The AgentKit adapter supports only port 8080 and `/healthz`, and refuses
@@ -415,10 +988,11 @@ The KMX-owned image-declaration schema is checkout-only and self-contained, with
 explicit required/null and mounted-inference rules. Cross-field semantic checks
 (capacity comparison, input-key uniqueness and digest agreement) still require
 the Go validator, as documented in the schema.
-Full image inventory/base composition, image Lift, evaluation and TUI workflows
-are separate work. Portable image-set association remains under
-[#356](https://github.com/kaimahi-agents/kaimahi/issues/356), and the materialization
-handoff under [#345](https://github.com/kaimahi-agents/kaimahi/issues/345).
+Full image inventory/base composition, image Deploy, evaluation and TUI workflows
+are separate work tracked under [#571](https://github.com/kaimahi-agents/kaimahi/issues/571),
+including the image-set association decisions from #356 and materialization
+handoff from #345. These commands do not add image execution to native workspace,
+flow or AgentSessions deployment paths.
 
 #### Registry authentication
 
@@ -575,8 +1149,8 @@ requires attachment, not visibility or trust.
 
 | Command | Current behavior |
 |---|---|
-| `kmx quickstart` | kind + keyless Ollama + pinned Orka v0.2.0 Helm chart + the fixed tool-free native `hello-world-agent` source/full eval/publication/reviewed Lift/placement Verify + a separate fresh answer Task; no Kagent installation or plane/governance enabled. [Getting started](getting-started.md#one-command-and-an-agent-that-answers) |
-| `kmx quickstart --interactive` (`-i`) | Experimental TUI: author an Orka agent while kind, Ollama/model, and Orka start in the background; then full eval, exact publication, reviewed Lift/placement Verify and a separate fresh answer Task. Flags for the other quickstart mode are refused before configuration loads. The retired `kmx quickstart-wizard` spelling refuses and names this command. |
+| `kmx quickstart` | kind + keyless Ollama + pinned Orka v0.2.0 Helm chart + the fixed tool-free native `hello-world-agent` source/full eval/publication/reviewed Deploy/placement Verify + a separate fresh answer Task; no Kagent installation or plane/governance enabled. [Getting started](getting-started.md#one-command-and-an-agent-that-answers) |
+| `kmx quickstart --interactive` (`-i`) | Experimental TUI: author an Orka agent while kind, Ollama/model, and Orka start in the background; then full eval, exact publication, reviewed Deploy/placement Verify and a separate fresh answer Task. Flags for the other quickstart mode are refused before configuration loads. The retired `kmx quickstart-wizard` spelling refuses and names this command. |
 | `kmx local up` | the runtime and no agent: cluster, ollama, model, orka. `--step` selects exactly one of those four; the three legacy steps are removed and are refused as unknown |
 | `kmx aks up` / `kmx aks down` | Temporary compatibility route, hidden from root help and shell completion; not a first-class KMX domain. Setup provisions AKS and installs Orka only, with optional Azure monitoring add-ons; the owner configures the model Provider. It does not deploy a model plane or capture its credentials. Teardown preserves cleanup of recorded owned resources, including historical runs. `--payload` defaults to `orka` and is the only payload (no Provider is created); the legacy payload is refused as retired, and an existing legacy lift can still be inspected and torn down. The root AKS aliases are removed; use `kmx aks up` / `kmx aks down`. [AKS](aks.md) |
 | `kmx orka list` | live Orka Agent inventory in one namespace; table/JSON/YAML. [Inventory contract](#kmx-orka-list) |
@@ -707,11 +1281,18 @@ bootstraps runtime/model, builds images, deploys or evaluates. `--live` and its
 live-only/preview flags are unknown before config loads. See [workspace source
 and cases](suite-workspace.md).
 
+Experimental `kmx create NAME --workspace DIR --members FILE --flow FILE` imports
+strict JSON members and a public `kmx.flow.v1alpha1` document as one offline suite.
+All three flags are required; single-member/runtime selectors refuse, including
+explicit defaults. It does not evaluate, run, publish or deploy the flow. See
+[experimental flow authoring](suite-workspace.md#experimental-flow-authoring-offline-only)
+for file shapes, path confinement, limits and the explicit read-only APIs.
+
 ## Task execution and results
 
 `kmx run --agent NAME --prompt TEXT` or `--prompt-file PATH` (`-` for stdin)
 submits one Task to a Ready live Orka Agent, including a suite-owned Agent placed
-by Lift. Select its context with `--context` and its namespace with `--namespace`
+by Deploy. Select its context with `--context` and its namespace with `--namespace`
 (default `orka-system`); `--agent` names the live Agent. `--wait` defaults to 5m,
 maximum 9m. stdout contains only the answer; stderr retains Task identity and
 retrieval instructions. Bundle-directory selection is removed.
@@ -730,7 +1311,7 @@ failed/cancelled Tasks exit 1. Preserve the Task's context and namespace.
 
 ## Native receipt diff
 
-`kmx eval diff BEFORE AFTER` compares strict full-passing native Orka/kagent
+`kmx test diff BEFORE AFTER` compares strict full-passing native Orka/kagent
 suite receipts offline. Both require the same runtime, exact observed subject
 and ownership, and complete ordered case inventory. Execution IDs and answer
 hashes are not comparison identities. Incompatible/incomplete evidence refuses
@@ -740,7 +1321,7 @@ not converted or retained as a promotion gate.
 
 ## Reference extraction
 
-`kmx eval from-sessions UID... --sessions SOURCE --assertions CASE.yaml
+`kmx test from-sessions UID... --sessions SOURCE --assertions CASE.yaml
 --out MANIFEST.json` remains a bounded read-only private extraction/export utility.
 It stores single-turn UID/prefix references and authored assertions, not recorded
 inputs/answers. Existing output appends atomically; duplicates refuse the whole
@@ -750,11 +1331,13 @@ Keep manifests private. No inference or runtime/host attestation is performed.
 Legacy RecordedExecution and bundle replay/evaluation/judge wiring are removed;
 runtime-core assertion and llmJudge implementations and tests remain retained.
 Native Orka/kagent and development AgentSessions eval wire authored llmJudge with an explicit endpoint;
-reference manifests still have no native consumer. Root eval requires authored
+reference manifests still have no native consumer. Root test requires authored
 workspace cases and private full-passing evidence, with no subset/recorded-input/
 model/runtime override. Native AgentSessions
-`--development-host FILE` evaluation is separate and remains supported; its
-passing proof supports evaluated push, not receipt diff or Lift.
+`--development-host FILE` evaluation is separate, requires `--bindings FILE` and
+records the binding digest; its passing proof supports evaluated push and the
+plan-only Deploy render (`kmx deploy ... --bindings FILE --evidence FILE --plan`;
+apply refuses), not receipt diff.
 
 ### Editing an agent
 

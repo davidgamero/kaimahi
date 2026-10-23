@@ -21,7 +21,7 @@ func TestMaterializePreservesEntriesAndDetectsMetadataDrift(t *testing.T) {
 		{header: tar.Header{Name: "payload/link", Typeflag: tar.TypeSymlink, Mode: 0777, Linkname: "tool"}},
 	}
 	metadata := map[string]entry{}
-	files, err := filesWithEntries(t.Context(), contentArchive(t, records), metadata)
+	files, err := filesWithEntries(t.Context(), contentArchive(t, records), metadata, false)
 	if err != nil {
 		t.Fatal(err)
 	}
