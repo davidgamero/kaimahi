@@ -12,12 +12,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/cliui"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
-	"golang.org/x/sys/unix"
 )
 
 // AgentInstance describes an execution, never a merely discovered source file.
@@ -258,28 +256,6 @@ func CacheMarkdownVersion(a *MarkdownAgent) (*MarkdownAgent, error) {
 	return frozen, nil
 }
 
-func openAgentLease(path string, create bool) (*os.File, error) {
-	flags := unix.O_RDWR | unix.O_NOFOLLOW | unix.O_CLOEXEC
-	if create {
-		flags |= unix.O_CREAT
-	}
-	fd, err := unix.Open(path, flags, 0600)
-	if err != nil {
-		return nil, err
-	}
-	f := os.NewFile(uintptr(fd), path)
-	info, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || st.Uid != uint32(os.Geteuid()) || st.Nlink != 1 {
-		f.Close()
-		return nil, errors.New("unsafe agent instance lease")
-	}
-	return f, nil
-}
 func beginAgentInstance(a *MarkdownAgent, model string) (*agentLease, *MarkdownAgent, error) {
 	source, err := filepath.Abs(a.Path)
 	if err != nil {
@@ -302,7 +278,7 @@ func beginAgentInstance(a *MarkdownAgent, model string) (*agentLease, *MarkdownA
 	if err != nil {
 		return nil, nil, err
 	}
-	if err = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err = mdLock(f); err != nil {
 		f.Close()
 		return nil, nil, fmt.Errorf("agent %s is already running; stop its foreground session before running an updated version", a.Name)
 	}
@@ -380,11 +356,11 @@ func RemoveAgentInstance(ctx context.Context, selector string, force bool) (Agen
 	deadline, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	for {
-		err = unix.Flock(int(lease.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		err = mdLock(lease)
 		if err == nil {
 			break
 		}
-		if !force || (!errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN)) {
+		if !force || !mdLockBusy(err) {
 			return r, errors.New("agent instance busy; nothing removed")
 		}
 		select {
@@ -393,7 +369,7 @@ func RemoveAgentInstance(ctx context.Context, selector string, force bool) (Agen
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	defer unix.Flock(int(lease.Fd()), unix.LOCK_UN)
+	defer mdUnlock(lease)
 	path := filepath.Join(dir, "instance.json")
 	var current AgentInstance
 	if err = mdStateRead(path, &current); err != nil {
@@ -494,15 +470,15 @@ func ReadAgentInstances(directory string) ([]AgentInstance, error) {
 		if e != nil {
 			return nil, e
 		}
-		e = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		e = mdLock(lock)
 		if e == nil {
 			if r.State == "running" {
 				r.State = "stopped"
 				r.Reason = "owner exited without recording completion"
 				r.Finished = nil
 			}
-			_ = unix.Flock(int(lock.Fd()), unix.LOCK_UN)
-		} else if !errors.Is(e, unix.EWOULDBLOCK) && !errors.Is(e, unix.EAGAIN) {
+			_ = mdUnlock(lock)
+		} else if !mdLockBusy(e) {
 			lock.Close()
 			return nil, e
 		}

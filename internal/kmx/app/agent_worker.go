@@ -15,8 +15,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 type agentWorkerConfig struct {
@@ -194,7 +192,7 @@ func RunAgentWorker() error {
 		sendReady(err)
 		return err
 	}
-	if err = unix.Flock(int(leaseFile.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err = mdLock(leaseFile); err != nil {
 		sendReady(err)
 		return err
 	}
@@ -338,8 +336,7 @@ func agentSocketCall(ctx context.Context, socket string, request agentWorkerRequ
 	if err != nil {
 		return agentWorkerReply{}, errors.New("agent socket unavailable")
 	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.IsDir() || st.Uid != uint32(os.Geteuid()) || info.Mode().Perm() != 0700 {
+	if !mdOwned(info, false) || !info.IsDir() || info.Mode().Perm() != 0700 {
 		return agentWorkerReply{}, errors.New("unsafe agent socket directory")
 	}
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", socket)
