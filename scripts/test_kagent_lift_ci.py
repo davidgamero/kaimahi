@@ -81,7 +81,6 @@ class WorkflowTests(unittest.TestCase):
         expression = str(expression).strip().removeprefix("${{").removesuffix("}}")
         expression = expression.replace("github.event_name", repr(event))
         expression = expression.replace("needs.classify-change.outputs.kagent_changed", repr(changed))
-        expression = expression.replace("needs.classify-change.outputs.orka_required", repr("true"))
         expression = expression.replace("!cancelled()", "True")
         expression = expression.replace("github.ref", repr("refs/heads/main"))
         expression = expression.replace("always()", "True").replace("!(", "not (").replace("&&", " and ").replace("||", " or ")
@@ -136,9 +135,9 @@ class WorkflowTests(unittest.TestCase):
                     "classify-change": {"result": result, "outputs": {"kagent_changed": "false"}}}
                 ).returncode, 0)
             self.assertNotEqual(self.aggregate(event, overrides={
-                "e2e-orka-runtime": {"result": "failure"}}).returncode, 0)
+                "e2e-orka-helm": {"result": "failure"}}).returncode, 0)
         self.assertNotEqual(self.aggregate("pull_request", overrides={
-            "e2e-orka-runtime": {"result": "skipped"}}).returncode, 0)
+            "e2e-orka-helm": {"result": "skipped"}}).returncode, 0)
         for missing in self.jobs["e2e-hello-world"]["needs"]:
             if missing == "classify-change":
                 continue  # Classification result failures are exercised above.
@@ -157,6 +156,8 @@ class WorkflowTests(unittest.TestCase):
             root = pathlib.Path(directory)
             workflow = root / ".github/workflows/ci.yml"
             workflow.parent.mkdir(parents=True)
+            (workflow.parent / "runtime-qualification.yml").write_bytes(
+                (ROOT / ".github/workflows/runtime-qualification.yml").read_bytes())
             full_path = ROOT / ".github/workflows/orka-runtime.yml"
             full_workflow = yaml.safe_load(full_path.read_text())
             kagent_workflow = yaml.safe_load((ROOT / ".github/workflows/kagent-runtime.yml").read_text())
@@ -173,7 +174,7 @@ class WorkflowTests(unittest.TestCase):
                 elif mutation == "nightly-aggregator-skip":
                     jobs["e2e-hello-world"]["if"] = "always() && github.event_name != 'schedule'"
                 elif mutation == "foreign-delegation":
-                    jobs["e2e-orka-runtime"]["uses"] = "other/repo/.github/workflows/proof.yml@main"
+                    jobs["e2e-orka-runtime"] = {"uses": "other/repo/.github/workflows/proof.yml@main"}
                 elif mutation == "missing-proof":
                     full["jobs"]["qualify"]["steps"] = [s for s in full["jobs"]["qualify"]["steps"]
                         if s.get("name") != "Native suite — qualify evaluation, exact transfer and CLI lift"]

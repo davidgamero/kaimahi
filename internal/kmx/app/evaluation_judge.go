@@ -42,6 +42,9 @@ type evaluationJudgeClient struct {
 	key        string
 	httpClient *http.Client
 	out        io.Writer
+	// File preview supplies a journaled sample boundary. Native suite evaluation
+	// leaves this nil and retains its ordinary HTTP path.
+	sampleRoundTrip func(*http.Request, string, string) (*http.Response, error)
 }
 
 // newEvaluationCaseJudge validates the selected suite before any agent execution.
@@ -124,8 +127,8 @@ func canonicalEvaluationJudgeURL(raw string) (string, error) {
 	return canonical, nil
 }
 
-// evaluate preserves ordinary assertion rows and fills only judge rows while the
-// attributed answer is ephemeral. Adapters invoke it only after execution succeeds.
+// evaluate preserves ordinary assertion rows and fills only judge rows.
+// Callers control answer retention. Adapters invoke it only after execution succeeds.
 func (c *evaluationJudgeClient) evaluate(ctx context.Context, evaluationCase agentruntime.EvaluationCase, evidence agentruntime.EvaluationEvidence) []agentruntime.EvaluationAssertionResult {
 	if notes := suiteFailureRunNotes(ctx); notes != nil {
 		notes.key = c.key
@@ -142,7 +145,10 @@ func (c *evaluationJudgeClient) evaluate(ctx context.Context, evaluationCase age
 		}
 		row := &rows[i]
 		note := suiteJudgeDiagnostic{CaseID: evaluationCase.ID, AssertionID: a.ID, Class: "judge-unavailable"}
-		defer func() { recordSuiteJudgeDiagnostic(ctx, note) }()
+		defer func() {
+			recordSuiteJudgeDiagnostic(ctx, note)
+			recordFileJudgeDiagnostic(ctx, note, c.key)
+		}()
 		row.Judge = &agentruntime.EvaluationJudgeEvidence{
 			Model: a.JudgeModel, ModelVersion: a.JudgeVersion, Provenance: "user-declared", RequestStyle: agentruntime.EvaluationJudgeRequestStyle,
 			EvaluatorDigest:     agentruntime.EvaluationJudgeEvaluatorDigest(),
@@ -248,7 +254,12 @@ func (c *evaluationJudgeClient) sample(ctx context.Context, payload []byte, mode
 	// or custom transport; copying avoids mutating a shared HTTP client.
 	httpClient := *c.httpClient
 	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	response, err := httpClient.Do(req)
+	var response *http.Response
+	if c.sampleRoundTrip != nil {
+		response, err = c.sampleRoundTrip(req, model, version)
+	} else {
+		response, err = httpClient.Do(req)
+	}
 	if err != nil {
 		return 0, "", "", "judge response unavailable", suiteFailureClass(err)
 	}

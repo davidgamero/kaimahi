@@ -13,7 +13,7 @@ func WriteFilePreview(w io.Writer, r FilePreviewResult, format string) error {
 		return json.NewEncoder(w).Encode(r)
 	}
 	if format != "text" {
-		return &FilePreviewError{"invalid_options", 1}
+		return &FilePreviewError{code: "invalid_options", exit: 1}
 	}
 	var b strings.Builder
 	if r.Runner != "" {
@@ -29,6 +29,12 @@ func WriteFilePreview(w io.Writer, r FilePreviewResult, format string) error {
 	}
 	if r.JudgeRoute != nil {
 		fmt.Fprintf(&b, "explicit judge: %s/%s\n", r.JudgeRoute.Provider, r.JudgeRoute.Model)
+	}
+	if r.Retention.Status != "not_requested" {
+		fmt.Fprintf(&b, "failure retention: %s\n", r.Retention.Status)
+		for _, diagnostic := range r.Retention.Diagnostics {
+			fmt.Fprintf(&b, "  example %s: diagnostic %s\n", diagnostic.CaseID, diagnostic.ID)
+		}
 	}
 	if r.AdHoc != nil {
 		fmt.Fprintf(&b, "ad-hoc: %s\n", r.AdHoc.State)

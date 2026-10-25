@@ -1,5 +1,7 @@
 // Package agentfile parses and loads single-file agent charters.
 // Explicit Squad parsing returns a distinct charter type, not a runnable Agent.
+// Canonical judge models may be omitted; execution binds isolated copies to the
+// selected route, while native Squad parsing and offline export require pins.
 // Offline run-profile export preserves canonical content and hashes, not evidence.
 // Parsing, inspection and export do not execute agents or register them with Squad.
 package agentfile
@@ -212,15 +214,13 @@ func parse(filename string, data []byte, inspection bool) (*Agent, error) {
 	}
 	missing := []string{}
 	for _, name := range sectionNames {
-		if minimal && name != "Model" && name != "Examples" {
+		if name == "Model" || minimal && name != "Examples" {
 			continue
 		}
 		if _, ok := sections[name]; !ok {
 			switch name {
 			case "Identity":
 				missing = append(missing, "Identity.ID", "Identity.Purpose")
-			case "Model":
-				missing = append(missing, "Model.Preferred")
 			default:
 				missing = append(missing, name)
 			}
@@ -287,7 +287,7 @@ func parse(filename string, data []byte, inspection bool) (*Agent, error) {
 		loc := a.Locations["Identity.ID"]
 		return nil, refuse(filename, loc.Line, loc.Column, "Identity.ID", "match the .squad/agents/<id>/charter.md directory ID")
 	}
-	if !modelID.MatchString(a.Model) || strings.EqualFold(a.Model, "auto") || strings.Contains(a.Model, "://") {
+	if a.Model != "" && !ValidModel(a.Model) {
 		loc := a.Locations["Model.Preferred"]
 		return nil, refuse(filename, loc.Line, loc.Column, "Model.Preferred", "set one concrete exact model ID, not auto, a URL or a wildcard")
 	}
@@ -303,12 +303,17 @@ func parse(filename string, data []byte, inspection bool) (*Agent, error) {
 		}
 	}
 	s := sections["Examples"]
-	examples, err := parseExamples(filename, lines[s.start+1:s.end], s.start+2)
+	examples, err := parseExamples(filename, lines[s.start+1:s.end], s.start+2, true)
 	if err != nil {
 		return nil, err
 	}
 	a.Examples = examples
 	return a, nil
+}
+
+// ValidModel accepts the same concrete model ID in authored files and runtime choices.
+func ValidModel(model string) bool {
+	return modelID.MatchString(model) && !strings.EqualFold(model, "auto") && !strings.Contains(model, "://")
 }
 
 func checkedSourceText(filename string, data []byte) (string, error) {

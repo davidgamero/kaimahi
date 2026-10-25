@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,17 +14,19 @@ import (
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentfile"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentpreview"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/modelaccess"
-	"github.com/kaimahi-agents/kaimahi/internal/kmx/modelaccess/copilot"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/runtime"
 )
 
 func TestLocalFileRunnerJournaledAppSnapshot(t *testing.T) {
-	home := t.TempDir()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(base, "state")
 	t.Setenv("KMX_HOME", home)
 	runner := NewLocalFileRunner()
-	entries, err := os.ReadDir(home)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("constructor performed IO: %v / %v", entries, err)
+	if _, err := os.Lstat(home); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("constructor performed IO: %v", err)
 	}
 	opt := directOptions(t, "fake", true)
 	opt.Operation = "run"
@@ -62,7 +63,12 @@ func TestLocalFileRunnerJournaledAppSnapshot(t *testing.T) {
 func TestLocalFileRunnerNativeJudgeExactLocalEndpoint(t *testing.T) {
 	for _, path := range []string{"", "/v1", "/custom/"} {
 		t.Run(path, func(t *testing.T) {
-			t.Setenv("KMX_HOME", t.TempDir())
+			base, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			home := filepath.Join(base, "state")
+			t.Setenv("KMX_HOME", home)
 			sends, judgeSends := 0, 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				sends++
@@ -91,49 +97,13 @@ func TestLocalFileRunnerNativeJudgeExactLocalEndpoint(t *testing.T) {
 	}
 }
 
-func TestLocalFileRunnerCopilotEitherRouteUsesDirect(t *testing.T) {
-	for _, judgeOnly := range []bool{false, true} {
-		t.Run(fmt.Sprint(judgeOnly), func(t *testing.T) {
-			t.Setenv("KMX_HOME", t.TempDir())
-			provider := &previewCopilotAccess{t: t}
-			wrapper := NewLocalFileRunner().(*localFileRunner)
-			wrapper.direct = &directFileRunner{copilot: provider}
-			opt := directOptions(t, "gpt-test", true)
-			route := copilotPreviewRoute()
-			opt.Route = &route
-			if judgeOnly {
-				opt = directOptions(t, "fake", true)
-				data, err := os.ReadFile(opt.File)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(opt.File, []byte(strings.ReplaceAll(string(data), "judgeModel: fake", "judgeModel: gpt-test")), 0600); err != nil {
-					t.Fatal(err)
-				}
-				opt.JudgeRoute = &route
-			}
-			result, err := (&App{FileRunner: wrapper}).PreviewAgentFile(t.Context(), opt)
-			if err != nil || !result.FullPass || result.Runner != "preview runner (no journal)" || result.Retention.Status != "not_requested" {
-				t.Fatalf("fallback mislabeled: %+v / %v", result, err)
-			}
-			want := 4
-			if judgeOnly {
-				want = 2
-			}
-			if provider.sends != want {
-				t.Fatalf("wrong direct sample count: %d", provider.sends)
-			}
-			provider.clientErr = copilot.ErrAuthRevoked
-			result, err = (&App{FileRunner: wrapper}).PreviewAgentFile(t.Context(), opt)
-			if err == nil || result.ReasonCode != "copilot_auth_revoked" {
-				t.Fatalf("typed Copilot error lost: %+v / %v", result, err)
-			}
-		})
-	}
-}
-
 func TestLocalFileRunnerJudgeProgressFailureStopsSamples(t *testing.T) {
-	t.Setenv("KMX_HOME", t.TempDir())
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(base, "state")
+	t.Setenv("KMX_HOME", home)
 	sends := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sends++
@@ -155,7 +125,12 @@ func TestLocalFileRunnerJudgeProgressFailureStopsSamples(t *testing.T) {
 }
 
 func TestLocalFileRunnerZeroExamplesAdHoc(t *testing.T) {
-	t.Setenv("KMX_HOME", t.TempDir())
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(base, "state")
+	t.Setenv("KMX_HOME", home)
 	opt := directOptions(t, "fake", false)
 	zeroPreviewFile(t, opt.File)
 	opt.Operation, opt.ShowContent = "run", true

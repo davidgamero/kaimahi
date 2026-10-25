@@ -20,7 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       kagent_changed: ${{ steps.changes.outputs.kagent_changed }}
-      orka_required: ${{ steps.changes.outputs.orka_required }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -63,7 +62,7 @@ jobs:
           path: kmx-app-test.json
           retention-days: 3
 
-  windows-read-foundation:
+  windows-day-zero-foundation:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -76,18 +75,38 @@ jobs:
       - name: Build isolated user-owner test launcher
         shell: pwsh
         run: go build -trimpath -o "$env:RUNNER_TEMP\kmx-windows-tests.exe" ./scripts/ci/windows-tests
-      - name: Native checked filesystem, private mutation, and state tests
+      - name: Native filesystem, state, preview, and retained diagnostics
         shell: pwsh
         run: |
           & "$env:RUNNER_TEMP\kmx-windows-tests.exe" go test -race -count=1 -timeout=600s -v ./scripts/ci/windows-tests ./internal/kmx/fileaccess
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & "$env:RUNNER_TEMP\kmx-windows-tests.exe" go test -race -count=1 -timeout=600s -v `
-            -run '^(TestStateDirUsesPortableOverrideAndNativeDefault|TestWindowsStateAccessUsesLocalAppDataAndSeparatesCreation|TestWindowsStateAccessRefusesUnsafeRootWithoutRepair)$' `
+            -run '^(TestStateDirUsesPortableOverrideAndNativeDefault|TestWindowsStateAccessUsesLocalAppDataAndSeparatesCreation|TestWindowsStateAccessRefusesUnsafeRootWithoutRepair|TestPrepareLocalPreviewJournalDirCreatesPrivateChain)$' `
             ./internal/kmx/config
-          exit $LASTEXITCODE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $previewTests = @('TestFakeInstructionRegressionFailsThenFixes','TestInspectReplaysWithoutModelCall','TestJournalRetentionAndClear','TestJournalLockCleanupFailureVetoesCompletion','TestClearDirectorySyncFailureReportsUncertainty','TestWindowsJournalFamilyIsPrivateAndReplayable','TestWindowsInterruptedJournalFamilyClearRecovers')
+          $output = & "$env:RUNNER_TEMP\kmx-windows-tests.exe" go test -race -count=1 -timeout=600s -v `
+            -run ('^(' + ($previewTests -join '|') + ')$') ./internal/kmx/localpreview 2>&1
+          $status = $LASTEXITCODE
+          $output | Write-Output
+          if ($status -ne 0) { exit $status }
+          if ($output -match '--- SKIP:') { Write-Error 'a selected localpreview test skipped'; exit 1 }
+          foreach ($test in $previewTests) {
+            if (-not ($output -match ("--- PASS: " + [regex]::Escape($test) + " \("))) { Write-Error "$test did not pass"; exit 1 }
+          }
+          $appTests = @('TestLocalFileRunnerJournaledAppSnapshot','TestSuiteFailureStorePublicationUncertainty','TestSuiteFailureStoreUnresolvedVisibilityKeepsDiagnosticID','TestSuiteFailureStoreOwnPairVisibleUntilWholeClear','TestSuiteFailureStoreAtomicErrors','TestFileFailureRetentionExplainRevisionAndIsolation','TestFileFailureRetentionDoesNotChangeOutcome','TestFileFailureRetentionKeepsFrozenSubjectAfterParentReplacement','TestFileFailureStoreUnresolvedVisibilityKeepsDiagnosticID','TestFileFailureStoreInterruptedWriteAndScopedClear','TestFileFailureStoreLeavesWorkspaceV1BytesCompatible','TestFileFailureStoreRejectsContradictoryRecords','TestWindowsSuiteFailureStoreLifecycle','TestWindowsSuiteFailureWorkspaceCaseAliasesSharePartition','TestWindowsFileFailureStoreLifecycleAndCaseAliases')
+          $output = & "$env:RUNNER_TEMP\kmx-windows-tests.exe" go test -race -count=1 -timeout=600s -v `
+            -run ('^(' + ($appTests -join '|') + ')$') ./internal/kmx/app 2>&1
+          $status = $LASTEXITCODE
+          $output | Write-Output
+          if ($status -ne 0) { exit $status }
+          if ($output -match '--- SKIP:') { Write-Error 'a selected App test skipped'; exit 1 }
+          foreach ($test in $appTests) {
+            if (-not ($output -match ("--- PASS: " + [regex]::Escape($test) + " \("))) { Write-Error "$test did not pass"; exit 1 }
+          }
       - name: Windows amd64 package vet
         shell: pwsh
-        run: go vet ./internal/kmx/fileaccess ./internal/kmx/config ./scripts/ci/windows-tests
+        run: go vet ./internal/kmx/fileaccess ./internal/kmx/config ./internal/kmx/localpreview ./internal/kmx/app ./scripts/ci/windows-tests
       - name: Windows arm64 compile and vet (not native execution)
         shell: pwsh
         env:
@@ -99,14 +118,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go test -c -o "$env:RUNNER_TEMP\config-arm64.test.exe" ./internal/kmx/config
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -c -o "$env:RUNNER_TEMP\localpreview-arm64.test.exe" ./internal/kmx/localpreview
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -c -o "$env:RUNNER_TEMP\app-arm64.test.exe" ./internal/kmx/app
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go test -c -o "$env:RUNNER_TEMP\windows-tests-arm64.test.exe" ./scripts/ci/windows-tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go vet ./internal/kmx/fileaccess ./internal/kmx/config ./scripts/ci/windows-tests
+          go vet ./internal/kmx/fileaccess ./internal/kmx/config ./internal/kmx/localpreview ./internal/kmx/app ./scripts/ci/windows-tests
           exit $LASTEXITCODE
 
   hygiene:
     runs-on: ubuntu-latest
-    needs: [app-tests, windows-read-foundation]
+    needs: [app-tests, windows-day-zero-foundation]
     if: always()
     steps:
       - uses: actions/checkout@v4
@@ -241,7 +264,7 @@ jobs:
           python3 scripts/test_suite_native_lift.py
           python3 scripts/test_orka_native_reference.py
           python3 scripts/test_suite_kagent.py
-      - name: Orka routing and dependency boundaries
+      - name: Orka qualification and dependency boundaries
         run: |
           python3 scripts/test_orka_routing.py
           python3 scripts/test_orka_callers.py
@@ -352,9 +375,13 @@ jobs:
               print("release.yml must upload the same checked assets for dry runs and native qualification")
               sys.exit(1)
           publish = wf["jobs"].get("publish", {})
-          if (set(publish.get("needs", [])) != {"release", "plugin-install"}
+          if (set(wf["jobs"]) != {"release", "release-contracts", "plugin-install", "publish"}
+                  or "needs" in wf["jobs"]["release"] or "if" in wf["jobs"]["release"]):
+              print("release.yml must build immediately without cluster runtime qualification")
+              sys.exit(1)
+          if (set(publish.get("needs", [])) != {"release", "plugin-install", "release-contracts"}
                   or publish.get("if") != "needs.release.outputs.dry_run == 'false'"):
-              print("release.yml must wait for native install checks and publish only outside dry runs")
+              print("release.yml must wait for native install checks and hermetic contracts and publish only outside dry runs")
               sys.exit(1)
           if 'scripts/homebrew-formula.py "$VERSION" dist/checksums.txt' not in release_text:
               print("release.yml must reject an incomplete or unexpected checksum manifest before publication")
@@ -449,7 +476,7 @@ jobs:
       - name: AX preview activity projection tests
         run: PYTHONDONTWRITEBYTECODE=1 PYTHONWARNINGS=error python3 -m unittest discover -s ax-harness -p 'test_activity.py' -v
       # The native Orka HTTP Tool's own allow/deny pair, proved keyless and
-      # clusterless: the e2e-orka-runtime shard proves the CLUSTER refuses
+      # clusterless: the nightly/manual Orka worker proves the CLUSTER refuses
       # (RBAC); this proves the SERVER refuses before a request is ever
       # made, over every pull request rather than only when that shard
       # runs. Mocked HTTP only — no live Kubernetes API is reached.
@@ -627,9 +654,9 @@ jobs:
           print("kmx-clone-free: bare `kmx local up` for Orka, its result account unmade by hand, "
                 "no retired command anywhere in the job")
           EOF
-      # Runtime routing invokes a fixed full Orka worker; other docs guards
-      # still protect steps that would otherwise run without their cluster.
-      # Validate both forms and reject delegation or conditional proof gaps.
+      # Nightly/manual qualification invokes the fixed full Orka worker.
+      # CI must not call it; retained shards keep their existing docs guards.
+      # Validate the full worker and reject conditional proof gaps.
       #
       # The required check aggregates the shards, so a shard that nothing needs would run,
       # fail, and still leave `e2e-hello-world` green. The aggregator must
@@ -642,6 +669,21 @@ jobs:
           import sys, yaml
           wf = yaml.safe_load(open(".github/workflows/ci.yml"))
           jobs = wf["jobs"]
+          manual = yaml.safe_load(open(".github/workflows/runtime-qualification.yml"))
+          runtime_jobs = {runtime + "-qualification": {
+              "permissions": {"contents": "read"},
+              "uses": "./.github/workflows/" + runtime + "-runtime.yml"}
+              for runtime in ("orka", "kagent")}
+          if (manual.get("on", manual.get(True)) != {"workflow_dispatch": None}
+                  or manual.get("permissions") != {"contents": "read"}
+                  or manual.get("jobs") != runtime_jobs):
+              print("on-demand runtime qualification must keep both unchanged read-only callers"); sys.exit(1)
+          for runtime in ("orka", "kagent"):
+              worker = yaml.safe_load(open(".github/workflows/" + runtime + "-runtime.yml"))
+              checkout = next(s for s in worker["jobs"]["qualify"]["steps"]
+                              if str(s.get("uses", "")).startswith("actions/checkout@"))
+              if checkout.get("with", {}).get("ref") != "${" + "{ github.sha }" + "}":
+                  print("runtime qualification must check out the exact dispatched commit"); sys.exit(1)
           required = "e2e-hello-world"
           shards = sorted(j for j in jobs if j.startswith("e2e-") and j != required)
           if not shards:
@@ -656,31 +698,24 @@ jobs:
                     "failure() && steps.changes.outputs.docs_only != 'true'",
                     "always() && steps.changes.outputs.docs_only != 'true'"}
           total = 0
+          if ("e2e-orka-runtime" in jobs or any(
+                  j.get("uses", "").endswith("/orka-runtime.yml") for j in jobs.values())):
+              print("Orka runtime qualification belongs only in nightly and on-demand workflows"); sys.exit(1)
+          full = yaml.safe_load(open(".github/workflows/orka-runtime.yml"))
+          proof = full["jobs"]["qualify"]
+          steps = proof["steps"]
+          if ("workflow_call" not in full.get("on", full.get(True, {})) or "if" in proof or
+                  proof.get("permissions") != {"contents": "read"} or proof.get("timeout-minutes") != 45):
+              print("the reusable Orka worker must always execute the full read-only proof"); sys.exit(1)
+          if any(str(s.get("if", "")).strip() not in {"", "always()", "failure()"} for s in steps):
+              print("a reusable Orka step can skip required live proof"); sys.exit(1)
+          needed = {"Native suite — qualify evaluation, exact transfer and CLI lift",
+                    "Pinned update preconditions — fresh RV and pair reservation",
+                    "Orka — Agent and Task return an exact local-model answer",
+                    "Native Orka Tool — Task invokes read-only health Tool", "down"}
+          if not needed.issubset({s.get("name") for s in steps}):
+              print("the reusable Orka worker is missing required proof steps"); sys.exit(1)
           for job in shards + ["kmx-clone-free"]:
-              if job == "e2e-orka-runtime":
-                  caller = jobs[job]
-                  routed = "${" + "{ !cancelled() && github.event_name != 'schedule' && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && (github.event_name != 'pull_request' || needs.classify-change.outputs.orka_required != 'false') }" + "}"
-                  if (caller.get("uses") != "./.github/workflows/orka-runtime.yml" or
-                          caller.get("needs") != ["classify-change"] or caller.get("if") != routed or
-                          caller.get("permissions") != {"contents": "read"} or "secrets" in caller):
-                      print("Orka must delegate read-only with fail-closed path routing"); sys.exit(1)
-                  full = yaml.safe_load(open(".github/workflows/orka-runtime.yml"))
-                  triggers = full.get("on", full.get(True, {}))
-                  proof = full["jobs"]["qualify"]
-                  steps = proof["steps"]
-                  if ("workflow_call" not in triggers or "if" in proof or
-                          proof.get("permissions") != {"contents": "read"} or proof.get("timeout-minutes") != 45):
-                      print("the reusable Orka worker must always execute the full read-only proof"); sys.exit(1)
-                  if any(str(s.get("if", "")).strip() not in {"", "always()", "failure()"} for s in steps):
-                      print("a reusable Orka step can skip required live proof"); sys.exit(1)
-                  needed = {"Native suite — qualify evaluation, exact transfer and CLI lift",
-                            "Pinned update preconditions — fresh RV and pair reservation",
-                            "Orka — Agent and Task return an exact local-model answer",
-                            "Native Orka Tool — Task invokes read-only health Tool", "down"}
-                  if not needed.issubset({s.get("name") for s in steps}):
-                      print("the reusable Orka worker is missing required proof steps"); sys.exit(1)
-                  total += len(steps)
-                  continue
               if job == "e2e-kagent-lift":
                   caller = jobs[job]
                   routed = "${" + "{ !cancelled() && github.event_name != 'pull_request' && !(github.event_name == 'push' && github.ref == 'refs/heads/main') }" + "}"
@@ -944,12 +979,6 @@ jobs:
           grep -q -- '--- PASS: TestChatRefusesTheRetiredKagentRuntimeWithoutReachingACluster' retirement.out
           grep -q -- '--- PASS: TestLegacyAgentEditIsRemovedBeforeConfiguration' retirement.out
           ! grep -q -- '--- SKIP:' retirement.out
-      - name: AgentSuite incremental artifact diff end to end
-        run: |
-          set -euo pipefail
-          go test ./cmd/kmx -run '^TestSuiteDiffArtifactsEndToEnd$' -count=1 -v | tee suite-diff-e2e.out
-          grep -q -- '--- PASS: TestSuiteDiffArtifactsEndToEnd' suite-diff-e2e.out
-          ! grep -q -- '--- SKIP:' suite-diff-e2e.out
       # Preserve the required check's name and collect other hygiene diagnostics
       # even if a dependency fails. Missing, skipped and cancelled work refuses.
       - name: Every required hygiene dependency succeeded
@@ -960,7 +989,7 @@ jobs:
           python3 - <<'EOF'
           import json, os, sys
           needs = json.loads(os.environ["SHARDS"])
-          expected = {"app-tests", "windows-read-foundation"}
+          expected = {"app-tests", "windows-day-zero-foundation"}
           if set(needs) != expected:
               print("missing or unexpected hygiene dependency — refusing success"); sys.exit(1)
           bad = {}
@@ -1325,19 +1354,6 @@ jobs:
         id: docs-only-summary
         if: steps.changes.outputs.docs_only == 'true'
         run: echo "every changed file is documentation; no cluster booted"
-  # Live proof for the deliberately narrow alternate-runtime boundary. The two
-  # official charts below are installed by CI as an external precondition;
-  # KMX receives a ready exact-v0.10.2 cluster and is tested only for create.
-  # Fail stubs plus KMX_TOOLCHAIN=off make any attempted Helm or kagent CLI use
-  # by the command fail. No hosted credential is used: the model is a hardened,
-  # deterministic in-cluster OpenAI chat-completions fixture.
-  e2e-orka-runtime:
-    needs: [classify-change]
-    if: ${{ !cancelled() && github.event_name != 'schedule' && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && (github.event_name != 'pull_request' || needs.classify-change.outputs.orka_required != 'false') }}
-    permissions:
-      contents: read
-    uses: ./.github/workflows/orka-runtime.yml
-
   e2e-orka-helm:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -1483,7 +1499,7 @@ jobs:
       - name: Offline kagent Go contracts — not live qualification
         run: go test ./internal/kmx/app -run '^(TestKagent|TestSuiteKagent|TestSuiteFailureKagent|TestReleaseLiftKagent|TestDestinationStatusKagent)' -skip '^TestLive' -count=1 -timeout=300s
       - name: State the coverage boundary
-        run: echo "Hermetic kagent contracts passed; not live qualification. Live A2A, full evaluation, evaluated push and suite lift run nightly, manually and before release."
+        run: echo "Hermetic kagent contracts passed; not live qualification. Live A2A, full evaluation, evaluated push and suite lift run nightly and on demand before runtime-related tags."
 
   e2e-kagent-lift:
     needs: [classify-change]
@@ -1494,7 +1510,7 @@ jobs:
 
   e2e-hello-world:
     runs-on: ubuntu-latest
-    needs: [classify-change, kagent-contract, e2e-kagent-lift, e2e-orka-runtime, e2e-orka-helm, e2e-quickstart]
+    needs: [classify-change, kagent-contract, e2e-kagent-lift, e2e-orka-helm, e2e-quickstart]
     if: always()
     steps:
       - name: Every e2e shard succeeded
@@ -1506,13 +1522,12 @@ jobs:
           python3 - <<'EOF'
           import json, os, sys
           needs = json.loads(os.environ["SHARDS"])
-          expected = {"kagent-contract", "e2e-kagent-lift", "e2e-orka-runtime", "e2e-orka-helm", "e2e-quickstart"}
+          expected = {"kagent-contract", "e2e-kagent-lift", "e2e-orka-helm", "e2e-quickstart"}
           classifier = needs.pop("classify-change", {})
           if classifier.get("result") != "success":
               print("classification did not succeed — refusing to report success"); sys.exit(1)
           if set(needs) != expected:
               print("missing or unexpected e2e shard dependencies — refusing success"); sys.exit(1)
-          orka_required = classifier.get("outputs", {}).get("orka_required", "")
           event = os.environ["EVENT"]
           ref = os.environ["REF"]
           bad = {}
@@ -1520,10 +1535,8 @@ jobs:
               result = outcome.get("result", "unknown")
               print(f"{job}: {result}")
               intended_skip = job == "e2e-kagent-lift" and (event == "pull_request" or (event == "push" and ref == "refs/heads/main"))
-              orka_skip = job == "e2e-orka-runtime" and event == "pull_request" and orka_required == "false"
-              main_skip = job == "e2e-orka-runtime" and event == "push" and ref == "refs/heads/main"
-              scheduled_skip = job in {"e2e-orka-runtime", "e2e-orka-helm", "e2e-quickstart"} and event == "schedule"
-              if result != "success" and not (result == "skipped" and (intended_skip or orka_skip or main_skip or scheduled_skip)):
+              scheduled_skip = job in {"e2e-orka-helm", "e2e-quickstart"} and event == "schedule"
+              if result != "success" and not (result == "skipped" and (intended_skip or scheduled_skip)):
                   bad[job] = result
           if bad:
               print("e2e shards did not succeed:", bad); sys.exit(1)

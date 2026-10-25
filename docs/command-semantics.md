@@ -68,7 +68,7 @@ Deploy stays create-only, including its narrow exact evaluated reuse. Explicit
 `--update` permits only eligible retained Orka updates or rollback with original
 passing evidence; kagent refuses updates. No enrollment, repair or automatic
 rollback. See [update and rollback](suite-workspace.md#update-and-rollback). `task result` and
-`suite push DIRECTORY REFERENCE` and `suite diff/pull/validate` retain their
+`suite push DIRECTORY REFERENCE` and `suite pull/validate` retain their
 contracts. Experimental `suite build --suite-ref REF@DIGEST` adds verified
 published-source selection. `suite push-image ARCHIVE REFERENCE` publishes the
 inspected image/attestation graph, with explicit `--force` for tag replacement;
@@ -88,9 +88,13 @@ Canonical `run FILE` / `test FILE` dispatch to a cluster-independent App adapter
 and the embedded-runner interface. Run optionally adds a separate ad-hoc input;
 both check saved ordered examples. `--case ID` is always partial. Versioned
 payload-free text/JSON results are local preview, never native evidence. The
-CLI uses a temporary direct `preview runner (no journal)` until the embedded
-runner is wired. It makes one completion per input/example plus one call per
-llmJudge assertion, without retries, fallback, Sessions or native judge evidence. Existing live `run --agent`, full-workspace Test,
+CLI uses embedded Agent Sessions for fake, local and Copilot models, with one
+Session per agent turn and two independent judge samples per llmJudge assertion.
+The invocation-owned cleartext journal retains instructions, inputs, answers,
+judge payloads and reasoning under the existing retention and clearing policy.
+Copilot content checks stay provider-owned and run before journaling. Replay
+makes zero model calls and does not create native evidence. There are no
+inference retries or fallback. Existing live `run --agent`, full-workspace Test,
 workspace Explain and hidden legacy Eval remain unchanged. See
 [agent-file preview](kmx.md#agent-file-local-preview-unreleased-integration).
 
@@ -226,7 +230,15 @@ and 128 KiB serialized records with deterministic truncation. Offline `test expl
 [failure-id] [--workspace DIR]` lists/shows records on stdout; --show-content opts
 into bounded content. --clear removes one ID, or all only with explicit
 --workspace; it conflicts with --show-content and never clears passing/candidate
-state or runtime history. Retention errors warn without changing eval outcomes. Authored `llmJudge`
+state or runtime history. Completed non-pass `test FILE` outcomes use the same
+checked store in separate per-file partitions, with a closed file-record schema
+that keeps exact source revision, selected agent/judge routes and assertion
+identity/results. `test explain --file FILE` is offline, marks records for older
+bytes historical, and clears only that resolved file subject. `--file` and
+`--workspace` are mutually exclusive. Run, passing Test, cancellation, execution
+failure and journal-finalization failure do not retain file diagnostics. The
+Sessions journal remains transcript/replay data without verdict authority.
+Retention errors never change the completed file verdict or workspace eval outcome. Authored `llmJudge`
 requires explicit `--judge-base-url`, optional `--judge-key-env` and authored
 model/version/threshold. Two independent samples must agree on the threshold
 side; errors/splits stay unknown. Judges use the fixed modern Chat Completions

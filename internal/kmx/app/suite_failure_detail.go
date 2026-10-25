@@ -94,9 +94,11 @@ type suiteFailureAssertion struct {
 var suiteDiagnosticHeader = regexp.MustCompile("(?im)^HTTP/[0-9.]+[ \\t]+[0-9]{3}\\b|^[ \\t]*[!#$%&'*+.^_`|~0-9A-Za-z-]+:[ \\t]*[^\\r\\n]*\\r?\\n[ \\t]*[!#$%&'*+.^_`|~0-9A-Za-z-]+:[ \\t]*")
 var suiteDiagnosticSensitiveHeader = regexp.MustCompile(`(?i)\b(authorization|proxy-authorization|cookie|set-cookie|api[-_]?key|x-[a-z0-9-]+|content-[a-z0-9-]+|user-agent|host|connection|transfer-encoding|www-authenticate)[ \t]*:`)
 
-func suiteDiagnosticText(raw string, limit int, keys []string) (string, bool) {
+// suiteDiagnosticViews is shared with provider-owned preview preflight so the
+// exact display normalization cannot assemble a credential after it was checked.
+func suiteDiagnosticViews(raw string, limit int) ([]string, string, bool) {
 	if !utf8.ValidString(raw) {
-		return "", false
+		return nil, "", false
 	}
 	safe := strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) && r != '\n' && r != '\t' {
@@ -120,6 +122,14 @@ func suiteDiagnosticText(raw string, limit int, keys []string) (string, bool) {
 	// A cut can create a new credential/header boundary absent in the full field.
 	if len(clipped) < len(safe) {
 		checks = append(checks, clipped, stripControls(clipped))
+	}
+	return checks, clipped, true
+}
+
+func suiteDiagnosticText(raw string, limit int, keys []string) (string, bool) {
+	checks, clipped, ok := suiteDiagnosticViews(raw, limit)
+	if !ok {
+		return "", false
 	}
 	for _, s := range checks {
 		if secretshapes.Match(s) != nil || suiteDiagnosticHeader.MatchString(s) || suiteDiagnosticSensitiveHeader.MatchString(s) {
@@ -212,6 +222,10 @@ func suiteHTTPDiagnostic(source string, status int) error {
 }
 
 func captureSuiteFailure(frame suitePassingInventoryCase, observation suitePassingObservation, answer string, notes map[string]suiteJudgeDiagnostic, cause error, keys ...string) *suiteFailureDetail {
+	return captureSuiteFailureWithReasons(frame, observation, answer, notes, true, cause, keys...)
+}
+
+func captureSuiteFailureWithReasons(frame suitePassingInventoryCase, observation suitePassingObservation, answer string, notes map[string]suiteJudgeDiagnostic, retainReasons bool, cause error, keys ...string) *suiteFailureDetail {
 	verdict := suiteRunVerdict(observation.Assertions)
 	if cause == nil && verdict == agentruntime.EvaluationPass && suiteRunComplete(observation, frame) {
 		return nil
@@ -288,6 +302,9 @@ func captureSuiteFailure(frame suitePassingInventoryCase, observation suitePassi
 		if note, ok := notes[row.ID]; ok {
 			a.Class = note.Class
 			for _, reason := range note.Reasons {
+				if !retainReasons {
+					break
+				}
 				if !available {
 					break
 				}

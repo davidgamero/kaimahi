@@ -51,13 +51,19 @@ no Azure account or model key is needed.
 
 Use a dedicated test environment. See [other install methods, prerequisites and cleanup](docs/getting-started.md).
 
-## Agent files in Windows Copilot
+## Agent files in Copilot
+
+On macOS, use the [plain Copilot plugin](plugins/copilot/README.md#install-on-macos):
+install the rc.2 darwin binary, then the plugin. macOS CI checks installation and
+the offline fake-model loop, not a Copilot model or the desktop app.
+
+### Windows through WSL
 
 For the Markdown-agent inner loop without a Kubernetes cluster, use the
-[WSL Copilot plugin](plugins/copilot-wsl/README.md). In WSL, from this checkout:
+[WSL Copilot plugin](plugins/copilot-wsl/README.md). Install v0.9.0-rc.2 in WSL:
 
 ```sh
-go build -o bin/kmx ./cmd/kmx && sudo install -m 0755 bin/kmx /usr/local/bin/kmx
+curl -fsSL https://raw.githubusercontent.com/kaimahi-agents/kaimahi/v0.9.0-rc.2/install.sh | sudo sh -s -- --version=v0.9.0-rc.2 --bin-dir=/usr/local/bin
 ```
 
 Then, in a Windows terminal:
@@ -67,8 +73,10 @@ copilot plugin install kaimahi-agents/kaimahi:plugins/copilot-wsl
 ```
 
 Ask Copilot to create an agent through kmx and open its canvas. No folder or model
-is selected at install time. The agent file names the model; canvas edits save
-back to that file, and Enter tests it. This preview is not deployment evidence.
+is selected at install time. Choose a model in the canvas or use the agent file's
+model; Enter saves edits and tests it. This preview is not deployment evidence.
+The Copilot CLI warns that direct plugin installs are deprecated; a marketplace
+install will come later.
 
 ## Go deeper
 

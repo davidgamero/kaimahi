@@ -53,6 +53,10 @@ func ExportRunProfile(filename string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Offline export preserves authored choices, not preview-time defaults.
+	if agent.Model == "" {
+		return nil, refuse(filename, 1, 1, "Model.Preferred", "add nonblank required fields in the canonical charter format")
+	}
 	// A profile hands examples to a separate runtime; zero tests is no evidence.
 	if len(agent.Examples) == 0 {
 		loc := agent.Locations["Examples"]
@@ -66,6 +70,11 @@ func ExportRunProfile(filename string) ([]byte, error) {
 		Examples:     make([]runProfileExample, 0, len(agent.Examples)),
 	}
 	for _, example := range agent.Examples {
+		// Export cannot choose an execution model; preserve strict refusal for
+		// unbound judge definitions rather than inventing an authored pin.
+		if runtime.ValidateEvaluationAssertions(example.Assertions) != nil {
+			return nil, refuse(filename, example.Location.Line, example.Location.Column, "Examples", "pin judgeModel before exporting a run profile")
+		}
 		definition := runProfileExampleDefinition{example.ID, example.Input, example.Assertions}
 		preimage, err := json.Marshal(definition)
 		if err != nil {

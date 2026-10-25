@@ -1,8 +1,13 @@
 // Package mcp adapts local agent-file operations to stdio MCP.
 // File access is agent-only, optionally root-bound; execution uses shared App snapshots.
+// WSL resolves Windows drive-absolute inputs through existing /mnt drives before
+// ordinary absolute-path handling; responses retain the requested path identity.
 // Unbound non-fake previews default to Copilot's fixed endpoint and the authored
 // model; explicit routes, fake previews and legacy root-bound behavior are unchanged.
+// Test requests with a progress token observe safe provisional per-case progress
+// in case order; notification delivery never changes the final shared App result.
 // Tool requests must not choose model endpoints or substitute a runner.
+// Human-readable tool titles leave protocol names and argument schemas unchanged.
 // The canonical resource includes an exact, revision-bound authoring snapshot.
 // Optional failure-only excerpts exclude passing and unknown answers from safe
 // results and observations; broader disclosure remains explicitly requested.
@@ -14,6 +19,10 @@
 // Canonical Edit optionally retains bounded private source preimages. Retention
 // failure never blocks a valid save and is explicit in its successful result.
 // Source-only versions are read-only resources; restore uses the same Edit CAS.
+// Linux creation uses no-replace rename, then hard-link publication when needed.
+// Mounts lacking both use exclusive creation and synced copy without atomic visibility.
+// Canonical Test passes its resolved target to App for subject-scoped failure
+// retention; requested display paths never grant storage authority.
 package mcp
 
 import (
@@ -57,7 +66,7 @@ func (e *Error) Error() string {
 	case "io_failed":
 		return "io_failed: could not read or stage the selected source; check access and available space"
 	case "publication_failed":
-		return "publication_failed: same-directory atomic rename failed; target was not published"
+		return "publication_failed: file publication failed"
 	case "cancelled":
 		return "cancelled: operation stopped before publication"
 	case "deadline_exceeded":
@@ -144,6 +153,10 @@ func revision(b []byte) string { return fmt.Sprintf("sha256:%x", sha256.Sum256(b
 // root or absolute when unbound. Missing suffixes support Create; an existing
 // dangling link never becomes one. IO uses the retained root/parent descriptor.
 func (f *Files) rootRelative(p string) (string, error) {
+	p, err := hostAgentPath(p)
+	if err != nil {
+		return "", err
+	}
 	if f.root == nil {
 		if !agentPath(p) {
 			return "", refusal("unsafe_path")

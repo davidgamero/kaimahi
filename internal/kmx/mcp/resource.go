@@ -52,7 +52,11 @@ func agentResourcePath(uri string) (string, error) {
 		return "", refusal("unsafe_path")
 	}
 	p, err := url.PathUnescape(strings.TrimPrefix(uri, prefix))
-	if err != nil || !agentPath(p) {
+	if err != nil {
+		return "", refusal("unsafe_path")
+	}
+	target, err := hostAgentPath(p)
+	if err != nil || !agentPath(target) {
 		return "", refusal("unsafe_path")
 	}
 	return p, nil
@@ -87,8 +91,8 @@ func AddAgentResource(server *sdk.Server, files *Files) {
 		observation := files.latest
 		if observation.path == target && observation.result != nil && observation.result.File.Revision != "" {
 			view.Latest.Status = "stale"
-			model := observation.result.ModelRoute.Model
-			if observation.result.File.Revision == agent.Revision && (model == "" || model == agent.Model) {
+			// Runtime model choices do not change the authored source revision.
+			if observation.result.File.Revision == agent.Revision {
 				view.Latest = AgentViewLatest{Status: "current", Result: observation.result}
 			}
 		}

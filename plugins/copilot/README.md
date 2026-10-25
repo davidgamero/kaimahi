@@ -1,15 +1,63 @@
-# Native Copilot plugin bundles
+# kmx in macOS Copilot
 
-For Windows Copilot, use the [plain WSL plugin](../copilot-wsl/README.md).
-It installs from the repository and uses `/usr/local/bin/kmx` without a bundled
-engine or folder/model configuration.
+Use this plugin on **macOS** (also usable with a Linux kmx on PATH). On
+**Windows**, use the [WSL plugin](../copilot-wsl/README.md) instead. Both contain
+skills, a canvas and MCP configuration, not an engine or a fixed working folder.
 
-This directory contains the legacy root-bound native bundle tooling and tests.
-Shared skills and canvas runtime assets live in `plugins/copilot-wsl`; the native
-packager copies that same source, not a second implementation. Native bundles
-are generated and signed by the release workflow, not committed here. Canvas
-actions use existing MCP operations, not a downloader, file writer or second runner.
-The source directory deliberately has no `bin/kmx`; do not install it directly.
+## Install on macOS
+
+With Copilot installed, run these two commands in a Mac terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/kaimahi-agents/kaimahi/v0.9.0-rc.2/install.sh | sudo sh -s -- --version=v0.9.0-rc.2 --bin-dir=/usr/local/bin
+copilot plugin install kaimahi-agents/kaimahi:plugins/copilot
+```
+
+The first command selects `kmx-darwin-arm64` on Apple Silicon and
+`kmx-darwin-amd64` on Intel, downloads it over HTTPS, checks its published SHA256
+and installs it at `/usr/local/bin/kmx`. It uses the same binary installer as WSL,
+not a plugin setup script. It does not verify the separate signature bundle.
+The Homebrew tap tracks final releases, not release candidates; use this binary
+for rc.2. Homebrew is the install path for final v0.9.0.
+
+The plugin starts `kmx mcp` from PATH; `/usr/local/bin` must be on Copilot's PATH.
+No root, model or binary is configured inside the plugin. The MCP schema has no
+per-OS command selector, so Windows keeps its separate WSL manifest. Both
+plugins have the name `kmx-agent-builder`; installing one replaces the other.
+Direct repository installs currently work but Copilot warns that they are
+deprecated; a marketplace install will come later.
+
+Ask Copilot to create an agent through kmx and open its canvas. Give it a full
+Mac path when the file is outside the current directory. Add or edit tests;
+Enter saves and runs them. Change the prompt and press Enter again to see the
+results change. The runtime model is picker override → authored model → current
+chat model (when available) → `gpt-5.6-terra`; existing `gh` sign-in supplies credentials without an install-time
+login step. An unknown model fails without silently switching models.
+
+## Shared assets and verification
+
+The skills and canvas have one source in `plugins/copilot-wsl`. This directory
+links to those sources; Copilot copies them into a self-contained installed
+cache. No second canvas implementation or bundled kmx is maintained here.
+The existing Python developer tools and legacy templates below are inert files
+in the source plugin, not additional extensions or installation steps. Node
+tests live separately under `plugins/tests/copilot`.
+
+The `macos-install` CI job installs the published rc.2 darwin binary, checks its
+SHA256 and exercises the public plugin install command. On PRs, it additionally
+installs the PR's local plugin to verify the new bytes before merge; on main it
+checks the public source's installed contents. It verifies cached assets and
+Create → Test pass → prompt-only Edit → Test fail → restore → Test pass with
+`fake`. **CI does not exercise a Copilot model or the Copilot app.** An
+authenticated app walk on a Mac is still needed before claiming that path works.
+
+## Legacy native bundles
+
+The remaining sections describe the separate root-bound native archive tooling,
+not the two-command repository install above. Native bundles are generated and
+signed by the release workflow. The legacy builder uses
+[native-mcp.json](native-mcp.json); the repository plugin uses [mcp.json](mcp.json).
+Canvas actions use existing MCP operations, not a second runner.
 
 ## Package contract
 
@@ -81,10 +129,13 @@ Real-model route setup is not automated by this packager.
 For manually configured trusted startup, `kmx mcp --root ABSOLUTE_DIR --provider copilot`
 uses existing runtime credentials and an exact listed
 `Model.Preferred`, with a fixed endpoint. This sends instructions/inputs and
-any judge answers/rubrics to Copilot. Startup does not sign in or access credentials;
-If either agent or judge uses Copilot, the whole invocation uses the same direct,
-unjournaled runner as the file CLI and reports `NoJournal`, not an SDK harness.
-Fully journaled Copilot remains follow-up work.
+any judge answers/rubrics to Copilot. Startup does not sign in or access credentials.
+In v0.9.0-rc.2 native bundles, Copilot previews use a direct, unjournaled runner.
+Current main journals tool-free Copilot agent and judge turns on embedded Sessions
+under `<kmx state>/local-preview/journals`, using the cleartext-content retention
+policy above, with one fresh Session per agent turn and judge sample. The provider
+owns pre-journal credential/content checks and captures one invocation-local
+credential snapshot. Neither path uses the Copilot SDK harness.
 
 A public archive cannot contain a user's absolute root. Release archives start
 unconfigured and refuse MCP startup until an operator chooses a root as below.
@@ -173,8 +224,13 @@ full pass. The sticky Tests header filters All / Not passing without reordering.
 Dark/light tokens and the same layout support a 600px panel.
 
 Test and ad-hoc Run use existing same-session MCP tools directly, not chat.
-**Suggest tests** alone asks Copilot for proposals in chat; it does not save them
-or invent canvas suggestions. The host still enforces permissions. The private
+**Suggest tests** gives Copilot the saved source, path and revision for one
+existing revision-checked Edit; it needs no MCP resource-reader tool. It keeps
+the prompt, authored model and existing tests and does not run them. The request status acknowledges the chat
+request, not a completed save. Saved additions appear through the normal canvas
+refresh; unsaved local drafts retain the existing outside-change reconciliation.
+Chat reports what was actually saved. An explicit request for proposals only
+leaves them in chat and says they are not saved. The host still enforces permissions. The private
 asset bridge accepts only declared interactions for its fixed path, with token,
 Host, exact Origin and size checks; it is not a generic executor.
 The visible idle panel observes the same resource for outside changes. With a
@@ -189,13 +245,19 @@ without that evidence, an older result cannot unlock a retry.
 Stop, versions/restore, a new Model validated type, Ask Copilot and All versions
 are not part of this canvas release; no inactive versions clock is shown.
 
-Failed saved-example answers are shown by default as bounded **untrusted
-excerpts**. **Include passing answers** explicitly adds other excerpts.
-The canvas requests `showFailedContent: true`, not implicit `showContent: true`:
-passing and unknown answers stay out of safe results, MCP summaries and resources
-when the checkbox is off. Ad-hoc answers still require `showContent`.
-Fake/local journal retention is unchanged; projection controls do not promise
-that the underlying runner does not journal content.
+Canvas runs explicitly request bounded answer excerpts with `showContent: true`,
+so passing answers are available without a hidden setting. Those excerpts also
+appear in MCP tool summaries, structured results and the latest `kmx://agent/`
+resource, not only the panel. Answers remain inert text; formatting and links
+cannot become controls. Direct MCP clients still opt in to content. Runner journal
+retention is unchanged.
+
+Saved checks are readable lines; click a line to edit it. Each failing check shows
+its own Missing, Found or No match explanation. The input grows with its content.
+Enter saves and runs the selected test; Esc discards its edits. The result pill
+and right-aligned verdict words distinguish current results from dimmed last-run
+results. Tests arrive together when the batch completes; a running indicator does
+not imply per-test progress.
 
 The typed resource remains `kmx://agent/{path}`; encode the entire path as one
 URI component, for example
@@ -209,10 +271,15 @@ details retain the complete path/revision and explicit Copy path with its
 selectable manual fallback; no clipboard permissions change.
 
 Latest results belong only to the current MCP process; a restart has no history.
-Changed revisions withhold old results. No observation means **No current result**.
+Changed revisions withhold old results. An open canvas can keep already observed
+verdicts dimmed for unchanged test definitions across source or model changes;
+new or changed tests do not inherit them. This display-only memory is lost when
+the canvas closes and never becomes a current resource. Without an observation,
+tests say **Not run yet** and the Tests section offers **Run N tests**.
 Windows Copilot app 1.1.30 with a WSL MCP engine demonstrated instruction
 Edit → Test, mixed text/judge results and native rendering using an offline fake
-model. Browser/unit checks cover inline formatting and failure-only disclosure.
+model. Browser/unit checks cover inline formatting, explicit answer disclosure and result
+presentation.
 This is not live hosted-model, clean-machine or every desktop error-state
 qualification. A loopback URL or browser mock alone is not desktop evidence.
 The `/kmx` skill → built-in opener → WSL resource → visible panel path was also
@@ -241,7 +308,11 @@ assertion failures are normal tool results: `isError: false` does not mean pass.
 Preview file.path is a display basename, **not the original Edit target**.
 Boundary refusals have a safe reason code instead of a preview.
 Default tool output omits answers/operands. Explicit `showContent` includes all
-bounded excerpts; optional `showFailedContent` includes only failed saved examples. Retention remains `not_requested`; file-scoped Explain is deferred.
+bounded excerpts; optional `showFailedContent` includes only failed saved examples.
+Completed non-pass Test results may report `retention.status: retained` with
+opaque diagnostic IDs, or `unavailable` when persistence could not be confirmed;
+Run and passing/error/cancelled Test remain `not_requested`. Offline inspection
+is the CLI-only `kmx test explain --file FILE`; no fifth MCP tool is added.
 These results grant no native shipping evidence or Publish/Deploy authority.
 Squad placement alone does not register a team member.
 

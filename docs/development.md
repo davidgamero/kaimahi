@@ -141,13 +141,16 @@ is the repository's explicit cross-platform isolation contract.
 `internal/kmx/fileaccess` has native Linux and Windows amd64 package tests for
 checked reads, security/identity inspection, protected private first creation,
 process-held locks and no-replace file/directory-flush publication. The package
-keeps opaque handles, repairs/adopts nothing and is unwired from operation
-adapters. `internal/kmx/config` separately exposes explicit creating and
-non-creating private state-root resolution; `StateDir` itself remains a pure
-locator. Windows defaults to machine-local `%LOCALAPPDATA%\kmx`. Windows arm64
-is compiled and vetted, not executed. These tests qualify only low-level local
-NTFS primitives, not the guarded Windows CLI; use WSL for the installed command
-until the later enablement phase lands.
+keeps opaque handles, repairs/adopts nothing and reports unresolved publication
+visibility separately from observed absence. `internal/kmx/config` exposes
+explicit creating and non-creating private state-root resolution; `StateDir`
+itself remains a pure locator. The local-preview journal family and retained
+evaluation-failure store consume the same checked foundation, including
+identity-bound clear, interrupted own-pair recovery and independent file/directory
+flush failure behavior. Windows defaults to machine-local `%LOCALAPPDATA%\kmx`.
+Windows arm64 is compiled and vetted, not executed. These native package tests
+qualify local-NTFS day-zero internals, not the guarded Windows CLI or a release
+artifact; use WSL for the installed command until the enablement phase lands.
 
 The hosted Windows test context is established by the test-only
 [`windows-tests` launcher](../scripts/ci/windows-tests/main_windows.go), whose
@@ -318,20 +321,20 @@ Cloud cleanup has different [ownership rules](aks.md#teardown).
 ### What CI proves
 
 The workflow emits `hygiene` and `e2e-hello-world` merge gates. The latter
-fail-closed aggregates four retained shards: `e2e-kagent-lift`,
-`e2e-orka-runtime`, `e2e-orka-helm` and `e2e-quickstart`, plus successful
-classification and the independent `kagent-contract` hermetic check. Only intentional skips are accepted, never failed/cancelled
-shards. Orka runtime proof may skip only an explicitly safe PR or a main push;
-unknown changes and events default to full proof. Required contexts remain
+fail-closed aggregates three retained shards: `e2e-kagent-lift`,
+`e2e-orka-helm` and `e2e-quickstart`, plus successful classification and the
+independent `kagent-contract` hermetic check. Only intentional skips are
+accepted, never failed/cancelled shards. Live Orka runtime qualification runs
+nightly and on demand, never on pull requests or pushes. Required contexts remain
 `hygiene` and `e2e-hello-world`, without a ruleset change.
 
 The read-only [Orka worker](../.github/workflows/orka-runtime.yml) runs the same
 complete proof when invoked, including native evaluation, transfer, promotion,
-and pinned-update checks. It has no internal Markdown shortcut. Unrecognized
-Markdown and live instruction fixtures require qualification; root policy docs
-not explicitly listed also run. Its raw check is `e2e-orka-runtime / qualify`.
-Quickstart, stock Helm and clone-free qualification keep their existing routing;
-not every Orka-bearing job is moved out of PR CI.
+and pinned-update checks. It has no internal Markdown shortcut. The init/caller
+source-boundary guards and their JSON policy/manifest remain mandatory hygiene
+checks; integration detection relies on the full nightly. Quickstart, stock Helm
+and clone-free qualification keep their existing routing; not every Orka-bearing
+job is moved out of PR CI.
 
 [Orka nightly](../.github/workflows/orka-nightly.yml) runs the full main proof
 at 03:23 UTC and supports manual qualification after the workflow lands. That
@@ -341,8 +344,17 @@ maintain one workflow-owned issue assigned to `gambtho`, containing only run lin
 commit and safe status. Current success closes it; older success cannot close a
 newer failure. Manual branch qualification does not alter main health.
 
-Moving main-push runtime proof to nightly trades immediate post-merge detection
-for detection on the next nightly (normally within 24 hours) or before release.
+Release tags qualify the shipped inner loop: binary artifacts, the WSL plugin
+and local previews on embedded Sessions. They do not invoke the cluster runtime
+workers. Both full read-only runtime workers remain available together through
+[on-demand runtime qualification](../.github/workflows/runtime-qualification.yml),
+which checks the exact dispatched commit. Run it before a runtime-related tag;
+see [release qualification](releases.md#release-qualification). Nightly schedules
+are unchanged; PR and push CI never invoke the Orka runtime worker.
+
+Moving PR/push runtime proof to nightly trades immediate change detection
+for detection on the next nightly (normally within 24 hours) or an on-demand
+check before a runtime-related tag.
 Individually passing PRs can still interact after merging. Check Actions when the
 last completed main nightly is older than 30 hours: an issue reporter cannot
 report a schedule that never started. The first scheduled run remains an
@@ -362,7 +374,8 @@ Live upstream MCP/A2A (one tool call, two model calls and one terminal answer),
 full packaged evaluation, evaluated push, source-free digest lift and private
 placement helpers run through the unchanged read-only
 [kagent worker](../.github/workflows/kagent-runtime.yml). It runs once in the
-existing 03:23 UTC scheduled CI, on manual CI and before every release/dry run.
+existing 03:23 UTC scheduled CI, on manual CI and through
+`runtime-qualification.yml` before runtime-related tags.
 PRs and routine main pushes intentionally skip only that full worker, regardless
 of `kagent_changed`; the fast check must still pass. `e2e-hello-world` always
 evaluates both outcomes and refuses fast-check skips, failures, cancellations,
@@ -370,14 +383,15 @@ missing results or unintended full-worker skips. Required contexts stay the same
 
 The fast check does **not** qualify live A2A execution, upstream image/bootstrap
 compatibility, readiness, actual suite execution or cluster cleanup. Moving these
-checks delays detection until nightly (normally within 24 hours) or before release.
-Tom watches scheduled CI in Actions; there is no new kagent issue reporter or
-promise that an undispatched schedule can report itself. Manual CI remains the
-way to request immediate full qualification. Nothing changes runtime pins,
+checks delays detection until nightly (normally within 24 hours) or an on-demand
+check before a runtime-related tag. Tom watches scheduled CI in Actions; there is
+no new kagent issue reporter or promise that an undispatched schedule can report
+itself. Use `runtime-qualification.yml` for immediate full qualification. Nothing changes runtime pins,
 assertions, retries or budgets, and no Helm/Quickstart cluster or image cache is shared.
 
-Every release/dry run requires fresh full **Orka and kagent** worker success at
-the exact built commit; no earlier nightly success is reused. The worker is read-only; only the
+A release/dry run qualifies the inner loop, not **Orka and kagent**. On-demand
+runtime qualification checks the exact dispatched commit; no earlier nightly
+success is reused as proof of another SHA. Both workers are read-only; only the
 scheduled-main issue reporter has issue-write permission. Reporter errors remain
 visible as workflow failures. Use `gh pr checks --required` for required contexts;
 a green gate does not establish human approval or resolved review threads.

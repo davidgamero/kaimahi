@@ -30,6 +30,8 @@ type JudgeFactory func(baseURL, keyEnv string, transport http.RoundTripper, case
 
 // Turn is one tool-free agent turn handed to an Executor.
 type Turn struct {
+	// Judge samples always use the tool-free chat harness, even for a tool agent.
+	Judge             bool
 	AgentID, Revision string
 	// ExampleID is empty for ad-hoc input.
 	ExampleID           string
@@ -145,7 +147,6 @@ func prepare(agent *agentfile.Agent, options Options, examples bool) (*prepared,
 			return nil, refuse(RefusedRequest, "the agent has no examples to test", "add examples to the Examples section")
 		}
 		for _, example := range agent.Examples {
-			c := agentruntime.EvaluationCase{ID: example.ID, Input: example.Input, Assertions: example.Assertions}
 			for _, assertion := range example.Assertions {
 				switch assertion.Type {
 				case "contains", "notContains", "regex":
@@ -157,10 +158,6 @@ func prepare(agent *agentfile.Agent, options Options, examples bool) (*prepared,
 					return nil, refuse(RefusedRequest, "an example uses an unsupported assertion type", "use contains, notContains, regex or llmJudge")
 				}
 			}
-			if agentruntime.ValidateEvaluationAssertions(c.Assertions) != nil {
-				return nil, refuse(RefusedRequest, "an example has invalid assertions", "fix the Examples section")
-			}
-			p.cases = append(p.cases, c)
 		}
 	}
 	resolver := options.resolveRoute
@@ -172,22 +169,40 @@ func prepare(agent *agentfile.Agent, options Options, examples bool) (*prepared,
 		return nil, err
 	}
 	p.addCredential(p.route.key)
-	if !hasJudge {
-		if options.JudgeEndpoint != nil {
-			return nil, refuse(RefusedJudge, "a judge endpoint was configured but no example uses llmJudge", "remove the judge endpoint")
-		}
-		return p, nil
+	if !hasJudge && options.JudgeEndpoint != nil {
+		return nil, refuse(RefusedJudge, "a judge endpoint was configured but no example uses llmJudge", "remove the judge endpoint")
 	}
-	if options.Judge == nil {
+	if hasJudge && options.Judge == nil {
 		return nil, refuse(RefusedJudge, "llmJudge examples need the shared judge", "run the preview through kmx")
 	}
 	judgeRoute := p.route
-	if options.JudgeEndpoint != nil {
+	if hasJudge && options.JudgeEndpoint != nil {
 		// An explicit override is a compatible endpoint; the judge model is
 		// each assertion's authored judgeModel, not Model.Preferred.
 		if judgeRoute, err = resolver("", options.JudgeEndpoint, options.Transport, "the judge"); err != nil {
 			return nil, err
 		}
+	}
+	// A standalone endpoint override selects transport, not another model.
+	// Adapter routes can supply an explicit judge model; otherwise use the run model.
+	model := judgeRoute.model
+	if model == "" {
+		model = p.route.model
+	}
+	execution := *agent
+	execution.Examples = agentfile.BindJudgeModels(agent.Examples, model)
+	p.agent = &execution
+	if examples {
+		for _, example := range execution.Examples {
+			c := agentruntime.EvaluationCase{ID: example.ID, Input: example.Input, Assertions: example.Assertions}
+			if agentruntime.ValidateEvaluationAssertions(c.Assertions) != nil {
+				return nil, refuse(RefusedRequest, "an example has invalid assertions", "fix the Examples section")
+			}
+			p.cases = append(p.cases, c)
+		}
+	}
+	if !hasJudge {
+		return p, nil
 	}
 	p.judgeRt = judgeRoute.kind()
 	p.addCredential(judgeRoute.key)
@@ -249,7 +264,7 @@ func Test(ctx context.Context, agent *agentfile.Agent, options Options) (Result,
 	if err != nil {
 		return Result{}, err
 	}
-	return p.run(ctx, agent.Examples, true)
+	return p.run(ctx, p.agent.Examples, true)
 }
 
 func (p *prepared) run(ctx context.Context, examples []agentfile.Example, evaluate bool) (result Result, err error) {
@@ -269,7 +284,14 @@ func (p *prepared) run(ctx context.Context, examples []agentfile.Example, evalua
 		}
 		executor = journaled
 	}
-	defer func() { err = errors.Join(err, executor.Close()) }()
+	defer func() {
+		if closeErr := executor.Close(); closeErr != nil {
+			result.Verdict = agentruntime.EvaluationUnknown
+			result.Journaled = false
+			result.RunID = ""
+			err = errors.Join(err, closeErr)
+		}
+	}()
 
 	verdicts := make([]agentruntime.EvaluationVerdict, 0, len(examples))
 	for i, example := range examples {
@@ -363,8 +385,13 @@ type journalExecutor struct {
 	slotMu  sync.Mutex
 	current *turnSlot
 	// lock marks the run as executing until Close.
-	lock  *runLock
-	tools bool
+	lock      *runLock
+	tools     bool
+	path      string
+	modelName string
+	// The upstream chat harness pins its model. Separate in-process hosts share
+	// this run's journal while preserving each turn's exact harness/model pair.
+	chatHosts map[string]*host
 }
 
 type turnSlot struct {
@@ -378,10 +405,10 @@ func openJournalExecutor(dir, model string) (*journalExecutor, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	e := &journalExecutor{sessions: map[string]bool{}, lock: lock}
+	e := &journalExecutor{sessions: map[string]bool{}, lock: lock, path: path, modelName: model, chatHosts: map[string]*host{}}
 	e.host, err = openHost(path, model, e.model)
 	if err != nil {
-		lock.release()
+		lock.discardRun()
 		return nil, runID, err
 	}
 	return e, runID, nil
@@ -392,10 +419,10 @@ func openToolJournalExecutor(dir, model string, tool controller.ToolFunc) (*jour
 	if err != nil {
 		return nil, "", err
 	}
-	e := &journalExecutor{sessions: map[string]bool{}, lock: lock, tools: true}
+	e := &journalExecutor{sessions: map[string]bool{}, lock: lock, tools: true, path: path, modelName: model, chatHosts: map[string]*host{}}
 	e.host, err = openPreviewHost(path, localtools.HarnessName, localtools.Harness{Model: model}, e.model, tool)
 	if err != nil {
-		lock.release()
+		lock.discardRun()
 		return nil, runID, err
 	}
 	return e, runID, nil
@@ -433,9 +460,22 @@ func (e *journalExecutor) Execute(ctx context.Context, turn Turn) (Execution, er
 		Revision: turn.Revision, Agent: turn.AgentID, Example: turn.ExampleID,
 		Instructions: turn.Instructions, Model: turn.Model, Input: turn.Input, UsedSessionUIDs: e.sessions,
 	}
-	run := e.host.client.RunPreviewCase
-	if e.tools {
-		run = e.host.client.RunToolPreviewCase
+	h := e.host
+	toolTurn := e.tools && !turn.Judge
+	if !toolTurn && (e.tools || turn.Model != e.modelName) {
+		h = e.chatHosts[turn.Model]
+		if h == nil {
+			var err error
+			h, err = openHost(e.path, turn.Model, e.model)
+			if err != nil {
+				return Execution{}, err
+			}
+			e.chatHosts[turn.Model] = h
+		}
+	}
+	run := h.client.RunPreviewCase
+	if toolTurn {
+		run = h.client.RunToolPreviewCase
 	}
 	result, err := run(ctx, request)
 	execution := Execution{SessionUID: result.SessionUID, Journaled: true}
@@ -465,6 +505,8 @@ func (e *journalExecutor) Execute(ctx context.Context, turn Turn) (Execution, er
 // may remove the finished run.
 func (e *journalExecutor) Close() error {
 	err := e.host.close()
-	e.lock.release()
-	return err
+	for _, h := range e.chatHosts {
+		err = errors.Join(err, h.close())
+	}
+	return errors.Join(err, e.lock.release())
 }

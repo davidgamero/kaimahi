@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/fileaccess"
 	agentruntime "github.com/kaimahi-agents/kaimahi/internal/kmx/runtime"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/secretshapes"
 )
@@ -24,7 +24,7 @@ const maxSuiteFailureRecordBytes = 128 << 10
 
 var (
 	errSuiteFailureStore    = errors.New("evaluation failure diagnostics unavailable or unsafe; inspect private KMX state")
-	errSuiteFailureMissing  = errors.New("no retained evaluation failure found for this workspace")
+	errSuiteFailureMissing  = errors.New("no retained evaluation failure found for this subject")
 	errSuiteFailureBusy     = errors.New("evaluation failure diagnostics busy; retry after the other command exits")
 	suiteFailureID          = regexp.MustCompile(`^f-[0-9a-f]{32}$`)
 	suiteFailureOperationID = regexp.MustCompile(`^op-[0-9a-f]{32}$`)
@@ -37,19 +37,102 @@ type suiteFailureRecord struct {
 	Sequence      uint64             `json:"sequence"`
 	Detail        suiteFailureDetail `json:"detail"`
 }
+type fileFailureRecord struct {
+	SchemaVersion int                          `json:"schemaVersion"`
+	Sequence      uint64                       `json:"sequence"`
+	Subject       string                       `json:"subject"`
+	Revision      string                       `json:"revision"`
+	AgentID       string                       `json:"agentID"`
+	Operation     string                       `json:"operation"`
+	Selection     string                       `json:"selection"`
+	Model         FilePreviewRoute             `json:"model"`
+	Judge         FilePreviewRoute             `json:"judge"`
+	Assertions    []fileFailureAssertionRecord `json:"assertions"`
+	Detail        suiteFailureDetail           `json:"detail"`
+}
+type fileFailureAssertionRecord struct {
+	ID         string                         `json:"id"`
+	Type       string                         `json:"type"`
+	Digest     string                         `json:"digest"`
+	Verdict    agentruntime.EvaluationVerdict `json:"verdict"`
+	ReasonCode string                         `json:"reasonCode"`
+}
+type suiteFailureCodec interface {
+	decode([]byte) (suiteFailureRecord, *fileFailureRecord, error)
+	encode(uint64, suiteFailureDetail, []string) ([]byte, error)
+}
+type workspaceFailureCodec struct{}
+type retainedFileFailureCodec struct {
+	subject    string
+	revision   string
+	agentID    string
+	operation  string
+	selection  string
+	model      FilePreviewRoute
+	judge      FilePreviewRoute
+	assertions []fileFailureAssertionRecord
+}
 type suiteFailureEntry struct {
-	name   string
-	info   os.FileInfo
-	record suiteFailureRecord
+	name     string
+	identity string
+	info     os.FileInfo
+	links    uint64
+	record   suiteFailureRecord
+	file     *fileFailureRecord
 }
 type suiteFailureStore struct {
-	root      *os.Root
-	lock      *os.File
-	lockInfo  os.FileInfo
+	directory *fileaccess.Directory
+	lock      *fileaccess.PrivateFile
+	lockID    string
 	path      string
-	writeFile func(*os.File, []byte) (int, error)
-	closeFile func(*os.File) error
-	rename    func(string, string) error
+	codec     suiteFailureCodec
+	publish   func(context.Context, *fileaccess.Directory, string, []byte, string) (fileaccess.PublicationResult, error)
+	syncDir   func(context.Context, *fileaccess.Directory) error
+}
+
+func (workspaceFailureCodec) decode(raw []byte) (suiteFailureRecord, *fileFailureRecord, error) {
+	var record suiteFailureRecord
+	var presence struct {
+		Detail struct {
+			Complete   *bool `json:"complete"`
+			Attributed *bool `json:"attributed"`
+		} `json:"detail"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if !agentruntime.JSONKeysUnique(raw) || decoder.Decode(&record) != nil || json.Unmarshal(raw, &presence) != nil || presence.Detail.Complete == nil || presence.Detail.Attributed == nil || validateSuiteFailureRecord(record, nil) != nil {
+		return suiteFailureRecord{}, nil, errSuiteFailureStore
+	}
+	return record, nil, nil
+}
+
+func (workspaceFailureCodec) encode(sequence uint64, detail suiteFailureDetail, keys []string) ([]byte, error) {
+	return marshalSuiteFailureRecord(suiteFailureRecord{1, sequence, detail}, keys)
+}
+
+func (c retainedFileFailureCodec) decode(raw []byte) (suiteFailureRecord, *fileFailureRecord, error) {
+	var record fileFailureRecord
+	var presence struct {
+		Detail struct {
+			Complete   *bool `json:"complete"`
+			Attributed *bool `json:"attributed"`
+		} `json:"detail"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if !agentruntime.JSONKeysUnique(raw) || decoder.Decode(&record) != nil || json.Unmarshal(raw, &presence) != nil || presence.Detail.Complete == nil || presence.Detail.Attributed == nil || validateFileFailureRecord(record, nil) != nil || c.subject != "" && record.Subject != c.subject {
+		return suiteFailureRecord{}, nil, errSuiteFailureStore
+	}
+	return suiteFailureRecord{SchemaVersion: record.SchemaVersion, Sequence: record.Sequence, Detail: record.Detail}, &record, nil
+}
+
+func (c retainedFileFailureCodec) encode(sequence uint64, detail suiteFailureDetail, keys []string) ([]byte, error) {
+	record := fileFailureRecord{
+		SchemaVersion: 2, Sequence: sequence, Subject: c.subject, Revision: c.revision, AgentID: c.agentID,
+		Operation: c.operation, Selection: c.selection, Model: c.model, Judge: c.judge,
+		Assertions: append([]fileFailureAssertionRecord(nil), c.assertions...), Detail: detail,
+	}
+	return marshalFileFailureRecord(record, keys)
 }
 
 func (s *suiteFailureStore) Close() error {
@@ -58,9 +141,9 @@ func (s *suiteFailureStore) Close() error {
 		err = s.lock.Close()
 		s.lock = nil
 	}
-	if s.root != nil {
-		err = errors.Join(err, s.root.Close())
-		s.root = nil
+	if s.directory != nil {
+		err = errors.Join(err, s.directory.Close())
+		s.directory = nil
 	}
 	if err != nil {
 		return errSuiteFailureStore
@@ -68,18 +151,28 @@ func (s *suiteFailureStore) Close() error {
 	return nil
 }
 func (s *suiteFailureStore) unchanged() error {
-	if s.root == nil || s.lock == nil {
+	if s.directory == nil || s.lock == nil || s.lockID == "" {
 		return errSuiteFailureStore
 	}
-	fresh, _, parent, e := openSessionReferenceDirectory(filepath.Join(s.path, "lock"))
+	fresh, e := fileaccess.OpenPrivateDirectory(context.Background(), s.path)
 	if e != nil {
 		return errSuiteFailureStore
 	}
-	old, oldErr := s.root.Stat(".")
+	wantDir, oldErr := fileaccess.PhysicalIdentity(context.Background(), s.directory)
+	gotDir, freshErr := fileaccess.PhysicalIdentity(context.Background(), fresh)
 	closeErr := fresh.Close()
-	base, baseErr := os.Lstat(filepath.Dir(s.path))
-	lock, lockErr := s.root.Lstat("lock")
-	if oldErr != nil || closeErr != nil || baseErr != nil || !safeSuiteFailureDirectory(base) || !safeSuiteFailureDirectory(parent) || !os.SameFile(old, parent) || lockErr != nil || !safeSuiteFailureFile(lock) || lock.Size() != 0 || !os.SameFile(lock, s.lockInfo) {
+	lock, lockErr := fileaccess.OpenPrivateFileAt(context.Background(), s.directory, "lock")
+	if oldErr != nil || freshErr != nil || closeErr != nil || lockErr != nil {
+		if lock != nil {
+			_ = lock.Close()
+		}
+		return errSuiteFailureStore
+	}
+	lockID, identityErr := fileaccess.PhysicalIdentity(context.Background(), lock)
+	info, statErr := lock.Stat()
+	links, linksErr := fileaccess.LinkCount(context.Background(), lock)
+	lockCloseErr := lock.Close()
+	if wantDir != gotDir || identityErr != nil || statErr != nil || linksErr != nil || lockCloseErr != nil || lockID != s.lockID || info.Size() != 0 || links != 1 {
 		return errSuiteFailureStore
 	}
 	return nil
@@ -88,26 +181,39 @@ func (s *suiteFailureStore) unchanged() error {
 // Pending bytes may be incomplete JSON. They are never read or displayed; only
 // explicit whole-workspace clearing may remove this validated private staging file.
 func (s *suiteFailureStore) pending() (*suiteFailureEntry, error) {
-	info, err := s.root.Lstat(suiteFailurePendingName)
-	if os.IsNotExist(err) {
+	file, err := fileaccess.OpenPrivateFileAt(context.Background(), s.directory, suiteFailurePendingName)
+	if errors.Is(err, fileaccess.ErrMissing) {
 		return nil, nil
 	}
-	if err != nil || !safeSuiteFailureFile(info) {
+	if err != nil {
 		return nil, errSuiteFailureStore
 	}
-	return &suiteFailureEntry{name: suiteFailurePendingName, info: info}, nil
+	info, statErr := file.Stat()
+	identity, identityErr := fileaccess.PhysicalIdentity(context.Background(), file)
+	links, linksErr := fileaccess.LinkCount(context.Background(), file)
+	closeErr := file.Close()
+	if statErr != nil || identityErr != nil || linksErr != nil || closeErr != nil || !info.Mode().IsRegular() || info.Size() > maxSuiteFailureRecordBytes || links < 1 || links > 2 {
+		return nil, errSuiteFailureStore
+	}
+	return &suiteFailureEntry{name: suiteFailurePendingName, identity: identity, info: info, links: links}, nil
 }
 
 func (s *suiteFailureStore) scan() ([]suiteFailureEntry, error) {
 	if s.unchanged() != nil {
 		return nil, errSuiteFailureStore
 	}
-	dir, e := s.root.Open(".")
+	scanDirectory, e := fileaccess.OpenPrivateDirectory(context.Background(), s.path)
 	if e != nil {
 		return nil, errSuiteFailureStore
 	}
-	files, readErr := dir.ReadDir(maxSuiteFailureRecords + 3)
-	closeErr := dir.Close()
+	wantDirectory, wantErr := fileaccess.PhysicalIdentity(context.Background(), s.directory)
+	gotDirectory, gotErr := fileaccess.PhysicalIdentity(context.Background(), scanDirectory)
+	if wantErr != nil || gotErr != nil || wantDirectory != gotDirectory {
+		_ = scanDirectory.Close()
+		return nil, errSuiteFailureStore
+	}
+	files, readErr := scanDirectory.ReadDir(maxSuiteFailureRecords + 3)
+	closeErr := scanDirectory.Close()
 	if readErr != nil && !errors.Is(readErr, io.EOF) || closeErr != nil || len(files) > maxSuiteFailureRecords+2 {
 		return nil, errSuiteFailureStore
 	}
@@ -129,44 +235,12 @@ func (s *suiteFailureStore) scan() ([]suiteFailureEntry, error) {
 		if match == nil {
 			return nil, errSuiteFailureStore
 		}
-		info, e := s.root.Lstat(name)
-		if e != nil || !safeSuiteFailureFile(info) {
+		raw, identity, info, links, e := s.readEntry(name, true)
+		if e != nil || identity == "" {
 			return nil, errSuiteFailureStore
 		}
-		directory, e := s.root.Open(".")
+		record, fileRecord, e := s.codec.decode(raw)
 		if e != nil {
-			return nil, errSuiteFailureStore
-		}
-		file, e := openKagentFile(directory, name)
-		directoryErr := directory.Close()
-		if e != nil || directoryErr != nil {
-			if file != nil {
-				_ = file.Close()
-			}
-			return nil, errSuiteFailureStore
-		}
-		opened, statErr := file.Stat()
-		if statErr != nil || !safeSuiteFailureFile(opened) || !os.SameFile(info, opened) {
-			_ = file.Close()
-			return nil, errSuiteFailureStore
-		}
-		raw, readErr := io.ReadAll(io.LimitReader(file, maxSuiteFailureRecordBytes+1))
-		after, afterErr := file.Stat()
-		closeErr := file.Close()
-		now, nowErr := s.root.Lstat(name)
-		if readErr != nil || afterErr != nil || closeErr != nil || nowErr != nil || !safeSuiteFailureFile(now) || !os.SameFile(opened, now) || !os.SameFile(opened, after) || opened.Size() != int64(len(raw)) || after.Size() != opened.Size() || !after.ModTime().Equal(opened.ModTime()) || len(raw) > maxSuiteFailureRecordBytes {
-			return nil, errSuiteFailureStore
-		}
-		var record suiteFailureRecord
-		var presence struct {
-			Detail struct {
-				Complete   *bool `json:"complete"`
-				Attributed *bool `json:"attributed"`
-			} `json:"detail"`
-		}
-		decoder := json.NewDecoder(bytes.NewReader(raw))
-		decoder.DisallowUnknownFields()
-		if !agentruntime.JSONKeysUnique(raw) || decoder.Decode(&record) != nil || json.Unmarshal(raw, &presence) != nil || presence.Detail.Complete == nil || presence.Detail.Attributed == nil || validateSuiteFailureRecord(record, nil) != nil {
 			return nil, errSuiteFailureStore
 		}
 		sequence, e := strconv.ParseUint(match[1], 10, 64)
@@ -174,7 +248,31 @@ func (s *suiteFailureStore) scan() ([]suiteFailureEntry, error) {
 			return nil, errSuiteFailureStore
 		}
 		ids[match[2]], sequences[sequence] = true, true
-		entries = append(entries, suiteFailureEntry{name, now, record})
+		entries = append(entries, suiteFailureEntry{name: name, identity: identity, info: info, links: links, record: record, file: fileRecord})
+	}
+	pending, pendingErr := s.pending()
+	if pendingErr != nil {
+		return nil, pendingErr
+	}
+	if pending != nil && pending.links == 2 {
+		matched := 0
+		for _, entry := range entries {
+			switch {
+			case entry.links == 2 && entry.identity == pending.identity:
+				matched++
+			case entry.links != 1:
+				return nil, errSuiteFailureStore
+			}
+		}
+		if matched != 1 {
+			return nil, errSuiteFailureStore
+		}
+	} else {
+		for _, entry := range entries {
+			if entry.links != 1 {
+				return nil, errSuiteFailureStore
+			}
+		}
 	}
 	if s.unchanged() != nil || len(entries) > maxSuiteFailureRecords {
 		return nil, errSuiteFailureStore
@@ -246,31 +344,88 @@ func validateSuiteFailureRecord(r suiteFailureRecord, keys []string) error {
 	return nil
 }
 
+func validateFileFailureRecord(r fileFailureRecord, keys []string) error {
+	d := r.Detail
+	if r.SchemaVersion != 2 || r.Sequence == 0 || !suitePrefixedDigest(r.Subject) || !suitePrefixedDigest(r.Revision) || !suiteFailureOperationID.MatchString(d.OperationID) || r.Operation != "test" || r.Selection != "full" && r.Selection != "subset" || r.Model.Provider == "" || r.Model.Model == "" || d.SuiteDigest != "" || d.Runtime != "" || d.MemberID != "" || d.Run != 1 || d.Runs != 1 || d.MinPasses != 1 || d.RetentionUnavailable || d.Class != "" || !d.Complete || !d.Attributed {
+		return errSuiteFailureStore
+	}
+	checkRoute := func(route FilePreviewRoute) bool {
+		return route.Provider != "" && route.Model != "" && route.Provider != "withheld" && route.Model != "withheld" && suiteDiagnosticIdentity(route.Provider, keys) == route.Provider && suiteDiagnosticIdentity(route.Model, keys) == route.Model
+	}
+	if !checkRoute(r.Model) || !checkRoute(r.Judge) || r.AgentID == "" || r.AgentID == "withheld" || suiteDiagnosticIdentity(r.AgentID, keys) != r.AgentID || len(r.Assertions) == 0 || len(r.Assertions) > 4096 {
+		return errSuiteFailureStore
+	}
+	definitions := make(map[string]fileFailureAssertionRecord, len(r.Assertions))
+	rows := make([]agentruntime.EvaluationAssertionResult, 0, len(r.Assertions))
+	for _, definition := range r.Assertions {
+		expectedReason := "judge_unknown"
+		if definition.Verdict == agentruntime.EvaluationPass {
+			expectedReason = "assertion_satisfied"
+		} else if definition.Verdict == agentruntime.EvaluationFail {
+			expectedReason = "assertion_failed"
+		}
+		if definition.ID == "" || definition.Type == "" || definition.ID == "withheld" || definition.Type == "withheld" || !verificationDigest(definition.Digest) || definition.Verdict != agentruntime.EvaluationPass && definition.Verdict != agentruntime.EvaluationFail && definition.Verdict != agentruntime.EvaluationUnknown || definition.ReasonCode != expectedReason || suiteDiagnosticIdentity(definition.ID, keys) != definition.ID || suiteDiagnosticIdentity(definition.Type, keys) != definition.Type {
+			return errSuiteFailureStore
+		}
+		key := definition.ID + "\x00" + definition.Type
+		if _, exists := definitions[key]; exists {
+			return errSuiteFailureStore
+		}
+		definitions[key] = definition
+		rows = append(rows, agentruntime.EvaluationAssertionResult{ID: definition.ID, Type: definition.Type, Verdict: definition.Verdict})
+	}
+	if string(agentruntime.EvaluationAssertionsVerdict(rows)) != d.Verdict {
+		return errSuiteFailureStore
+	}
+	workspaceShape := suiteFailureRecord{SchemaVersion: 1, Sequence: r.Sequence, Detail: d}
+	workspaceShape.Detail.OperationID = "op-" + strings.Repeat("0", 32)
+	workspaceShape.Detail.SuiteDigest = "sha256:" + strings.Repeat("0", 64)
+	workspaceShape.Detail.Runtime = "orka"
+	workspaceShape.Detail.MemberID = "file"
+	if validateSuiteFailureRecord(workspaceShape, keys) != nil {
+		return errSuiteFailureStore
+	}
+	for _, assertion := range d.Assertions {
+		definition, ok := definitions[assertion.ID+"\x00"+assertion.Type]
+		if !ok || string(definition.Verdict) != assertion.Verdict {
+			return errSuiteFailureStore
+		}
+		if assertion.Threshold == nil && len(assertion.Scores) != 0 || assertion.Threshold != nil && len(assertion.Scores) != 0 && len(assertion.Scores) != 2 || assertion.Type != "llmJudge" && (assertion.Threshold != nil || len(assertion.Scores) != 0) {
+			return errSuiteFailureStore
+		}
+	}
+	return nil
+}
+
 func marshalSuiteFailureRecord(r suiteFailureRecord, keys []string) ([]byte, error) {
 	if validateSuiteFailureRecord(r, keys) != nil {
 		return nil, errSuiteFailureStore
 	}
 	r.Detail.Assertions = append([]suiteFailureAssertion(nil), r.Detail.Assertions...)
 	encode := func() []byte { raw, _ := json.Marshal(r); return raw }
+	return marshalFailureDetail(&r.Detail, encode, keys)
+}
+
+func marshalFailureDetail(detail *suiteFailureDetail, encode func() []byte, keys []string) ([]byte, error) {
 	raw := encode()
 	if len(raw) > maxSuiteFailureRecordBytes {
-		r.Detail.ContentTruncated = true
-		r.Detail.Answer = ""
-		r.Detail.AnswerStatus = "omitted"
+		detail.ContentTruncated = true
+		detail.Answer = ""
+		detail.AnswerStatus = "omitted"
 		raw = encode()
 		// Keep the longest content prefix at each priority. Binary search avoids
 		// repeatedly serializing megabytes once per assertion under hostile input.
 		for phase := 0; phase < 3 && len(raw) > maxSuiteFailureRecordBytes; phase++ {
-			original := append([]suiteFailureAssertion(nil), r.Detail.Assertions...)
+			original := append([]suiteFailureAssertion(nil), detail.Assertions...)
 			apply := func(keep int) {
-				r.Detail.Assertions = append([]suiteFailureAssertion(nil), original...)
+				detail.Assertions = append([]suiteFailureAssertion(nil), original...)
 				if phase == 2 {
-					r.Detail.OmittedAssertions += len(original) - keep
-					r.Detail.Assertions = r.Detail.Assertions[:keep]
+					detail.OmittedAssertions += len(original) - keep
+					detail.Assertions = detail.Assertions[:keep]
 					return
 				}
 				for i := keep; i < len(original); i++ {
-					a := &r.Detail.Assertions[i]
+					a := &detail.Assertions[i]
 					if phase == 0 {
 						a.Excerpt, a.ExcerptKind = "", ""
 					} else {
@@ -279,11 +434,11 @@ func marshalSuiteFailureRecord(r suiteFailureRecord, keys []string) ([]byte, err
 					}
 				}
 			}
-			previousOmitted := r.Detail.OmittedAssertions
+			previousOmitted := detail.OmittedAssertions
 			lo, hi := 0, len(original)
 			for lo < hi {
 				mid := (lo + hi + 1) / 2
-				r.Detail.OmittedAssertions = previousOmitted
+				detail.OmittedAssertions = previousOmitted
 				apply(mid)
 				if len(encode()) <= maxSuiteFailureRecordBytes {
 					lo = mid
@@ -291,7 +446,7 @@ func marshalSuiteFailureRecord(r suiteFailureRecord, keys []string) ([]byte, err
 					hi = mid - 1
 				}
 			}
-			r.Detail.OmittedAssertions = previousOmitted
+			detail.OmittedAssertions = previousOmitted
 			apply(lo)
 			raw = encode()
 		}
@@ -307,18 +462,62 @@ func marshalSuiteFailureRecord(r suiteFailureRecord, keys []string) ([]byte, err
 	return raw, nil
 }
 
+func marshalFileFailureRecord(r fileFailureRecord, keys []string) ([]byte, error) {
+	if validateFileFailureRecord(r, keys) != nil {
+		return nil, errSuiteFailureStore
+	}
+	r.Assertions = append([]fileFailureAssertionRecord(nil), r.Assertions...)
+	r.Detail.Assertions = append([]suiteFailureAssertion(nil), r.Detail.Assertions...)
+	encode := func() []byte { raw, _ := json.Marshal(r); return raw }
+	return marshalFailureDetail(&r.Detail, encode, keys)
+}
+
 func (s *suiteFailureStore) remove(entry suiteFailureEntry) error {
 	if s.unchanged() != nil {
 		return errSuiteFailureStore
 	}
-	now, e := s.root.Lstat(entry.name)
-	if e != nil || !safeSuiteFailureFile(now) || !os.SameFile(now, entry.info) || now.Size() != entry.info.Size() || !now.ModTime().Equal(entry.info.ModTime()) {
+	file, e := fileaccess.OpenPrivateFileAt(context.Background(), s.directory, entry.name)
+	if e != nil {
 		return errSuiteFailureStore
 	}
-	if s.root.Remove(entry.name) != nil {
+	now, statErr := file.Stat()
+	identity, identityErr := fileaccess.PhysicalIdentity(context.Background(), file)
+	if statErr != nil || identityErr != nil || identity != entry.identity || now.Size() != entry.info.Size() || !now.ModTime().Equal(entry.info.ModTime()) {
+		_ = file.Close()
+		return errSuiteFailureStore
+	}
+	removeErr := fileaccess.RemovePrivateFileAt(context.Background(), s.directory, entry.name, file)
+	closeErr := file.Close()
+	if removeErr != nil || closeErr != nil {
 		return errSuiteFailureStore
 	}
 	return nil
+}
+
+func (s *suiteFailureStore) removeOwnPair(pending suiteFailureEntry, entries []suiteFailureEntry) (bool, error) {
+	if pending.links != 2 {
+		return false, nil
+	}
+	var final *suiteFailureEntry
+	for i := range entries {
+		if entries[i].links != 2 {
+			continue
+		}
+		if entries[i].identity == pending.identity {
+			if final != nil {
+				return false, errSuiteFailureStore
+			}
+			final = &entries[i]
+		}
+	}
+	if final == nil {
+		return false, errSuiteFailureStore
+	}
+	if s.remove(pending) != nil {
+		return false, errSuiteFailureStore
+	}
+	final.links = 1
+	return true, nil
 }
 func (s *suiteFailureStore) save(ctx context.Context, d suiteFailureDetail) (id string, err error) {
 	entries, e := s.scan()
@@ -345,7 +544,7 @@ func (s *suiteFailureStore) save(ctx context.Context, d suiteFailureDetail) (id 
 	if reporter, ok := ctx.Value(suiteFailureReportingKey{}).(suiteFailureReporter); ok {
 		keys = []string{reporter.key}
 	}
-	raw, e := marshalSuiteFailureRecord(suiteFailureRecord{1, sequence, d}, keys)
+	raw, e := s.codec.encode(sequence, d, keys)
 	if e != nil {
 		return "", e
 	}
@@ -354,55 +553,23 @@ func (s *suiteFailureStore) save(ctx context.Context, d suiteFailureDetail) (id 
 			return "", errSuiteFailureStore
 		}
 	}
-	if s.unchanged() != nil {
-		return "", errSuiteFailureStore
-	}
-	const stage = suiteFailurePendingName
-	file, e := s.root.OpenFile(stage, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if e != nil {
-		return "", errSuiteFailureStore
-	}
-	info, statErr := file.Stat()
-	published := false
-	defer func() {
-		_ = file.Close()
-		if !published {
-			now, e := s.root.Lstat(stage)
-			if statErr == nil && e == nil && os.SameFile(info, now) && safeSuiteFailureFile(now) {
-				if s.root.Remove(stage) != nil {
-					err = errSuiteFailureStore
-				}
-			}
-		}
-	}()
-	if statErr != nil || !safeSuiteFailureFile(info) {
-		return "", errSuiteFailureStore
-	}
-	n, writeErr := s.writeFile(file, raw)
-	syncErr := file.Sync()
-	closeErr := s.closeFile(file)
-	if writeErr != nil || n != len(raw) || syncErr != nil || closeErr != nil || s.unchanged() != nil {
-		return "", errSuiteFailureStore
-	}
 	name := fmt.Sprintf("%020d-%s.json", sequence, id)
-	if _, e := s.root.Lstat(name); !os.IsNotExist(e) {
+	result, publishErr := s.publish(ctx, s.directory, name, raw, suiteFailurePendingName)
+	if publishErr != nil {
+		if result.Visible {
+			return id, errSuiteFailureStore
+		}
+		// Not positively observed is not proof of absence. Keep the generated ID
+		// whenever publication reconciliation could not establish either state.
+		if !result.VisibilityKnown {
+			return id, errSuiteFailureStore
+		}
 		return "", errSuiteFailureStore
 	}
-	current, e := s.root.Lstat(stage)
-	if e != nil || !safeSuiteFailureFile(current) || !os.SameFile(info, current) || current.Size() != int64(len(raw)) {
-		return "", errSuiteFailureStore
-	}
-	if s.rename(stage, name) != nil {
-		return "", errSuiteFailureStore
-	}
-	published = true
-	directory, e := s.root.Open(".")
-	if e != nil {
+	if !result.Visible || !result.VisibilityKnown || s.unchanged() != nil {
 		return id, errSuiteFailureStore
 	}
-	syncErr = directory.Sync()
-	closeErr = directory.Close()
-	if syncErr != nil || closeErr != nil || s.unchanged() != nil {
+	if s.syncDir(ctx, s.directory) != nil {
 		return id, errSuiteFailureStore
 	}
 	return id, nil
@@ -422,14 +589,40 @@ func saveSuiteFailure(ctx context.Context, workspaceRoot string, d suiteFailureD
 	}
 	return id, nil
 }
+func saveFileFailure(ctx context.Context, scope fileFailureScope, codec retainedFileFailureCodec, d suiteFailureDetail) (string, error) {
+	s, e := openFileFailureStoreScope(scope, true, codec)
+	if e != nil {
+		return "", e
+	}
+	id, saveErr := s.save(ctx, d)
+	closeErr := s.Close()
+	if saveErr != nil {
+		return id, saveErr
+	}
+	if closeErr != nil {
+		return id, closeErr
+	}
+	return id, nil
+}
+
 func clearSuiteFailures(ctx context.Context, workspaceRoot, id string) (int, error) {
+	return clearFailureStore(ctx, id, func() (*suiteFailureStore, error) { return openSuiteFailureStore(workspaceRoot, false) })
+}
+
+func clearFileFailures(ctx context.Context, filename, id string) (int, error) {
+	return clearFailureStore(ctx, id, func() (*suiteFailureStore, error) {
+		return openFileFailureStore(filename, false, retainedFileFailureCodec{})
+	})
+}
+
+func clearFailureStore(ctx context.Context, id string, open func() (*suiteFailureStore, error)) (int, error) {
 	if ctx.Err() != nil {
 		return 0, ctx.Err()
 	}
 	if id != "" && !suiteFailureID.MatchString(id) {
 		return 0, errSuiteFailureStore
 	}
-	s, e := openSuiteFailureStore(workspaceRoot, false)
+	s, e := open()
 	if e != nil {
 		return 0, e
 	}
@@ -442,6 +635,13 @@ func clearSuiteFailures(ctx context.Context, workspaceRoot, id string) (int, err
 		pending, err := s.pending()
 		if err != nil {
 			return 0, err
+		}
+		if pending != nil {
+			if recovered, recoverErr := s.removeOwnPair(*pending, entries); recoverErr != nil {
+				return 0, recoverErr
+			} else if recovered {
+				pending = nil
+			}
 		}
 		if pending != nil {
 			entries = append(entries, *pending)
@@ -459,13 +659,7 @@ func clearSuiteFailures(ctx context.Context, workspaceRoot, id string) (int, err
 	if id != "" && removed == 0 {
 		return 0, errSuiteFailureMissing
 	}
-	directory, e := s.root.Open(".")
-	if e != nil {
-		return removed, errSuiteFailureStore
-	}
-	syncErr := directory.Sync()
-	closeErr := directory.Close()
-	if syncErr != nil || closeErr != nil || s.unchanged() != nil {
+	if s.syncDir(ctx, s.directory) != nil || s.unchanged() != nil {
 		return removed, errSuiteFailureStore
 	}
 	return removed, nil
