@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -58,6 +59,31 @@ func TestMaterializePreservesEntriesAndDetectsMetadataDrift(t *testing.T) {
 	}
 	if err := a.Materialize(t.Context(), root); err == nil {
 		t.Fatal("existing output overwritten")
+	}
+}
+
+func TestMaterializeRefusesUnreadableModesBeforeCreatingOutput(t *testing.T) {
+	for _, kind := range []byte{tar.TypeReg, tar.TypeDir} {
+		for _, mode := range []int64{0, 0100, 0200} {
+			t.Run(fmt.Sprintf("%c/%o", kind, mode), func(t *testing.T) {
+				metadata := map[string]entry{}
+				files, err := filesWithEntries(t.Context(), contentArchive(t, []tarRecord{{header: tar.Header{Name: "payload", Typeflag: kind, Mode: mode}}}), metadata, false)
+				if err != nil {
+					t.Fatal("valid packaged mode refused at ingestion", err)
+				}
+				a := &Artifact{files: files, entries: metadata}
+				root := filepath.Join(t.TempDir(), "stage")
+				if err := a.Materialize(t.Context(), root); err == nil {
+					t.Fatal("unreadable staging mode accepted")
+				}
+				if _, err := os.Stat(root); !os.IsNotExist(err) {
+					t.Fatal("mode refusal created staging", err)
+				}
+				if metadata["payload"].Mode != mode {
+					t.Fatal("refusal changed declared mode identity")
+				}
+			})
+		}
 	}
 }
 

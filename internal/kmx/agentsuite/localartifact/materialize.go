@@ -12,12 +12,18 @@ import (
 // Materialize writes validated content into a new caller-owned directory. Files
 // and hardlinks precede symlinks so writes never traverse an authored symlink.
 // Directory permissions are applied last; group/world write bits are removed.
+// Declared modes must support owner reads/traversal before any staging is created.
 func (a *Artifact) Materialize(ctx context.Context, output string) error {
 	if a == nil || a.entries == nil {
 		return ErrArtifact
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	for _, e := range a.entries {
+		if e.Kind == tar.TypeReg && e.Mode&0400 == 0 || e.Kind == tar.TypeDir && e.Mode&0500 != 0500 {
+			return errors.New("artifact modes do not support owner-readable files and owner-readable/searchable directories for build staging")
+		}
 	}
 	if err := os.Mkdir(output, 0700); err != nil {
 		return err

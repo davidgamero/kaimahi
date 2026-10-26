@@ -76,30 +76,8 @@ func ResolveImage(ctx context.Context, source kmxsuite.ReadOnlyTarget, reference
 	if err != nil {
 		return ResolvedImage{}, fmt.Errorf("resolve agent image: %w", err)
 	}
-	data, err := imageJSON(ctx, source, root)
-	if err != nil {
-		return ResolvedImage{}, err
-	}
 	if root.MediaType == ocispec.MediaTypeImageIndex {
-		var index ocispec.Index
-		if err := json.Unmarshal(data, &index); err != nil {
-			return ResolvedImage{}, err
-		}
-		matches := 0
-		for _, candidate := range index.Manifests {
-			match, err := imageDescriptorMatchesPlatform(ctx, source, candidate, platform)
-			if err != nil {
-				return ResolvedImage{}, err
-			}
-			if match {
-				root = candidate
-				matches++
-			}
-		}
-		if matches != 1 {
-			return ResolvedImage{}, errors.New("image index must select exactly one target platform manifest")
-		}
-		data, err = imageJSON(ctx, source, root)
+		root, err = selectImageManifest(ctx, source, root, platform)
 		if err != nil {
 			return ResolvedImage{}, err
 		}
@@ -107,9 +85,16 @@ func ResolveImage(ctx context.Context, source kmxsuite.ReadOnlyTarget, reference
 	if root.MediaType != ocispec.MediaTypeImageManifest {
 		return ResolvedImage{}, errors.New("image resolution requires a runnable OCI image manifest or index")
 	}
+	data, err := imageJSON(ctx, source, root)
+	if err != nil {
+		return ResolvedImage{}, err
+	}
 	var manifest ocispec.Manifest
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return ResolvedImage{}, err
+	}
+	if manifest.Subject != nil {
+		return ResolvedImage{}, errors.New("OCI image manifest subjects are unsupported")
 	}
 	if manifest.SchemaVersion != 2 || manifest.ArtifactType != "" || manifest.Config.MediaType != ocispec.MediaTypeImageConfig || len(manifest.Layers) == 0 {
 		return ResolvedImage{}, errors.New("image resolution requires a built runnable image, not an AgentSuite definition artifact")
@@ -169,6 +154,63 @@ func ResolveImage(ctx context.Context, source kmxsuite.ReadOnlyTarget, reference
 		}
 	}
 	return ResolvedImage{Descriptor: root, Deployment: *record}, nil
+}
+
+// selectImageManifest shares one descriptor/depth budget and ambiguity count
+// across the whole index tree, including branches without platform metadata.
+func selectImageManifest(ctx context.Context, source kmxsuite.Fetcher, root ocispec.Descriptor, platform suitecore.Platform) (ocispec.Descriptor, error) {
+	// Match archive inspection's 1000 descendants and 100 nested index levels.
+	const maxDescriptors, maxIndexDepth = 1001, 100
+	var selected ocispec.Descriptor
+	count, matches := 0, 0
+	var visit func(ocispec.Descriptor, int) error
+	visit = func(d ocispec.Descriptor, depth int) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		count++
+		if count > maxDescriptors || d.MediaType == ocispec.MediaTypeImageIndex && depth > maxIndexDepth {
+			return errors.New("image index traversal limit exceeded")
+		}
+		if d.MediaType != ocispec.MediaTypeImageIndex {
+			match, err := imageDescriptorMatchesPlatform(ctx, source, d, platform)
+			if err != nil {
+				return err
+			}
+			if match {
+				selected = d
+				matches++
+				if matches > 1 {
+					return errors.New("image index must select exactly one target platform manifest")
+				}
+			}
+			return nil
+		}
+		data, err := imageJSON(ctx, source, d)
+		if err != nil {
+			return err
+		}
+		var index ocispec.Index
+		if err := json.Unmarshal(data, &index); err != nil {
+			return err
+		}
+		if index.SchemaVersion != 2 || index.Subject != nil {
+			return errors.New("invalid or unsupported OCI image index")
+		}
+		for _, child := range index.Manifests {
+			if err := visit(child, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := visit(root, 0); err != nil {
+		return ocispec.Descriptor{}, err
+	}
+	if matches != 1 {
+		return ocispec.Descriptor{}, errors.New("image index must select exactly one target platform manifest")
+	}
+	return selected, nil
 }
 
 func imageDescriptorMatchesPlatform(ctx context.Context, source kmxsuite.Fetcher, candidate ocispec.Descriptor, platform suitecore.Platform) (bool, error) {

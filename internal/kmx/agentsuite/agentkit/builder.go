@@ -15,6 +15,7 @@ import (
 	suitecore "github.com/agent-primitives/suite/core"
 	"github.com/distribution/reference"
 	kmxsuite "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/secretshapes"
 )
 
 const (
@@ -30,6 +31,9 @@ var modelAPIKeyEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // ValidateModelAPIKeyEnv accepts an optional environment variable name, never a
 // key value. Errors omit the input so a pasted credential cannot reach output.
 func ValidateModelAPIKeyEnv(value string) error {
+	if secretshapes.Match(value) != nil {
+		return errors.New("--model-api-key-env requires an environment variable name, not a credential value")
+	}
 	if value != "" && !modelAPIKeyEnvName.MatchString(value) {
 		return errors.New("--model-api-key-env must be an environment variable name matching [A-Za-z_][A-Za-z0-9_]*")
 	}
@@ -202,6 +206,10 @@ func (b *Builder) validate(plan kmxsuite.SandboxPlan) error {
 		errs = append(errs, errors.New("model credential environment must not alias AgentKit serving inputs"))
 	}
 	if plan.Agent.Model.Capabilities != nil {
+		// The qualified digest below is a single amd64 manifest, not a multi-platform index.
+		if plan.Composition.Platform.String() != "linux/amd64" {
+			errs = append(errs, errors.New("mounted AgentKit configuration supports only the qualified linux/amd64 harness"))
+		}
 		if b.options.ModelBaseURL != "" || b.options.ModelAPIKeyEnv != "" {
 			errs = append(errs, errors.New("capability-based builds take model and credentials only at deployment; omit model build flags"))
 		}

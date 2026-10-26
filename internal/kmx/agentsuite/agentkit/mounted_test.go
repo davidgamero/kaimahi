@@ -56,6 +56,16 @@ func TestMountedImageOmitsSelectedModelAndUsesRuntimeConfigABI(t *testing.T) {
 		t.Fatal("mounted serving inputs/config not represented together")
 	}
 	first := string(captured.AgentkitFile)
+	badPlatform := plan
+	badPlatform.Composition.Platform.Architecture = "arm64"
+	refusingBuilder := New(builder.options)
+	refusingBuilder.options.exporter = ociExporterFunc(func(context.Context, agentImage, io.Writer) error {
+		t.Fatal("amd64-only mounted harness reached arm64 exporter")
+		return nil
+	})
+	if _, err := refusingBuilder.Build(t.Context(), badPlatform, io.Discard); err == nil || !strings.Contains(err.Error(), "linux/amd64") {
+		t.Fatalf("unqualified mounted platform accepted: %v", err)
+	}
 	for _, inputs := range [][]suitecore.ExecutionInput{nil, {{Name: "listen", Environment: "AGENTKIT_BIND"}}, {{Name: "auth", Environment: "AGENTKIT_AUTH_TOKEN", Secret: true}}} {
 		bad := plan
 		execution := *plan.BuildProfile.Execution

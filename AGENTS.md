@@ -847,6 +847,13 @@ image operations do not alter native workspace authoring or add Deploy support.
 Source comparison uses the shared portable packing policy, including declared
 ToolProvider modes rather than host execute bits. Keep strict image-source reads
 separate from explicit flow ingestion; preserve flow-only limits and graph identity.
+Image inspection refuses OCI index/manifest subjects before registry requests;
+in-toto statement subjects remain validated normally. Resolution traverses nested
+indexes under one global descriptor/depth budget and ambiguity count. Mounted
+AgentKit builds require linux/amd64 for the qualified single-platform harness pin.
+Reject known credential shapes in model-key environment selectors before source
+or build effects. Loose build staging refuses modes without owner file-read or
+directory read/search permissions before creating output, preserving declared modes.
 
 Run checks appropriate to the changed paths as described in CONTRIBUTING.md.
 App CI runs all four process-isolated shards on Linux and macOS; both platforms

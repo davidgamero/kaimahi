@@ -6,9 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	suitecore "github.com/agent-primitives/suite/core"
@@ -84,8 +87,18 @@ func TestPushImagePreservesGraphWithoutDeploymentAdmission(t *testing.T) {
 	}
 }
 
-func publicationArchive(t *testing.T, nested bool, marker, deploymentLabel string, omitPlatform bool) (string, string, string, []ocispec.Descriptor) {
+type publicationArchiveOptions struct {
+	subject        string
+	missingSubject bool
+	indexDepth     int
+}
+
+func publicationArchive(t *testing.T, nested bool, marker, deploymentLabel string, omitPlatform bool, options ...publicationArchiveOptions) (string, string, string, []ocispec.Descriptor) {
 	t.Helper()
+	var opt publicationArchiveOptions
+	if len(options) != 0 {
+		opt = options[0]
+	}
 	blobs := map[string][]byte{}
 	var descriptors []ocispec.Descriptor
 	add := func(media string, value any) ocispec.Descriptor {
@@ -99,12 +112,26 @@ func publicationArchive(t *testing.T, nested bool, marker, deploymentLabel strin
 		return d
 	}
 	layer := add(ocispec.MediaTypeImageLayer, "fixture layer")
+	var subject *ocispec.Descriptor
+	if opt.subject != "" {
+		otherConfig := add(ocispec.MediaTypeImageConfig, ocispec.Image{Platform: ocispec.Platform{OS: "linux", Architecture: "arm64"}})
+		otherLayer := add(ocispec.MediaTypeImageLayer, "uninspected subject layer")
+		d := add(ocispec.MediaTypeImageManifest, ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, Config: otherConfig, Layers: []ocispec.Descriptor{otherLayer}})
+		subject = &d
+		if opt.missingSubject {
+			delete(blobs, "blobs/sha256/"+d.Digest.Encoded())
+		}
+	}
 	labels := map[string]string{}
 	if deploymentLabel != "" {
 		labels[kmxsuite.ImageDeploymentLabel] = deploymentLabel
 	}
 	config := add(ocispec.MediaTypeImageConfig, ocispec.Image{Platform: ocispec.Platform{OS: "linux", Architecture: "amd64"}, Config: ocispec.ImageConfig{User: "1000", Entrypoint: []string{"/agent"}, Labels: labels}, RootFS: ocispec.RootFS{Type: "layers", DiffIDs: []digest.Digest{layer.Digest}}})
-	image := add(ocispec.MediaTypeImageManifest, ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, Config: config, Layers: []ocispec.Descriptor{layer}, Annotations: map[string]string{"fixture": marker}})
+	manifest := ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, Config: config, Layers: []ocispec.Descriptor{layer}, Annotations: map[string]string{"fixture": marker}}
+	if opt.subject == "image" {
+		manifest.Subject = subject
+	}
+	image := add(ocispec.MediaTypeImageManifest, manifest)
 	if !omitPlatform {
 		image.Platform = &ocispec.Platform{OS: "linux", Architecture: "amd64"}
 	}
@@ -113,19 +140,30 @@ func publicationArchive(t *testing.T, nested bool, marker, deploymentLabel strin
 	for _, predicate := range []string{"https://spdx.dev/Document", "https://slsa.dev/provenance/v1"} {
 		layers = append(layers, add("application/vnd.in-toto+json", map[string]any{"_type": "https://in-toto.io/Statement/v1", "predicateType": predicate, "subject": []any{map[string]any{"digest": map[string]string{"sha256": image.Digest.Encoded()}}}, "predicate": map[string]any{"fixture": true}}))
 	}
-	attestation := add(ocispec.MediaTypeImageManifest, ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, Config: config, Layers: layers})
+	attestationManifest := ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, Config: config, Layers: layers}
+	if opt.subject == "attestation" {
+		attestationManifest.Subject = subject
+	}
+	attestation := add(ocispec.MediaTypeImageManifest, attestationManifest)
 	if !omitPlatform {
 		attestation.Platform = &ocispec.Platform{OS: "unknown", Architecture: "unknown"}
 	}
 	attestation.Annotations = map[string]string{"vnd.docker.reference.type": "attestation-manifest", "vnd.docker.reference.digest": image.Digest.String()}
 	index := ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: []ocispec.Descriptor{image, attestation}}
+	if opt.subject == "index" {
+		index.Subject = subject
+	}
+	for range opt.indexDepth {
+		inner := add(ocispec.MediaTypeImageIndex, index)
+		index = ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: []ocispec.Descriptor{inner}}
+	}
 	if marker == "large-index" {
 		index.Annotations = map[string]string{"padding": strings.Repeat("x", (1<<20)+1024)}
 	}
 	root := add(ocispec.MediaTypeImageIndex, index)
 	if nested {
 		root.Annotations = map[string]string{ocispec.AnnotationRefName: "local:latest"}
-		index.Manifests = []ocispec.Descriptor{root}
+		index = ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageIndex, Manifests: []ocispec.Descriptor{root}}
 	} else {
 		// A flat index is not itself required to exist under blobs/.
 		delete(blobs, "blobs/sha256/"+root.Digest.Encoded())
@@ -154,6 +192,30 @@ func publicationArchive(t *testing.T, nested bool, marker, deploymentLabel strin
 		t.Fatal(err)
 	}
 	return path, image.Digest.String(), root.Digest.String(), descriptors
+}
+
+func TestPushImageRefusesSubjectsBeforeRegistryRequests(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unexpected registry request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+	for _, subject := range []string{"index", "image", "attestation"} {
+		for _, missing := range []bool{false, true} {
+			for _, nested := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/missing=%t/nested=%t", subject, missing, nested), func(t *testing.T) {
+					archive, _, _, _ := publicationArchive(t, nested, "subject", "", false, publicationArchiveOptions{subject: subject, missingSubject: missing})
+					ref := strings.TrimPrefix(server.URL, "http://") + "/team/image:v1"
+					result, err := PushImage(t.Context(), archive, ref, suitecore.Platform{OS: "linux", Architecture: "amd64"}, true, false)
+					if err == nil || !strings.Contains(err.Error(), "subjects are unsupported") || result != "" || requests.Load() != 0 {
+						t.Fatalf("subject did not refuse before registry access: result=%q err=%v requests=%d", result, err, requests.Load())
+					}
+				})
+			}
+		}
+	}
 }
 
 func TestImagePublicationMetadataBudget(t *testing.T) {
@@ -196,14 +258,20 @@ func TestPushAndResolveImageWithoutDescriptorPlatform(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	archive, image, _, _ := publicationArchive(t, false, "omitted-platform", label, true)
-	ref := strings.TrimPrefix(server.URL, "http://") + "/team/image:v1"
-	if published, err := PushImage(t.Context(), archive, ref, platform, true, false); err != nil || published != strings.TrimSuffix(ref, ":v1")+"@"+image {
-		t.Fatalf("published=%q error=%v", published, err)
-	}
-	resolved, err := ResolveImageRegistryTransport(t.Context(), ref, platform, true)
-	if err != nil || resolved.Descriptor.Digest.String() != image {
-		t.Fatalf("resolved=%+v error=%v", resolved, err)
+	for _, depth := range []int{0, 1, 3} {
+		for _, omitPlatform := range []bool{false, true} {
+			t.Run(fmt.Sprintf("depth=%d/omit-platform=%t", depth, omitPlatform), func(t *testing.T) {
+				archive, image, _, _ := publicationArchive(t, false, "omitted-platform", label, omitPlatform, publicationArchiveOptions{indexDepth: depth})
+				ref := strings.TrimPrefix(server.URL, "http://") + fmt.Sprintf("/team/image:d%d-%t", depth, omitPlatform)
+				if published, err := PushImage(t.Context(), archive, ref, platform, true, false); err != nil || published != strings.TrimPrefix(server.URL, "http://")+"/team/image@"+image {
+					t.Fatalf("published=%q error=%v", published, err)
+				}
+				resolved, err := ResolveImageRegistryTransport(t.Context(), ref, platform, true)
+				if err != nil || resolved.Descriptor.Digest.String() != image {
+					t.Fatalf("resolved=%+v error=%v", resolved, err)
+				}
+			})
+		}
 	}
 }
 
@@ -282,7 +350,7 @@ func TestImageBuildSourceBindsSupplementalContent(t *testing.T) {
 }
 
 func TestResolveImageVerifiesContractAndPlatform(t *testing.T) {
-	for _, scenario := range []string{"valid", "unmarked", "root", "wrong platform", "ambiguous index", "ambiguous omitted platform", "suite artifact"} {
+	for _, scenario := range []string{"valid", "unmarked", "root", "wrong platform", "ambiguous index", "ambiguous omitted platform", "ambiguous nested index", "depth limit", "descriptor limit", "suite artifact"} {
 		t.Run(scenario, func(t *testing.T) {
 			store := memory.New()
 			ctx := t.Context()
@@ -331,6 +399,24 @@ func TestResolveImageVerifiesContractAndPlatform(t *testing.T) {
 				entries[0].Platform = nil
 				entries[1].Platform = nil
 			}
+			if scenario == "ambiguous nested index" {
+				inner := push(ocispec.MediaTypeImageIndex, ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: entries})
+				entries = []ocispec.Descriptor{inner, inner}
+			}
+			if scenario == "depth limit" {
+				for range 102 {
+					inner := push(ocispec.MediaTypeImageIndex, ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: entries})
+					entries = []ocispec.Descriptor{inner}
+				}
+			}
+			if scenario == "descriptor limit" {
+				inner := push(ocispec.MediaTypeImageIndex, ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: []ocispec.Descriptor{}})
+				entries = nil
+				for range 1001 {
+					entries = append(entries, inner)
+				}
+				entries = append(entries, root)
+			}
 			index := push(ocispec.MediaTypeImageIndex, ocispec.Index{Versioned: specs.Versioned{SchemaVersion: 2}, Manifests: entries})
 			if err := store.Tag(ctx, index, "v1"); err != nil {
 				t.Fatal(err)
@@ -342,6 +428,9 @@ func TestResolveImageVerifiesContractAndPlatform(t *testing.T) {
 				}
 			} else if err == nil {
 				t.Fatal("invalid image accepted")
+			}
+			if (scenario == "depth limit" || scenario == "descriptor limit") && (err == nil || !strings.Contains(err.Error(), "traversal limit")) {
+				t.Fatalf("global traversal budget not enforced: %v", err)
 			}
 		})
 	}

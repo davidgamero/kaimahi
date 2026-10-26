@@ -1021,8 +1021,8 @@ platform-specific, digest-pinned OCI manifests. The example targets an Azure
 OpenAI deployment named `gpt-5-mini` through the OpenAI-compatible v1 endpoint.
 The build records only the environment variable name `AZURE_OPENAI_API_KEY`; it
 never reads or embeds the key. `--model-api-key-env` accepts only names matching
-`[A-Za-z_][A-Za-z0-9_]*`; invalid names are rejected before any build files are
-written. Supply the key in that environment variable when running or deploying
+`[A-Za-z_][A-Za-z0-9_]*`; invalid names and known credential-shaped values are
+rejected before source reads or build files are written. Supply the key in that environment variable when running or deploying
 the resulting image.
 
 The command validates the suite, resolves one immutable sandbox build plan and
@@ -1062,9 +1062,13 @@ content. Loose directories use the shared portable packing policy: undeclared
 files default to non-executable, and ToolProvider inventory owns declared modes,
 independently of host execute bits. Published executable permissions are preserved;
 group/world write bits are masked
-when materializing build sources. Capability-based agents omit model build flags:
+when materializing build sources. Modes without owner file-read or directory
+read/search permissions (including `0000`) refuse before creating the staging
+directory; declared mode identity is never rewritten. Capability-based agents omit model build flags:
 selected inference is supplied through the `agentkit-v0-mounted-v1` configuration
-ABI. The AgentKit adapter supports only port 8080 and `/healthz`, and refuses
+ABI. Mounted builds currently support only `linux/amd64`: their qualified harness
+digest names a single amd64 manifest. Other mounted platforms refuse before export.
+The AgentKit adapter supports only port 8080 and `/healthz`, and refuses
 unsupported serving declarations before building.
 The shared `localartifact` loader retains accepted confined symlink/hardlink
 semantics as well as files/directories; build materialization does not restore a
@@ -1082,6 +1086,10 @@ explicit; same-digest publication is a no-op. The existing non-atomic tag prefli
 and registry authentication policy below apply. `--platform` requires nonempty
 `os/architecture` components with exactly one slash; malformed values refuse
 before archive reads.
+OCI index/manifest `subject` links are unsupported and refuse during inspection
+before registry requests, including subject links on attestation manifests.
+This does not affect in-toto statement subjects. Image resolution traverses nested
+indexes with a global descriptor/depth budget and refuses ambiguous platform matches.
 Image manifest/index transport uses the inspector's 4-MiB metadata budget;
 suite provenance/referrer operations retain their separate 1-MiB budget.
 

@@ -243,7 +243,7 @@ func TestSuiteBuildUsesAgentKitBackend(t *testing.T) {
 func TestSuiteBuildRejectsInvalidModelKeyEnvBeforeBuilderOrFiles(t *testing.T) {
 	for _, verbose := range []bool{false, true} {
 		t.Run(map[bool]string{false: "quiet", true: "verbose"}[verbose], func(t *testing.T) {
-			const invalid = "sk-test-only-invalid-env"
+			invalid := "github_" + "pat_" + strings.Repeat("A", 82)
 			root := t.TempDir()
 			var out, diagnostics bytes.Buffer
 			deps, loads := testDependencies(&out, &diagnostics)
