@@ -443,6 +443,9 @@ func markdownAgentInventory(directory string) ([]agentTUIAgent, error) {
 // ResolveMarkdownAgent selects a literal path or one unambiguous display name
 // from the same inventory used by the agent console.
 func ResolveMarkdownAgent(directory, selector string) (string, error) {
+	if info, err := os.Lstat(selector); err == nil && info.IsDir() {
+		return ResolveMarkdownSource(selector)
+	}
 	if strings.HasSuffix(selector, ".md") {
 		return selector, nil
 	}

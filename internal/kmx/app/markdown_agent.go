@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gowebpki/jcs"
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentfile"
 	agentruntime "github.com/kaimahi-agents/kaimahi/internal/kmx/runtime"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/secretshapes"
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -43,6 +44,11 @@ func mdError(path string, line int, code, repair string) error {
 // MarkdownAgent owns a frozen native definition and its separately authored tests.
 // Hashes identify source bytes, not model determinism or deployment authority.
 type MarkdownAgent struct {
+	Unmapped                                                                                       []string
+	ToolsOmitted                                                                                   bool
+	ToolsPath, ToolsRevision                                                                       string
+	ToolSources, TestSources                                                                       map[string][]byte
+	CasePaths                                                                                      map[string]string
 	CLITools                                                                                       []CLIToolSpec
 	Grant                                                                                          *MarkdownToolGrant
 	BindingDigest                                                                                  string
@@ -86,14 +92,16 @@ func mdRead(path string, limit int) ([]byte, error) {
 }
 
 func MarkdownTestsPath(path string) string {
-	if filepath.Base(filepath.Dir(path)) == "agents" && filepath.Base(filepath.Dir(filepath.Dir(path))) == ".github" {
-		return filepath.Join(filepath.Dir(filepath.Dir(path)), "agent-tests", strings.TrimSuffix(filepath.Base(path), ".agent.md")+".agent.test.md")
-	}
-	return ""
+	return markdownStem(path) + ".tests.md"
 }
 func ReadMarkdownAgent(path string) (*MarkdownAgent, error) { return LoadMarkdownAgent(path, "") }
 func LoadMarkdownAgent(path, tests string) (*MarkdownAgent, error) {
-	if !strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".agent.test.md") {
+	var resolveErr error
+	path, resolveErr = ResolveMarkdownSource(path)
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+	if !strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".tests.md") || strings.HasSuffix(path, ".agent.test.md") {
 		return nil, mdError(path, 1, "extension", "select an agent Markdown definition, not a test file")
 	}
 	path, err := canonicalMDSource(path)
@@ -106,6 +114,9 @@ func LoadMarkdownAgent(path, tests string) (*MarkdownAgent, error) {
 	}
 	a, err := parseMarkdownAgent(path, raw)
 	if err != nil {
+		return nil, err
+	}
+	if err := loadMarkdownTools(a); err != nil {
 		return nil, err
 	}
 	explicit := tests != ""
@@ -127,12 +138,12 @@ func LoadMarkdownAgent(path, tests string) (*MarkdownAgent, error) {
 			return nil, mdError(tests, 1, "read", "select a regular test file of at most 128 KiB")
 		}
 		if e == nil {
-			if err = parseMarkdownTests(a, b); err != nil {
+			if err = loadMarkdownTestFiles(a, b); err != nil {
 				return nil, err
 			}
 		}
 	}
-	a.PairRevision = mdJSONHash(struct{ Schema, Agent, Tests string }{"kmx.agent-pair/v1", a.Revision, a.TestsRevision})
+	a.PairRevision = mdJSONHash(struct{ Schema, Agent, Tools, Tests string }{"kmx.agent-pair/v2", a.Revision, a.ToolsRevision, a.TestsRevision})
 	if err = a.CheckCurrent(); err != nil {
 		return nil, err
 	}
@@ -156,6 +167,14 @@ func (a *MarkdownAgent) CheckCurrent() error {
 	raw, err := mdRead(a.Path, markdownAgentLimit)
 	if err != nil || mdHash(raw) != a.Revision {
 		return errors.New("agent definition changed; reload before running")
+	}
+	if a.ToolsPath != "" {
+		if err := checkMarkdownSources(a.ToolsPath, a.ToolSources, 128<<10); err != nil {
+			return err
+		}
+	}
+	if a.TestSources != nil {
+		return checkMarkdownSources(a.TestsPath, a.TestSources, 128<<10)
 	}
 	if a.TestsPath != "" {
 		b, e := mdRead(a.TestsPath, 128<<10)
@@ -242,18 +261,35 @@ func mdText(n *yaml.Node) string {
 	return n.Value
 }
 func parseMarkdownAgent(path string, raw []byte) (*MarkdownAgent, error) {
+	if !bytes.HasPrefix(raw, []byte("---\n")) && !bytes.HasPrefix(raw, []byte("---\r\n")) {
+		parsed, err := agentfile.Parse(path, raw)
+		if err != nil {
+			return nil, err
+		}
+		a := &MarkdownAgent{Path: path, Name: parsed.Identity.ID, Description: parsed.Identity.Purpose, Model: parsed.Model, Instructions: parsed.Instructions, Tools: parsed.Tools, Source: bytes.Clone(raw), Revision: mdHash(raw), Mocks: map[string][]MarkdownMock{}, Lines: map[string]int{}}
+		for _, example := range parsed.Examples {
+			if example.Mocks != nil {
+				return nil, errors.New("use paired tests for recorded tool fixtures in persistent agents")
+			}
+			a.Examples = append(a.Examples, agentruntime.EvaluationCase{ID: example.ID, Input: example.Input, Assertions: example.Assertions})
+		}
+		return a, nil
+	}
 	m, lines, end, err := mdFront(path, raw, markdownAgentLimit)
 	if err != nil {
 		return nil, err
 	}
-	for k, n := range m {
+	var unmapped []string
+	for k := range m {
 		switch k {
 		case "name", "description", "model", "tools":
+		case "metadata", "user-invocable", "disable-model-invocation", "infer":
 		default:
-			return nil, mdError(path, n.Line+1, "unsupported-field", "field "+safeTerminal(k)+" is not supported by the local runner")
+			unmapped = append(unmapped, safeTerminal(k))
 		}
 	}
 	a := &MarkdownAgent{Path: path, Name: strings.TrimSuffix(filepath.Base(path), ".agent.md"), Description: mdText(m["description"]), Model: mdText(m["model"]), Source: bytes.Clone(raw), Revision: mdHash(raw), Mocks: map[string][]MarkdownMock{}, Lines: map[string]int{}}
+	a.Unmapped, a.ToolsOmitted = unmapped, m["tools"] == nil
 	if !strings.HasSuffix(path, ".agent.md") {
 		a.Name = strings.TrimSuffix(filepath.Base(path), ".md")
 	}
@@ -264,45 +300,51 @@ func parseMarkdownAgent(path string, raw []byte) (*MarkdownAgent, error) {
 		return nil, mdError(path, 2, "name", "use a safe 1-63 character name")
 	}
 	if strings.TrimSpace(a.Description) == "" {
-		return nil, mdError(path, 2, "description", "add a nonempty description string")
+		a.Description = a.Name + " agent"
 	}
 	if n := m["model"]; n != nil && (a.Model == "" || !localModelName.MatchString(a.Model)) {
 		return nil, mdError(path, n.Line+1, "model", "use a native string model ID or omit model; nested provider/id is retired")
 	}
 	tools := m["tools"]
-	if tools == nil || tools.Kind != yaml.SequenceNode {
+	if tools == nil {
+		tools = &yaml.Node{Kind: yaml.SequenceNode}
+	}
+	if tools.Kind == yaml.ScalarNode && tools.Tag == "!!str" {
+		list := &yaml.Node{Kind: yaml.SequenceNode}
+		for _, name := range strings.Split(tools.Value, ",") {
+			list.Content = append(list.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: strings.TrimSpace(name)})
+		}
+		tools = list
+	}
+	if tools.Kind != yaml.SequenceNode {
 		return nil, mdError(path, 2, "tools", "declare tools: [] for tool-free agents, or a list of mock-bound tool names")
 	}
 	a.Tools = []string{}
 	seen := map[string]bool{}
 	for _, n := range tools.Content {
 		v := mdText(n)
-		if !markdownAgentName.MatchString(v) || seen[v] {
+		if v == "" || len(v) > 128 || !cliText(v) || seen[v] {
 			return nil, mdError(path, n.Line+1, "tools", "use unique literal tool names")
 		}
 		a.Tools = append(a.Tools, v)
 		seen[v] = true
 	}
-	a.Instructions, a.CLITools, err = extractCLITools(path, lines, end+1)
-	if err != nil {
-		return nil, err
+	if strings.Contains(string(raw), "```yaml kmx-tool") {
+		return nil, mdError(path, end+2, "tools", "put command definitions in the .tools.yaml companion")
 	}
-	if len(a.CLITools) > 0 {
-		if len(a.CLITools) != len(a.Tools) {
-			return nil, mdError(path, end+2, "tools", "every declared tool needs exactly one CLI binding")
-		}
-		for _, tool := range a.CLITools {
-			if !containsString(a.Tools, tool.Name) {
-				return nil, mdError(path, end+2, "tools", "CLI binding name must be in front-matter tools")
-			}
-		}
-	}
+	a.Instructions = strings.TrimSpace(strings.Join(lines[end+1:], "\n"))
 	if a.Instructions == "" || utf8.RuneCountInString(a.Instructions) > 30000 {
 		return nil, mdError(path, end+2, "instructions", "provide 1-30000 characters of instructions")
 	}
 	// Give old spike users an explicit repair rather than leaking tests into prompts.
-	if strings.Contains(a.Instructions, "## Examples") && strings.Contains(a.Instructions, "assertions:") {
-		return nil, mdError(path, end+2, "inline-tests", "move inline tests to the paired .agent.test.md file")
+	if parsed, e := agentfile.Parse(path, raw); e == nil && len(parsed.Examples) > 0 {
+		a.Instructions = parsed.Instructions
+		for _, example := range parsed.Examples {
+			if example.Mocks != nil {
+				return nil, errors.New("use paired tests for recorded tool fixtures in persistent agents")
+			}
+			a.Examples = append(a.Examples, agentruntime.EvaluationCase{ID: example.ID, Input: example.Input, Assertions: example.Assertions})
+		}
 	}
 	return a, nil
 }
@@ -467,7 +509,7 @@ func validateMarkdownMocks(tools []string, mocks []MarkdownMock) error {
 
 // MarkdownOrphanTests reports companion files that cannot pair in this project.
 func MarkdownOrphanTests(root string) ([]string, error) {
-	dir := filepath.Join(root, ".github", "agent-tests")
+	dir := root
 	f, err := os.Open(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -485,8 +527,8 @@ func MarkdownOrphanTests(root string) ([]string, error) {
 	}
 	var orphan []string
 	for _, entry := range entries {
-		if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), ".agent.test.md") {
-			agent := filepath.Join(root, ".github", "agents", strings.TrimSuffix(entry.Name(), ".agent.test.md")+".agent.md")
+		if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), ".tests.md") {
+			agent := filepath.Join(dir, strings.TrimSuffix(entry.Name(), ".tests.md")+".agent.md")
 			if _, err := os.Lstat(agent); errors.Is(err, os.ErrNotExist) {
 				orphan = append(orphan, filepath.Join(dir, entry.Name()))
 			}

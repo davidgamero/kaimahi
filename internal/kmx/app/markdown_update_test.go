@@ -60,10 +60,10 @@ func TestManagerUpdateInvalidInputsKeepSessions(t *testing.T) {
 	defer m.close()
 	r := m.handle(t.Context(), agentWorkerRequest{Operation: "start", Source: a.Path, Version: a.Revision}).Instance
 	opened := m.handle(t.Context(), agentWorkerRequest{AgentID: r.ID, Version: r.Version, Generation: r.Generation, Operation: "session-open"})
-	if err := os.WriteFile(a.Path, []byte("broken"), 0600); err != nil {
+	if err := os.WriteFile(a.Path, []byte("---\nbroken"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	reply := m.handle(t.Context(), agentWorkerRequest{AgentID: r.ID, Version: r.Version, Generation: r.Generation, Operation: "update", NewVersion: mdHash([]byte("broken"))})
+	reply := m.handle(t.Context(), agentWorkerRequest{AgentID: r.ID, Version: r.Version, Generation: r.Generation, Operation: "update", NewVersion: mdHash([]byte("---\nbroken"))})
 	if reply.Error == "" || m.agents[r.ID].sessions[opened.Session] == nil || m.agents[r.ID].stopping {
 		t.Fatal("invalid replacement disrupted instance")
 	}

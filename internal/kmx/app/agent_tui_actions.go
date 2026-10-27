@@ -7,10 +7,13 @@ import (
 
 func (a *App) runAgentTUIAction(action agentTUIAction) (agentTUIEnvironment, error) {
 	if action.agent.Runtime == "md" {
-		if action.kind == "edit" || action.kind == "edit-tests" {
+		if action.kind == "edit" || action.kind == "edit-tests" || action.kind == "edit-tools" {
 			path := action.agent.DefinitionPath
 			if action.kind == "edit-tests" {
 				path = action.agent.TestsPath
+			}
+			if action.kind == "edit-tools" {
+				path = MarkdownToolsPath(action.agent.DefinitionPath)
 			}
 			argv, err := markdownEditor()
 			if err != nil {

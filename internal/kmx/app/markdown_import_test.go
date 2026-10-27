@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,68 +10,52 @@ import (
 	"testing"
 )
 
-func TestMarkdownImportNewDefaultAndExplicitReplacement(t *testing.T) {
-	for _, replace := range []bool{false, true} {
-		t.Run(map[bool]string{true: "replace", false: "new"}[replace], func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "frogagent.agent.md")
-			original := []byte("You are a frog.\r\nRibbit.\r\n")
-			if err := os.WriteFile(path, original, 0644); err != nil {
+func TestMarkdownDirectoryImportPreservesSourceAndCreatesTemplates(t *testing.T) {
+	for _, source := range []string{"You are a frog.\r\nRibbit.\r\n", markdownTestAgent} {
+		path := filepath.Join(t.TempDir(), "frog.agent.md")
+		if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+			t.Fatal(err)
+		}
+		dest := filepath.Join(t.TempDir(), "frog")
+		saved, err := ImportMarkdownDirectory(t.Context(), path, dest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range []string{path, saved} {
+			b, err := os.ReadFile(p)
+			if err != nil || !bytes.Equal(b, []byte(source)) {
+				t.Fatal("source rewritten", err)
+			}
+		}
+		a, err := ReadMarkdownAgent(dest)
+		if err != nil || len(a.Examples) != 0 || len(a.CLITools) != 0 {
+			t.Fatal("templates invalid", err)
+		}
+		for _, p := range []string{MarkdownToolsPath(saved), MarkdownTestsPath(saved)} {
+			if _, err := os.Stat(p); err != nil {
 				t.Fatal(err)
 			}
-			input := "\n"
-			if replace {
-				input = "r\ny\n"
-			}
-			var output bytes.Buffer
-			saved, err := ImportMarkdownAgent(t.Context(), path, strings.NewReader(input), &output)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if replace && saved != path || !replace && saved == path {
-				t.Fatalf("saved=%s", saved)
-			}
-			if !replace && strings.Count(output.String(), "]: ") != 1 {
-				t.Fatalf("default import asked more than once: %s", &output)
-			}
-			b, err := os.ReadFile(saved)
-			if err != nil || !bytes.HasSuffix(b, original) {
-				t.Fatal("instructions changed")
-			}
-			a, err := ReadMarkdownAgent(saved)
-			if err != nil || a.Name != "frogagent" || a.Description != "frogagent agent" {
-				t.Fatalf("agent=%+v err=%v", a, err)
-			}
-			if !replace {
-				b, _ := os.ReadFile(path)
-				if !bytes.Equal(b, original) {
-					t.Fatal("original overwritten")
-				}
-			}
-		})
+		}
+		if _, err := ImportMarkdownDirectory(t.Context(), path, dest); err == nil {
+			t.Fatal("existing destination overwritten")
+		}
 	}
 }
 
-func TestMarkdownImportCancellationAndCollisionPreserveOriginal(t *testing.T) {
-	for _, input := range []string{"n\n", "", "r\n\n", "\n"} {
-		path := filepath.Join(t.TempDir(), "frog.agent.md")
-		original := []byte("Be a frog")
-		if err := os.WriteFile(path, original, 0600); err != nil {
-			t.Fatal(err)
-		}
-		collision := strings.TrimSuffix(path, ".agent.md") + ".imported.agent.md"
-		if err := os.WriteFile(collision, []byte("existing user content"), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := ImportMarkdownAgent(t.Context(), path, strings.NewReader(input), io.Discard); err == nil {
-			t.Fatal("unexpected import success")
-		}
-		got, _ := os.ReadFile(path)
-		if !bytes.Equal(got, original) {
-			t.Fatal("original modified")
-		}
-		got, _ = os.ReadFile(collision)
-		if string(got) != "existing user content" {
-			t.Fatal("collision overwritten")
-		}
+func TestMarkdownImportCancellationPreservesOriginal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "frog.agent.md")
+	if err := os.WriteFile(path, []byte("Be a frog"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportMarkdownAgent(t.Context(), path, strings.NewReader("n\n"), io.Discard); err == nil {
+		t.Fatal("decline imported")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := ImportMarkdownDirectory(ctx, path, markdownStem(path)); err == nil {
+		t.Fatal("cancelled import succeeded")
+	}
+	if _, err := os.Stat(markdownStem(path)); !os.IsNotExist(err) {
+		t.Fatal("cancel created directory")
 	}
 }

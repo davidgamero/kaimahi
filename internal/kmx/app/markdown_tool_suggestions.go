@@ -155,6 +155,7 @@ The example is a schema illustration, NOT an instruction to suggest GitHub tools
 		return p, err
 	}
 	p = MarkdownToolProposal{SchemaVersion: 2, ID: "p-" + id, Source: a.Path, AgentDigest: a.Revision, BaseGrant: base, Model: model, CLIChoices: choices, Gaps: gaps, Created: time.Now().UTC()}
+	p.ToolsDigest = a.ToolsRevision
 	root, _, err := mdToolPaths("")
 	if err != nil {
 		return p, err
@@ -224,6 +225,9 @@ func AddSuggestedCLITools(ctx context.Context, p MarkdownToolProposal, selected 
 	if a.Revision != p.AgentDigest {
 		return errors.New("definition changed since suggestion; nothing added")
 	}
+	if a.ToolsRevision != p.ToolsDigest {
+		return errors.New("tool companion changed since suggestion")
+	}
 	_, base, err := readCurrentToolGrant(a.Path)
 	if err != nil {
 		return err
@@ -259,21 +263,25 @@ func AddSuggestedCLITools(ctx context.Context, p MarkdownToolProposal, selected 
 			return errors.New("selected tool is absent from the proposal")
 		}
 	}
-	// Re-encode front matter while preserving the instruction body bytes exactly.
+	// Preserve every original header field and the exact prompt body; only the
+	// tool selection changes. Plain prompts gain a minimal Copilot header.
 	lines := bytes.SplitAfter(a.Source, []byte("\n"))
-	end := 1
-	for end < len(lines) && strings.TrimSpace(string(lines[end])) != "---" {
-		end++
+	header := map[string]any{"name": a.Name, "description": a.Description}
+	body := a.Source
+	if strings.TrimSpace(string(lines[0])) == "---" {
+		end := 1
+		for end < len(lines) && strings.TrimSpace(string(lines[end])) != "---" {
+			end++
+		}
+		if end == len(lines) {
+			return errors.New("invalid source header")
+		}
+		if err := yaml.Unmarshal(bytes.Join(lines[1:end], nil), &header); err != nil {
+			return err
+		}
+		body = bytes.Join(lines[end+1:], nil)
 	}
-	if end == len(lines) {
-		return errors.New("invalid source header")
-	}
-	header := struct {
-		Name        string   `yaml:"name"`
-		Description string   `yaml:"description"`
-		Model       string   `yaml:"model,omitempty"`
-		Tools       []string `yaml:"tools"`
-	}{a.Name, a.Description, a.Model, names}
+	header["tools"] = names
 	front, err := yaml.Marshal(header)
 	if err != nil {
 		return err
@@ -282,18 +290,14 @@ func AddSuggestedCLITools(ctx context.Context, p MarkdownToolProposal, selected 
 	result.WriteString("---\n")
 	result.Write(front)
 	result.WriteString("---\n")
-	for _, line := range lines[end+1:] {
-		result.Write(line)
-	}
-	result.WriteString("\n\n## Tool bindings\n")
+	result.Write(body)
+	toolFile := markdownToolsFile{SchemaVersion: 1, Tools: map[string]CLIToolSpec{}}
 	for _, spec := range specs {
-		raw, err := yaml.Marshal(spec)
-		if err != nil {
-			return err
-		}
-		result.WriteString("\n```yaml kmx-tool\n")
-		result.Write(raw)
-		result.WriteString("```\n")
+		toolFile.Tools[spec.Name] = spec
+	}
+	toolBytes, err := yaml.Marshal(toolFile)
+	if err != nil {
+		return err
 	}
 	if _, err = parseMarkdownAgent(a.Path, result.Bytes()); err != nil {
 		return err
@@ -333,6 +337,9 @@ func AddSuggestedCLITools(ctx context.Context, p MarkdownToolProposal, selected 
 	}
 	if err = os.Rename(f.Name(), a.Path); err != nil {
 		return err
+	}
+	if err = writeMarkdownCompanion(a.ToolsPath, toolBytes, a.ToolSources[a.ToolsPath]); err != nil {
+		return fmt.Errorf("agent tool selection saved; companion save incomplete: %w", err)
 	}
 	dir, err := os.Open(filepath.Dir(a.Path))
 	if err != nil {

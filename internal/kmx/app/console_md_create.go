@@ -365,7 +365,7 @@ func (m agentTUIModel) updateMDCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err := CreateMarkdownDraft(root, name, instructions, model); err != nil {
 						return consoleMDResult{err: fmt.Errorf("creation stopped; inspect destination files before retrying: %w", err)}
 					}
-					a, err := ReadMarkdownAgent(filepath.Join(root, ".github", "agents", name+".agent.md"))
+					a, err := ReadMarkdownAgent(filepath.Join(root, name, name+".agent.md"))
 					return consoleMDResult{agent: a, err: err}
 				})
 			case "accept":

@@ -190,76 +190,6 @@ func validateCLISpec(s CLIToolSpec) error {
 	return nil
 }
 
-// Only a final dedicated section is executable metadata. Ordinary code fences
-// in the instructions are retained; a binding fence outside the section refuses.
-func extractCLITools(path string, lines []string, start int) (string, []CLIToolSpec, error) {
-	section := len(lines)
-	fence := ""
-	for i := start; i < len(lines); i++ {
-		line := strings.TrimSpace(lines[i])
-		if fence != "" {
-			if line == fence {
-				fence = ""
-			}
-			continue
-		}
-		if line == "## Tool bindings" {
-			section = i
-			break
-		}
-		if line == "```yaml kmx-tool" {
-			return "", nil, mdError(path, i+1, "tool-section", "put kmx-tool blocks in a final ## Tool bindings section")
-		}
-		if strings.HasPrefix(line, "```") {
-			fence = "```"
-		} else if strings.HasPrefix(line, "~~~") {
-			fence = "~~~"
-		}
-	}
-	instructions := strings.TrimSpace(strings.Join(lines[start:section], "\n"))
-	specs := []CLIToolSpec{}
-	seen := map[string]bool{}
-	for i := section + 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "" {
-			continue
-		}
-		if strings.TrimSpace(lines[i]) != "```yaml kmx-tool" {
-			return "", nil, mdError(path, i+1, "tool-section", "Tool bindings accepts only yaml kmx-tool fences")
-		}
-		begin := i + 1
-		i++
-		for i < len(lines) && strings.TrimSpace(lines[i]) != "```" {
-			i++
-		}
-		if i == len(lines) {
-			return "", nil, mdError(path, begin, "tool-fence", "close tool fence with ```")
-		}
-		b := []byte(strings.Join(lines[begin:i], "\n"))
-		var node yaml.Node
-		if yaml.Unmarshal(b, &node) != nil || mdNodeCheck(&node) != nil {
-			return "", nil, mdError(path, begin+1, "tool", "invalid YAML, duplicates or aliases in tool binding")
-		}
-		d := yaml.NewDecoder(bytes.NewReader(b))
-		d.KnownFields(true)
-		var s CLIToolSpec
-		var extra any
-		if d.Decode(&s) != nil || !errors.Is(d.Decode(&extra), io.EOF) {
-			return "", nil, mdError(path, begin+1, "tool", "use one closed CLI binding document; check field names and types")
-		}
-		if err := validateCLISpec(s); err != nil {
-			return "", nil, mdError(path, begin+1, "tool", err.Error())
-		}
-		if seen[s.Name] || len(specs) >= 8 {
-			return "", nil, mdError(path, begin+1, "tool", "use unique tool names and at most eight bindings")
-		}
-		seen[s.Name] = true
-		specs = append(specs, s)
-	}
-	if section < len(lines) && len(specs) == 0 {
-		return "", nil, mdError(path, section+1, "tool", "add at least one kmx-tool block")
-	}
-	return instructions, specs, nil
-}
 func resolveCLICommand(name string) (string, string, error) {
 	p, err := exec.LookPath(name)
 	if err != nil {
@@ -316,13 +246,14 @@ func PrepareCLIToolApproval(path string) (CLIToolApproval, error) {
 		return plan, err
 	}
 	if len(a.CLITools) == 0 {
-		return plan, errors.New("agent has no ## Tool bindings; add a yaml kmx-tool block")
+		return plan, errors.New("agent has no command bindings; add named tools to its .tools.yaml companion")
 	}
 	_, base, err := readCurrentToolGrant(a.Path)
 	if err != nil {
 		return plan, err
 	}
 	g := MarkdownToolGrant{SchemaVersion: 1, Source: a.Path, AgentDigest: a.Revision, Adapter: cliToolAdapter, Tools: append([]string{}, a.Tools...)}
+	g.ToolsDigest = a.ToolsRevision
 	for _, s := range a.CLITools {
 		exe, digest, err := resolveCLICommand(s.Command)
 		if err != nil {
@@ -453,6 +384,9 @@ func ApplyCLIToolApproval(ctx context.Context, p *CLIToolApproval) error {
 		}
 		if a.Revision != p.Grant.AgentDigest {
 			return nil, errors.New("source changed after review; no probe or grant applied")
+		}
+		if a.ToolsRevision != p.Grant.ToolsDigest {
+			return nil, errors.New("tool companion changed after review; no probe or grant applied")
 		}
 		_, base, err := readCurrentToolGrant(a.Path)
 		if err != nil {

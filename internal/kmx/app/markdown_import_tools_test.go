@@ -2,10 +2,8 @@ package app
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"os"
-	"strings"
 	"testing"
 )
 
@@ -21,21 +19,13 @@ func cliSuggestionFixture(t *testing.T) (*MarkdownAgent, MarkdownToolProposal) {
 	second.Command = "git"
 	second.Description = "Read Git version"
 	p := MarkdownToolProposal{SchemaVersion: 2, Source: a.Path, AgentDigest: a.Revision, CLIChoices: []MarkdownCLIChoice{{Reason: "Check Go compatibility", Scope: "Only go version; no repository changes", MissingScope: []string{}, Tool: &s}, {Reason: "Check Git compatibility", Scope: "Only git version; no repository changes", MissingScope: []string{}, Tool: &second}}, Gaps: []string{}}
+	p.ToolsDigest = a.ToolsRevision
 	return a, p
 }
 
 func TestImportToolSuggestionsAllowSubsetWithoutGrant(t *testing.T) {
 	a, p := cliSuggestionFixture(t)
-	calls := 0
-	suggest := func(ctx context.Context, path, model string) (MarkdownToolProposal, error) {
-		calls++
-		if path != a.Path {
-			t.Fatal("wrong source")
-		}
-		return p, nil
-	}
-	var out bytes.Buffer
-	if err := offerImportedTools(t.Context(), a.Path, "", strings.NewReader("allow\ndeny\n"), &out, suggest); err != nil {
+	if err := AddSuggestedCLITools(t.Context(), p, []string{"go_version"}); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(a.Path)
@@ -43,39 +33,28 @@ func TestImportToolSuggestionsAllowSubsetWithoutGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || len(got.CLITools) != 1 || got.CLITools[0].Name != "go_version" || got.Instructions != a.Instructions {
-		t.Fatalf("got=%+v calls=%d", got, calls)
+	if err := loadMarkdownTools(got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.CLITools) != 1 || got.CLITools[0].Name != "go_version" || got.Instructions != a.Instructions {
+		t.Fatalf("got=%+v", got)
 	}
 	if g, _, err := readCurrentToolGrant(a.Path); err != nil || g != nil {
 		t.Fatal("declaration acceptance granted execution")
 	}
-	if strings.Contains(out.String(), "Repository OWNER/REPO") {
-		t.Fatal("GitHub-first prompt retained")
-	}
 }
 
 func TestImportToolSuggestionsDenyCancelAndMissingScope(t *testing.T) {
-	for _, input := range []string{"\n\n", "deny\ndeny\n", "allow\ncancel\n", "allow\n"} {
-		t.Run(strings.ReplaceAll(input, "\n", "_"), func(t *testing.T) {
-			a, p := cliSuggestionFixture(t)
-			suggest := func(context.Context, string, string) (MarkdownToolProposal, error) { return p, nil }
-			var out bytes.Buffer
-			if err := offerImportedTools(t.Context(), a.Path, "", strings.NewReader(input), &out, suggest); err != nil {
-				t.Fatal(err)
-			}
-			raw, _ := os.ReadFile(a.Path)
-			if !bytes.Equal(raw, a.Source) {
-				t.Fatal("cancel/deny modified source")
-			}
-		})
-	}
 	a, p := cliSuggestionFixture(t)
-	p.CLIChoices = []MarkdownCLIChoice{{Reason: "Inspect a cluster", Scope: "Not known", MissingScope: []string{"subscription", "resource group"}, Tool: nil}}
-	var out bytes.Buffer
-	if err := offerImportedTools(t.Context(), a.Path, "", strings.NewReader(""), &out, func(context.Context, string, string) (MarkdownToolProposal, error) { return p, nil }); err != nil {
+	if err := AddSuggestedCLITools(t.Context(), p, nil); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out.String(), "[allow/deny") {
+	raw, _ := os.ReadFile(a.Path)
+	if !bytes.Equal(raw, a.Source) {
+		t.Fatal("empty selection changed source")
+	}
+	p.CLIChoices = []MarkdownCLIChoice{{Reason: "Inspect a cluster", Scope: "Not known", MissingScope: []string{"subscription", "resource group"}, Tool: nil}}
+	if _, err := CLIProposalSelection(p, nil); err == nil {
 		t.Fatal("unscoped tool was selectable")
 	}
 }

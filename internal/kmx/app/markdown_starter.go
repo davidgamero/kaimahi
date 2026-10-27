@@ -21,8 +21,9 @@ func createMarkdownPair(root, name, instructions, model string, starter bool) er
 	if !markdownAgentName.MatchString(name) {
 		return fmt.Errorf("use a safe 1-63 character name")
 	}
-	agent := filepath.Join(root, ".github", "agents", name+".agent.md")
-	tests := filepath.Join(root, ".github", "agent-tests", name+".agent.test.md")
+	agent := filepath.Join(root, name, name+".agent.md")
+	tests := MarkdownTestsPath(agent)
+	tools := MarkdownToolsPath(agent)
 	body := fmt.Sprintf("---\nname: %s\ndescription: Greets people by name\ntools: []\n---\n\nWhen the user gives their name, reply with exactly Hello, NAME!\nReplace NAME with their name, preserving spelling and capitalization.\n", name)
 	testBody := "---\nschemaVersion: 1\n---\n\n# Greeting tests\n\n```yaml agent-test\nid: greet-sam\ninput: My name is Sam\nassertions:\n  - id: greeting\n    type: regex\n    pattern: '^Hello, Sam!$'\n```\n"
 	if !starter {
@@ -41,7 +42,7 @@ func createMarkdownPair(root, name, instructions, model string, starter bool) er
 	if _, err := parseMarkdownAgent(agent, []byte(body)); err != nil {
 		return err
 	}
-	for _, path := range []string{agent, tests} {
+	for _, path := range []string{agent, tests, tools} {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			return fmt.Errorf("refusing to overwrite %s", path)
 		}
@@ -66,5 +67,8 @@ func createMarkdownPair(root, name, instructions, model string, starter bool) er
 	if err := write(agent, body); err != nil {
 		return err
 	}
-	return write(tests, testBody)
+	if err := write(tests, testBody); err != nil {
+		return err
+	}
+	return write(tools, emptyMarkdownTools)
 }

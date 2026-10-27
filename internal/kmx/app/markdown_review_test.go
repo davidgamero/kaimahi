@@ -14,7 +14,15 @@ import (
 )
 
 func TestMDReviewFullStringToolPattern(t *testing.T) {
-	a, err := parseMarkdownAgent("agent.agent.md", []byte(strings.Replace(cliToolAgent, "^dg-[a-z0-9-]+$", "^dg-prod|staging$", 1)))
+	path, _ := cliFixture(t)
+	b, err := os.ReadFile(MarkdownToolsPath(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(MarkdownToolsPath(path), []byte(strings.Replace(string(b), "^dg-[a-z0-9-]+$", "^dg-prod|staging$", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a, err := ReadMarkdownAgent(path)
 	if err != nil {
 		t.Fatal(err)
 	}

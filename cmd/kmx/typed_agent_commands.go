@@ -75,6 +75,18 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 		if operation == "init" {
 			return false
 		}
+		if len(args) > 0 {
+			if info, e := os.Lstat(args[0]); e == nil && info.IsDir() {
+				return true
+			}
+			if strings.HasSuffix(args[0], ".md") {
+				for _, companion := range []string{app.MarkdownToolsPath(args[0]), app.MarkdownTestsPath(args[0])} {
+					if _, e := os.Lstat(companion); e == nil {
+						return true
+					}
+				}
+			}
+		}
 		if len(args) > 0 && strings.HasSuffix(args[0], ".md") {
 			if _, err := os.Lstat(args[0]); errors.Is(err, os.ErrNotExist) && (operation == "run" || operation == "test") {
 				return false

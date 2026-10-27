@@ -451,7 +451,11 @@ func (m *markdownTUI) localCommand(input string) tea.Cmd {
 func mdCaseDetails(a *MarkdownAgent, r MarkdownCaseResult) string {
 	var b strings.Builder
 	if a != nil {
-		fmt.Fprintf(&b, "%s:%d\n", a.TestsPath, a.Lines[r.ID])
+		path := a.TestsPath
+		if a.CasePaths[r.ID] != "" {
+			path = a.CasePaths[r.ID]
+		}
+		fmt.Fprintf(&b, "%s:%d\n", path, a.Lines[r.ID])
 		for _, c := range a.Examples {
 			if c.ID == r.ID {
 				for _, check := range c.Assertions {

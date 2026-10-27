@@ -194,6 +194,12 @@ func (s *MarkdownSession) effective(a *MarkdownAgent) *MarkdownAgent {
 	return &copy
 }
 func (s *MarkdownSession) checkSelection(a *MarkdownAgent) error {
+	if len(a.Unmapped) > 0 {
+		return fmt.Errorf("unsupported execution settings: %s; imported source is preserved", strings.Join(a.Unmapped, ", "))
+	}
+	if a.ToolsOmitted {
+		fmt.Fprintln(s.Err, "Tools omitted: this KMX host exposes only explicitly approved local bindings; Copilot host defaults are not imported.")
+	}
 	if err := a.CheckCurrent(); err != nil {
 		return err
 	}
@@ -246,6 +252,9 @@ func (s *MarkdownSession) Evaluate(ctx context.Context, a *MarkdownAgent, select
 		return result, grantErr
 	}
 	if grant != nil {
+		if grant.ToolsDigest != a.ToolsRevision {
+			return result, errors.New("tool companion changed; review approval before testing")
+		}
 		if grant.AgentDigest != a.Revision {
 			return result, errors.New("tool approval is stale; suggest/review the edited definition before testing")
 		}

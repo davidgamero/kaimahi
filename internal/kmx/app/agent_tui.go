@@ -384,7 +384,7 @@ func (m agentTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		c.Agents, c.Loading, c.Error = msg.agents, false, ""
 		for path, row := range m.createdDefinitions {
-			if filepath.Dir(filepath.Dir(filepath.Dir(path))) != c.Env.Directory {
+			if filepath.Dir(filepath.Dir(path)) != c.Env.Directory {
 				continue
 			}
 			found := false
@@ -572,7 +572,7 @@ func (m agentTUIModel) agentActions(a agentTUIAgent) []agentTUIMenuAction {
 		actions = append(actions, agentTUIMenuAction{"c", "Chat with agent"})
 	}
 	if a.Runtime == "md" {
-		return append(actions, agentTUIMenuAction{"e", "Edit definition"}, agentTUIMenuAction{"t", "Edit tests"}, agentTUIMenuAction{"T", "Run tests"}, agentTUIMenuAction{"s", "Suggest tools"}, agentTUIMenuAction{"a", "Review & approve tools"}, agentTUIMenuAction{"u", "Update running agent"})
+		return append(actions, agentTUIMenuAction{"e", "Edit definition"}, agentTUIMenuAction{"t", "Edit tests"}, agentTUIMenuAction{"b", "Edit tool bindings"}, agentTUIMenuAction{"T", "Run tests"}, agentTUIMenuAction{"s", "Suggest tools"}, agentTUIMenuAction{"a", "Review & approve tools"}, agentTUIMenuAction{"u", "Update running agent"})
 	}
 	if !a.External {
 		actions = append(actions, agentTUIMenuAction{"f", "Edit inference"}, agentTUIMenuAction{"t", "Add / edit tools"})
@@ -649,9 +649,9 @@ func (m agentTUIModel) updateActions(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.action = &agentTUIAction{kind: "update", agent: *a, source: m.columns[m.focus].Env}
 			return m, tea.Quit
 		}
-	case "e", "t", "T":
+	case "e", "t", "b", "T":
 		if a.Runtime == "md" {
-			kind := map[string]string{"e": "edit", "t": "edit-tests", "T": "test"}[chosen]
+			kind := map[string]string{"e": "edit", "t": "edit-tests", "b": "edit-tools", "T": "test"}[chosen]
 			m.action = &agentTUIAction{kind: kind, agent: *a, source: m.columns[m.focus].Env}
 			return m, tea.Quit
 		}

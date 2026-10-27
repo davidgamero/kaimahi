@@ -140,7 +140,7 @@ func TestTypedAgentNamesAndCreationStayOffline(t *testing.T) {
 	if err := execute([]string{"create", "greeting", "--type", "md", "--directory", root}, deps); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".github", "agents", "greeting.agent.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "greeting", "greeting.agent.md")); err != nil {
 		t.Fatal(err)
 	}
 	if *loads != 0 {
@@ -158,7 +158,7 @@ func TestRunAndTestResolveStoppedShortIDToSource(t *testing.T) {
 	if err := execute([]string{"create", "identity-test", "--type", "md", "--directory", root}, deps); err != nil {
 		t.Fatal(err)
 	}
-	source := filepath.Join(root, ".github", "agents", "identity-test.agent.md")
+	source := filepath.Join(root, "identity-test", "identity-test.agent.md")
 	id := fmt.Sprintf("md-%x", sha256.Sum256([]byte(source)))
 	dir := filepath.Join(home, "agents", "instances", id)
 	if err := os.MkdirAll(dir, 0700); err != nil {

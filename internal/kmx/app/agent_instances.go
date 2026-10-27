@@ -253,6 +253,8 @@ func CacheMarkdownVersion(a *MarkdownAgent) (*MarkdownAgent, error) {
 	}
 	frozen.TestsPath, frozen.TestsRevision, frozen.PairRevision = a.TestsPath, a.TestsRevision, a.PairRevision
 	frozen.Grant, frozen.BindingDigest = a.Grant, a.BindingDigest
+	frozen.CLITools = append([]CLIToolSpec(nil), a.CLITools...)
+	frozen.ToolsRevision = a.ToolsRevision
 	return frozen, nil
 }
 

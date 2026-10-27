@@ -57,6 +57,7 @@ func TestConsoleMDCreationAndSelectedToolsNeverExecute(t *testing.T) {
 	// Exercise the production UI suggestion request with a scripted inference result.
 	_, proposal := cliSuggestionFixture(t)
 	proposal.Source, proposal.AgentDigest = a.Path, a.Revision
+	proposal.ToolsDigest = a.ToolsRevision
 	m.startMDJob = func(_ *consoleMDCreate, _ func(context.Context) consoleMDResult) tea.Cmd {
 		return func() tea.Msg { return consoleMDResult{pane: p, proposal: proposal} }
 	}
@@ -143,7 +144,7 @@ func TestMarkdownCustomDraftValidationAndCollision(t *testing.T) {
 	if err := CreateMarkdownDraft(root, "test", "Explain Go tests", "gpt-test"); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, ".github", "agents", "test.agent.md")
+	path := filepath.Join(root, "test", "test.agent.md")
 	before, _ := os.ReadFile(path)
 	if err := CreateMarkdownDraft(root, "test", "overwrite", "gpt-test"); err == nil {
 		t.Fatal("collision overwritten")

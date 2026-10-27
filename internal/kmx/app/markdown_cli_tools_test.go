@@ -13,6 +13,7 @@ import (
 	"time"
 
 	copilot "github.com/github/copilot-sdk/go"
+	"go.yaml.in/yaml/v3"
 )
 
 const cliToolAgent = "---\nname: cluster-reader\ndescription: Read approved development clusters\ntools: [get_cluster]\n---\nUse get_cluster to inspect a development cluster.\n\n## Tool bindings\n\n```yaml kmx-tool\nname: get_cluster\ndescription: Read a dg cluster\ncommand: fixture-cli\nargs:\n  - show\n  - --name\n  - argument: cluster\nparameters:\n  cluster:\n    type: string\n    pattern: '^dg-[a-z0-9-]+$'\n    max-length: 63\nexecution:\n  timeout: 2s\n  max-output-bytes: 1024\n  approval: granted-scope\nvalidation:\n  args: [version]\n  exit-code: 0\n  stdout-pattern: '^fixture 2\\.[0-9]+\\n?$'\n  timeout: 1s\n```\n"
@@ -22,7 +23,20 @@ func cliFixture(t *testing.T) (string, string) {
 	t.Setenv("KMX_HOME", t.TempDir())
 	dir := t.TempDir()
 	path := filepath.Join(dir, "reader.agent.md")
-	if err := os.WriteFile(path, []byte(cliToolAgent), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Split(cliToolAgent, "\n## Tool bindings")[0]+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, specRaw, _ := strings.Cut(cliToolAgent, "```yaml kmx-tool\n")
+	specRaw = strings.TrimSuffix(specRaw, "```\n")
+	var spec CLIToolSpec
+	if err := yaml.Unmarshal([]byte(specRaw), &spec); err != nil {
+		t.Fatal(err)
+	}
+	b, err := yaml.Marshal(markdownToolsFile{SchemaVersion: 1, Tools: map[string]CLIToolSpec{spec.Name: spec}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(MarkdownToolsPath(path), b, 0600); err != nil {
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
@@ -158,7 +172,8 @@ func TestCLIProbeCancellationAndSourceChange(t *testing.T) {
 	if time.Since(start) > 2*time.Second {
 		t.Fatal("probe did not stop promptly")
 	}
-	if err = os.WriteFile(path, append([]byte(cliToolAgent), '\n'), 0600); err != nil {
+	raw, _ := os.ReadFile(path)
+	if err = os.WriteFile(path, append(raw, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err = ApplyCLIToolApproval(t.Context(), &p); err == nil || !strings.Contains(err.Error(), "source changed") {

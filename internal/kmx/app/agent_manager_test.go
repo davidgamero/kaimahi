@@ -10,11 +10,11 @@ import (
 
 func TestSharedManagerSessionsAreIndependent(t *testing.T) {
 	a := mdFixture(t)
-	root := filepath.Dir(filepath.Dir(filepath.Dir(a.Path)))
+	root := filepath.Dir(filepath.Dir(a.Path))
 	if err := InitMarkdownAgent(root, "second"); err != nil {
 		t.Fatal(err)
 	}
-	b, err := ReadMarkdownAgent(filepath.Join(root, ".github", "agents", "second.agent.md"))
+	b, err := ReadMarkdownAgent(filepath.Join(root, "second", "second.agent.md"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -32,6 +32,7 @@ type MarkdownToolChoice struct {
 	Reason   string `json:"reason"`
 }
 type MarkdownToolProposal struct {
+	ToolsDigest   string               `json:"toolsDigest,omitempty"`
 	CLIChoices    []MarkdownCLIChoice  `json:"cliChoices,omitempty"`
 	SchemaVersion int                  `json:"schemaVersion"`
 	ID            string               `json:"id"`
@@ -48,6 +49,7 @@ type MarkdownToolProposal struct {
 // Grants are machine-local explicit approvals, not transferable source metadata.
 // The reviewed digest pins the executable and definitions as well as the scope.
 type MarkdownToolGrant struct {
+	ToolsDigest      string            `json:"toolsDigest,omitempty"`
 	CLI              []ApprovedCLITool `json:"cli,omitempty"`
 	SchemaVersion    int               `json:"schemaVersion"`
 	Source           string            `json:"source"`
@@ -357,6 +359,7 @@ func PrepareToolGrant(p MarkdownToolProposal, repo string, selected []string) (M
 		return grant, err
 	}
 	grant = MarkdownToolGrant{SchemaVersion: 1, Source: a.Path, AgentDigest: a.Revision, Adapter: githubToolAdapter, Repository: repo, Tools: selected, Executable: exe, ExecutableDigest: digest}
+	grant.ToolsDigest = a.ToolsRevision
 	return grant, validateToolGrant(grant)
 }
 
@@ -437,6 +440,9 @@ func attachApprovedTools(a *MarkdownAgent) error {
 		}
 		return errors.New("tool grant belongs to a different definition; suggest/review tools for this revision")
 	}
+	if g.ToolsDigest != a.ToolsRevision {
+		return errors.New("tool declarations changed; approve the companion again")
+	}
 	for _, name := range a.Tools {
 		if !slices.Contains(g.Tools, name) {
 			return errors.New("declared tool has no approved binding")
@@ -496,6 +502,11 @@ func loadToolSnapshot(a *MarkdownAgent, digest string) error {
 		return errors.New("invalid frozen tool binding")
 	}
 	a.Grant, a.BindingDigest = &g, digest
+	a.ToolsRevision = g.ToolsDigest
+	a.CLITools = nil
+	for _, tool := range g.CLI {
+		a.CLITools = append(a.CLITools, tool.Spec)
+	}
 	return nil
 }
 

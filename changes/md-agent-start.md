@@ -1,5 +1,12 @@
 ### Added
 
+- Same-stem agent/tool/test files work beside a standalone agent or inside one
+  directory. Create writes NAME/NAME.agent.md, NAME.tools.yaml and NAME.tests.md;
+  import --into copies exact source and referenced companions without execution.
+  Tool/test indexes support bounded one-level file organization. Tool companion
+  digests bind approval and test identity, while running grants retain frozen specs.
+  Retire inline executable fences and consolidate the duplicate spike guides.
+
 - Console file-pane creation collects name, custom instructions and optional model,
   authors a definition with empty tests, and selects the unstarted draft. An optional
   hosted tool-suggestion pass supports per-tool review and source-only acceptance.

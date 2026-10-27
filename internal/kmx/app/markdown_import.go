@@ -2,7 +2,6 @@ package app
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,176 +9,100 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"unicode/utf8"
-
-	"github.com/kaimahi-agents/kaimahi/internal/kmx/secretshapes"
-	"go.yaml.in/yaml/v3"
 )
 
-// ImportMarkdownAgent returns the saved path. New-file publication never replaces
-// an existing file; replacing the original requires a separate explicit choice.
-func ImportMarkdownAgent(ctx context.Context, path string, in io.Reader, out io.Writer) (string, error) {
-	if !strings.HasSuffix(path, ".agent.md") {
-		return "", errors.New("import requires a .agent.md file")
-	}
-	raw, err := mdRead(path, markdownAgentLimit)
+const emptyMarkdownTools = "schemaVersion: 1\ntools: {}\n# Add named command bindings here; approval is machine-local.\n"
+const emptyMarkdownTests = "---\nschemaVersion: 1\n---\n\n# Tests\n\nNo tests defined yet. Add reviewed yaml agent-test blocks here.\n"
+
+// ImportMarkdownDirectory copies a frozen source and its explicit companions into
+// one new directory. Neither imports nor copied declarations grant execution.
+func ImportMarkdownDirectory(ctx context.Context, source, destination string) (string, error) {
+	a, err := ReadMarkdownAgent(source)
 	if err != nil {
 		return "", err
 	}
-	if !utf8.Valid(raw) || bytes.ContainsRune(raw, 0) || secretshapes.Match(string(raw)) != nil {
-		return "", errors.New("import requires UTF-8 instructions without credential-shaped content")
+	if destination == "" {
+		return "", errors.New("import requires --into DIRECTORY")
 	}
-	if strings.TrimSpace(string(raw)) == "" {
-		return "", errors.New("add instructions before importing the agent")
+	destination, err = filepath.Abs(destination)
+	if err != nil {
+		return "", err
 	}
-	first := strings.TrimSuffix(strings.SplitN(string(raw), "\n", 2)[0], "\r")
-	if first == "---" {
-		return "", errors.New("agent already has front matter; use validate to inspect it")
+	if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
+		return "", errors.New("import destination already exists or is unavailable")
 	}
-	name := strings.TrimSuffix(filepath.Base(path), ".agent.md")
-	if !markdownAgentName.MatchString(name) {
-		name = "my-agent"
+	files := map[string][]byte{filepath.Base(a.Path): a.Source}
+	root := filepath.Dir(a.Path)
+	for _, sources := range []map[string][]byte{a.ToolSources, a.TestSources} {
+		for path, b := range sources {
+			rel, err := filepath.Rel(root, path)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return "", errors.New("import companion must be inside agent directory")
+			}
+			if _, ok := files[rel]; ok {
+				return "", errors.New("import file collision")
+			}
+			files[rel] = b
+		}
+	}
+	if len(a.ToolSources) == 0 {
+		files[filepath.Base(MarkdownToolsPath(a.Path))] = []byte(emptyMarkdownTools)
+	}
+	if len(a.TestSources) == 0 {
+		files[filepath.Base(MarkdownTestsPath(a.Path))] = []byte(emptyMarkdownTests)
+	}
+	if err := a.CheckCurrent(); err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := os.Mkdir(destination, 0755); err != nil {
+		return "", err
+	}
+	for _, rel := range sortedMarkdownPaths(files) {
+		if err := ctx.Err(); err != nil {
+			return "", fmt.Errorf("import incomplete in %s: %w", destination, err)
+		}
+		path := filepath.Join(destination, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return "", err
+		}
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if err != nil {
+			return "", err
+		}
+		_, writeErr := f.Write(files[rel])
+		err = errors.Join(writeErr, f.Close())
+		if err != nil {
+			return "", err
+		}
+	}
+	if err := a.CheckCurrent(); err != nil {
+		return "", fmt.Errorf("source changed; imported snapshot remains at %s: %w", destination, err)
+	}
+	return filepath.Join(destination, filepath.Base(a.Path)), nil
+}
+
+// ImportMarkdownAgent is the terminal convenience wrapper over directory import.
+func ImportMarkdownAgent(ctx context.Context, path string, in io.Reader, out io.Writer) (string, error) {
+	source, err := ResolveMarkdownSource(path)
+	if err != nil {
+		return "", err
+	}
+	destination := markdownStem(source)
+	if _, err = fmt.Fprintf(out, "Import unchanged agent and companions into %s? [y/N]: ", safeTerminal(destination)); err != nil {
+		return "", err
 	}
 	scanner := bufio.NewScanner(mdImportLineReader{in})
-	scanner.Buffer(make([]byte, 1024), 4096)
-	ask := func(label, defaultValue string) (string, error) {
-		if err := ctx.Err(); err != nil {
-			return "", err
-		}
-		if _, err := fmt.Fprintf(out, "%s [%s]: ", label, defaultValue); err != nil {
-			return "", err
-		}
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				return "", err
-			}
-			return "", io.EOF
-		}
-		if err := ctx.Err(); err != nil {
-			return "", err
-		}
-		v := strings.TrimSpace(scanner.Text())
-		if v == "" {
-			v = defaultValue
-		}
-		return v, nil
+	if !scanner.Scan() || !strings.EqualFold(strings.TrimSpace(scanner.Text()), "y") {
+		return "", errors.New("import cancelled; source unchanged")
 	}
-	description := strings.NewReplacer("-", " ", "_", " ").Replace(name) + " agent"
-	model := ""
-	destination := strings.TrimSuffix(path, ".agent.md") + ".imported.agent.md"
-	replace := false
-	for {
-		if _, err = fmt.Fprintf(out, "\nImport agent\n  Name: %s\n  Description: %s\n  Model: %s\n  Tools: none\n  Save new file: %s\n", name, description, mdModelLabel(model), safeTerminal(destination)); err != nil {
-			return "", err
-		}
-		choice, e := ask("[Y] Save new file  [e] Edit fields  [r] Replace original  [n] Cancel", "Y")
-		if e != nil {
-			return "", e
-		}
-		switch strings.ToLower(choice) {
-		case "y", "yes", "new":
-			if !strings.HasSuffix(destination, ".agent.md") {
-				return "", errors.New("new file must end in .agent.md")
-			}
-			if _, err = os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
-				return "", errors.New("new file already exists or is unavailable; choose Edit fields to select another path")
-			}
-		case "e", "edit":
-			name, err = ask("Name", name)
-			if err != nil {
-				return "", err
-			}
-			description, err = ask("Description", description)
-			if err != nil {
-				return "", err
-			}
-			model, err = ask("Model (default uses Copilot selection)", valueOr(model, "default"))
-			if err != nil {
-				return "", err
-			}
-			if model == "default" {
-				model = ""
-			}
-			destination, err = ask("New file", destination)
-			if err != nil {
-				return "", err
-			}
-			continue
-		case "r", "replace":
-			confirm, e := ask("Replace "+safeTerminal(path)+"? y/N", "N")
-			if e != nil {
-				return "", e
-			}
-			if !strings.EqualFold(confirm, "y") && !strings.EqualFold(confirm, "yes") {
-				return "", errors.New("replacement cancelled; original unchanged")
-			}
-			destination, replace = path, true
-		default:
-			return "", errors.New("agent import cancelled; original unchanged")
-		}
-		break
+	saved, err := ImportMarkdownDirectory(ctx, source, destination)
+	if err == nil {
+		_, err = fmt.Fprintln(out, "Imported agent:", safeTerminal(saved))
 	}
-	header := struct {
-		Name        string   `yaml:"name"`
-		Description string   `yaml:"description"`
-		Model       string   `yaml:"model,omitempty"`
-		Tools       []string `yaml:"tools"`
-	}{name, description, model, []string{}}
-	front, err := yaml.Marshal(header)
-	if err != nil {
-		return "", err
-	}
-	result := append([]byte("---\n"), front...)
-	result = append(result, []byte("---\n\n")...)
-	result = append(result, raw...)
-	if _, err = parseMarkdownAgent(path, result); err != nil {
-		return "", err
-	}
-	current, err := mdRead(path, markdownAgentLimit)
-	if err != nil || !bytes.Equal(current, raw) {
-		return "", errors.New("agent changed while importing; reload and try again")
-	}
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return "", errors.New("agent is no longer a regular file")
-	}
-	temp, err := os.CreateTemp(filepath.Dir(destination), ".kmx-import-*")
-	if err != nil {
-		return "", err
-	}
-	defer os.Remove(temp.Name())
-	if err = temp.Chmod(info.Mode().Perm()); err != nil {
-		temp.Close()
-		return "", err
-	}
-	if _, err = temp.Write(result); err != nil {
-		temp.Close()
-		return "", err
-	}
-	if err = temp.Sync(); err != nil {
-		temp.Close()
-		return "", err
-	}
-	if err = temp.Close(); err != nil {
-		return "", err
-	}
-	if err = ctx.Err(); err != nil {
-		return "", err
-	}
-	current, err = mdRead(path, markdownAgentLimit)
-	if err != nil || !bytes.Equal(current, raw) {
-		return "", errors.New("agent changed before save; original unchanged")
-	}
-	if replace {
-		err = os.Rename(temp.Name(), destination)
-	} else {
-		err = os.Link(temp.Name(), destination)
-	}
-	if err != nil {
-		return "", err
-	}
-	_, err = fmt.Fprintln(out, "Imported agent:", safeTerminal(destination))
-	return destination, err
+	return saved, err
 }
 
 type mdImportLineReader struct{ io.Reader }

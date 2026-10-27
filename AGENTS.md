@@ -9,7 +9,12 @@ changes in the package's Go doc comment.
 
 ## Command consistency
 
-- Native-header agents may declare final `yaml kmx-tool` blocks under Tool bindings.
+- Persistent MD agents use same-stem .tools.yaml and .tests.md companions. Directory
+  input selects one root agent; explicit one-level file indexes retain bounded
+  confined content and globally unique tool/case IDs. Import copies original agent
+  bytes into a new directory and supplies empty companions without execution.
+  Tool-only changes invalidate approval and pair identity; frozen grants retain
+  approved command definitions independently from the editable companion.
   CLI string patterns enforce full-value matches including alternation. Grant
   identity canonicalizes parent paths without accepting symlinked source leaves.
   Obsolete grants do not block a changed tool-free definition; exact-definition
@@ -17,7 +22,7 @@ changes in the package's Go doc comment.
   Activation probes run outside the manager mutex and recheck lifecycle/source/
   binding identity before committing. Chat UI owns its attachment display state;
   cached execution stays separate from source/test snapshots used by edit/test.
-  Parse/validate strips bindings from model instructions and never executes them.
+  Parse/validate never executes companion bindings; inline kmx-tool blocks refuse.
   `tools approve FILE --apply` explicitly reviews PATH resolution, binary hashes,
   fixed argv, operand constraints and optional fixed probes before saving a grant.
   CLI granted-scope handlers use bounded direct exec/process-group cancellation,

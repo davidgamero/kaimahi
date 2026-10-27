@@ -27,7 +27,7 @@ func markdownOperations(state *commandState) *cobra.Command {
 	var directory string
 	group := &cobra.Command{
 		Use: "md [directory]", Short: "Browse and try .agent.md files with Copilot (experimental)",
-		Long: "Browse native .agent.md files paired with .agent.test.md files. Chat, edit and test through the installed Copilot CLI.\nWith redirected input, list files only. Test metadata is saved privately under KMX_HOME; Copilot owns its session retention.",
+		Long: "Open Markdown agents with optional same-stem .tools.yaml and .tests.md companions, standalone or in a directory. Chat, edit and test through the installed Copilot CLI.",
 		Args: cobra.MaximumNArgs(1),
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			format, _ := cmd.Flags().GetString("output")
@@ -48,7 +48,7 @@ func markdownOperations(state *commandState) *cobra.Command {
 			return nil
 		},
 	}
-	group.PersistentFlags().StringVar(&tests, "tests", "", "explicit companion test file (otherwise .github/agent-tests/NAME.agent.test.md)")
+	group.PersistentFlags().StringVar(&tests, "tests", "", "explicit companion test file (otherwise NAME.tests.md beside NAME.agent.md)")
 	group.PersistentFlags().StringVar(&provider, "provider", "", "one-invocation provider override: copilot")
 	group.PersistentFlags().StringVar(&model, "model", "", "one-invocation model override")
 	group.PersistentFlags().StringVarP(&output, "output", "o", "text", "output: text|json|yaml (noninteractive operations)")
@@ -108,31 +108,21 @@ func markdownOperations(state *commandState) *cobra.Command {
 	}
 	report := func(cmd *cobra.Command, value any) error { return json.NewEncoder(cmd.OutOrStdout()).Encode(value) }
 	loadForExecution := func(cmd *cobra.Command, path string) (*app.MarkdownAgent, error) {
-		a, err := app.LoadMarkdownAgent(path, tests)
-		var diagnostic *app.MarkdownDiagnostic
-		if errors.As(err, &diagnostic) && diagnostic.Code == "frontmatter" && strings.Contains(diagnostic.Repair, "no agent header") && strings.HasSuffix(path, ".agent.md") {
-			if !term.IsTerminal(int(input.Fd())) {
-				return nil, fmt.Errorf("%w\nImport interactively: %s import %s", err, state.executable(), quoteShell(path))
-			}
-			var saved string
-			if e := withInput(cmd, func(ctx context.Context, reader io.Reader) error {
-				var e error
-				saved, e = app.ImportMarkdownAgent(ctx, path, reader, state.deps.stderr)
-				if e == nil {
-					e = app.OfferImportedTools(ctx, saved, model, reader, state.deps.stderr)
-					if e != nil {
-						return fmt.Errorf("import saved to %s; tool suggestions failed: %w", saved, e)
-					}
-				}
-				return e
-			}); e != nil {
-				return nil, e
-			}
-			return app.LoadMarkdownAgent(saved, tests)
-		}
-		return a, err
+		return app.LoadMarkdownAgent(path, tests)
 	}
-	group.AddCommand(&cobra.Command{Use: "import FILE", Short: "Import plain instructions as a native agent (interactive)", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	var into string
+	importCommand := &cobra.Command{Use: "import FILE_OR_DIRECTORY", Short: "Copy an agent and companions into a new directory", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		if into != "" {
+			saved, err := app.ImportMarkdownDirectory(cmd.Context(), args[0], into)
+			if err != nil {
+				return err
+			}
+			if structured(cmd) {
+				return report(cmd, map[string]any{"definition": saved, "tools": app.MarkdownToolsPath(saved), "tests": app.MarkdownTestsPath(saved)})
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), "Imported agent:", saved)
+			return err
+		}
 		if structured(cmd) {
 			return errors.New("interactive import does not produce a structured report; use validate -o yaml after importing")
 		}
@@ -144,19 +134,22 @@ func markdownOperations(state *commandState) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err = app.OfferImportedTools(ctx, saved, model, reader, state.deps.stderr); err != nil {
-				return fmt.Errorf("import saved to %s; tool suggestions failed: %w", saved, err)
+			_, err = fmt.Fprintf(state.deps.stderr, "Next: tools suggest %s, or open console --directory %s --definitions\n", quoteShell(saved), quoteShell(filepath.Dir(saved)))
+			if err != nil {
+				return err
 			}
 			return nil
 		})
-	}})
+	}}
+	importCommand.Flags().StringVar(&into, "into", "", "new directory for an unchanged agent and named companions")
+	group.AddCommand(importCommand)
 	group.AddCommand(&cobra.Command{Use: "show FILE", Short: "Read native instructions and paired tests offline", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		a, err := app.LoadMarkdownAgent(args[0], tests)
 		if err != nil {
 			return err
 		}
 		if structured(cmd) {
-			return report(cmd, map[string]any{"name": a.Name, "type": "md", "source": a.Path, "version": a.Revision, "model": a.Model, "instructions": a.Instructions, "tests": a.TestsPath, "testsDigest": a.TestsRevision, "cases": len(a.Examples)})
+			return report(cmd, map[string]any{"name": a.Name, "type": "md", "source": a.Path, "version": a.Revision, "model": a.Model, "instructions": a.Instructions, "toolsFile": a.ToolsPath, "toolsDigest": a.ToolsRevision, "unmapped": a.Unmapped, "tests": a.TestsPath, "testsDigest": a.TestsRevision, "cases": len(a.Examples)})
 		}
 		return app.ShowMarkdownAgent(state.deps.stdout, a)
 	}})
@@ -220,7 +213,7 @@ func markdownOperations(state *commandState) *cobra.Command {
 		if err := app.InitMarkdownAgent(directory, args[0]); err != nil {
 			return err
 		}
-		file := filepath.Join(directory, ".github", "agents", args[0]+".agent.md")
+		file := filepath.Join(directory, args[0], args[0]+".agent.md")
 		if structured(cmd) {
 			return report(cmd, map[string]any{"created": true, "definition": file, "tests": app.MarkdownTestsPath(file)})
 		}

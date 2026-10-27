@@ -26,7 +26,7 @@ func mdFixture(t *testing.T) *MarkdownAgent {
 	if err := InitMarkdownAgent(root, "hello"); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, ".github", "agents", "hello.agent.md")
+	path := filepath.Join(root, "hello", "hello.agent.md")
 	if err := os.WriteFile(path, []byte(markdownTestAgent), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -49,12 +49,9 @@ func TestMarkdownParsingAndOfflineValidation(t *testing.T) {
 		})
 	}
 	for name, raw := range map[string]string{
-		"unknown":             strings.Replace(markdownTestAgent, "tools: []", "hooks: {}\ntools: []", 1),
-		"duplicate":           strings.Replace(markdownTestAgent, "name: hello", "name: hello\nname: other", 1),
-		"missing-description": strings.Replace(markdownTestAgent, "description: Greet people\n", "", 1),
-		"nested-model":        strings.Replace(markdownTestAgent, "tools: []", "model: {provider: copilot, id: auto}\ntools: []", 1),
-		"implicit-tools":      strings.Replace(markdownTestAgent, "tools: []\n", "", 1),
-		"empty-instructions":  strings.Replace(markdownTestAgent, "Greet the user.", "", 1),
+		"duplicate":          strings.Replace(markdownTestAgent, "name: hello", "name: hello\nname: other", 1),
+		"nested-model":       strings.Replace(markdownTestAgent, "tools: []", "model: {provider: copilot, id: auto}\ntools: []", 1),
+		"empty-instructions": strings.Replace(markdownTestAgent, "Greet the user.", "", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := parseMarkdownAgent("bad.agent.md", []byte(raw))
@@ -348,11 +345,11 @@ func TestMarkdownMissingPairAndOrphans(t *testing.T) {
 	if _, err := LoadMarkdownAgent(a.Path, filepath.Join(t.TempDir(), "missing.agent.test.md")); err == nil {
 		t.Fatal("explicit missing test accepted")
 	}
-	orphan := filepath.Join(filepath.Dir(a.TestsPath), "orphan.agent.test.md")
+	orphan := filepath.Join(filepath.Dir(a.TestsPath), "orphan.tests.md")
 	if err := os.WriteFile(orphan, []byte(markdownTestCases), 0600); err != nil {
 		t.Fatal(err)
 	}
-	root := filepath.Dir(filepath.Dir(filepath.Dir(a.Path)))
+	root := filepath.Dir(a.Path)
 	paths, err := MarkdownOrphanTests(root)
 	if err != nil || len(paths) != 1 {
 		t.Fatalf("orphans=%v err=%v", paths, err)
