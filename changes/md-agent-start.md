@@ -1,5 +1,17 @@
 ### Added
 
+- Console file-pane creation collects name, custom instructions and optional model,
+  authors a definition with empty tests, and selects the unstarted draft. An optional
+  hosted tool-suggestion pass supports per-tool review and source-only acceptance.
+  Cluster panes label their existing authored-workspace action as deployment.
+
+- Console agent panes use compact aligned tables when their available width fits
+  name/type/state/model, adding version/provider/tool counts at wider sizes and
+  falling back to multiline entries in narrow side-by-side panes.
+
+- Interactive chat uses a lighter filled input surface with the selected agent
+  beneath the draft, replacing the repeated per-line YOU prompt.
+
 - Experimental persistent Copilot-native Markdown agents with paired tests,
   shared local sessions, short IDs, lifecycle/activity inventory, interactive
   editing/import, explicit version updates, removal and completion.

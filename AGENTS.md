@@ -24,8 +24,11 @@ changes in the package's Go doc comment.
   Probes still match stdout only and never expose their captured diagnostics.
 
 - Local tools suggest/review is a separate scoped capability workflow, not retired
-  gateway administration. Inference proposes catalog IDs only; explicit review
-  approves a private definition/binary/repository-bound overlay. GitHub handlers
+  gateway administration. Default inference proposes scoped CLI declarations;
+  bounded PATH name lookups provide availability only, never execute candidates or
+  probes, and expose no resolved machine paths to inference. Source acceptance
+  grants no execution. Explicit --repo selects catalog IDs and a private
+  definition/binary/repository-bound overlay. GitHub handlers
   use fixed GET paths at api.github.com without redirects; gh auth token is captured
   in memory only. Session handlers are per-agent, binding changes require update,
   and mocks never fall through to live calls. Native mapping refuses local grants.
@@ -51,6 +54,12 @@ changes in the package's Go doc comment.
   Orka source and uses the existing evaluated publication/Deploy pipeline; no
   local-preview result grants deployment authority. JSON-capable reports may be
   rendered as YAML by the bounded presentation adapter.
+- Console file-pane `n` authors a name/instructions/optional-model draft and an
+  empty test companion through the shared exclusive pair writer. Optional hosted
+  suggestions require a separate choice; per-tool selection plus confirmation
+  edits source only. Created definitions remain visible for that console session
+  without pretending they are running. Cluster `n` reviews/deploys an already
+  authored workspace. Pane widths select compact tables or multiline inventories.
 
 - `model list [-o table|json]` defaults to config-free bounded local discovery.
   Explicit `--provider copilot` lists available Chat/Responses routes without

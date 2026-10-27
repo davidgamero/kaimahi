@@ -1,5 +1,9 @@
 ### Added
 
+- Tool suggestions use bounded, non-executing PATH name lookups to inform command
+  availability. No candidate executable, compatibility probe, installer or login
+  runs during suggestion; approval remains a separate identity-bound operation.
+
 - CLI tool failures retain their nonzero status and return bounded, sanitized
   stdout/stderr to the model for compiler/test diagnosis. Both streams share the
   declared output budget; credential-shaped, invalid or incomplete output is

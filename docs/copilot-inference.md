@@ -164,6 +164,40 @@ the separate mocked suite passed. Native deployment still refuses local tools.
 
 ## Suggest and approve PR-monitor tools
 
+### Create locally in the console
+
+In `kmx console --type md`, press `n` in the files pane to enter a name,
+instructions (Shift+Enter for a newline), and optional model. Enter confirms
+creation of `.github/agents/NAME.agent.md` and an empty companion under
+`.github/agent-tests/`; existing files refuse replacement. Custom instructions
+do not inherit the greeting starter's tests. No agent starts during creation.
+
+After creation, `y` opts into a hosted suggestion pass; Enter or `n` skips it.
+The pass sends the definition and bounded executable-name availability observations
+to Copilot. It checks common commands and at most 64 word-like names from the
+definition with PATH lookups, then checks suggested command names. It neither
+enumerates PATH directories nor launches candidates, probes, installers or login
+commands. Availability is advisory, not version/authentication/health proof;
+normal approval re-resolves and hashes each executable.
+
+Review each proposal using arrows/PageUp/PageDown (End jumps to the bottom).
+`y` selects a fully reviewed tool, `n` skips it, and a final Enter saves selected
+declarations. Missing scope blocks selection. Escape discards pending selections
+but retains an already-created definition. Cancellation waits for active work;
+partial file-creation errors require inspecting the destination before retrying.
+
+The console selects the created, unstarted definition and retains it through
+refresh for the current session. Enter opens its actions for editing, tests, and
+chat. Add reviewed tests and mocks yourself; no passing result is fabricated.
+Before live tool use, run `kmx tools approve FILE --apply`. This flow does not
+approve tools or execute compatibility probes. In cluster panes, `n` remains
+deployment of an already-authored native workspace, not local authoring.
+
+Agent panes show name/type/state/model as aligned table rows when space permits,
+adding version/provider/tool counts at wider sizes and reverting to multiline
+entries in narrow panes. Interactive chat uses a filled draft box with the agent
+name beneath the text.
+
 ### General suggestions (default)
 
 `kmx tools suggest FILE` now analyzes the definition once and proposes **zero to
@@ -174,6 +208,9 @@ need regex/enum limits and a maximum length of 1–256 bytes. Missing repository
 subscription, resource-group or other required scope is returned as clarification
 items; an incomplete tool cannot be selected. A persona agent can receive no tools.
 No commands or compatibility probes execute during suggestion.
+The planner receives bounded PATH availability as described above; executable
+paths are kept local. Each proposal records whether its candidate command was
+found, and executable approval checks the current identity again.
 
 ```sh
 kmx tools suggest agent.agent.md
