@@ -13,7 +13,7 @@ func TestSuiteMapIsOfflineAndYAMLReport(t *testing.T) {
 	t.Setenv("KMX_HOME", t.TempDir())
 	var out, diag bytes.Buffer
 	deps, loads := testDependencies(&out, &diag)
-	err := execute([]string{"suite", "map", "../../.github/agents/hello.agent.md", "--workspace", filepath.Join(t.TempDir(), "mapped"), "--model", "qwen2.5:3b", "-o", "yaml"}, deps)
+	err := execute([]string{"package", "map", "../../.github/agents/hello.agent.md", "--workspace", filepath.Join(t.TempDir(), "mapped"), "--model", "qwen2.5:3b", "-o", "yaml"}, deps)
 	if err != nil || *loads != 0 || !strings.Contains(out.String(), "requiresNativeEvaluation: true") {
 		t.Fatalf("err=%v loads=%d out=%s", err, *loads, &out)
 	}
@@ -31,7 +31,11 @@ func TestMarkdownDeployAndLiftPlanComposeOffline(t *testing.T) {
 			}
 			var out, diag bytes.Buffer
 			deps, loads := testDependencies(&out, &diag)
-			err := execute([]string{verb, "../../.github/agents/hello.agent.md", "--to", "prod", "--directory", dir, "--model", "qwen2.5:3b", "--plan", "-o", "json"}, deps)
+			args := []string{verb, "../../.github/agents/hello.agent.md", "--to", "prod", "--directory", dir, "--model", "qwen2.5:3b", "--plan", "-o", "json"}
+			if verb == "deploy" {
+				args = append([]string{"package"}, args...)
+			}
+			err := execute(args, deps)
 			if err != nil || *loads != 0 {
 				t.Fatalf("err=%v loads=%d out=%s diag=%s", err, *loads, &out, &diag)
 			}

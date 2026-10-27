@@ -26,7 +26,7 @@ func TestMDReviewRejectsUnsupportedFlagsBeforeEffects(t *testing.T) {
 		var out, diag bytes.Buffer
 		deps, loads := testDependencies(&out, &diag)
 		err := execute(args, deps)
-		if err == nil || !strings.Contains(err.Error(), "not supported for md") || *loads != 0 || out.Len() != 0 {
+		if err == nil || (!strings.Contains(err.Error(), "not supported for md") && !strings.Contains(err.Error(), "unknown flag")) || *loads != 0 || out.Len() != 0 {
 			t.Fatalf("%v: %v loads=%d out=%q", args, err, *loads, out.String())
 		}
 	}

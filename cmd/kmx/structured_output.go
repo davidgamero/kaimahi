@@ -74,7 +74,11 @@ func enableYAMLOutput(root *cobra.Command, out *yamlOutput) {
 			}
 			seen[flag] = true
 			flag.Value = &yamlFormatValue{Value: flag.Value, output: out}
-			flag.Usage += "; yaml renders the same structured report"
+			if cmd.Name() == "run" {
+				flag.Usage = "output: text|json|yaml"
+			} else {
+				flag.Usage += "; YAML available"
+			}
 			if _, ok := cmd.GetFlagCompletionFunc("output"); !ok {
 				_ = cmd.RegisterFlagCompletionFunc("output", staticCompletion([]string{flag.DefValue, "json", "yaml"}))
 			}

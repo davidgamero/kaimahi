@@ -133,7 +133,7 @@ func execute(argv []string, deps dependencies) error {
 			// refusal, but still disclose a recognizable legacy invocation.
 			notice := ""
 			if legacyCommandInvocation(original, "lift") {
-				notice = "kmx lift is deprecated; use kmx deploy (same arguments)."
+				notice = "kmx lift is deprecated; use kmx package deploy (same arguments)."
 			} else if legacyCommandInvocation(original, "eval") {
 				notice = evalDeprecationNotice
 			}
@@ -175,10 +175,17 @@ func execute(argv []string, deps dependencies) error {
 	}
 	root.InitDefaultHelpCmd()
 	help, _, _ := root.Find([]string{"help"})
+	help.Hidden = true
 	// Cobra otherwise reports an unknown help topic on stdout but exits zero.
 	help.Args = func(cmd *cobra.Command, args []string) error {
-		if len(args) > 0 && args[0] == "agent" {
-			return fmt.Errorf("unknown command %q for %q", args[0], root.Name())
+		if len(args) > 0 {
+			topic, remaining, err := root.Find(args)
+			if err != nil {
+				return err
+			}
+			if len(remaining) != 0 {
+				return fmt.Errorf("unknown help topic %q for %q", strings.Join(args, " "), topic.CommandPath())
+			}
 		}
 		if legacyCommandInvocation(argv, "eval") {
 			return state.noticeLegacyEval(cmd)
@@ -191,7 +198,10 @@ func execute(argv []string, deps dependencies) error {
 		if legacyCommandInvocation(argv, "eval") {
 			return errors.Join(state.noticeLegacyEval(cmd), err)
 		}
-		return err
+		if legacyCommandInvocation(argv, "lift") {
+			return err
+		}
+		return flagErrorWithHelp(cmd, state, err)
 	})
 	root.SetArgs(argv)
 	err = root.Execute()
@@ -230,7 +240,7 @@ func legacyCommandInvocation(argv []string, verb string) bool {
 func newRootCommand(state *commandState) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "kmx",
-		Short: "Create, inspect, test and run agents",
+		Short: "Write, run and test agent files.",
 		// Leave Args unset so Cobra rejects unknown roots before parsing their
 		// flags or honoring --help. Bare root still runs the help handler.
 		SilenceErrors: true,
@@ -242,8 +252,8 @@ func newRootCommand(state *commandState) *cobra.Command {
 	root.SetOut(state.deps.stdout)
 	root.SetErr(state.deps.stderr)
 	root.CompletionOptions.DisableDefaultCmd = true
-	root.PersistentFlags().String("context", "", "act on this kube context for one command (may appear anywhere)")
-	root.PersistentFlags().StringVar(&state.containerEngineFlag, "container-engine", "", "kind container engine: docker or podman (overrides CONTAINER_ENGINE)")
+	root.PersistentFlags().String("context", "", "Kubernetes context for live/cluster operations")
+	root.PersistentFlags().StringVar(&state.containerEngineFlag, "container-engine", "", "kind engine: docker or podman")
 	root.PersistentPreRunE = validateContainerEngineFlag
 	_ = root.RegisterFlagCompletionFunc("context", completeContexts)
 	_ = root.RegisterFlagCompletionFunc("container-engine", staticCompletion([]string{"docker", "podman"}))
@@ -256,17 +266,14 @@ func newRootCommand(state *commandState) *cobra.Command {
 	settings := markdownOperation(state, "settings")
 	settings.Use = "settings"
 	root.AddCommand(
-		newVersionCommand(state), newMCPCommand(state), newCompletionCommand(root), newModelCommand(state), newContextCommand(state), newLocalCommand(state), newDestinationsCommand(state),
-		newQuickstartCommand(state), newAKSCommand(state),
-		newConsoleCommand(state), newOrkaCommand(state),
-		newStatusCommand(state), create, chat, run,
-		test, newAgentEvalCommand(state), newReleaseDeployCommand(state), newReleaseLiftCommand(state), newTaskCommand(state),
-		newSuiteCommand(state), newSuitePushCommand(state, true), newTargetsCommand(state), newRunProfileCommand(state),
+		newVersionCommand(state), newMCPCommand(state), newCompletionCommand(root), newModelCommand(state),
+		create, chat, run, test, newAgentEvalCommand(state), newReleaseLiftCommand(state),
+		newClusterCommand(state), newPackageCommand(state),
 		newListTypedAgentsCommand(state), newInspectAgentCommand(state), newTypedAgentCommand(state, "validate", "validate"), newInfoCommand(state), newStopAgentCommand(state), newRemoveAgentCommand(state), settings,
 		markdownOperation(state, "import"),
 		newToolsCommand(state),
-		retiredCommand("quickstart-wizard", "kmx quickstart --interactive"),
 	)
+	configureCommandHelp(root, state)
 	installPlatformGate(root, state)
 	return root
 }

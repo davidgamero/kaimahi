@@ -93,7 +93,7 @@ func (a *App) AgentTUI(opt AgentTUIOptions) error {
 		return fmt.Errorf("md agents use local files, not cluster contexts")
 	}
 	if a.Stdin == nil || !isTerminalFile(a.Stdin) || !isInteractiveTerminal(a.Out) || os.Getenv("TERM") == "dumb" {
-		return fmt.Errorf("kmx console requires an interactive terminal on stdin and stdout; use kmx orka list for piped output")
+		return fmt.Errorf("kmx cluster console requires an interactive terminal on stdin and stdout; use kmx cluster orka list for piped output")
 	}
 	if opt.Namespace == "" {
 		opt.Namespace = OrkaNamespace
@@ -1326,8 +1326,6 @@ func (m agentTUIModel) agentDetailsLines(a agentTUIAgent, inner int) []string {
 	}
 	return rows
 }
-
-func quoteAgentPath(path string) string { return fmt.Sprintf("%q", path) }
 
 // Wrap at words and carry both the field indentation and authored indentation
 // onto continuation lines. Only unbroken tokens wider than the panel are split.

@@ -9,8 +9,9 @@ func newConsoleCommand(state *commandState) *cobra.Command {
 	var opt app.AgentTUIOptions
 	cmd := &cobra.Command{
 		Use: "console", Short: "Open the interactive workspace for agents and environments", Args: cobra.NoArgs,
-		Long: "Browse agents by type: local md definitions and Orka Agents in local/remote Kubernetes environments.\nMD agents offer inspect, chat, edit definition/tests and test actions.\nOrka creation reviews source/all cases and a Ready openai Provider before full eval, publication and Deploy.\nUse h/j/k/l or arrows; /env selects environments and /inspect shows the selected agent.\nR opens recent read-only Orka runs (caller must list/get Tasks and get the kube-system Namespace).\nDeploy moved: kmx deploy <ref>@<digest> --to-context … --evidence …\nUse --demo for sample data without cluster access.",
+		Long: "Browse local Markdown agents and native Orka Agents side by side.\nMD actions create/edit definitions, companions, tests and reviewed tool approvals.\nCluster creation reviews authored source and cases before evaluation and Deploy.\nUse arrows or h/j/k/l; Enter opens actions, n creates locally or reviews a workspace.\nR opens recent read-only Orka runs.\nDeploy moved: kmx package deploy <ref>@<digest> --to-context … --evidence …\nUse --demo for sample data without effects.",
 	}
+	cmd.Long += "\nRun inspection requires list/get Tasks and get the kube-system Namespace."
 	cmd.Flags().StringVar(&opt.LocalContext, "local-context", "", "local kind context (default: last TUI selection, configured context, or first local)")
 	cmd.Flags().StringVar(&opt.RemoteContext, "remote-context", "", "remote context (default: last TUI selection, last deploy target, configured context, or first remote)")
 	cmd.Flags().StringVar(&opt.Namespace, "namespace", app.OrkaNamespace, "Orka namespace to display")

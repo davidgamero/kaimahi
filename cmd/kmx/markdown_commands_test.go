@@ -19,7 +19,7 @@ func TestMarkdownCommandsOfflineAndBeforeConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
-		{"console", "--help"}, {"list", "--type", "md", "--directory", "../.."}, {"inspect", path}, {"test", "--help"},
+		{"cluster", "console", "--help"}, {"list", "--type", "md", "--directory", "../.."}, {"inspect", path}, {"test", "--help"},
 		{"__complete", "chat", "--type", ""}, {"validate", path},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -91,7 +91,7 @@ func TestRegisteredAgentNameRoutesLocallyBeforeClusterDiscovery(t *testing.T) {
 	if err := execute([]string{"list", "--all", "-o", "json"}, listDeps); err != nil {
 		t.Fatal(err)
 	}
-	if err := execute([]string{"status", "--all", "-o", "json"}, statusDeps); err != nil {
+	if err := execute([]string{"list", "--all", "-o", "json"}, statusDeps); err != nil {
 		t.Fatal(err)
 	}
 	if listOut.String() != statusOut.String() {

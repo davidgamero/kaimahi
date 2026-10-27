@@ -14,7 +14,7 @@ func TestYAMLReportsMatchJSON(t *testing.T) {
 	t.Setenv("KMX_HOME", t.TempDir())
 	t.Setenv("PATH", t.TempDir())
 	source, _ := filepath.Abs("../../.github/agents/hello.agent.md")
-	for _, args := range [][]string{{"list", "--all"}, {"status", "--all"}, {"info", "--directory", t.TempDir()}, {"validate", source}, {"inspect", source}, {"targets"}, {"list", "--definitions", "--type", "md", "--directory", "../.."}, {"settings"}} {
+	for _, args := range [][]string{{"list", "--all"}, {"info", "--directory", t.TempDir()}, {"validate", source}, {"inspect", source}, {"cluster", "targets"}, {"list", "--definitions", "--type", "md", "--directory", "../.."}, {"settings"}} {
 		t.Run(args[0]+args[len(args)-1], func(t *testing.T) {
 			values := []any{}
 			for _, format := range []string{"json", "yaml"} {

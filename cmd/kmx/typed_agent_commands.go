@@ -107,7 +107,8 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 			value = args[0]
 		}
 		if operation == "test" && len(args) == 1 && value != "" {
-			return true
+			_, err := app.FindAgentInstance(value)
+			return err == nil
 		}
 		if value == "" {
 			return false
@@ -292,7 +293,16 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 		return local.RunE(cmd, resolved)
 	}
 	cmd.Short = strings.ReplaceAll(cmd.Short, "Orka Agent", "agent")
-	cmd.Long += "\n\nRegistered local agent names/IDs and Markdown file paths resolve locally before Orka discovery. Explicit --type or cluster/runtime selectors take precedence. Use --type md NAME_OR_FILE for source discovery with --directory DIR."
+	// Experimental instance flags remain callable without expanding the compact
+	// canonical file-preview help. The console/MD guide describes this surface.
+	for _, name := range []string{"type", "tests", "directory", "interactive", "update", "yes"} {
+		if flag := cmd.Flags().Lookup(name); flag != nil {
+			flag.Hidden = true
+		}
+	}
+	if flag := cmd.Flags().Lookup("output"); flag != nil && operation == "run" {
+		flag.Usage = "output: text|json"
+	}
 }
 
 // Canonical Squad charters retain upstream Run/Test semantics. Copilot-native

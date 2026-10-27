@@ -13,7 +13,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	copilot "github.com/github/copilot-sdk/go"
-	"golang.org/x/sys/unix"
 )
 
 const markdownTestAgent = "---\nname: hello\ndescription: Greet people\ntools: []\n---\nGreet the user.\n"
@@ -90,7 +89,7 @@ func TestMarkdownDiscoveryAndSpecialFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	fifo := filepath.Join(dir, "fifo.agent.md")
-	if err := unix.Mkfifo(fifo, 0600); err != nil {
+	if err := markdownTestFIFO(fifo); err != nil {
 		t.Fatal(err)
 	}
 	paths, err := DiscoverMarkdownAgents(root)
