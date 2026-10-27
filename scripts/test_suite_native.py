@@ -499,6 +499,10 @@ class CandidateProofTests(unittest.TestCase):
             request.pop("status", None)
             for field in ("uid", "generation", "resourceVersion"):
                 request["metadata"].pop(field)
+            if kind == "Task":
+                dry = A.classify(["create", "--dry-run=server", "-f", "-", "-o", "json"], json.dumps(request).encode())
+                frames.extend([{**dry, "returnCode": 0, "response": A.response_snapshot(json.dumps(request).encode())},
+                               {**dry, "returnCode": 0, "response": A.response_snapshot(json.dumps(request).encode())}])
             create = A.classify(["create", "-f", "-", "-o", "json"], json.dumps(request).encode())
             pending = copy.deepcopy(doc); pending["status"] = None
             frames.append({**create, "returnCode": 0, "response": A.response_snapshot(json.dumps(pending).encode())})
@@ -521,6 +525,8 @@ class CandidateProofTests(unittest.TestCase):
         receipt, frames, cases, specs = self.fixture()
         tasks = Q.verify_candidate(receipt, frames, cases, specs)
         self.assertEqual(tasks[0]["uid"], "task-uid")
+        task_name = receipt["cases"][0]["taskName"]
+        self.assertEqual(sum(f.get("admission", False) for f in frames if (f["resource"], f["name"]) == ("Task", task_name)), 3)
         self.assertNotIn("PRIVATE_INSTRUCTIONS", json.dumps(tasks))
         for kind in ("Provider", "Agent", "Task"):
             changed = copy.deepcopy(frames)
@@ -541,12 +547,15 @@ class CandidateProofTests(unittest.TestCase):
             if frame.get("response", {}).get("kind") in {"Provider", "Agent", "Task"}:
                 frame["response"]["metadata"]["annotations"].pop(Q.CREATED_BY_VERSION, None)
         self.assertEqual(Q.verify_candidate(receipt, without_version, cases, specs)[0]["uid"], "task-uid")
+        task_create = next(i for i, f in enumerate(frames) if f["persistent"] and f["resource"] == "Task")
+        task_get = next(i for i, f in enumerate(frames) if f["verb"] == "get" and
+                        f.get("response", {}).get("kind") == "Task")
         for edit in (lambda fs: fs[-1]["preconditions"].update(resourceVersion="stale"),
                      lambda fs: fs[-1]["preconditions"].update(uid="foreign"),
                      lambda fs: fs[-1]["response"].update(status="Failure"),
-                     lambda fs: fs.pop(5), lambda fs: fs[5]["response"].update(phase="Running"),
-                     lambda fs: fs[4]["response"].update(inputDigest="0" * 64),
-                     lambda fs: fs.append(dict(fs[4]))):
+                     lambda fs: fs.pop(task_get), lambda fs: fs[task_get]["response"].update(phase="Running"),
+                     lambda fs: fs[task_create]["response"].update(inputDigest="0" * 64),
+                     lambda fs: fs.append(dict(fs[task_create]))):
             changed = copy.deepcopy(frames); edit(changed)
             with self.subTest(edit=edit), self.assertRaises(ValueError):
                 Q.verify_candidate(receipt, changed, cases, specs)

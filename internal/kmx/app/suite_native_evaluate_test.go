@@ -348,7 +348,7 @@ func TestSuiteWorkspaceEvaluationPipelineStopsAndExports(t *testing.T) {
 
 func TestSuiteNativeEvaluationAdmittedFrameAndOneShot(t *testing.T) {
 	// Omitting either admission check would execute or credit a changed prompt/ref.
-	for _, stage := range []string{"passing", "dry prompt", "dry identity", "create prompt", "create identity", "create ref", "create override", "ambiguous", "uid", "generation", "failed", "cancelled", "result", "blank", "placement"} {
+	for _, stage := range []string{"passing", "dry prompt", "dry identity", "create prompt", "create identity", "create ref", "create override", "final identity", "ambiguous", "uid", "generation", "failed", "cancelled", "result", "blank", "placement"} {
 		t.Run(stage, func(t *testing.T) {
 			a, placement, frame, f := nativeEvaluationFixture(t)
 			a.SetBuildIdentity(version.Build{Version: "v0.4.0", Release: true})
@@ -424,6 +424,9 @@ func TestSuiteNativeEvaluationAdmittedFrameAndOneShot(t *testing.T) {
 					}
 					if stage == "failed" {
 						doc["status"].(map[string]any)["phase"] = "Failed"
+					}
+					if stage == "final identity" {
+						delete(nativeMetadata(doc)["annotations"].(map[string]any), createdByVersionAnnotation)
 					}
 					if stage == "cancelled" {
 						cancel()

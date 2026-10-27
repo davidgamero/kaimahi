@@ -273,10 +273,8 @@ func (a *App) evaluateSuiteNativeTracked(ctx context.Context, placement *suiteNa
 	if err = verify(caseCtx); err != nil {
 		return observation, err
 	}
-	if run != nil {
-		if err = worker.verifySuiteCandidateTask(caseCtx, ns, id, task); err != nil {
-			return observation, err
-		}
+	if err = worker.verifySuiteCandidateTask(caseCtx, ns, id, task); err != nil {
+		return observation, err
 	}
 	observation.AnswerSHA256 = agentruntime.EvaluationAnswerDigest(answer)
 	evidence := agentruntime.EvaluationEvidence{Answer: answer, AnswerAvailable: true}
@@ -290,18 +288,8 @@ func (a *App) evaluateSuiteNativeTracked(ctx context.Context, placement *suiteNa
 		if err = verify(caseCtx); err != nil {
 			return observation, err
 		}
-		if run != nil {
-			if err = worker.verifySuiteCandidateTask(caseCtx, ns, id, task); err != nil {
-				return observation, err
-			}
-		}
-		var current *orkaObject
-		current, err = worker.readOrkaObject(caseCtx, ns, id)
-		if err != nil {
+		if err = worker.verifySuiteCandidateTask(caseCtx, ns, id, task); err != nil {
 			return observation, err
-		}
-		if !orkaTaskSuccessful(current) {
-			return observation, errSuiteNativeEvaluation
 		}
 	}
 	attributed = true

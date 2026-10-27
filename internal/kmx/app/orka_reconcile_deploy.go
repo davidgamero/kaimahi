@@ -120,9 +120,10 @@ func (a *App) inspectOrkaPlacement(ctx context.Context, namespace string, desire
 			identity.suite.check(admittedAnnotations) != nil ||
 			!reflect.DeepEqual(identity.suite.markers(), suiteOnlyMarkers(admittedAnnotations)) ||
 			!orkaRenderedMetadataEqual(admittedMeta, doc["metadata"].(map[string]any)) ||
-			!reflect.DeepEqual(admittedDoc["spec"], doc["spec"]) {
+			!orkaAuthoredFieldsEqual(doc["spec"], admittedDoc["spec"]) {
 			return check, fmt.Errorf("%s/%s strict server create preflight changed reviewed fields", kind, name)
 		}
+		doc["spec"] = admittedDoc["spec"]
 		check.candidate = doc
 		return check, nil
 	}
@@ -258,6 +259,24 @@ func orkaRenderedMetadataEqual(existing, desired map[string]any) bool {
 		return false
 	}
 	return true
+}
+
+func orkaAuthoredFieldsEqual(authored, admitted any) bool {
+	wanted, wantedMap := authored.(map[string]any)
+	actual, actualMap := admitted.(map[string]any)
+	if wantedMap || actualMap {
+		if !wantedMap || !actualMap {
+			return false
+		}
+		for key, value := range wanted {
+			observed, present := actual[key]
+			if !present || !orkaAuthoredFieldsEqual(value, observed) {
+				return false
+			}
+		}
+		return true
+	}
+	return reflect.DeepEqual(authored, admitted)
 }
 
 func cloneOrkaDoc(doc map[string]any) (map[string]any, error) {

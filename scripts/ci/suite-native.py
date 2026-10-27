@@ -158,7 +158,7 @@ def verify_candidate(receipt, frames, cases, specs):
             require(any(s.get("phase") == "Succeeded" and s.get("resultAvailable") and not s["metadata"]["terminating"] for s in seen), "candidate-task-terminal")
         attempts = [f for f in frames if f.get("admission") and (f["resource"], f["name"]) == (kind, name)]
         require(all(f["verb"] == "create" and f["stdinDigest"] == created["stdinDigest"] for f in attempts) and
-                len(attempts) <= (2 if kind == "Task" else 3), "candidate-no-resend")
+                len(attempts) <= 3, "candidate-no-resend")
         observations[(kind, name)] = observed
     require(all(not f.get("admission") or f["resource"] == "token" or (f["resource"], f["name"]) in wanted for f in frames), "candidate-admissions")
     deletes = [(i, f) for i, f in enumerate(frames) if f["verb"] == "delete"]
