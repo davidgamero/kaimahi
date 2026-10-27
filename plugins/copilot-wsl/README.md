@@ -2,7 +2,7 @@
 
 The plugin contains skills, canvas assets and MCP configuration. It uses the
 Linux kmx binary in your default WSL distribution; it does not bundle an engine.
-The v0.9.0-rc.3 install below exposes Create/Edit/Run/Test and the revision-checked
+The v0.9.0-rc.4 install below exposes Create/Edit/Run/Test and the revision-checked
 `set_tool_state` folder-settings writer. Older rc.2 binaries expose only the first
 four tools.
 Internal preview children retain only Create/Edit/Run/Test and never gain
@@ -10,10 +10,10 @@ config-write authority.
 
 ## Install
 
-1. In WSL, install the v0.9.0-rc.3 Linux kmx binary at `/usr/local/bin/kmx`:
+1. In WSL, install the paired v0.9.0-rc.4 prerelease Linux binary at `/usr/local/bin/kmx`:
 
    ```sh
-   curl -fsSL https://raw.githubusercontent.com/kaimahi-agents/kaimahi/v0.9.0-rc.3/install.sh | sudo sh -s -- --version=v0.9.0-rc.3 --bin-dir=/usr/local/bin
+   curl -fsSL https://raw.githubusercontent.com/kaimahi-agents/kaimahi/v0.9.0-rc.4/install.sh | sudo sh -s -- --version=v0.9.0-rc.4 --bin-dir=/usr/local/bin
    ```
 
    The installer downloads the binary and checks its published SHA256 over HTTPS;
@@ -22,20 +22,37 @@ config-write authority.
 2. In a Windows terminal with Copilot installed:
 
    ```powershell
-   copilot plugin install kaimahi-agents/kaimahi:plugins/copilot-wsl
+   copilot plugin marketplace add kaimahi-agents/kaimahi
+   copilot plugin install kmx-agent-builder@kmx-plugins
    ```
 
 There is no folder or model to configure during installation. The fixed command
-is `wsl.exe -e /usr/local/bin/kmx mcp`. The WSL and native-bundle plugins share the
-name `kmx-agent-builder`; installing one replaces the other. The Copilot CLI warns
-that direct plugin installs are deprecated; this install still works, and a
-marketplace install will come later.
+is `wsl.exe -e /usr/local/bin/kmx mcp`. The catalog pins this plugin's source to
+the matching release commit. It does not install or update `/usr/local/bin/kmx`.
+The WSL and native-bundle plugins share the name `kmx-agent-builder`; PATH uses
+`kmx-agent-builder-path`. Install only one variant per host profile.
+For an existing direct install, follow [migration and paired upgrades](../../docs/copilot-app.md#existing-direct-installs-and-upgrades), rather than leaving both registrations active.
 
 ## Use
 
-In Copilot, ask it to create an agent through kmx and open the agent canvas. Give
-it a full WSL path when the file is outside the current directory. The same
-server handles files in unrelated repositories.
+In Copilot, ask: `Create a kmx agent called Release notes that writes a short
+release note from a supplied pull request title, and open its canvas.` Give it a
+full WSL path when the file is outside the current directory. The same server
+handles files in unrelated repositories.
+
+To open an existing file without a model turn, use
+`/kmx-canvas open /mnt/c/work/release-notes.agent.md`. Keep path spaces literal,
+without surrounding quotes. `/kmx-canvas` or `/kmx-canvas help` shows usage;
+`/agent-view FULL_PATH` shows read-only text. Native open was checked in the Copilot
+app with a main build before rc.4 that includes the fix, not the released rc.4 pair.
+If it fails or shows nothing, try `Open the kmx canvas for FULL_PATH` through chat.
+
+In the interactive CLI, use `copilot --experimental` to load those native
+commands. Without the extension, `/agent-view` is unavailable too. Select the
+full installed plugin skill entry; short `/kmx` is not a universal CLI command.
+See the [launch table and CLI spellings](../../docs/copilot-app.md#launch-commands-and-phrases)
+for create/open/run/test requests, saved-snapshot test additions and recovery.
+CLI command checks are not a new Copilot-app acceptance claim.
 
 Choose a runtime model in the canvas: picker override → authored `Model.Preferred`
 → known chat model → `gpt-5.6-terra`. Model may be omitted; a picker choice never

@@ -94,7 +94,9 @@ test('Test is canonical while compatibility and current runtime limits stay expl
     assert.match(text, /Run[^\n]*Test[^\n]*Publish/, `${page}: developer vocabulary`)
     assert.match(text, /v0\.8\.1 uses[^\n]*eval/, `${page}: stable spelling`)
     assert.match(text, /Docker/, `${page}: container prerequisite retained`)
-    assert.match(text, /WSL/, `${page}: Windows boundary retained`)
+    assert.match(text, /WSL/, `${page}: broader Windows route retained`)
+    assert.match(text, /native Windows[^\n]*(?:day-zero CLI|CLI)/i, `${page}: narrow native path linked`)
+    assert.match(text, /v0\.8\.1[^\n]*no Windows \.exe/i, `${page}: stable Windows asset boundary`)
     assert.doesNotMatch(text, /kmx publish|kmx test --local/)
   }
   for (const page of ['docs/azure/cpu-model/index.html', 'docs/aks-demo.html', 'docs/suite-workspace.html']) {
@@ -106,6 +108,96 @@ test('Test is canonical while compatibility and current runtime limits stay expl
   const workflow = plainText(await readFile(path.join(dist, 'docs/workflow-overview.html'), 'utf8'))
   assert.match(workflow, /kmx run --agent NAME --prompt TEXT[^\n]*live Agents[^\n]*neither is workspace-local execution/)
   assert.match(workflow, /kmx push --workspace DIR --evaluation RECEIPT REF/)
+})
+
+test('native Windows documentation keeps the day-zero and release boundary narrow', async () => {
+  const html = await readFile(path.join(dist, 'docs/windows.html'), 'utf8')
+  const windows = plainText(html).replace(/\s+/g, ' ')
+
+  for (const marker of [
+    'unreleased, narrow day-zero CLI',
+    'Stable v0.8.1',
+    'kmx-windows-amd64.exe',
+    'kmx-windows-arm64.exe',
+    'kmx run FILE',
+    'kmx test FILE',
+    'kmx test explain [failure-id] --file FILE',
+    '--github-summary',
+    'local preview only',
+    'publication authority',
+    'deployment authority',
+    '%LOCALAPPDATA%\\kmx',
+    'persistent ACL',
+    'current token user',
+    'protected DACL',
+    'never repaired',
+    'non-NTFS',
+    'UNC paths',
+    'SUBST',
+    'alternate data streams',
+    'reparse-point',
+    'Synchronized folders',
+    'physically separate',
+    'locks do not coordinate',
+    'recognized Windows-drive mounts',
+    'Read-only Windows source input is a separate contract',
+    'not power-loss certification',
+    'not Authenticode',
+    'may be unsigned',
+    'Get-AuthenticodeSignature',
+    'Zone.Identifier',
+    'SmartScreen',
+    'A policy block is a blocker',
+    'Windows amd64 is natively executed',
+    'Windows arm64 is cross-built',
+    'Use WSL for broader workflows'
+  ]) assert.ok(windows.includes(marker), `Windows boundary: ${marker}`)
+
+  for (const deferred of [
+    'Docker', 'kind', 'Kubernetes', 'workspace', 'OCI', 'suite evidence',
+    'provider routes', 'kmx mcp', 'native Copilot plugin', 'AgentKit', 'Buildx',
+    'managed tools', 'publication', 'Deploy'
+  ]) assert.ok(windows.includes(deferred), `Windows deferred operation: ${deferred}`)
+
+  assert.match(windows, /Sigstore bundle signs the checksum manifest/i)
+  assert.match(windows, /certificate-identity[^\n]*\$Version/i)
+  assert.match(windows, /not evaluated[^.]*not[^.]*allowed/i)
+  assert.match(windows, /install\.sh[^.]*Homebrew[^.]*Go @latest[^.]*Unix or WSL/i)
+  assert.doesNotMatch(windows, /native Windows builds are not supported yet|Windows CLI remains guarded/i)
+  for (const forbiddenAdvice of [
+    /run Unblock-File/i,
+    /disable (?:Microsoft )?Defender to/i,
+    /disable SmartScreen to/i,
+    /enable Developer Mode to/i,
+    /change execution policy to/i
+  ]) assert.doesNotMatch(windows, forbiddenAdvice)
+
+  for (const page of ['index.html', 'docs/index.html', 'docs/getting-started.html', 'docs/kmx.html', 'docs/releases.html']) {
+    const source = await readFile(path.join(dist, page), 'utf8')
+    assert.match(source, /href="[^"]*windows(?:\.html)?(?:["#])/, `${page}: native Windows guide linked`)
+  }
+})
+
+test('agent-file CI reports retain failure status and content-free summaries', async () => {
+  const app = plainText(await readFile(path.join(dist, 'docs/copilot-app.html'), 'utf8')).replace(/\s+/g, ' ')
+  for (const marker of [
+    'kmx test ./greeter.agent.md -o json --github-summary > kmx-test.json',
+    'if: always() && hashFiles',
+    'kmx-test-report',
+    'Do not use continue-on-error',
+    'original 0/1/2/130 file-mode result',
+    'content-free table',
+    'Neither output creates automatic local history'
+  ]) assert.ok(app.includes(marker), `CI report contract: ${marker}`)
+  assert.match(app, /--github-summary[^.]*unreleased on main/i)
+  assert.match(app, /v0\.9\.0 release candidates do not contain it/i)
+
+  const reference = plainText(await readFile(path.join(dist, 'docs/kmx.html'), 'utf8')).replace(/\s+/g, ' ')
+  for (const marker of [
+    'durationMs', 'effective judge identity', 'Enabled/Disabled settings',
+    'live/recorded/unavailable source', 'GITHUB_STEP_SUMMARY',
+    'omits file paths', '0/1/2/130 file-mode exit status', 'not suite evidence'
+  ]) assert.ok(reference.includes(marker), `JSON/summary contract: ${marker}`)
 })
 
 /** Inspect rendered instructions without syntax-highlighter markup. */

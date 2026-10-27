@@ -81,6 +81,7 @@ function rewriteRepositoryLinks(md: any): void {
 const userGuides = [
   { text: 'Use kmx in the Copilot app', link: '/docs/copilot-app' },
   { text: 'Getting started', link: '/docs/getting-started' },
+  { text: 'Native Windows', link: '/docs/windows' },
   { text: 'Workspace lifecycle', link: '/docs/suite-workspace' },
   { text: 'Runtime support', link: '/docs/runtime-adapters' },
   { text: 'Orka', link: '/docs/orka' },
@@ -198,6 +199,7 @@ export default defineConfig({
   themeConfig: {
     nav: [
       { text: 'Start', link: '/docs/getting-started' },
+      { text: 'Windows', link: '/docs/windows' },
       { text: 'Run · Test · Publish', link: '/docs/suite-workspace' },
       { text: 'Runtimes', link: '/docs/runtime-adapters' },
       { text: 'Reference', link: '/docs/kmx' },

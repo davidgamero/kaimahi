@@ -1713,7 +1713,9 @@ rerun `kmx test` before evaluated `kmx push`, and obtain fresh approval/signing
 where required. An explicit mismatched `--evaluation` refuses without falling
 back; managed lookup considers only the new exact-S partition. Source-free digest
 Lift still consumes the original artifact and its matching receipt, without
-repreparing a workspace. This packaging change does not enable native Windows.
+repreparing a workspace. This packaging change does not enable native Windows
+workspace or OCI operations; only the separate
+[fake single-file day-zero path](windows.md) is supported there.
 
 ### Managed passing proof
 

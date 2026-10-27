@@ -50,9 +50,10 @@ Sources: [Foundry CLI reference](https://learn.microsoft.com/en-us/azure/foundry
 [macOS requirements](https://docs.ollama.com/macos) and
 [Linux installation](https://docs.ollama.com/linux).
 
-The independent model-access package has native Windows/macOS/Linux tests.
-The installed Windows CLI remains blocked until native CLI support lands; these
-package tests do not qualify the full Windows executable.
+The independent model-access package has native Windows/macOS/Linux tests, but
+the narrow [native Windows day-zero CLI](windows.md) does not expose model
+inventory, keychain, provider or network routes. Package tests are not command
+qualification. Use WSL for these operations.
 
 ## Canvas model choice
 

@@ -11,9 +11,14 @@ first? Use the [local quickstart](#one-command-and-an-agent-that-answers) below.
 
 ## Install kmx
 
-**On Windows, use WSL for now.** Run the install commands and kmx inside
-your Linux WSL distribution, not PowerShell or Command Prompt. Native Windows
-builds are not supported yet; track [Windows support in #578](https://github.com/kaimahi-agents/kaimahi/issues/578).
+This guide covers the full cluster/workspace lifecycle. On Windows, run these
+install and workflow commands inside a Linux WSL distribution. Current `main`
+also has an **unreleased, narrow** [native Windows CLI](windows.md):
+version/help/completion, package-free fake `kmx run FILE` and `kmx test FILE`,
+and offline `kmx test explain ... --file FILE`. It does not support the cluster,
+workspace, model, publication or deployment steps below. Stable v0.8.1 and
+`@latest` have no Windows `.exe`; Homebrew and the Go route shown here remain
+macOS/Linux or WSL guidance as applicable.
 
 Install the latest release with Homebrew:
 

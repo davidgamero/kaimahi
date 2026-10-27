@@ -6,6 +6,9 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentfile"
 )
 
 var errWindowsOperationUnsupported = errors.New("this operation is not available in the guarded native Windows day-zero path")
@@ -15,8 +18,6 @@ const platformAnnotation = "kaimahi.dev/platform-gate"
 // installPlatformGate refuses deferred Windows operations before configuration,
 // state, subprocess, network, or ordinary output effects. Required help,
 // completion and compatibility notices retain their existing output contracts.
-// The compile guard remains until phase 5; GOOS injection exists only for policy
-// tests while that guard is present.
 func installPlatformGate(root *cobra.Command, state *commandState) {
 	if state.deps.goos != "windows" {
 		return
@@ -30,7 +31,7 @@ func installPlatformGate(root *cobra.Command, state *commandState) {
 		if cmd != root {
 			args := cmd.Args
 			cmd.Args = func(cmd *cobra.Command, values []string) error {
-				if windowsCommandAllowed(cmd, values) {
+				if windowsCommandAllowed(cmd, values, state) {
 					if args != nil {
 						return args(cmd, values)
 					}
@@ -54,27 +55,56 @@ func installPlatformGate(root *cobra.Command, state *commandState) {
 	wrap(root)
 }
 
-func windowsCommandAllowed(cmd *cobra.Command, args []string) bool {
+func windowsCommandAllowed(cmd *cobra.Command, args []string, state *commandState) bool {
 	path := strings.TrimPrefix(cmd.CommandPath(), "kmx ")
 	switch path {
 	case "version", "completion", "help":
 		return true
 	}
-	// The command handlers retain their exact file-mode validation. A positional
-	// FILE is required here so live Run and workspace Test never reach Args.
-	if path == "run" || path == "test" {
-		if len(args) != 1 {
-			return false
-		}
-		for _, name := range []string{"provider", "endpoint", "tool-bindings", "prompt-file"} {
-			if flag := cmd.Flag(name); flag != nil && flag.Changed {
-				return false
-			}
-		}
-		return true
+	if state.contextFlag != "" {
+		return false
 	}
-	if path == "test explain" || path == "eval explain" {
-		return true
+	switch path {
+	case "run":
+		// No explicit route, host input, live-Agent selector, or other operational
+		// flag may turn the default package-free fake preview into external work.
+		// Positional input has the same authority as the allowed inline prompt.
+		if len(args) == 2 {
+			args = args[:1]
+		}
+		return windowsFlagsAllowed(cmd, "case", "output", "prompt", "no-content", "verbose") && windowsPackageFreeFakeFile(args)
+	case "test":
+		return windowsFlagsAllowed(cmd, "case", "output", "no-content", "verbose") && windowsPackageFreeFakeFile(args)
+	case "test explain", "eval explain":
+		file := cmd.Flag("file")
+		return len(args) <= 1 && file != nil && file.Changed && strings.TrimSpace(file.Value.String()) != "" &&
+			windowsFlagsAllowed(cmd, "clear", "file", "show-content")
 	}
 	return false
+}
+
+func windowsPackageFreeFakeFile(args []string) bool {
+	if len(args) != 1 {
+		return false
+	}
+	agent, err := agentfile.Load(args[0])
+	return err == nil && windowsPackageFreeFakeAgent(agent)
+}
+
+func windowsPackageFreeFakeAgent(agent *agentfile.Agent) bool {
+	return agent != nil && agent.Model == "fake" && len(agent.Tools) == 0
+}
+
+func windowsFlagsAllowed(cmd *cobra.Command, names ...string) bool {
+	allowed := make(map[string]bool, len(names))
+	for _, name := range names {
+		allowed[name] = true
+	}
+	valid := true
+	cmd.Flags().Visit(func(flag *pflag.Flag) {
+		if !allowed[flag.Name] {
+			valid = false
+		}
+	})
+	return valid
 }

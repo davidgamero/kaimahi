@@ -35,7 +35,9 @@ It never starts a runtime, downloads a model, changes a saved selection or runs
 an agent. Foundry Local supplies its own endpoint; Ollama defaults to loopback
 port 11434. See [model discovery](models.md#installed-local-model-discovery) for
 requirements, sizes and the non-secret route contract. These commands are
-unreleased; native Windows package tests do not yet qualify the Windows CLI.
+unreleased and outside the narrow native Windows command boundary. Package-level
+Windows model-access tests do not enable native model discovery; use WSL for
+model routes. See [native Windows](windows.md).
 
 ## Copilot model access
 
@@ -69,7 +71,7 @@ unreleased. File Run/Test can explicitly consume the saved credential with
 existing Copilot chat is introduced. See
 [storage and model routes](models.md#explicit-copilot-model-access)
 and [direct transport](copilot-inference.md#direct-model-access). Native package
-tests are not full Windows CLI qualification.
+tests do not enable these model/provider routes in the narrow Windows CLI.
 
 ## Install
 
@@ -78,9 +80,13 @@ For the unreleased single-file Copilot experiment, use
 agents by type, `list --type md` to list local agents, and `chat NAME --type md`
 to interact. Root create/run/inspect/test/validate support the local agent loop.
 
-**On Windows, use WSL for now.** Install and run kmx inside your Linux
-WSL distribution, not PowerShell or Command Prompt. Native Windows builds
-are not supported yet; track [Windows support in #578](https://github.com/kaimahi-agents/kaimahi/issues/578).
+On Windows, the install methods in this section are WSL routes for the full CLI;
+run them inside the Linux distribution. Current `main` separately supports an
+**unreleased, narrow** [native Windows day-zero CLI](windows.md):
+version/help/completion, package-free fake file Run/Test and offline file Explain.
+Stable v0.8.1 and `@latest` have no Windows `.exe`. Do not use Homebrew,
+`install.sh` or generic Go `@latest` guidance as a native Windows installer;
+future Windows release assets require the page's explicit manual verification.
 
 The stable release is available through the official Homebrew tap:
 
@@ -181,6 +187,10 @@ on stderr, with no result document. Rooted API callers can pass an already-parse
 snapshot without reopening its filename; the CLI path is a thin load-and-delegate
 wrapper.
 Neither operation changes source or produces native evaluation/deploy evidence.
+On native Windows, the supported slice is narrower still: the package-free
+offline `fake` route with no provider, endpoint, tool binding or prompt-file
+input. See [native Windows](windows.md#supported-native-commands). A native
+preview pass creates no suite evidence, publication or deployment authority.
 An optional canonical Tools declaration and explicit `--tool-bindings FILE` select
 one [host-owned read-only GitHub MCP operation](local-preview.md#host-tool-foundation).
 The operator binds one repository and an explicit environment credential name;
@@ -215,7 +225,8 @@ existing preview: cancel it explicitly, or let its five-minute bound finish.
 Unbound tools refuse. Bound agent runs support tools; judging stays tool-free.
 There are no retries, redirects or provider/model fallback. A nil dependency
 still refuses `runner_unavailable`. Hermetic tests do not qualify real local
-models or native Windows.
+models or native Windows model/provider routes; only the package-free fake
+Windows path is qualified.
 
 The offline `fake` route is deliberately small: it recognizes
 ``Reply with exactly `Hello, ` followed by the input`` (the prefix can change),
@@ -227,7 +238,7 @@ routes use an explicit keyless local endpoint (HTTP or HTTPS on literal loopback
 Compatible/local transport waits at most 30 seconds for response headers, within
 the five-minute overall budget; slow non-streaming generation can hit that limit.
 Agent completions require an exact model-ID echo, with no automatic aliasing.
-Explicit `--provider copilot` uses the existing authenticated model-access
+Copilot is the default for non-fake models and uses the existing authenticated model-access
 transport at the fixed `https://api.githubcopilot.com` endpoint. Other remote
 endpoints still refuse. Copilot requires prior explicit sign-in and an exact
 enabled Chat/Responses model from `kmx model list --provider copilot`; it never falls back
@@ -242,7 +253,7 @@ cleartext, including reasoning. Neither previews nor replay produce native
 evaluation evidence.
 
 ```text
-kmx run ./greeter.agent.md --prompt Ada
+kmx run ./greeter.agent.md "Ada"
 kmx test ./greeter.agent.md --case greeting -o json
 kmx test ./greeter.agent.md
 ```
@@ -256,13 +267,13 @@ withheld. Journaled execution uses fixed-text refusals without per-request
 HTTP-status/timing or network-subclass diagnostics; it never forwards raw
 provider errors or invents a status for requests without a response.
 Absent, null, empty or different returned model identities refuse.
-Verbose is off by default and does not imply `--show-content`: instructions,
-inputs, answers, assertion operands, judge rationale and response bodies stay
-private. JSON stdout and exit contracts are unchanged. A failed diagnostic
+Verbose is off by default and does not opt into extra content: instructions,
+inputs and response bodies stay out of diagnostics. Run answers and failed-Test
+excerpts are shown by default; `--no-content` omits them and failure operands. A failed diagnostic
 write stops later sends and cannot report a full pass.
 
 ```text
-kmx run ./greeter.agent.md --provider ollama --endpoint http://127.0.0.1:11434/v1 --prompt Ada --verbose --show-content
+kmx run ./greeter.agent.md "Ada" --provider ollama --provider-url http://127.0.0.1:11434/v1 --verbose
 ```
 
 For this Ollama example, first set `Model.Preferred` in your own copy of the
@@ -274,14 +285,16 @@ for users without gh:
 
 ```bash
 kmx model list --provider copilot
-kmx run ./greeter.agent.md --provider copilot --prompt Ada --show-content
-kmx test ./greeter.agent.md --provider copilot
+kmx run ./greeter.agent.md "Ada"
+kmx test ./greeter.agent.md
 ```
 
 Selecting Copilot sends the authored instructions and each input/example to the
 hosted service; judging also sends the answer and rubric. Review the file before
 running it and account for subscription, policy and quota limits. The endpoint
-is pinned: omit `--endpoint` or supply exactly `https://api.githubcopilot.com`.
+is pinned: omit `--provider-url` or supply exactly `https://api.githubcopilot.com`.
+Without an available sign-in, Run/Test exits 2 and names `gh auth login` and the
+`--provider ollama --provider-url URL` alternative. Execution never starts login.
 Known authentication, entitlement, policy, quota and service failures produce
 safe `copilot_*` reasons and stop later sends, including after a judge failure.
 This remains preview on embedded Sessions, not a Copilot SDK harness
@@ -293,33 +306,68 @@ if the file contains only that example. Unknown/blank IDs refuse before inferenc
 An explicit `examples: []` can be saved and loaded while authoring. Ad-hoc Run
 with an input still works; Test refuses with “No tests yet — add or suggest one”.
 Missing/empty examples cannot pass, export a run profile or supply the evidence
-required for packaging/deployment. The exact CLI model comes from `Model.Preferred`
-or `gpt-5.6-terra` when the Model section is omitted;
-`fake` selects only the built-in fake route. A real model additionally requires
-an explicit trusted `--provider` and, for local routes, `--endpoint`, validated by model access;
-there is no discovery, installation, sign-in or fallback inside Run/Test. The
+required for packaging/deployment. The exact CLI model comes from `--model`, then
+`Model.Preferred`, then `gpt-5.6-terra` when the Model section is omitted.
+`fake` selects only the built-in fake route. Other models default to Copilot with
+an existing sign-in, matching the canvas. `--provider` overrides that selection;
+local providers require `--provider-url`, validated by model access. There is no
+discovery, installation, sign-in prompt or fallback inside Run/Test. The
 caller supplies any judge-route override through the App API; otherwise the
 judge uses the exact agent route, never an independently chosen route. A canonical
 file Judge without `judgeModel` follows that route; conflicting authored pins still
 refuse rather than silently switching. `judgeVersion` stays authored and required.
 Strict workspace assertions and exported run profiles still require a model pin.
 
+Text `run FILE "input"` writes only the answer to stdout; the selected route/model
+and preview diagnostics go to stderr. Positional input runs only that input unless `--case ID` also explicitly selects
+a saved example to check. Without positional input, Run prints each saved example answer;
+legacy `--prompt`/`--prompt-file` still run their ad-hoc input plus saved examples.
+`test FILE` reports PASS/FAIL, test ID and duration, failed checks with the same
+wording as the canvas, then the first answer lines. `--no-content` suppresses
+answers, failure operands and judge content in both text and JSON. Known unsafe
+content remains withheld; this is not a guarantee of detecting arbitrary secrets.
+
 Output defaults to text; `-o json` returns one versioned `schemaVersion: 1`,
 `kind: kmx.agent-file-preview` document. Both preserve operation, exact source-byte
 SHA-256 revision, provider/model, full/subset selection, terminal state and
-example/assertion IDs with pass/fail/unknown and safe reasons. JSON includes
+example/assertion IDs with pass/fail/unknown and safe reasons. It also includes
+monotonic `durationMs` for the whole invocation and each completed test, effective
+judge identity when judging ran, frozen tool Enabled/Disabled settings and each
+test's live/recorded/unavailable source plus call count. JSON includes
 `fullPass`, which is false for every subset, incomplete or unknown result.
 Fake/local and Copilot execution retain a private journal handle internally,
 never in this safe result. A journaled preview pass is not deploy evidence. Paths
 are sanitized display basenames, not a file-targeting API. The optional structured
 `diagnostic` names safe parser fields, source line/column and repair advice.
-Default output contains no instructions, inputs, answers, operands, provider error
-text, endpoint or journal handle. `--show-content` explicitly adds sanitized answer
-excerpts, at most 4096 UTF-8 bytes each; treat them as untrusted content.
+CLI Run JSON includes a sanitized full `answer` per completion (including a known
+empty answer); unsafe content is marked withheld, never silently clipped to an
+excerpt. Failed Test rows include `failure` wording and sanitized `answerExcerpt`
+(up to 4096 UTF-8 bytes). `--no-content` omits these fields and judge content.
+Instructions, inputs, raw provider errors, endpoints and journal handles are never
+included. Treat all answer/operand content as untrusted. MCP retains its separate
+bounded content opt-in. File commands no longer accept `--show-content` or
+`--endpoint`; workspace/deploy/explain content flags and MCP startup are unchanged.
+
+`kmx test FILE -o json --github-summary` writes the JSON report to stdout and
+appends a bounded Markdown rendering of that same safe result to the file named by
+GitHub Actions' existing `$GITHUB_STEP_SUMMARY`. It omits file paths, prompts,
+answers, assertion operands, tool arguments/results, credentials, endpoints,
+provider diagnostics, retained diagnostic IDs and judge rationale. The flag is
+Test-file-only, requires JSON output, and creates no local history beyond an
+explicit recording capture requested by the test. An unset, relative, linked or
+non-regular summary path is refused before model execution; a missing file at a
+valid absolute path is created with mode 0600.
+A summary-write failure exits 1. Otherwise the command retains the normal
+0/1/2/130 file-mode exit status. Reports and summaries are local-preview diagnostics only,
+not suite evidence or Publish/Deploy authority.
 
 File-mode exits: 0 means the selected checks completed and passed (a partial
-selection is **not** a full pass); 2 means completed assertion fail/unknown;
-1 means refusal, execution/deadline/journal/output failure; 130 means cancellation.
+selection is **not** a full pass), or an ad-hoc Run completed; 1 means a completed
+check failed; 2 means it could not run or decide (including missing sign-in/tests,
+execution/deadline/journal failure or an inconclusive judge). Output/summary-write
+failures and command-line parsing errors (such as unknown flags) exit 1;
+cancellation exits 130. These file-mode statuses do not change
+workspace Test or live Run.
 Journal-finalization failure preserves available rows but makes the overall
 verdict unknown and returns an error, never a pass. Source edits do not rebind
 an in-flight result to a new revision. Completed non-pass Test examples retain
@@ -327,7 +375,7 @@ bounded private diagnostics under the existing `eval-failures` state root. Each
 record binds the resolved file subject, exact source revision, effective agent
 and judge provider/model, selection and assertion identity/result. The safe
 preview result reports `retention.status` and opaque diagnostic IDs; retention
-failure does not change the completed verdict or exit 2. Run, passing Test,
+failure does not change the completed verdict or file-mode exit status. Run, passing Test,
 cancellation, execution failure and journal-finalization failure retain no file
 diagnostic. This diagnostic store is separate from the cleartext Sessions journal
 and grants no evidence, Publish or Deploy authority.
@@ -355,6 +403,8 @@ journals, source history, workspace failures, passing proof or runtime history.
 Do not mix FILE with `--agent`, workspace, destination, evidence, native judge or
 cluster flags, including explicitly supplied defaults. Existing live
 `run --agent` and full-workspace Test contracts remain separate and unchanged.
+Those live/workspace modes are deferred on native Windows and refuse before
+effects.
 
 ### Frozen run-profile export (unreleased)
 
@@ -690,9 +740,10 @@ or model request. Tools accept no endpoint, credential or arbitrary-command fiel
 Run/Test use the same
 [file preview runner](#agent-file-local-preview-unreleased-integration) as the
 CLI: fake/local and explicit Copilot routes use embedded Sessions and one private
-journal, with one Session per agent turn and per judge sample. A nil runner still returns `runner_unavailable`, never
-a fallback. Hermetic checks do not qualify real models or native Windows.
-There is no additional Explain/model/install tool; offline Explain stays a CLI action.
+journal, with one Session per agent turn and per judge sample. A nil runner still
+returns `runner_unavailable`, never a fallback. Hermetic checks do not qualify
+real models or native Windows MCP. There is no fifth Explain/model/install tool;
+offline Explain stays a CLI action.
 
 #### Saved source versions and restore
 
@@ -758,7 +809,7 @@ not resolved model credentials or run answers. Keep that directory private:
 0700 directories, 0600 regular single-link files. Existing unsafe state is
 refused rather than chmod-repaired. The operator-selected state directory may
 be a symlink, but owned history components may not. No native Windows history
-qualification is implied. Filesystem IO is bounded but synchronous.
+or MCP qualification is implied. Filesystem IO is bounded but synchronous.
 
 Retention is at most 20 snapshots per file, 200 per operation root and 32 MiB of
 encoded records per root; source is bounded to 256 KiB. The oldest eligible
@@ -1318,7 +1369,7 @@ absent. Root `show/list` are not implemented.
 | `--container-engine`, `CONTAINER_ENGINE` | `docker` (default) or `podman`; the flag overrides the environment; keep consistent for every operation on a cluster |
 | `MODEL` | model the runtime pulls and resolves, default `qwen2.5:3b` |
 | `KAIMAHI_CONFIRM` | explicit named-target consent, not a universal yes |
-| `KMX_HOME` | portable override for all kmx state/cache; otherwise the native user config directory (`~/.config/kmx` on Linux, `~/Library/Application Support/kmx` on macOS) |
+| `KMX_HOME` | portable override for all kmx state/cache; otherwise the native user config directory (`~/.config/kmx` on Linux, `~/Library/Application Support/kmx` on macOS, `%LOCALAPPDATA%\kmx` on Windows) |
 
 Use `KMX_HOME` for isolated runs and tests on both Linux and macOS. KMX follows
 Go's native user-config lookup when it is unset: `XDG_CONFIG_HOME` participates
@@ -1326,6 +1377,10 @@ in that lookup on Linux, but it is not the macOS override. Changing `KMX_HOME`
 selects a separate set of saved records; it does not migrate files from the
 native location. Point it only at a trusted private directory: KMX state can
 include kubeconfig snapshots and infrastructure resource identifiers.
+Native Windows writable state has the stricter local-NTFS/current-user/protected-
+DACL contract, and must remain physically separate from WSL state. WSL/Linux
+state cannot use a recognized Windows-drive mount. See
+[Windows writable state](windows.md#writable-state).
 
 ### Where the command will land
 
@@ -1379,7 +1434,7 @@ recorded monitoring, not agents/plane; unknown ownership is left alone. Read
   `unknown` and `not kmx-owned` remain distinct. Exit1 unknown/unhealthy/drift
   overrides2 known pending;0 requires complete ready/empty. Missing fields are
   never filled from companions or local history. Candidate roots remain separate.
-  Bare status reports tracked running/stopped local instances and cached version
+  Bare status reports tracked running local instances (`--all` includes stopped) and cached version
   hashes. `--directory` filters original source locations without scanning files.
   Use `info` for local inference setup. `orka status` remains table-only and
   refuses JSON/YAML. See [destination status](destination-status.md).

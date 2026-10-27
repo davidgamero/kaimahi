@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentfile"
@@ -30,6 +31,12 @@ type FilePreviewOptions struct {
 	Input             *string
 	ShowContent       bool
 	ShowFailedContent bool
+	// CLI-only presentation choices; snapshot/MCP callers keep bounded opt-in content.
+	IncludeAnswer         bool
+	IncludeFailureDetails bool
+	DefaultCopilot        bool
+	AdHocOnly             bool
+	RouteSelected         func(FilePreviewRoute) error
 
 	RecordedReplayOnly   bool
 	ExpectedToolSettings *[]localtools.ToolSetting
@@ -62,10 +69,12 @@ type FilePreviewResult struct {
 	FullPass      bool                      `json:"fullPass"`
 	ReasonCode    string                    `json:"reasonCode"`
 	Reason        string                    `json:"reason"`
+	DurationMs    int64                     `json:"durationMs"`
 	Examples      []FilePreviewExample      `json:"examples"`
 	AdHoc         *FilePreviewCompletion    `json:"adHoc,omitempty"`
 	Retention     FilePreviewRetention      `json:"retention"`
 	ToolSettings  []localtools.ToolSetting  `json:"toolSettings,omitempty"`
+	Notices       []string                  `json:"notices,omitempty"`
 }
 type FilePreviewDiagnostic struct {
 	Field  string `json:"field"`
@@ -112,8 +121,10 @@ type FilePreviewCompletion struct {
 	State         string                     `json:"state"`
 	ReasonCode    string                     `json:"reasonCode"`
 	Reason        string                     `json:"reason"`
+	Answer        *string                    `json:"answer,omitempty"`
 	AnswerExcerpt string                     `json:"answerExcerpt,omitempty"`
 	Truncated     bool                       `json:"truncated,omitempty"`
+	DurationMs    int64                      `json:"durationMs"`
 	ToolCalls     int                        `json:"toolCalls,omitempty"`
 	Tools         []agentpreview.ToolSummary `json:"tools,omitempty"`
 }
@@ -130,6 +141,7 @@ type FilePreviewAssertion struct {
 	ReasonCode string                    `json:"reasonCode"`
 	Reason     string                    `json:"reason"`
 	Judge      *FilePreviewJudge         `json:"judge,omitempty"`
+	Failure    string                    `json:"failure,omitempty"`
 }
 
 // FilePreviewError contains fixed safe text or validated catalog choices, never raw provider content.
@@ -182,7 +194,7 @@ func previewReason(code string) string {
 		"completion_ready": "Attributable completion available.",
 		"assertion_failed": "Assertion not satisfied.", "judge_unknown": "Assertion outcome is inconclusive.",
 		"not_run": "Execution is not complete.", "cancelled": "Local preview cancelled.", "deadline_exceeded": "Local preview deadline exceeded.",
-		"invalid_file":      "Invalid agent file; use the canonical charter format with required fields and an Examples section.",
+		"invalid_file":      "Invalid agent file; repair the reported source field.",
 		"no_tests":          "No tests yet — add or suggest one",
 		"invalid_selection": "Unknown example ID; select an authored example ID.", "invalid_options": "Invalid file preview options.",
 		"invalid_tool_settings":     "Tool settings in the agent folder's kmx.yaml are invalid.",
@@ -206,11 +218,12 @@ func previewReason(code string) string {
 
 // PreviewAgentFile is the CLI path wrapper: load once, then execute that snapshot.
 func (a *App) PreviewAgentFile(ctx context.Context, opt FilePreviewOptions) (FilePreviewResult, error) {
+	started := a.timeNow()
 	parsed, err := agentfile.Load(opt.File)
 	if err == nil && opt.RetentionFile != "" && opt.retentionScope == nil {
 		opt = WithFilePreviewRetention(opt, opt.RetentionFile, parsed.Revision)
 	}
-	return a.previewAgentSnapshot(ctx, parsed, opt, err)
+	return a.previewAgentSnapshot(ctx, parsed, opt, err, started)
 }
 
 // PreviewAgentSnapshot executes a caller-owned parsed snapshot without reopening
@@ -218,10 +231,11 @@ func (a *App) PreviewAgentFile(ctx context.Context, opt FilePreviewOptions) (Fil
 // The caller must obtain parsed from agentfile.Parse/Load and not mutate it while
 // the operation runs. Preview results grant no native evidence/deploy authority.
 func (a *App) PreviewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent, opt FilePreviewOptions) (FilePreviewResult, error) {
-	return a.previewAgentSnapshot(ctx, parsed, opt, nil)
+	return a.previewAgentSnapshot(ctx, parsed, opt, nil, a.timeNow())
 }
 
-func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent, opt FilePreviewOptions, parseErr error) (FilePreviewResult, error) {
+func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent, opt FilePreviewOptions, parseErr error, started time.Time) (result FilePreviewResult, resultErr error) {
+	defer func() { result.DurationMs = previewDurationMilliseconds(a.timeNow().Sub(started)) }()
 	filePath := suiteDiagnosticIdentity(filepath.Base(opt.File), nil)
 	if opt.FullPath {
 		var safe bool
@@ -230,8 +244,12 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 			filePath = "withheld"
 		}
 	}
+	scope := "full"
+	if opt.CaseID != "" {
+		scope = "subset"
+	}
 	r := FilePreviewResult{SchemaVersion: 1, Kind: "kmx.agent-file-preview", Operation: opt.Operation,
-		File: FilePreviewIdentity{Path: filePath}, Selection: FilePreviewSelection{Scope: "full", CaseIDs: []string{}},
+		File: FilePreviewIdentity{Path: filePath}, Selection: FilePreviewSelection{Scope: scope, CaseIDs: []string{}},
 		State: "refused", Verdict: runtime.EvaluationUnknown, Examples: []FilePreviewExample{}, Retention: FilePreviewRetention{Status: "not_requested"}}
 	fail := func(code string, exit int) (FilePreviewResult, *FilePreviewError) {
 		r.FullPass = false
@@ -274,6 +292,9 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 			return fail("invalid_file", 1)
 		}
 	}
+	if parsed.CopilotToolsOmitted {
+		r.Notices = []string{agentfile.CopilotToolsNotice}
+	}
 	missingModel := parsed.Model == ""
 	execution := *parsed
 	if opt.Model != "" {
@@ -295,7 +316,10 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 			route.Model = parsed.Model
 		}
 	} else if parsed.Model != "fake" {
-		return fail("model_unavailable", 1)
+		if !opt.DefaultCopilot {
+			return fail("model_unavailable", 1)
+		}
+		route = modelaccess.Route{Provider: "copilot", Model: parsed.Model, Endpoint: modelaccess.CopilotEndpoint, Auth: "copilot"}
 	}
 	if route.Model != parsed.Model || route.Validate() != nil || route.Provider == "fake" && route.Model != "fake" || route.Provider != "fake" && route.Model == "fake" {
 		return fail("model_unavailable", 1)
@@ -311,7 +335,6 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 	parsed.Examples = agentfile.BindJudgeModels(parsed.Examples, judge.Model)
 	selected := parsed.Examples
 	if opt.CaseID != "" {
-		r.Selection.Scope = "subset"
 		selected = nil
 		for _, ex := range parsed.Examples {
 			if ex.ID == opt.CaseID {
@@ -322,7 +345,17 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 			return fail("invalid_selection", 1)
 		}
 	}
-	if opt.JudgeRoute != nil {
+	if opt.AdHocOnly && opt.Input != nil {
+		selected = nil
+		r.Selection.Scope = "subset"
+	}
+	usesJudge := opt.JudgeRoute != nil
+	for _, ex := range selected {
+		for _, assertion := range ex.Assertions {
+			usesJudge = usesJudge || assertion.Type == "llmJudge"
+		}
+	}
+	if usesJudge {
 		r.JudgeRoute = &FilePreviewRoute{judge.Provider, judge.Model}
 	}
 	if len(parsed.Tools) == 0 && opt.ToolBindings != "" {
@@ -420,6 +453,9 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 	}
 	request := agentpreview.Request{Agent: parsed, Examples: selected, Route: route, JudgeRoute: opt.JudgeRoute, Input: opt.Input, Progress: opt.Progress, ToolBindings: opt.ToolBindings, FileLabel: r.File.Path, ToolSettings: append([]localtools.ToolSetting(nil), r.ToolSettings...)}
 	request.ExampleFinished = previewCaseObserver(ctx, selected, parsed, route, opt.CaseFinished)
+	if opt.RouteSelected != nil {
+		request.BeforeExecute = func() error { return opt.RouteSelected(r.ModelRoute) }
+	}
 	judgeCtx, judgeNotes := newFileJudgeContext(ctx)
 	outcome, cause := a.FileRunner.Run(judgeCtx, request)
 	if errors.Is(cause, agentpreview.ErrUnsafeToolContent) || errors.Is(cause, agentpreview.ErrCredentialContent) || errors.Is(cause, copilot.ErrCredentialContent) {
@@ -454,7 +490,7 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 		if !validPreviewTools(c, ex, parsed.Tools) {
 			return false
 		}
-		if c.ToolCalls < 0 || c.ToolCalls > localtools.MaxCalls || len(parsed.Tools) == 0 && c.ToolCalls != 0 || c.State != agentpreview.Complete || c.ID == "" || seen[c.ID] || c.FileRevision != parsed.Revision || c.Provider != route.Provider || c.Model != route.Model || len(c.Answer) > 256*1024 || !utf8.ValidString(c.Answer) {
+		if c.DurationMs < 0 || c.DurationMs > (5*time.Minute).Milliseconds() || c.ToolCalls < 0 || c.ToolCalls > localtools.MaxCalls || len(parsed.Tools) == 0 && c.ToolCalls != 0 || c.State != agentpreview.Complete || c.ID == "" || seen[c.ID] || c.FileRevision != parsed.Revision || c.Provider != route.Provider || c.Model != route.Model || len(c.Answer) > 256*1024 || !utf8.ValidString(c.Answer) {
 			return false
 		}
 		seen[c.ID] = true
@@ -464,6 +500,9 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 	if outcome.AdHoc != nil {
 		if validCompletion(*outcome.AdHoc, agentfile.Example{}) {
 			c := previewCompleted(*outcome.AdHoc, opt.ShowContent)
+			if opt.IncludeAnswer {
+				c.Answer = previewFullAnswer(outcome.AdHoc.Answer)
+			}
 			r.AdHoc = &c
 		} else if outcome.AdHoc.State == agentpreview.Complete {
 			malformed = true
@@ -506,9 +545,18 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 			for j, as := range row.Assertions {
 				note := judgeNotes[fileJudgeKey{ex.ID, as.ID}]
 				r.Examples[i].Assertions[j].Judge = previewJudge(as, ex.Assertions[j], note, &judgeReasonBytes)
+				if opt.IncludeFailureDetails && as.Verdict == runtime.EvaluationFail {
+					r.Examples[i].Assertions[j].Failure = previewCheckFailure(ex.Assertions[j])
+				}
 			}
 		}
-		r.Examples[i].FilePreviewCompletion = previewCompleted(row.Completion, show)
+		completion := previewCompleted(row.Completion, show)
+		if opt.IncludeAnswer {
+			completion.Answer = previewFullAnswer(row.Completion.Answer)
+		}
+		completion.ReasonCode = previewResultReasonCode(verdict)
+		completion.Reason = previewReason(completion.ReasonCode)
+		r.Examples[i].FilePreviewCompletion = completion
 		r.Examples[i].Verdict = verdict
 		all = append(all, row.Assertions...)
 	}
@@ -582,12 +630,7 @@ func (a *App) previewAgentSnapshot(ctx context.Context, parsed *agentfile.Agent,
 		return r, nil
 	}
 	r.Verdict = runtime.EvaluationAssertionsVerdict(all)
-	r.ReasonCode = "checks_passed"
-	if r.Verdict == runtime.EvaluationFail {
-		r.ReasonCode = "assertion_failed"
-	} else if r.Verdict != runtime.EvaluationPass {
-		r.ReasonCode = "judge_unknown"
-	}
+	r.ReasonCode = previewResultReasonCode(r.Verdict)
 	r.Reason = previewReason(r.ReasonCode)
 	r.FullPass = r.Selection.Scope == "full" && r.Verdict == runtime.EvaluationPass
 	if r.Verdict != runtime.EvaluationPass {
@@ -665,6 +708,7 @@ func previewCompletion(state, code string) FilePreviewCompletion {
 }
 func previewCompleted(c agentpreview.Completion, show bool) FilePreviewCompletion {
 	row := previewCompletion("complete", "completion_ready")
+	row.DurationMs = c.DurationMs
 	row.ToolCalls = c.ToolCalls
 	row.Tools = append([]agentpreview.ToolSummary(nil), c.Tools...)
 	if show {
@@ -674,6 +718,24 @@ func previewCompleted(c agentpreview.Completion, show bool) FilePreviewCompletio
 	}
 	return row
 }
+
+func previewDurationMilliseconds(elapsed time.Duration) int64 {
+	if elapsed <= 0 {
+		return 0
+	}
+	return elapsed.Milliseconds()
+}
+
+func previewResultReasonCode(verdict runtime.EvaluationVerdict) string {
+	if verdict == runtime.EvaluationPass {
+		return "checks_passed"
+	}
+	if verdict == runtime.EvaluationFail {
+		return "assertion_failed"
+	}
+	return "judge_unknown"
+}
+
 func previewAssertion(id, kind string, v runtime.EvaluationVerdict) FilePreviewAssertion {
 	code := "judge_unknown"
 	if v == runtime.EvaluationPass {

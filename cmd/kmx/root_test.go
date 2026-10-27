@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/app"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/config"
@@ -98,12 +100,27 @@ func TestGuardedWindowsDeferredOperationsRefuseBeforeEffects(t *testing.T) {
 }
 
 func TestGuardedWindowsAllowsPackageFreeFileCommands(t *testing.T) {
-	for _, verb := range []string{"run", "test"} {
-		t.Run(verb, func(t *testing.T) {
+	cases := []struct {
+		name string
+		args func(string) []string
+	}{
+		{"run", func(file string) []string { return []string{"run", file} }},
+		{"run positional input", func(file string) []string { return []string{"run", file, "Grace"} }},
+		{"run presentation", func(file string) []string {
+			return []string{"run", file, "--case", "greeting", "--output", "json", "--prompt", "hello", "--no-content", "--verbose"}
+		}},
+		{"test", func(file string) []string { return []string{"test", file} }},
+		{"test presentation", func(file string) []string {
+			return []string{"test", file, "--case", "greeting", "--output", "json", "--no-content", "--verbose"}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			var out, errOut bytes.Buffer
 			deps, loads := testDependencies(&out, &errOut)
 			deps.goos = "windows"
-			deps.fileRunner = &cliPreviewFake{verdict: runtime.EvaluationPass}
+			runner := &cliPreviewFake{verdict: runtime.EvaluationPass}
+			deps.fileRunner = runner
 			root, err := filepath.EvalSymlinks(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
@@ -116,9 +133,360 @@ func TestGuardedWindowsAllowsPackageFreeFileCommands(t *testing.T) {
 			if err := os.WriteFile(file, source, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			err = execute([]string{verb, file}, deps)
-			if err != nil || *loads != 0 || out.Len() == 0 {
-				t.Fatalf("%s FILE = %v loads=%d stdout=%q stderr=%q", verb, err, *loads, out.String(), errOut.String())
+			args := tc.args(file)
+			err = execute(args, deps)
+			if err != nil || *loads != 0 || runner.calls != 1 || out.Len() == 0 {
+				t.Fatalf("%v = %v loads=%d sends=%d stdout=%q stderr=%q", args, err, *loads, runner.calls, out.String(), errOut.String())
+			}
+			if runner.request.Route.Provider != "fake" || runner.request.Route.Model != "fake" || runner.request.Route.Endpoint != "" || runner.request.Route.Auth != "none" || runner.request.ToolBindings != "" || len(runner.request.Agent.Tools) != 0 {
+				t.Fatalf("%v escaped package-free fake route: %+v", args, runner.request)
+			}
+		})
+	}
+}
+
+func TestGuardedWindowsFileCommandsRefuseEveryExternalRouteBeforeEffects(t *testing.T) {
+	file := cliPreviewFile(t)
+	toolFile := filepath.Join(filepath.Dir(file), "tool.agent.md")
+	source, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolSource := bytes.Replace(source, []byte("## Examples"), []byte("## Tools\n- lookup\n## Examples"), 1)
+	if err := os.WriteFile(toolFile, toolSource, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	realModelFile := filepath.Join(filepath.Dir(file), "real.agent.md")
+	realModelSource := bytes.Replace(source, []byte("**Preferred:** fake"), []byte("**Preferred:** model-v1"), 1)
+	if err := os.WriteFile(realModelFile, realModelSource, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"run provider", []string{"run", file, "--provider", "copilot"}},
+		{"run endpoint", []string{"run", file, "--provider-url", "https://example.invalid"}},
+		{"run tool bindings", []string{"run", file, "--tool-bindings", "bindings.json"}},
+		{"run prompt file", []string{"run", file, "--prompt-file", "prompt.txt"}},
+		{"run live selector", []string{"run", file, "--agent", "live"}},
+		{"run namespace", []string{"run", file, "--namespace", "agents"}},
+		{"run wait", []string{"run", file, "--wait", "10s"}},
+		{"run result port", []string{"run", file, "--result-port", "1234"}},
+		{"run engine", []string{"run", file, "--container-engine", "docker"}},
+		{"run context", []string{"run", file, "--context", "kind-live"}},
+		{"run tool charter", []string{"run", toolFile}},
+		{"run nonfake charter", []string{"run", realModelFile}},
+		{"test provider", []string{"test", file, "--provider", "copilot"}},
+		{"test endpoint", []string{"test", file, "--provider-url", "https://example.invalid"}},
+		{"test tool bindings", []string{"test", file, "--tool-bindings", "bindings.json"}},
+		{"test GitHub summary", []string{"test", file, "--output", "json", "--github-summary"}},
+		{"test workspace", []string{"test", file, "--workspace", filepath.Dir(file)}},
+		{"test destination", []string{"test", file, "--to", "remote"}},
+		{"test inference", []string{"test", file, "--inference", "provider:live"}},
+		{"test judge endpoint", []string{"test", file, "--judge-base-url", "https://example.invalid"}},
+		{"test development host", []string{"test", file, "--development-host", "host.json"}},
+		{"test result port", []string{"test", file, "--result-port", "1234"}},
+		{"test engine", []string{"test", file, "--container-engine", "docker"}},
+		{"test context", []string{"test", file, "--context", "kind-live"}},
+		{"test tool charter", []string{"test", toolFile}},
+		{"test nonfake charter", []string{"test", realModelFile}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			deps, loads := testDependencies(&out, &errOut)
+			deps.goos = "windows"
+			runner := &cliPreviewFake{verdict: runtime.EvaluationPass}
+			deps.fileRunner = runner
+			home := filepath.Join(t.TempDir(), "state-must-not-exist")
+			t.Setenv("KMX_HOME", home)
+			summary := filepath.Join(t.TempDir(), "summary-must-not-exist.md")
+			t.Setenv("GITHUB_STEP_SUMMARY", summary)
+			err := execute(tc.args, deps)
+			if !errors.Is(err, errWindowsOperationUnsupported) {
+				t.Fatalf("%v = %v", tc.args, err)
+			}
+			if *loads != 0 || runner.calls != 0 || out.Len() != 0 || errOut.Len() != 0 {
+				t.Fatalf("%v had effects: loads=%d sends=%d stdout=%q stderr=%q", tc.args, *loads, runner.calls, out.String(), errOut.String())
+			}
+			if _, statErr := os.Lstat(home); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("%v created state: %v", tc.args, statErr)
+			}
+			if _, statErr := os.Lstat(summary); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("%v created a GitHub summary: %v", tc.args, statErr)
+			}
+		})
+	}
+}
+
+func TestGuardedWindowsFileSnapshotCannotChangeRouteAfterAdmission(t *testing.T) {
+	file := cliPreviewFile(t)
+	source, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := bytes.Replace(source, []byte("**Preferred:** fake"), []byte("**Preferred:** model-v1"), 1)
+	var out, errOut bytes.Buffer
+	deps, loads := testDependencies(&out, &errOut)
+	deps.goos = "windows"
+	runner := &cliPreviewFake{verdict: runtime.EvaluationPass}
+	deps.fileRunner = runner
+	home := filepath.Join(t.TempDir(), "state-must-not-exist")
+	t.Setenv("KMX_HOME", home)
+	root := newRootCommand(&commandState{deps: deps, argv: []string{"run", file}})
+	run, _, err := root.Find([]string{"run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.PreRunE = func(*cobra.Command, []string) error { return os.WriteFile(file, changed, 0o600) }
+	root.SetArgs([]string{"run", file})
+	err = root.Execute()
+	if !errors.Is(err, errWindowsOperationUnsupported) {
+		t.Fatalf("changed route = %v", err)
+	}
+	if *loads != 0 || runner.calls != 0 || out.Len() != 0 || errOut.Len() != 0 {
+		t.Fatalf("changed route had effects: loads=%d sends=%d stdout=%q stderr=%q", *loads, runner.calls, out.String(), errOut.String())
+	}
+	if _, statErr := os.Lstat(home); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("changed route created state: %v", statErr)
+	}
+
+	var summaryOut, summaryErrOut bytes.Buffer
+	summaryDeps, summaryLoads := testDependencies(&summaryOut, &summaryErrOut)
+	summaryDeps.goos = "windows"
+	summaryRunner := &cliPreviewFake{verdict: runtime.EvaluationPass}
+	summaryDeps.fileRunner = summaryRunner
+	summaryHome := filepath.Join(t.TempDir(), "state-must-not-exist")
+	summary := filepath.Join(t.TempDir(), "summary-must-not-exist.md")
+	t.Setenv("KMX_HOME", summaryHome)
+	t.Setenv("GITHUB_STEP_SUMMARY", summary)
+	summaryFile := cliPreviewFile(t)
+	root = newRootCommand(&commandState{deps: summaryDeps, argv: []string{"test", summaryFile, "--output", "json"}})
+	testCommand, _, err := root.Find([]string{"test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	testCommand.PreRunE = func(cmd *cobra.Command, _ []string) error {
+		return cmd.Flags().Set("github-summary", "true")
+	}
+	root.SetArgs([]string{"test", summaryFile, "--output", "json"})
+	err = root.Execute()
+	if !errors.Is(err, errWindowsOperationUnsupported) {
+		t.Fatalf("changed summary mode = %v", err)
+	}
+	if *summaryLoads != 0 || summaryRunner.calls != 0 || summaryOut.Len() != 0 || summaryErrOut.Len() != 0 {
+		t.Fatalf("changed summary mode had effects: loads=%d sends=%d stdout=%q stderr=%q", *summaryLoads, summaryRunner.calls, summaryOut.String(), summaryErrOut.String())
+	}
+	if _, statErr := os.Lstat(summaryHome); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("changed summary mode created state: %v", statErr)
+	}
+	if _, statErr := os.Lstat(summary); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("changed summary mode created a GitHub summary: %v", statErr)
+	}
+}
+
+func TestGuardedWindowsExplainRequiresExplicitFileAndAllowsFileScopedClear(t *testing.T) {
+	file := cliPreviewFile(t)
+	allowed := [][]string{
+		{"test", "explain", "--file", file},
+		{"test", "explain", "f-" + strings.Repeat("a", 32), "--file", file, "--show-content"},
+		{"test", "explain", "--file", file, "--clear"},
+		{"eval", "explain", "--file", file},
+	}
+	for _, args := range allowed {
+		var out, errOut bytes.Buffer
+		deps, loads := testDependencies(&out, &errOut)
+		deps.goos = "windows"
+		root := newRootCommand(&commandState{deps: deps})
+		cmd, remaining, err := root.Find(args)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if err := cmd.ParseFlags(remaining); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		if err := cmd.Args(cmd, cmd.Flags().Args()); errors.Is(err, errWindowsOperationUnsupported) {
+			t.Errorf("%v was guarded: %v", args, err)
+		}
+		wantDiagnostics := ""
+		if args[0] == "eval" {
+			wantDiagnostics = legacyEvalNotice
+		}
+		if *loads != 0 || out.Len() != 0 || errOut.String() != wantDiagnostics {
+			t.Fatalf("%v classification had effects: loads=%d stdout=%q stderr=%q", args, *loads, out.String(), errOut.String())
+		}
+	}
+
+	refused := [][]string{
+		{"test", "explain"},
+		{"test", "explain", "f-" + strings.Repeat("a", 32)},
+		{"test", "explain", "--workspace", filepath.Dir(file)},
+		{"test", "explain", "--file", ""},
+		{"test", "explain", "--file", file, "--workspace", filepath.Dir(file)},
+		{"test", "explain", "--file", file, "--container-engine", "docker"},
+		{"test", "explain", "--file", file, "--context", "kind-live"},
+		{"eval", "explain", "--workspace", filepath.Dir(file)},
+	}
+	for _, args := range refused {
+		var out, errOut bytes.Buffer
+		deps, loads := testDependencies(&out, &errOut)
+		deps.goos = "windows"
+		home := filepath.Join(t.TempDir(), "state-must-not-exist")
+		t.Setenv("KMX_HOME", home)
+		err := execute(args, deps)
+		if !errors.Is(err, errWindowsOperationUnsupported) {
+			t.Errorf("%v = %v", args, err)
+		}
+		wantDiagnostics := ""
+		if args[0] == "eval" {
+			wantDiagnostics = legacyEvalNotice
+		}
+		if *loads != 0 || out.Len() != 0 || errOut.String() != wantDiagnostics {
+			t.Errorf("%v had effects: loads=%d stdout=%q stderr=%q", args, *loads, out.String(), errOut.String())
+		}
+		if _, statErr := os.Lstat(home); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("%v created state: %v", args, statErr)
+		}
+	}
+}
+
+func TestGuardedWindowsFileExplainClearStaysSubjectScoped(t *testing.T) {
+	t.Setenv("KMX_HOME", privateCommandHome(t))
+	files := []string{cliPreviewFile(t), cliPreviewFile(t)}
+	var out, errOut bytes.Buffer
+	deps, loads := testDependencies(&out, &errOut)
+	deps.goos = "windows"
+	deps.fileRunner = &cliPreviewFake{verdict: runtime.EvaluationFail}
+	ids := make([]string, len(files))
+	for i, file := range files {
+		out.Reset()
+		errOut.Reset()
+		err := execute([]string{"test", file, "--output", "json"}, deps)
+		if err == nil || exitCode(err) != 1 {
+			t.Fatalf("test %q = %v", file, err)
+		}
+		var result app.FilePreviewResult
+		if err := json.Unmarshal(out.Bytes(), &result); err != nil || result.Retention.Status != "retained" || len(result.Retention.Diagnostics) != 1 {
+			t.Fatalf("test %q retention = %+v, %v", file, result.Retention, err)
+		}
+		ids[i] = result.Retention.Diagnostics[0].ID
+	}
+	out.Reset()
+	errOut.Reset()
+	if err := execute([]string{"eval", "explain", ids[1], "--file", files[1]}, deps); err != nil || !strings.Contains(out.String(), ids[1]) || errOut.String() != legacyEvalNotice {
+		t.Fatalf("legacy file Explain = %v stdout=%q stderr=%q", err, out.String(), errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if err := execute([]string{"test", "explain", "--file", files[0], "--clear"}, deps); err != nil || !strings.Contains(out.String(), "Cleared 1") {
+		t.Fatalf("file-scoped clear = %v stdout=%q stderr=%q", err, out.String(), errOut.String())
+	}
+	out.Reset()
+	errOut.Reset()
+	if err := execute([]string{"test", "explain", ids[0], "--file", files[0]}, deps); err == nil {
+		t.Fatal("cleared file subject remained readable")
+	}
+	out.Reset()
+	errOut.Reset()
+	if err := execute([]string{"test", "explain", ids[1], "--file", files[1]}, deps); err != nil || !strings.Contains(out.String(), ids[1]) {
+		t.Fatalf("clear crossed file subjects: %v stdout=%q stderr=%q", err, out.String(), errOut.String())
+	}
+	if *loads != 0 {
+		t.Fatalf("file Explain loaded operational config %d times", *loads)
+	}
+}
+
+func TestGuardedWindowsSupportedCommandFlagsAreExhaustivelyAllowlisted(t *testing.T) {
+	file := cliPreviewFile(t)
+	cases := []struct {
+		path       []string
+		args       []string
+		allFlags   []string
+		allowFlags []string
+	}{
+		{[]string{"run"}, []string{file}, []string{"agent", "case", "container-engine", "context", "model", "namespace", "no-content", "output", "prompt", "prompt-file", "provider", "provider-url", "result-port", "tool-bindings", "verbose", "wait"}, []string{"case", "no-content", "output", "prompt", "verbose"}},
+		{[]string{"test"}, []string{file}, []string{"bindings", "case", "case-timeout", "container-engine", "context", "development-host", "github-summary", "inference", "judge-base-url", "judge-key-env", "model", "no-content", "out", "output", "provider", "provider-url", "result-port", "show-content", "to", "to-context", "to-namespace", "tool-bindings", "verbose", "workspace"}, []string{"case", "no-content", "output", "verbose"}},
+		{[]string{"test", "explain"}, nil, []string{"clear", "container-engine", "context", "file", "show-content", "workspace"}, []string{"clear", "file", "show-content"}},
+		{[]string{"eval", "explain"}, nil, []string{"clear", "container-engine", "context", "file", "show-content", "workspace"}, []string{"clear", "file", "show-content"}},
+	}
+	for _, tc := range cases {
+		if len(tc.path) == 1 && (tc.path[0] == "run" || tc.path[0] == "test") {
+			tc.allFlags = append(tc.allFlags, "directory", "tests", "type")
+			if tc.path[0] == "run" {
+				tc.allFlags = append(tc.allFlags, "interactive", "update", "yes")
+			}
+			sort.Strings(tc.allFlags)
+		}
+		var out, errOut bytes.Buffer
+		deps, _ := testDependencies(&out, &errOut)
+		deps.goos = "windows"
+		root := newRootCommand(&commandState{deps: deps})
+		cmd, _, err := root.Find(tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = cmd.InheritedFlags()
+		var names []string
+		cmd.Flags().VisitAll(func(flag *pflag.Flag) { names = append(names, flag.Name) })
+		if !reflect.DeepEqual(names, tc.allFlags) {
+			t.Fatalf("%s flags = %v, want %v", strings.Join(tc.path, " "), names, tc.allFlags)
+		}
+		allowed := make(map[string]bool, len(tc.allowFlags))
+		for _, name := range tc.allowFlags {
+			allowed[name] = true
+		}
+		for _, name := range names {
+			t.Run(strings.Join(tc.path, "_")+"_"+name, func(t *testing.T) {
+				var out, errOut bytes.Buffer
+				deps, _ := testDependencies(&out, &errOut)
+				deps.goos = "windows"
+				state := &commandState{deps: deps}
+				root := newRootCommand(state)
+				cmd, _, err := root.Find(tc.path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = cmd.InheritedFlags()
+				if strings.HasSuffix(strings.Join(tc.path, " "), "explain") {
+					if err := cmd.Flags().Set("file", file); err != nil {
+						t.Fatal(err)
+					}
+				}
+				flag := cmd.Flags().Lookup(name)
+				value := flag.DefValue
+				if name == "file" {
+					value = file
+				}
+				if err := cmd.Flags().Set(name, value); err != nil {
+					t.Fatal(err)
+				}
+				got := windowsCommandAllowed(cmd, tc.args, state)
+				if got != allowed[name] {
+					t.Errorf("--%s allowed=%v, want %v", name, got, allowed[name])
+				}
+			})
+		}
+	}
+}
+
+func TestGuardedWindowsVersionHelpAndCompletionRemainInert(t *testing.T) {
+	for _, args := range [][]string{{}, {"--help"}, {"help"}, {"version"}, {"completion", "bash"}} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			deps, loads := testDependencies(&out, &errOut)
+			deps.goos = "windows"
+			home := filepath.Join(t.TempDir(), "state-must-not-exist")
+			t.Setenv("KMX_HOME", home)
+			if err := execute(args, deps); err != nil {
+				t.Fatalf("%v = %v", args, err)
+			}
+			if *loads != 0 || out.Len() == 0 || errOut.Len() != 0 {
+				t.Fatalf("%v had effects: loads=%d stdout=%q stderr=%q", args, *loads, out.String(), errOut.String())
+			}
+			if _, statErr := os.Lstat(home); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("%v created state: %v", args, statErr)
 			}
 		})
 	}
@@ -152,7 +520,7 @@ func TestGuardedWindowsCommandTreeIsExhaustivelyClassified(t *testing.T) {
 	deps, loads := testDependencies(&out, &errOut)
 	deps.goos = "windows"
 	root := newRootCommand(&commandState{deps: deps})
-	allowed := map[string]bool{"version": true, "completion": true, "test explain": true, "eval explain": true}
+	allowed := map[string]bool{"version": true, "completion": true}
 	var walk func(*cobra.Command)
 	walk = func(parent *cobra.Command) {
 		for _, cmd := range parent.Commands() {

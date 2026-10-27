@@ -17,7 +17,7 @@ version, with one stderr notice and unchanged legacy output/exit contracts. See
 
 `tools suggest FILE --repo OWNER/REPO` and `tools review PROPOSAL_ID [--apply]`
 provide inference-assisted local capability selection and explicit scope approval.
-Only fixed GitHub PR list/read templates are executable; this does not restore
+That explicit --repo route uses fixed GitHub PR list/read templates; this does not restore
 retired gateway tool administration. See the [scoped tool workflow](copilot-inference.md#suggest-and-approve-pr-monitor-tools).
 
 `tools approve FILE [--apply]` additionally resolves/reviews explicit same-file CLI
@@ -92,6 +92,13 @@ attestations, independently of deployment admission. Replacing a different tag
 requires `--force`; same-digest publication is a no-op. `suite build --suite-ref`
 checks complete source content through the shared bounded materializer.
 
+On native Windows, this full command tree remains visible for help/completion but
+is not an enabled capability list. Current `main` permits only version/help/
+completion, package-free fake `run FILE` / `test FILE`, and offline
+`test explain ... --file FILE` (plus the hidden legacy Explain spelling for
+compatibility). Every other route refuses before effects. See the
+[native Windows command boundary](windows.md#supported-native-commands).
+
 Unreleased `model list` defaults to local discovery; explicit Copilot listing
 uses explicit `COPILOT_GITHUB_TOKEN`, then an existing gh sign-in without keychain
 setup, then kmx's existing keychain item if gh is unavailable. It never starts sign-in or saves
@@ -110,8 +117,9 @@ use the exact selected model and existing runtime credentials, with no login
 step for a working gh sign-in. The Copilot endpoint is fixed. This remains a
 tool-free journaled embedded-Sessions preview, not a new harness.
 No inference replay, model substitution or persisted selection. See
-[direct model access](copilot-inference.md#direct-model-access). Native package
-tests do not qualify the full Windows CLI.
+[direct model access](copilot-inference.md#direct-model-access). These model and
+provider routes remain outside the narrow native Windows CLI, regardless of
+package-level Windows tests.
 
 Hidden but callable:
 

@@ -86,6 +86,18 @@ func TestPreviewDescriptionsDiscloseRecordingSave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	names := []string{}
+	descriptions := map[string]string{}
+	for _, tool := range list.Tools {
+		names = append(names, tool.Name)
+		descriptions[tool.Name] = tool.Description
+	}
+	if descriptions["run"] == descriptions["test"] {
+		t.Fatal("Run and Test must advertise different intents")
+	}
+	if strings.Join(names, ",") != "create,edit,run,set_tool_state,test" {
+		t.Fatalf("production tools: %v", names)
+	}
 	found := 0
 	for _, tool := range list.Tools {
 		if tool.Name != "run" && tool.Name != "test" {
@@ -93,6 +105,23 @@ func TestPreviewDescriptionsDiscloseRecordingSave(t *testing.T) {
 		}
 		if !strings.Contains(tool.Description, "A successful first live call for a pending Recorded tool saves its result in this file.") {
 			t.Errorf("%s description omits recording save: %q", tool.Name, tool.Description)
+		}
+		want := map[string]string{"run": "optional ad-hoc input", "test": "saved tests"}[tool.Name]
+		if !strings.Contains(tool.Description, want) {
+			t.Errorf("%s description must explain %q: %q", tool.Name, want, tool.Description)
+		}
+		encoded, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var schema struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(encoded, &schema); err != nil {
+			t.Fatal(err)
+		}
+		if _, input := schema.Properties["input"]; input != (tool.Name == "run") {
+			t.Errorf("%s ad-hoc input schema: %s", tool.Name, encoded)
 		}
 		found++
 	}
@@ -299,6 +328,10 @@ func TestPreviewToolsSharedResults(t *testing.T) {
 				got.Retention.Diagnostics = nil
 				want.Retention.Diagnostics = nil
 			}
+			if got.DurationMs < 0 || want.DurationMs < 0 {
+				t.Fatalf("invalid duration: got=%d want=%d", got.DurationMs, want.DurationMs)
+			}
+			got.DurationMs, want.DurationMs = 0, 0
 			b1, _ := json.Marshal(got)
 			b2, _ := json.Marshal(want)
 			if string(b1) != string(b2) || res.IsError != (tc.cause != nil) {
@@ -389,14 +422,14 @@ func TestPreviewToolsRefusals(t *testing.T) {
 	fake := &previewFixture{verdict: runtime.EvaluationPass}
 	a := &app.App{FileRunner: fake}
 	cs := connectFixture(t, Operations(f, a, nil))
-	if err := os.WriteFile(filepath.Join(root, "greeter.agent.md"), []byte("invalid"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "greeter.agent.md"), []byte("\x00invalid"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	invalidOptions, _ := previewCall(t, cs, "run", map[string]any{"schemaVersion": 1, "path": "greeter.agent.md", "input": strings.Repeat("界", 6000)})
 	if invalidOptions.ReasonCode != "invalid_options" || invalidOptions.Diagnostic != nil {
 		t.Fatalf("option failure inherited parser diagnostic: %+v", invalidOptions)
 	}
-	for _, tc := range []struct{ source, code string }{{"invalid", "invalid_file"}, {strings.Replace(source, "**Preferred:** fake", "**Preferred:** local-model", 1), "model_unavailable"}} {
+	for _, tc := range []struct{ source, code string }{{"\x00invalid", "invalid_file"}, {strings.Replace(source, "**Preferred:** fake", "**Preferred:** local-model", 1), "model_unavailable"}} {
 		if err := os.WriteFile(filepath.Join(root, "greeter.agent.md"), []byte(tc.source), 0600); err != nil {
 			t.Fatal(err)
 		}

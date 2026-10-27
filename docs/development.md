@@ -148,9 +148,14 @@ itself remains a pure locator. The local-preview journal family and retained
 evaluation-failure store consume the same checked foundation, including
 identity-bound clear, interrupted own-pair recovery and independent file/directory
 flush failure behavior. Windows defaults to machine-local `%LOCALAPPDATA%\kmx`.
-Windows arm64 is compiled and vetted, not executed. These native package tests
-qualify local-NTFS day-zero internals, not the guarded Windows CLI or a release
-artifact; use WSL for the installed command until the enablement phase lands.
+Windows amd64 now also builds, vets and natively executes the CLI on hosted
+`windows-latest`: version/help/completion plus one real Markdown file through
+package-free fake Run, failing Test and offline Explain. Windows arm64 is
+cross-built and vetted, not executed. These checks qualify only the
+[narrow Windows day-zero command boundary](windows.md), local-NTFS private state
+and exact tested artifact; they do not enable deferred adapters, real models,
+clusters, suite evidence, publication or Deploy. Stable v0.8.1 remains without a
+Windows `.exe`.
 
 The hosted Windows test context is established by the test-only
 [`windows-tests` launcher](../scripts/ci/windows-tests/main_windows.go), whose
@@ -162,8 +167,17 @@ The native amd64 selection also runs one real Markdown agent through the
 production embedded fake runner: package-free Run, a source edit and failing
 Test, retained diagnostics, then offline Explain with no further model send.
 It scans both private state families for an ambient credential canary. This is
-still package-level qualification, not execution of the guarded Windows CLI or
-a release artifact.
+part of the native executable qualification when driven through the direct CLI
+journey. The package-level tests alone are not a release-artifact claim.
+
+Writable native state is restricted to local NTFS with persistent ACLs,
+current-user ownership and protected owner-only DACLs; unsafe existing state is
+refused without repair. Native and WSL writable state must be physically
+separate, and WSL/Linux refuses recognized Windows-drive mounts for KMX state.
+See [Windows writable state](windows.md#writable-state) for the non-NTFS,
+UNC/network, SUBST/remapped, stream, exposed reparse, synchronized-folder,
+power-loss and backup limits. Read-only Windows source files have a separate
+contract.
 
 ```bash
 formatted=$(gofmt -l cmd internal pkg embed.go embed_test.go) && test -z "$formatted" && go vet ./... && go build ./... && go test ./...
@@ -351,7 +365,11 @@ commit and safe status. Current success closes it; older success cannot close a
 newer failure. Manual branch qualification does not alter main health.
 
 Release tags qualify the shipped inner loop: binary artifacts, the WSL plugin
-and local previews on embedded Sessions. They do not invoke the cluster runtime
+and local previews on embedded Sessions. For containing releases, the exact
+Windows amd64 staged `.exe` must pass the native day-zero journey; Windows arm64
+is cross-build/vet/checksum evidence only. Clean-machine Authenticode,
+Zone.Identifier and SmartScreen observations remain separate and must not be
+invented from hosted CI. Release checks do not invoke the cluster runtime
 workers. Both full read-only runtime workers remain available together through
 [on-demand runtime qualification](../.github/workflows/runtime-qualification.yml),
 which checks the exact dispatched commit. Run it before a runtime-related tag;

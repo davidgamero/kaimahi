@@ -6,8 +6,9 @@
 // provides private first creation, process-held locking, and durable no-replace
 // publication. A failed publication reports only positively observed visibility;
 // a false visibility bit with an error never proves absence. On Windows, every
-// retained handle is qualified as local-disk NTFS with persistent ACLs. It
-// interprets no application state, repairs or adopts no existing object, retries
-// no ambiguous effect, exposes no raw descriptor, and is consumed only by the
-// explicit state, local-preview, and retained-diagnostic adapters.
+// retained handle is qualified as local-disk NTFS with persistent ACLs. On Linux,
+// writable-state callers can refuse recognized WSL Windows-drive mounts before
+// creation. It interprets no application state, repairs or adopts no existing
+// object, retries no ambiguous effect, exposes no raw descriptor, and is consumed
+// only by explicit state, local-preview, and retained-diagnostic adapters.
 package fileaccess

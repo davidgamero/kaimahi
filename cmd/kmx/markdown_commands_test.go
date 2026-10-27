@@ -13,6 +13,7 @@ import (
 )
 
 func TestMarkdownCommandsOfflineAndBeforeConfig(t *testing.T) {
+	t.Setenv("KMX_HOME", t.TempDir())
 	path, err := filepath.Abs("../../.github/agents/hello.agent.md")
 	if err != nil {
 		t.Fatal(err)
@@ -127,6 +128,7 @@ func TestMarkdownRedirectedBrowserListsWithoutCopilot(t *testing.T) {
 }
 
 func TestTypedAgentNamesAndCreationStayOffline(t *testing.T) {
+	t.Setenv("KMX_HOME", t.TempDir())
 	var out, diagnostics bytes.Buffer
 	deps, loads := testDependencies(&out, &diagnostics)
 	for _, args := range [][]string{{"inspect", "hello", "--type", "md", "--directory", "../.."}, {"validate", "hello", "--directory", "../.."}} {

@@ -10,7 +10,7 @@ ASSETS = {VIEW + name for name in (
     "extension.mjs", "view.mjs", "open.mjs", "index.html", "app.js", "style.css", "authoring.mjs", "editor.mjs",
     "draft-controller.mjs", "action-controller.mjs", "observation-controller.mjs", "host-relay.mjs", "tool-catalog.mjs", "tools-view.mjs", "test-tools.mjs",
     "dom.mjs", "results.mjs", "check-controls.mjs", "instruction-text.mjs",
-    "run-views.mjs", "view-resource.mjs")}
+    "run-views.mjs", "view-resource.mjs", "failure-wording.mjs")}
 SKILLS = {"skills/kmx/SKILL.md", "skills/kmx-agent-builder/SKILL.md"}
 
 
@@ -35,7 +35,7 @@ class WSLPluginTests(unittest.TestCase):
     def test_installed_tree_has_one_self_contained_asset_source(self):
         self.assertTrue(ROOT.is_dir(), "WSL plugin directory is missing")
         actual = {p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*") if p.is_file()}
-        self.assertEqual(actual, ASSETS | SKILLS | {"plugin.json", "mcp.json", "README.md"})
+        self.assertEqual(actual, ASSETS | SKILLS | {VIEW + "failure-wording.json", "plugin.json", "mcp.json", "README.md"})
         for name in actual:
             path = ROOT / name
             self.assertFalse(path.is_symlink(), name)
@@ -59,11 +59,12 @@ class WSLPluginTests(unittest.TestCase):
             self.assertLessEqual(len(source), 65536, name)
             self.assertLessEqual(len(source.replace(b"\n", b"\r\n")), 65536, name)
 
-    def test_install_instructions_are_the_two_plain_steps(self):
+    def test_install_instructions_use_paired_binary_and_marketplace(self):
         self.assertTrue((ROOT / "README.md").is_file(), "WSL install instructions are missing")
         text = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("/usr/local/bin/kmx", text)
-        self.assertIn("copilot plugin install kaimahi-agents/kaimahi:plugins/copilot-wsl", text)
+        self.assertIn("copilot plugin marketplace add kaimahi-agents/kaimahi", text)
+        self.assertIn("copilot plugin install kmx-agent-builder@kmx-plugins", text)
         self.assertNotIn("model login", text)
         self.assertNotIn("__SELECTED_ROOT__", text)
         self.assertNotIn("try-it.sh", text)

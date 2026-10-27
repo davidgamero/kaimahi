@@ -115,8 +115,8 @@ func TestToolApprovalBindsSourceScopeAndExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = attachApprovedTools(changed); err == nil {
-		t.Fatal("changed definition inherited grant")
+	if err = attachApprovedTools(changed); err != nil || changed.Grant != nil || changed.BindingDigest != "" {
+		t.Fatal("tool-free changed definition should ignore the obsolete overlay")
 	}
 	if err = os.WriteFile(g.Executable, []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
 		t.Fatal(err)

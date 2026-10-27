@@ -31,14 +31,15 @@ never switches protocols. Responses requests remain nonstreaming with
 and translated completion, so joined output fragments cannot bypass the check.
 
 Status: the hermetic tests (fake model, an in-process HTTP endpoint and the
-judge) run with the root Go tests. Native Windows amd64 package tests exercise
-the fake model, replay, private journal family and interrupted clear on local
-NTFS. They also run one real Markdown file through package-free fake Run, an
-instruction-regressed failing Test, retained diagnostics and offline Explain,
-checking that Explain sends nothing and that neither private state family keeps
-an ambient credential canary. This is not execution of the guarded Windows CLI
-or native arm64. No run against a real compatible model is recorded yet. To
-record one, a human runs:
+judge) run with the root Go tests. Hosted Windows amd64 natively executes the CLI
+against one real Markdown file through package-free fake Run, an instruction-
+regressed failing Test, retained diagnostics and offline Explain. It checks that
+Explain sends nothing and neither private state family keeps an ambient
+credential canary. That qualifies only the narrow
+[native Windows day-zero path](windows.md), not providers, tools, clusters,
+suite evidence or native arm64 execution. Windows arm64 remains cross-build/vet
+and checksum evidence only. No run against a real compatible model is recorded
+yet. To record one on a supported non-Windows route, a human runs:
 
 ```sh
 KMX_LOCAL_PREVIEW_LIVE_BASE_URL=http://127.0.0.1:11434/v1 \
@@ -137,6 +138,10 @@ the effective settings makes an earlier result out of date even when the agent
 file is unchanged. Offline replay uses the journaled settings and results,
 never today's YAML or a live executor. Older journals without settings retain
 Enabled semantics; older readers can refuse new settings-bearing journals.
+The safe JSON report projects these settings and per-test source/call counts
+without definitions, arguments or results. It also records monotonic total and
+per-test `durationMs`; those timings are diagnostics, not model billing or
+deployment evidence.
 
 ## Copilot host tools
 
@@ -369,9 +374,17 @@ sends; a valid split verdict stays unknown.
   `%LOCALAPPDATA%\kmx` on Windows.
   The journal is never stored in a checkout.
 - **Windows:** `%LOCALAPPDATA%` is machine-local and does not roam with a domain
-  profile. Native package tests qualify private state and local-preview storage
-  on local NTFS. The installed Windows CLI remains guarded until executable
-  qualification under [#578](https://github.com/kaimahi-agents/kaimahi/issues/578).
+  profile. The native day-zero CLI qualifies writable state only on local NTFS
+  with persistent ACLs, current-user ownership and a protected owner-only DACL;
+  unsafe existing ACLs are refused, never repaired. Non-NTFS, network/UNC,
+  device, SUBST/remapped, stream and exposed symlink/junction/reparse state roots
+  are refused. Synchronized folders are outside the qualified boundary even when
+  their current NTFS representation is not exposed as a reparse point. Native
+  and WSL writable state must be
+  physically separate because their locks do not coordinate; WSL/Linux refuses
+  recognized Windows-drive mounts for state. See
+  [the complete Windows state boundary](windows.md#writable-state), including
+  the read-only source distinction and lack of power-loss/backup certification.
 - Each preview run is one SQLite file named `<UTC time>-<random>.db` (the time
   has nanosecond precision, so names sort in creation order), with its
   `-wal`/`-shm` companions. While the run executes it holds an OS lock on a

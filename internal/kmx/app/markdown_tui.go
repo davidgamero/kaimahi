@@ -76,6 +76,7 @@ type markdownTUI struct {
 	fullWidth                int
 	instanceRunning          bool
 	updatePlan               *MarkdownUpdatePlan
+	attached                 bool // UI-owned; never read worker-mutated session fields
 }
 
 func mdPollCmd() tea.Cmd {
@@ -117,7 +118,7 @@ func (m *markdownTUI) refreshHeader() {
 	if m.instanceRunning {
 		status = "running"
 	}
-	if _, ok := m.session.executor.(*attachedAgentExecutor); ok {
+	if m.attached {
 		status = "attached · running"
 	}
 	if m.busy {
@@ -191,15 +192,17 @@ func (m *markdownTUI) sendLocal(input string) tea.Cmd {
 	if m.busy {
 		return nil
 	}
-	if m.diskErr != nil {
+	if m.diskErr != nil && !m.attached {
 		m.note("INVALID", m.diskErr.Error())
 		return nil
 	}
-	if m.disk.Revision != m.loaded.Revision {
+	if !m.attached && m.disk.Revision != m.loaded.Revision {
 		m.note("CHANGED", "Definition changed. /reload starts a fresh conversation before sending.")
 		return nil
 	}
-	m.loaded = m.disk // test-only edits do not reset the conversation
+	if !m.attached {
+		m.loaded = m.disk
+	} // attached execution remains frozen
 	m.sent = append(m.sent, input)
 	m.recall = len(m.sent)
 	m.draft = ""
@@ -305,7 +308,7 @@ func (m *markdownTUI) localCommand(input string) tea.Cmd {
 	case "/test":
 		return m.startTest(arg)
 	case "/reload":
-		if _, ok := m.session.executor.(*attachedAgentExecutor); ok && m.session.ownedManaged == "" {
+		if m.attached {
 			m.note("RUNNING VERSION", "This chat uses the worker's cached version. Use kmx stop then kmx run FILE to update it.")
 			break
 		}
@@ -319,6 +322,7 @@ func (m *markdownTUI) localCommand(input string) tea.Cmd {
 		}
 		m.loaded = m.disk
 		m.session.Reset()
+		m.attached = false
 		m.instanceRunning = false
 		m.note("RELOADED", m.loaded.PairRevision+" · new conversation; earlier messages belong to the old revision")
 	case "/update":
@@ -360,6 +364,9 @@ func (m *markdownTUI) localCommand(input string) tea.Cmd {
 		m.busy = true
 		m.workers.Add(1)
 		path, tests := m.loaded.Path, m.loaded.TestsPath
+		if m.attached {
+			tests = MarkdownTestsPath(path)
+		}
 		ctx := m.ctx
 		return func() tea.Msg {
 			defer m.workers.Done()
@@ -383,6 +390,9 @@ func (m *markdownTUI) localCommand(input string) tea.Cmd {
 		path := m.loaded.Path
 		if command == "/edit-tests" {
 			path = m.loaded.TestsPath
+			if m.attached {
+				path = MarkdownTestsPath(m.loaded.Path)
+			}
 		}
 		if path == "" {
 			m.note("EDIT", "Supply --tests for a definition outside .github/agents.")
@@ -504,13 +514,15 @@ func (m markdownTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// The manager has already replaced the old generation. Never let cleanup
 		// of the former foreground owner stop this new instance by the same ID.
-		m.session.ownedManaged = ""
-		m.session.executor.Close()
-		m.session.executor = v.session.executor
+		old, _ := m.session.executionState()
+		old.Close()
+		executor, _ := v.session.executionState()
+		m.session.setExecutionState(executor, "")
+		m.attached = true
 		m.session.Model = v.session.Model
 		m.session.conversationDisplay = m.session.conversationLabel()
-		m.loaded, m.disk = v.agent, v.agent
-		m.diskErr = nil
+		m.loaded = v.agent
+		m.disk, m.diskErr = LoadMarkdownAgent(v.agent.Path, MarkdownTestsPath(v.agent.Path))
 		m.instanceRunning = true
 		m.result = nil
 		m.lastTested = nil
@@ -543,10 +555,10 @@ func (m markdownTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize()
 		return m, nil
 	case mdPoll:
-		if _, ok := m.session.executor.(*attachedAgentExecutor); ok && m.session.ownedManaged == "" {
-			return m, mdPollCmd()
-		}
 		path, tests := m.loaded.Path, m.loaded.TestsPath
+		if m.attached {
+			tests = MarkdownTestsPath(path)
+		}
 		return m, func() tea.Msg {
 			a, err := LoadMarkdownAgent(path, tests)
 			return mdDisk{agent: a, err: err, reschedule: true}
@@ -582,6 +594,8 @@ func (m markdownTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.busy = false
+		executor, _ := m.session.executionState()
+		_, m.attached = executor.(*attachedAgentExecutor)
 		m.session.conversationDisplay = m.session.conversationLabel()
 		if v.result == nil {
 			m.instanceRunning = v.err == nil
@@ -607,8 +621,12 @@ func (m markdownTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.err != nil {
 			m.note("EDITOR", v.err.Error())
 		}
+		path, tests := m.loaded.Path, m.loaded.TestsPath
+		if m.attached {
+			tests = MarkdownTestsPath(path)
+		}
 		return m, func() tea.Msg {
-			a, e := LoadMarkdownAgent(m.loaded.Path, m.loaded.TestsPath)
+			a, e := LoadMarkdownAgent(path, tests)
 			return mdDisk{agent: a, err: e}
 		}
 	case tea.KeyPressMsg:
@@ -695,6 +713,11 @@ func (s *MarkdownSession) ChatTUI(ctx context.Context, a *MarkdownAgent, in *os.
 	timeline.cancel = cancel
 	workers := &sync.WaitGroup{}
 	m := markdownTUI{chatTimelineModel: timeline, session: s, loaded: a, disk: a, ctx: ctx, cancel: cancel, events: make(chan tea.Msg, 64), workers: workers}
+	executor, _ := s.executionState()
+	_, m.attached = executor.(*attachedAgentExecutor)
+	if m.attached {
+		m.disk, m.diskErr = LoadMarkdownAgent(a.Path, MarkdownTestsPath(a.Path))
+	}
 	m.instanceRunning = s.instance != nil
 	s.conversationDisplay = s.conversationLabel()
 	rows, err := LoadMarkdownHistory(a)

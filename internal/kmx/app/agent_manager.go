@@ -382,7 +382,7 @@ func RunAgentManager() error {
 			defer conn.Close()
 			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 			var req agentWorkerRequest
-			if json.NewDecoder(io.LimitReader(conn, 128<<10)).Decode(&req) != nil {
+			if json.NewDecoder(io.LimitReader(conn, agentWireLimit)).Decode(&req) != nil {
 				return
 			}
 			_ = conn.SetDeadline(time.Now().Add(6 * time.Minute))
@@ -430,8 +430,29 @@ func (m *localAgentManager) handle(ctx context.Context, req agentWorkerRequest) 
 		if a.BindingDigest != req.BindingDigest {
 			return fail(errors.New("tool binding changed before start; run again"))
 		}
-		if err = validateActivatedTools(ctx, a); err != nil {
+		m.mu.Unlock()
+		err = validateActivatedTools(ctx, a)
+		m.mu.Lock()
+		if err != nil {
 			return fail(err)
+		}
+		if err = ctx.Err(); err != nil {
+			return fail(err)
+		}
+		if m.closing {
+			return fail(errors.New("manager is stopping; run again"))
+		}
+		if m.agents[id] != nil {
+			return fail(errors.New("agent changed during validation; run again"))
+		}
+		if err = a.CheckCurrent(); err != nil {
+			return fail(err)
+		}
+		if err = attachApprovedTools(a); err != nil {
+			return fail(err)
+		}
+		if a.BindingDigest != req.BindingDigest {
+			return fail(errors.New("tool binding changed during validation"))
 		}
 		lease, frozen, err := beginAgentInstance(a, req.Model)
 		if err != nil {
@@ -525,9 +546,30 @@ func (m *localAgentManager) handle(ctx context.Context, req agentWorkerRequest) 
 			m.mu.Unlock()
 			return fail(errors.New("tool bindings changed after review; running agent unchanged"))
 		}
-		if err = validateActivatedTools(ctx, a); err != nil {
+		m.mu.Unlock()
+		err = validateActivatedTools(ctx, a)
+		m.mu.Lock()
+		if err != nil {
 			m.mu.Unlock()
 			return fail(err)
+		}
+		if m.closing || m.agents[req.AgentID] != agent || agent.stopping || agent.lease.record.Generation != r.Generation || agent.lease.record.Version != r.Version {
+			m.mu.Unlock()
+			return fail(errors.New("agent changed during validation; review update again"))
+		}
+		if err = ctx.Err(); err == nil {
+			err = a.CheckCurrent()
+		}
+		if err == nil {
+			err = attachApprovedTools(a)
+		}
+		if err != nil {
+			m.mu.Unlock()
+			return fail(err)
+		}
+		if a.BindingDigest != req.BindingDigest {
+			m.mu.Unlock()
+			return fail(errors.New("tool binding changed during validation"))
 		}
 		frozen, err := CacheMarkdownVersion(a)
 		if err != nil {

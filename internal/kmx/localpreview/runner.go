@@ -51,15 +51,30 @@ type RunnerOptions struct {
 type runner struct {
 	options RunnerOptions
 	open    func(string, string) (Executor, string, error)
+	now     func() time.Time
 }
 
 // NewRunner adapts selected examples and optional input to one journal/executor.
 // It neither reloads a file nor infers a model, endpoint or credential facility.
 func NewRunner(options RunnerOptions) agentpreview.Runner {
-	return &runner{options: options, open: func(dir, model string) (Executor, string, error) { return openJournalExecutor(dir, model) }}
+	return &runner{options: options, open: func(dir, model string) (Executor, string, error) { return openJournalExecutor(dir, model) }, now: time.Now}
 }
 
 var errRunnerExecution = errors.New("local preview did not produce an attributable completion")
+
+func (r *runner) timeNow() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
+}
+
+func elapsedMilliseconds(elapsed time.Duration) int64 {
+	if elapsed <= 0 {
+		return 0
+	}
+	return elapsed.Milliseconds()
+}
 
 func (r *runner) Run(ctx context.Context, request agentpreview.Request) (out agentpreview.Outcome, err error) {
 	// One outer budget bounds the whole operation; each turn also has its own
@@ -165,7 +180,7 @@ func (r *runner) Run(ctx context.Context, request agentpreview.Request) (out age
 				Input        *string
 				Definitions  any
 			}{agent, request.FileLabel, request.Route, judgeSelection, request.Input, request.ToolDefinitions})
-			if checkJSONContent(content, checkContent) != nil {
+			if checkJSONContent(content, checkContent, agentPayloadPaths...) != nil {
 				return agentpreview.Outcome{State: agentpreview.Failed}, agentpreview.ErrCredentialContent
 			}
 		}
@@ -276,6 +291,11 @@ func (r *runner) Run(ctx context.Context, request agentpreview.Request) (out age
 	if request.Input != nil && planErr != nil {
 		return abort(planErr)
 	}
+	if request.BeforeExecute != nil {
+		if err := request.BeforeExecute(); err != nil {
+			return abort(fmt.Errorf("%w: %w", agentpreview.ErrDiagnosticsFailed, err))
+		}
+	}
 	dir, dirErr := r.options.JournalDir()
 	if dirErr != nil {
 		return abort(fmt.Errorf("%w: %w", agentpreview.ErrJournalFailed, dirErr))
@@ -336,17 +356,18 @@ func (r *runner) Run(ctx context.Context, request agentpreview.Request) (out age
 		if reportErr := request.Report("Completion %s started: provider=%s endpoint=%s", label, request.Route.Provider, runnerDiagnosticEndpoint(request.Route)); reportErr != nil {
 			return completion, nil, reportErr
 		}
-		started := time.Now()
+		started := r.timeNow()
 		plan := adHocPlan
 		if index >= 0 {
 			plan = plans[index]
 		}
 		execution, execErr := executor.Execute(turnCtx, Turn{AgentID: agent.Identity.ID, Revision: agent.Revision, ExampleID: ex.ID, Instructions: agent.Instructions, Input: ex.Input, Model: p.route.model, Call: call, Tool: plan.execute, ToolDefinitions: plan.definitions, ToolSources: plan.sources, ToolSettings: plan.settings})
+		executionElapsed := r.timeNow().Sub(started)
 		reason := "complete"
 		if execErr != nil || turnCtx.Err() != nil {
 			reason = "execution_failed"
 		}
-		if reportErr := request.Report("Completion %s finished: %s elapsed=%s", label, reason, time.Since(started).Round(time.Millisecond)); reportErr != nil {
+		if reportErr := request.Report("Completion %s finished: %s elapsed=%s", label, reason, executionElapsed.Round(time.Millisecond)); reportErr != nil {
 			return completion, nil, errors.Join(execErr, turnCtx.Err(), reportErr)
 		}
 		if turnCtx.Err() != nil {
@@ -394,7 +415,7 @@ func (r *runner) Run(ctx context.Context, request agentpreview.Request) (out age
 				}
 			}
 		}
-		completion = agentpreview.Completion{State: agentpreview.Complete, ID: execution.SessionUID, FileRevision: agent.Revision, Provider: request.Route.Provider, Model: request.Route.Model, Answer: execution.Answer, ToolCalls: execution.ToolCalls, Tools: plan.summaries(execution.ToolCallCounts)}
+		completion = agentpreview.Completion{State: agentpreview.Complete, ID: execution.SessionUID, FileRevision: agent.Revision, Provider: request.Route.Provider, Model: request.Route.Model, Answer: execution.Answer, DurationMs: elapsedMilliseconds(r.timeNow().Sub(started)), ToolCalls: execution.ToolCalls, Tools: plan.summaries(execution.ToolCallCounts)}
 		for i := range completion.Tools {
 			for _, exchange := range execution.ToolExchanges {
 				if exchange.Call.Tool == completion.Tools[i].Name {

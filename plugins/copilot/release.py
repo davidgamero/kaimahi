@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package already signature-verified release engines; never download or execute them."""
+"""Validate six signed core engines and package the four Unix plugin engines."""
 from __future__ import annotations
 
 import argparse
@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -15,7 +16,11 @@ import tempfile
 
 import package
 
-TARGETS = ("linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64")
+CORE_TARGETS = (
+    "linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64",
+    "windows/amd64", "windows/arm64",
+)
+PLUGIN_TARGETS = ("linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64")
 PREFIX = "kmx-agent-builder/"
 FILES = {"plugin.json", "mcp.json", "selected-root.json", "engine.json",
          "bin/kmx", "SETUP.md", *package.SKILL_FILES,
@@ -39,7 +44,7 @@ An update must be verified and configured again, never silently rebound to cwd.
 
 
 def read_inventory(text: str) -> dict[str, str]:
-    expected = {"kmx-" + target.replace("/", "-") for target in TARGETS}
+    expected = {asset_name(target) for target in CORE_TARGETS}
     entries = {}
     for line in text.splitlines():
         parts = line.split()
@@ -50,6 +55,11 @@ def read_inventory(text: str) -> dict[str, str]:
     if set(entries) != expected:
         raise ValueError("incomplete engine checksum inventory")
     return entries
+
+
+def asset_name(target: str) -> str:
+    name = "kmx-" + target.replace("/", "-")
+    return name + ".exe" if target.startswith("windows/") else name
 
 
 def validate_buildinfo(info: dict, target: str, revision: str) -> None:
@@ -97,7 +107,7 @@ def verify_archive(path: Path, digest: str, target: str, version: str, revision:
 
 def archive(*, binary: Path, sha256: str, target: str, version: str,
             revision: str, output: Path) -> Path:
-    if target not in TARGETS or not re.fullmatch(r"[a-f0-9]{40}", revision):
+    if target not in PLUGIN_TARGETS or not re.fullmatch(r"[a-f0-9]{40}", revision):
         raise ValueError("invalid release platform or revision")
     if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", version):
         raise ValueError("invalid release version")
@@ -130,11 +140,11 @@ def archive(*, binary: Path, sha256: str, target: str, version: str,
 
 
 def build_all(assets: Path, version: str, revision: str) -> None:
-    """Caller must first verify checksums.txt's Sigstore signature and identity."""
+    """Validate all core assets, then emit Unix plugin archives only."""
     inventory = read_inventory((assets / "checksums.txt").read_text(encoding="utf-8"))
     checked = []
-    for target in TARGETS:
-        name = "kmx-" + target.replace("/", "-")
+    for target in CORE_TARGETS:
+        name = asset_name(target)
         binary = assets / name
         if binary.is_symlink() or not binary.is_file() or not 0 < binary.stat().st_size <= package.MAX_BINARY:
             raise ValueError("engine must be a bounded regular file")
@@ -144,7 +154,21 @@ def build_all(assets: Path, version: str, revision: str) -> None:
             raise ValueError("engine metadata exceeds limit")
         info = json.loads(result.stdout)
         validate_buildinfo(info, target, revision)
-        checked.append((binary, inventory[name], target))
+        digest = hashlib.sha256()
+        before = binary.stat()
+        with binary.open("rb") as source:
+            opened = os.fstat(source.fileno())
+            if opened.st_dev != before.st_dev or opened.st_ino != before.st_ino or opened.st_size != before.st_size:
+                raise ValueError("engine changed while validating signed inventory")
+            while chunk := source.read(1 << 20):
+                digest.update(chunk)
+            after = os.fstat(source.fileno())
+            if after.st_size != before.st_size or after.st_mtime_ns != before.st_mtime_ns:
+                raise ValueError("engine changed while validating signed inventory")
+        if digest.hexdigest() != inventory[name]:
+            raise ValueError("engine digest does not match signed inventory")
+        if target in PLUGIN_TARGETS:
+            checked.append((binary, inventory[name], target))
     rows = []
     for binary, digest, target in checked:
         name = "kmx-agent-builder-" + target.replace("/", "-") + ".tar.gz"

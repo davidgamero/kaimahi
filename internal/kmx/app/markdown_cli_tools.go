@@ -153,7 +153,7 @@ func validateCLISpec(s CLIToolSpec) error {
 				if !strings.HasPrefix(p.Pattern, "^") || !strings.HasSuffix(p.Pattern, "$") || len(p.Pattern) > 512 {
 					return errors.New("parameter patterns must be anchored ^...$ and at most 512 bytes")
 				}
-				if _, err := regexp.Compile(p.Pattern); err != nil {
+				if _, err := regexp.Compile(`\A(?:` + p.Pattern + `)\z`); err != nil {
 					return errors.New("invalid parameter pattern")
 				}
 			}
@@ -526,7 +526,7 @@ func cliInvocationArgs(s CLIToolSpec, value any) ([]string, error) {
 			if len(p.Enum) > 0 && !slices.Contains(p.Enum, v) {
 				return nil, errors.New("argument_not_allowed: value outside enum")
 			}
-			if p.Pattern != "" && !regexp.MustCompile(p.Pattern).MatchString(v) {
+			if p.Pattern != "" && !regexp.MustCompile(`\A(?:`+p.Pattern+`)\z`).MatchString(v) {
 				return nil, errors.New("argument_not_allowed: value does not match approved pattern")
 			}
 			rendered[name] = v

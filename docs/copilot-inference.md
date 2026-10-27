@@ -162,9 +162,9 @@ Chat `/suggest-tools` and `/review-tools` retain their existing display/CLI hint
 the executable approval action lives in the console, not a new chat slash command.
 Correlated live tool-result viewing remains follow-up work: background-managed
 chat needs a typed event/result transport beyond its final-answer reply. The
-existing chat session-state race and manager-wide activation-probe lock also remain
-separate correctness work; console approval runs outside that manager and never
-mutates a chat session. Recorded agent tests are distinct from real probes/calls.
+chat attachment state is UI-owned and activation probes run outside the manager
+lock with identity rechecks. Console approval never mutates a chat session.
+Recorded agent tests are distinct from real probes/calls.
 
 The checked-in [Go-version agent](../.github/agents/local-go-version.agent.md)
 demonstrates a harmless fixed CLI call with a compatibility probe; its
@@ -367,7 +367,8 @@ before Orka discovery. Thus `kmx chat frogagent` attaches directly when frogagen
 is running in the background. Explicit `--type orka`, runtime or cluster selectors
 take precedence. Ambiguous local names require a full instance ID. `list` shows tracked local instances;
 `--definitions` explicitly discovers source files. `inspect` dispatches by type; full native
-AgentSuite evaluation remains `eval`. `test` and `validate` currently support md.
+AgentSuite evaluation uses canonical `test`; `eval` is its hidden compatibility alias.
+`test` and `validate` also support the explicit md path.
 
 ### Agent and test files
 
@@ -482,8 +483,6 @@ Edit Hello to Goodbye in the hello definition, save and run `/test`: the greetin
 checks fail. Restore Hello and retest. Git stores source history; exact SHA-256
 hashes of both files bind test attempts. File changes during a run mark the
 captured result stale, and partial tests never become a full-suite pass.
-
-### Test history and execution
 
 ### Versions and instances
 
@@ -890,7 +889,8 @@ Auth/header reference: [vekil authenticator](https://github.com/sozercan/vekil/b
 and [request headers](https://github.com/sozercan/vekil/blob/3e77a9d0739baf7740b141bd88b3fdf40caf7c16/proxy/handler.go).
 KMX does not reuse its disk cache, proxy, retry or failover behavior. Hermetic
 native package tests are not live GitHub/subscription or OS-keychain acceptance
-proof, nor full Windows CLI qualification. Explicit credential access may show
+proof, nor native Windows model/provider command qualification. The supported
+Windows fake file preview does not use this route. Explicit credential access may show
 OS unlock UI; Linux uses the existing login/default collection with kmx-specific service
 and account attributes. Native keychain calls/prompts have no context-cancellation
 guarantee. Unexpected native-dependency panics during credential access are
@@ -901,9 +901,7 @@ mapped to the safe keychain error without exposing their value.
 The existing Orka host-chat adapter supplies enabled HTTP Tool descriptions to
 `copilot -p --model <selected>`, validates returned JSON actions, executes scoped
 HTTP calls and feeds results into the next prompt. It permits at most eight steps
-and five minutes per turn. Supported tools are POST HTTP tools targeting a Service
-in the Agent namespace, without special auth headers, Secrets or outbound policy.
-Calls use an owned loopback forward and the selected Kubernetes context.
+and five minutes per turn.
 
 Supported tools are POST HTTP tools pointing to a Service in the Agent namespace,
 without special headers, auth Secrets, outbound policy or MCP configuration.

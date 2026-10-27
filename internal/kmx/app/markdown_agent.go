@@ -96,7 +96,7 @@ func LoadMarkdownAgent(path, tests string) (*MarkdownAgent, error) {
 	if !strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".agent.test.md") {
 		return nil, mdError(path, 1, "extension", "select an agent Markdown definition, not a test file")
 	}
-	path, err := filepath.Abs(path)
+	path, err := canonicalMDSource(path)
 	if err != nil {
 		return nil, err
 	}
@@ -137,6 +137,20 @@ func LoadMarkdownAgent(path, tests string) (*MarkdownAgent, error) {
 		return nil, err
 	}
 	return a, nil
+}
+
+// Canonicalize existing parent directories while retaining the final component:
+// mdRead must still refuse an agent-looking symlink to another file.
+func canonicalMDSource(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, filepath.Base(abs)), nil
 }
 func (a *MarkdownAgent) CheckCurrent() error {
 	raw, err := mdRead(a.Path, markdownAgentLimit)

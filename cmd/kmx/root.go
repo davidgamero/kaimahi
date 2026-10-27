@@ -34,6 +34,7 @@ type dependencies struct {
 	newAgentKitBuilder func(agentkitbuilder.Options) kmxsuite.SandboxBuilder
 	discoverModels     func(context.Context) []modelaccess.Report
 	newCopilot         func() copilotAccess
+	openGitHubSummary  func() (io.WriteCloser, error)
 	goos               string
 }
 
@@ -41,9 +42,10 @@ func productionDependencies() dependencies {
 	return dependencies{
 		fileRunner: app.NewLocalFileRunner(),
 		stdin:      os.Stdin, stdout: os.Stdout, stderr: os.Stderr,
-		executable: invocationExecutable(os.Args[0]),
-		goos:       runtime.GOOS,
-		loadConfig: config.LoadWithOverrides, newApp: app.New, buildInfo: debug.ReadBuildInfo,
+		executable:        invocationExecutable(os.Args[0]),
+		goos:              runtime.GOOS,
+		openGitHubSummary: func() (io.WriteCloser, error) { return openGitHubSummary() },
+		loadConfig:        config.LoadWithOverrides, newApp: app.New, buildInfo: debug.ReadBuildInfo,
 		newAgentKitBuilder: func(options agentkitbuilder.Options) kmxsuite.SandboxBuilder {
 			return agentkitbuilder.New(options)
 		},
@@ -158,15 +160,18 @@ func execute(argv []string, deps dependencies) error {
 		root.SetOut(writer)
 	}
 	enableYAMLOutput(root, output)
-	// Help/completion produce their own text, never an operation's JSON report.
-	for _, arg := range argv {
-		if arg == "--" {
-			break
+	// Help is recognized by Cobra after flag parsing, not by scanning values
+	// such as --prompt help or a positional agent named help.
+	disableYAML := func() {
+		output.enabled = false
+		if output.selectOutput != nil {
+			output.selectOutput(false)
 		}
-		if arg == "--help" || arg == "-h" || arg == "help" || arg == "__complete" || arg == "__completeNoDesc" {
-			output.selectOutput = nil
-			break
-		}
+	}
+	defaultHelp := root.HelpFunc()
+	root.SetHelpFunc(func(cmd *cobra.Command, args []string) { disableYAML(); defaultHelp(cmd, args) })
+	if len(argv) > 0 && (argv[0] == "__complete" || argv[0] == "__completeNoDesc") {
+		output.selectOutput = nil
 	}
 	root.InitDefaultHelpCmd()
 	help, _, _ := root.Find([]string{"help"})

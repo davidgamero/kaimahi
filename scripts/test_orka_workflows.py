@@ -117,13 +117,48 @@ class QualificationCallers(unittest.TestCase):
 
     def test_release_starts_immediately_and_publish_requires_shipped_path_contracts(self):
         jobs = workflow('release.yml')['jobs']
-        self.assertEqual(set(jobs), {'release', 'release-contracts', 'plugin-install', 'publish'})
+        self.assertEqual(set(jobs), {'release', 'release-contracts', 'plugin-install',
+                                     'release-windows-amd64', 'publish'})
         self.assertNotIn('needs', jobs['release'])
         self.assertNotIn('if', jobs['release'])
         self.assertNotIn('qualified_sha', json.dumps(jobs))
         self.assertEqual(jobs['plugin-install']['needs'], 'release')
         self.assertEqual(jobs['plugin-install']['strategy']['matrix']['os'], ['ubuntu-latest', 'macos-latest'])
-        self.assertEqual(set(jobs['publish']['needs']), {'release', 'plugin-install', 'release-contracts'})
+        windows = jobs['release-windows-amd64']
+        self.assertEqual(windows['needs'], 'release')
+        self.assertEqual(windows['runs-on'], 'windows-latest')
+        self.assertFalse(any(str(step.get('uses', '')).startswith('actions/setup-go@')
+                             for step in windows['steps']))
+        self.assertTrue(all('continue-on-error' not in step for step in windows['steps']))
+        download = next(step for step in windows['steps']
+                        if str(step.get('uses', '')).startswith('actions/download-artifact@'))
+        self.assertEqual(download['with']['name'], 'kmx-${{ needs.release.outputs.version }}')
+        self.assertEqual(download['with']['path'], '${{ runner.temp }}/checked-release')
+        windows_body = '\n'.join(step.get('run', '') for step in windows['steps'])
+        self.assertIn('Get-AuthenticodeSignature', windows_body)
+        self.assertIn('Zone.Identifier', windows_body)
+        self.assertIn('SmartScreen: not evaluated', windows_body)
+        self.assertIn("@('Valid', 'NotSigned')", windows_body)
+        self.assertNotIn('go version', windows_body)
+        self.assertNotIn('go env', windows_body)
+        self.assertIn("FileSystem -cne 'NTFS'", windows_body)
+        self.assertIn("DriveType.ToString() -cne 'Fixed'", windows_body)
+        self.assertIn('Get-Partition -DriveLetter', windows_body)
+        self.assertIn('windows-cli-day-zero.ps1', windows_body)
+        self.assertIn("$ErrorActionPreference = 'Stop'", windows_body)
+        helper_step = next(step for step in windows['steps']
+                           if 'windows-cli-day-zero.ps1' in step.get('run', ''))
+        self.assertEqual(helper_step['env']['RELEASE_VERSION'], '${{ needs.release.outputs.version }}')
+        self.assertIn('kmx-windows-amd64.exe', windows_body)
+        self.assertIn('kmx-windows-arm64.exe', windows_body)
+        self.assertIn('$rows.Count -ne 6', windows_body)
+        self.assertIn('$stagedBinaries.Count -ne 6', windows_body)
+        trust_upload = next(step for step in windows['steps']
+                            if step.get('name') == 'Upload Windows executable trust observation')
+        self.assertEqual(trust_upload['if'], "steps.authenticode.outputs.recorded == 'true'")
+        self.assertEqual(trust_upload['with']['if-no-files-found'], 'error')
+        self.assertEqual(set(jobs['publish']['needs']), {'release', 'plugin-install',
+                                                         'release-contracts', 'release-windows-amd64'})
         self.assertEqual(jobs['publish']['if'], "needs.release.outputs.dry_run == 'false'")
         contracts = jobs['release-contracts']
         self.assertEqual(contracts['permissions'], {'contents': 'read'})
@@ -136,7 +171,34 @@ class QualificationCallers(unittest.TestCase):
             if 'run' in step:
                 self.assertIn(step['run'], body)
         self.assertIn('go test ./internal/kmx/localpreview -count=1', body)
-        self.assertIn('Runtime qualification:', '\n'.join(s.get('run', '') for s in jobs['release']['steps']))
+        release_body = '\n'.join(s.get('run', '') for s in jobs['release']['steps'])
+        self.assertIn('Runtime qualification:', release_body)
+        self.assertIn('--require-windows', release_body)
+        for asset in ('kmx-windows-amd64.exe', 'kmx-windows-arm64.exe'):
+            self.assertIn(asset, release_body)
+            self.assertIn(asset, '\n'.join(s.get('run', '') for s in jobs['publish']['steps']))
+        goreleaser = yaml.safe_load((ROOT / '.goreleaser.yaml').read_text())
+        build = goreleaser['builds'][0]
+        self.assertEqual(build['goos'], ['linux', 'darwin', 'windows'])
+        self.assertEqual(build['goarch'], ['amd64', 'arm64'])
+
+    def test_release_declares_exact_six_core_and_four_unix_plugin_assets(self):
+        text = (ROOT / '.github/workflows/release.yml').read_text()
+        core = {
+            'kmx-linux-amd64', 'kmx-linux-arm64',
+            'kmx-darwin-amd64', 'kmx-darwin-arm64',
+            'kmx-windows-amd64.exe', 'kmx-windows-arm64.exe',
+        }
+        plugin = {
+            'kmx-agent-builder-linux-amd64.tar.gz',
+            'kmx-agent-builder-linux-arm64.tar.gz',
+            'kmx-agent-builder-darwin-amd64.tar.gz',
+            'kmx-agent-builder-darwin-arm64.tar.gz',
+        }
+        publish = text.split('  publish:', 1)[1]
+        self.assertEqual({name for name in core if f'"$artifact_dir/{name}"' in publish}, core)
+        self.assertEqual({name for name in plugin if f'"$artifact_dir/{name}"' in publish}, plugin)
+        self.assertNotIn('kmx-agent-builder-windows-', text)
 
     def test_release_notes_scope_keeps_named_and_synthetic_failure_rules(self):
         step = next(s for s in workflow('release.yml')['jobs']['release']['steps']
@@ -154,7 +216,11 @@ class QualificationCallers(unittest.TestCase):
                     env={**os.environ, 'VERSION': version, 'SYNTHETIC': synthetic,
                          'NOTES': str(notes), 'RUNNER_TEMP': folder}, text=True, capture_output=True, timeout=10, check=False)
                 self.assertEqual(result.returncode, expected, result.stderr)
-                self.assertEqual(notes.read_text().count('Runtime qualification:'), 1 if expected == 0 else 0)
+                notes_text = notes.read_text()
+                self.assertEqual(notes_text.count('Runtime qualification:'), 1 if expected == 0 else 0)
+                if expected == 0:
+                    self.assertIn('Native Windows qualification covers amd64 day-zero Run/Test/offline Explain', notes_text)
+                    self.assertIn('Windows arm64 is checksum, metadata and cross-build evidence only', notes_text)
                 if expected:
                     self.assertIn('CHANGELOG.md has no section', result.stderr)
 
@@ -196,7 +262,7 @@ class QualificationCallers(unittest.TestCase):
     def test_release_self_check_rejects_runtime_dependencies_and_missing_publish_gates(self):
         name = 'The unreleased section exists, and the release job stays keyless'
         self.assertEqual(self.run_hygiene_check(name).returncode, 0)
-        for mutation in ('runtime', 'build-needs', 'contracts', 'plugin'):
+        for mutation in ('runtime', 'build-needs', 'contracts', 'plugin', 'windows', 'windows-setup-go'):
             def mutate(root, mutation=mutation):
                 path = root / '.github/workflows/release.yml'
                 text = path.read_text()
@@ -204,25 +270,33 @@ class QualificationCallers(unittest.TestCase):
                     text = text.replace('jobs:\n', 'jobs:\n  orka-qualification:\n    permissions:\n      contents: read\n    uses: ./.github/workflows/orka-runtime.yml\n', 1)
                 elif mutation == 'build-needs':
                     text = text.replace('  release:\n', '  release:\n    needs: [release-contracts]\n', 1)
+                elif mutation == 'windows-setup-go':
+                    marker = '  release-windows-amd64:\n'
+                    before, after = text.split(marker, 1)
+                    after = after.replace('    steps:\n', '    steps:\n      - uses: actions/setup-go@v5\n', 1)
+                    text = before + marker + after
                 else:
-                    gate = 'release-contracts' if mutation == 'contracts' else 'plugin-install'
-                    text = text.replace('    needs: [release, plugin-install, release-contracts]',
-                                        '    needs: [' + ', '.join(g for g in ('release', 'plugin-install', 'release-contracts') if g != gate) + ']')
+                    gates = ('release', 'plugin-install', 'release-contracts', 'release-windows-amd64')
+                    gate = {'contracts': 'release-contracts', 'plugin': 'plugin-install',
+                            'windows': 'release-windows-amd64'}[mutation]
+                    text = text.replace('    needs: [' + ', '.join(gates) + ']',
+                                        '    needs: [' + ', '.join(g for g in gates if g != gate) + ']')
                 path.write_text(text)
             with self.subTest(mutation=mutation):
                 result = self.run_hygiene_check(name, mutate)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn('release.yml must build immediately' if mutation in ('runtime', 'build-needs')
-                              else 'release.yml must wait for native install checks and hermetic contracts', result.stdout)
+                              else 'release.yml must natively qualify' if mutation == 'windows-setup-go'
+                              else 'release.yml must wait for native install, Windows day-zero and hermetic contracts', result.stdout)
 
     def check_sha_script(self, program, worker=False):
         with tempfile.TemporaryDirectory() as folder:
             def git(*args):
                 return subprocess.check_output(['git', '-C', folder, *args], text=True).strip()
             git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test')
-            git('commit', '--allow-empty', '-qm', 'fixture')
+            git('commit', '--allow-empty', '--no-gpg-sign', '-qm', 'fixture')
             sha = git('rev-parse', 'HEAD')
-            git('tag', 'v1.0.0'); git('tag', '-am', 'annotated', 'v1.0.1')
+            git('tag', '--no-sign', 'v1.0.0'); git('tag', '--no-sign', '-am', 'annotated', 'v1.0.1')
             for event_sha in (sha, git('rev-parse', 'v1.0.0'), git('rev-parse', 'v1.0.1')):
                 for valid in (True, False):
                     with tempfile.NamedTemporaryFile() as output:

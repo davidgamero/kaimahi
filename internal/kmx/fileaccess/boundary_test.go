@@ -90,7 +90,7 @@ func TestProductionSurfaceIsNarrowAndOpaque(t *testing.T) {
 		names = append(names, name)
 	}
 	slices.Sort(names)
-	want := []string{"CheckPrivate", "CheckSafeDirectory", "CreatePrivateDirectoryAt", "CreatePrivateFileAt", "EnsurePrivateDirectory", "EnsurePrivateDirectoryAt", "EnsurePrivateFileAt", "LinkCount", "OpenDirectory", "OpenDirectoryAt", "OpenPrivateDirectory", "OpenPrivateFileAt", "OpenRegularAt", "PhysicalIdentity", "PublishPrivate", "PublishPrivateNamed", "RemovePrivateFileAt", "SyncDirectory", "TryLock"}
+	want := []string{"CheckPrivate", "CheckSafeDirectory", "CreatePrivateDirectoryAt", "CreatePrivateFileAt", "EnsurePrivateDirectory", "EnsurePrivateDirectoryAt", "EnsurePrivateFileAt", "LinkCount", "OpenDirectory", "OpenDirectoryAt", "OpenPrivateDirectory", "OpenPrivateFileAt", "OpenRegularAt", "PhysicalIdentity", "PublishPrivate", "PublishPrivateNamed", "RefuseWindowsDriveMount", "RemovePrivateFileAt", "SyncDirectory", "TryLock"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("exported functions = %v, want exactly %v", names, want)
 	}

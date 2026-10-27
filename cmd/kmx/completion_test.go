@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"golang.org/x/sys/unix"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,6 +31,9 @@ func TestCobraCompletionIncludesCompleteCommandTree(t *testing.T) {
 }
 
 func TestLocalAgentIDsCompleteWithoutExternalProbes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Markdown instance leases are Unix-only")
+	}
 	home := t.TempDir()
 	t.Setenv("KMX_HOME", home)
 	t.Setenv("PATH", t.TempDir())
@@ -51,7 +53,7 @@ func TestLocalAgentIDsCompleteWithoutExternalProbes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lease.Close()
-	if err = unix.Flock(int(lease.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err = testMDLease(lease, true); err != nil {
 		t.Fatal(err)
 	}
 	for _, command := range []string{"stop", "rm", "chat", "inspect", "run", "test"} {
@@ -64,7 +66,7 @@ func TestLocalAgentIDsCompleteWithoutExternalProbes(t *testing.T) {
 			t.Fatalf("%s: %s loads=%d", command, &out, *loads)
 		}
 	}
-	if err = unix.Flock(int(lease.Fd()), unix.LOCK_UN); err != nil {
+	if err = testMDLease(lease, false); err != nil {
 		t.Fatal(err)
 	}
 	var out, diag bytes.Buffer

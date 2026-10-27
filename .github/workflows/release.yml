@@ -191,7 +191,7 @@ jobs:
             esac
           fi
           test -s "$NOTES"
-          printf '\nRuntime qualification: this release checks the inner loop; Orka and kagent are qualified nightly on main and on demand before runtime-related tags.\n' >> "$NOTES"
+          printf '\nRuntime qualification: this release checks the inner loop; Orka and kagent are qualified nightly on main and on demand before runtime-related tags. Native Windows qualification covers amd64 day-zero Run/Test/offline Explain; Windows arm64 is checksum, metadata and cross-build evidence only.\n' >> "$NOTES"
 
       # A release is a provenance claim. The tree it is built from must be
       # the tagged tree and nothing else — an untracked file here becomes
@@ -227,20 +227,39 @@ jobs:
           GORELEASER_CURRENT_TAG: ${{ steps.what.outputs.version }}
         run: goreleaser release --clean --skip=publish,validate
 
-      # Platforms, and why exactly these: kmx drives a Linux container
-      # runtime (kind), so the machine running it is a Linux host or a Mac
-      # running one in a VM — amd64 and arm64 cover both, and are the same
-      # four platforms the pinned cluster tools publish, which kmx downloads
-      # for the SAME machine. Windows is served through WSL, which is
-      # linux/amd64; a native windows/amd64 build would be an untested
-      # claim, not a platform. .goreleaser.yaml's `builds` pins this set.
-      - name: The four release binaries exist
+      # The four established Unix assets keep their names. Windows binaries
+      # have exact .exe names; amd64 is executed by the separate native gate,
+      # while arm64 remains checksum, metadata and cross-build evidence only.
+      - name: The six release binaries exist
         run: |
           set -euo pipefail
-          for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
-            matches=(dist/kmx_"$target"*/kmx)
+          for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64 windows_arm64; do
+            binary=kmx
+            case "$target" in windows_*) binary=kmx.exe ;; esac
+            matches=(dist/kmx_"$target"*/"$binary")
             test "${#matches[@]}" -eq 1
             test -f "${matches[0]}"
+          done
+
+      - name: All six binaries carry exact target and clean provenance
+        run: |
+          set -euo pipefail
+          for target in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64 windows_arm64; do
+            binary=kmx
+            case "$target" in windows_*) binary=kmx.exe ;; esac
+            matches=(dist/kmx_"$target"*/"$binary")
+            test "${#matches[@]}" -eq 1
+            os=${target%_*}
+            arch=${target#*_}
+            info="$RUNNER_TEMP/buildinfo-$target.txt"
+            go version -m "${matches[0]}" | tee "$info"
+            grep -qE "^[[:space:]]+build[[:space:]]+GOOS=$os$" "$info"
+            grep -qE "^[[:space:]]+build[[:space:]]+GOARCH=$arch$" "$info"
+            grep -q "vcs.revision=$GITHUB_SHA" "$info"
+            if ! grep -qE '^[[:space:]]+build[[:space:]]+vcs.modified=false$' "$info"; then
+              echo "kmx-$os-$arch lacks an explicit clean VCS stamp" >&2
+              exit 1
+            fi
           done
 
       # The binary must say what it is. That is what version stamping is
@@ -257,13 +276,13 @@ jobs:
           # Provenance, from the artifact itself.
           go version -m "$bin" | tee "$RUNNER_TEMP/buildinfo.txt"
           grep -q "vcs.revision=$GITHUB_SHA" "$RUNNER_TEMP/buildinfo.txt"
-          if grep -q 'vcs.modified=true' "$RUNNER_TEMP/buildinfo.txt"; then
-            echo "the released binary is stamped as built from a modified tree" >&2
+          if ! grep -qE '^[[:space:]]+build[[:space:]]+vcs.modified=false$' "$RUNNER_TEMP/buildinfo.txt"; then
+            echo "the released binary lacks an explicit clean VCS stamp" >&2
             exit 1
           fi
 
       # dist/checksums.txt names assets the way they will be uploaded
-      # (kmx-$os-$arch, no directory component) — .goreleaser.yaml's
+      # (kmx-$os-$arch, with .exe for Windows, no directory component) — .goreleaser.yaml's
       # `archives.name_template` sets that, matching what install.sh and
       # docs/releases.md's "by hand" section already expect.
       - name: Checksums match the built binaries
@@ -273,12 +292,13 @@ jobs:
           set -euo pipefail
           cat dist/checksums.txt
           # The renderer's parser enforces exactly one entry for each of the
-          # four expected assets, with no unknown names. Without this, the
+          # six expected assets, with no unknown names. Without this, the
           # loop below would vacuously accept an empty or incomplete manifest.
-          python3 scripts/homebrew-formula.py "$VERSION" dist/checksums.txt >/dev/null
+          python3 scripts/homebrew-formula.py "$VERSION" dist/checksums.txt --require-windows >/dev/null
           while read -r want name; do
-            suffix=$(printf '%s' "${name#kmx-}" | tr - _)
-            matches=(dist/kmx_"$suffix"*/kmx)
+            stem=${name%.exe}
+            suffix=$(printf '%s' "${stem#kmx-}" | tr - _)
+            matches=(dist/kmx_"$suffix"*/kmx"${name#"$stem"}")
             test "${#matches[@]}" -eq 1
             test -f "${matches[0]}"
             got=$(sha256sum "${matches[0]}" | cut -d' ' -f1)
@@ -306,6 +326,10 @@ jobs:
           fi
           ruby -c dist/homebrew/Formula/kmx.rb
           test -s dist/homebrew/Formula/kmx.rb
+          if grep -qi windows dist/homebrew/Formula/kmx.rb; then
+            echo "the Homebrew formula must remain Unix-only" >&2
+            exit 1
+          fi
 
       # Exercise the emitted test block, not a duplicate version assertion.
       # This is a binary smoke test, not a replacement for tap-side brew test.
@@ -348,9 +372,10 @@ jobs:
           artifact_dir="$RUNNER_TEMP/release-assets"
           rm -rf "$artifact_dir"
           mkdir -p "$artifact_dir"
-          for name in kmx-linux-amd64 kmx-linux-arm64 kmx-darwin-amd64 kmx-darwin-arm64; do
-            suffix=$(printf '%s' "${name#kmx-}" | tr - _)
-            matches=(dist/kmx_"$suffix"*/kmx)
+          for name in kmx-linux-amd64 kmx-linux-arm64 kmx-darwin-amd64 kmx-darwin-arm64 kmx-windows-amd64.exe kmx-windows-arm64.exe; do
+            stem=${name%.exe}
+            suffix=$(printf '%s' "${stem#kmx-}" | tr - _)
+            matches=(dist/kmx_"$suffix"*/kmx"${name#"$stem"}")
             test "${#matches[@]}" -eq 1
             cp "${matches[0]}" "$artifact_dir/$name"
             cmp "${matches[0]}" "$artifact_dir/$name"
@@ -359,6 +384,9 @@ jobs:
           cp dist/homebrew/Formula/kmx.rb "$artifact_dir/kmx.rb"
           cmp dist/checksums.txt "$artifact_dir/checksums.txt"
           cmp dist/homebrew/Formula/kmx.rb "$artifact_dir/kmx.rb"
+          mapfile -t manifest_names < <(cut -d' ' -f3 dist/checksums.txt | sort)
+          mapfile -t staged_names < <(for path in "$artifact_dir"/kmx-*; do basename "$path"; done | sort)
+          test "${manifest_names[*]}" = "${staged_names[*]}"
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
@@ -475,8 +503,107 @@ jobs:
           export KMX_NATIVE_COPILOT="$RUNNER_TEMP/copilot/node_modules/.bin/copilot"
           python3 -m unittest discover -s plugins/copilot -p test_native_install.py -v
 
+  release-windows-amd64:
+    name: Release Windows amd64 native day-zero qualification
+    needs: release
+    permissions:
+      contents: read
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: kmx-${{ needs.release.outputs.version }}
+          path: ${{ runner.temp }}/checked-release
+      - name: Strictly verify six staged checksums
+        shell: pwsh
+        env:
+          ASSET_ROOT: ${{ runner.temp }}/checked-release/release-assets
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $assets = $env:ASSET_ROOT
+          $manifest = Join-Path $assets 'checksums.txt'
+          $expected = @(
+            'kmx-linux-amd64', 'kmx-linux-arm64',
+            'kmx-darwin-amd64', 'kmx-darwin-arm64',
+            'kmx-windows-amd64.exe', 'kmx-windows-arm64.exe'
+          )
+          $rows = @(Get-Content -LiteralPath $manifest | Where-Object { $_ -notmatch '^\s*$' })
+          if ($rows.Count -ne 6) { throw "checksum manifest has $($rows.Count) rows, expected 6" }
+          $seen = @{}
+          foreach ($row in $rows) {
+            if ($row -cnotmatch '^([0-9a-f]{64})\s{2}([^\s]+)$') { throw "invalid checksum row: $row" }
+            $digest, $name = $Matches[1], $Matches[2]
+            if ($expected -cnotcontains $name -or $seen.ContainsKey($name)) { throw "unexpected or duplicate checksum asset: $name" }
+            $path = Join-Path $assets $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "missing staged asset: $name" }
+            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -cne $digest) { throw "checksum mismatch for $name" }
+            $seen[$name] = $true
+          }
+          if ($seen.Count -ne 6) { throw 'checksum manifest is incomplete' }
+          $stagedBinaries = @(Get-ChildItem -LiteralPath $assets -File | Where-Object { $_.Name -match '^kmx-(?:linux|darwin|windows)-' })
+          if ($stagedBinaries.Count -ne 6 -or @($stagedBinaries | Where-Object { $expected -cnotcontains $_.Name }).Count -ne 0) {
+            throw 'staged core binary inventory is not the exact six manifest assets'
+          }
+      - name: Record Windows executable trust status
+        id: authenticode
+        shell: pwsh
+        env:
+          AUTHENTICODE_RECORD: ${{ runner.temp }}/kmx-windows-amd64-authenticode.txt
+          WINDOWS_BINARY: ${{ runner.temp }}/checked-release/release-assets/kmx-windows-amd64.exe
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binary = $env:WINDOWS_BINARY
+          $signature = Get-AuthenticodeSignature -LiteralPath $binary
+          $zone = Get-Item -LiteralPath $binary -Stream Zone.Identifier -ErrorAction SilentlyContinue
+          $zoneStatus = if ($null -eq $zone) { 'absent from Actions artifact download' } else { 'present' }
+          $record = ($signature | Format-List Status,StatusMessage,SignerCertificate,TimeStamperCertificate | Out-String) + `
+            "Zone.Identifier: $zoneStatus`r`nSmartScreen: not evaluated by the hosted PowerShell worker`r`n"
+          $record | Write-Output
+          [IO.File]::WriteAllText($env:AUTHENTICODE_RECORD, $record, [Text.UTF8Encoding]::new($false))
+          $status = $signature.Status.ToString()
+          if ($status -cnotin @('Valid', 'NotSigned')) {
+            throw "unexpected Authenticode status $status; Windows protections remain enabled"
+          }
+          "recorded=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Upload Windows executable trust observation
+        if: steps.authenticode.outputs.recorded == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kmx-${{ needs.release.outputs.version }}-windows-amd64-authenticode
+          path: ${{ runner.temp }}/kmx-windows-amd64-authenticode.txt
+          if-no-files-found: error
+          retention-days: 30
+      - name: Verify native state prerequisites without changing protections
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $probe = Join-Path $env:RUNNER_TEMP ('kmx native state probe ' + [char]0x96EA + ' ' + [Guid]::NewGuid().ToString('N'))
+          $drive = [IO.Path]::GetPathRoot($probe).Substring(0, 1)
+          $partition = Get-Partition -DriveLetter $drive
+          $volume = Get-Volume -DriveLetter $drive
+          if ($partition.IsOffline -or $volume.FileSystem -cne 'NTFS' -or $volume.DriveType.ToString() -cne 'Fixed') {
+            throw "release qualification requires online local fixed NTFS, got offline=$($partition.IsOffline) $($volume.FileSystem)/$($volume.DriveType)"
+          }
+      - name: Run exact staged executable through day-zero helper
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.release.outputs.version }}
+          WINDOWS_BINARY: ${{ runner.temp }}/checked-release/release-assets/kmx-windows-amd64.exe
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/ci/windows-cli-day-zero.ps1 `
+            -Binary $env:WINDOWS_BINARY `
+            -Fixture ./internal/kmx/agentfile/testdata/greeter.agent.md `
+            -ExpectedVersionLine "kmx $env:RELEASE_VERSION (release build)"
+
   publish:
-    needs: [release, plugin-install, release-contracts]
+    needs: [release, plugin-install, release-contracts, release-windows-amd64]
     if: needs.release.outputs.dry_run == 'false'
     runs-on: ubuntu-latest
     permissions:
@@ -486,8 +613,8 @@ jobs:
         with:
           name: kmx-${{ needs.release.outputs.version }}
           path: ${{ runner.temp }}/checked-release
-      # Publish only after Linux AND macOS executed the exact staged engine and
-      # checked an install/uninstall/reinstall in a fresh host profile.
+      # Publish only after Linux and macOS checked the four Unix plugin
+      # archives and Windows amd64 executed the exact staged core binary.
       - name: Publish the checked release artifacts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -502,6 +629,8 @@ jobs:
             "$artifact_dir/kmx-linux-arm64"
             "$artifact_dir/kmx-darwin-amd64"
             "$artifact_dir/kmx-darwin-arm64"
+            "$artifact_dir/kmx-windows-amd64.exe"
+            "$artifact_dir/kmx-windows-arm64.exe"
             "$artifact_dir/checksums.txt"
             "$artifact_dir/checksums.txt.sigstore.json"
             "$artifact_dir/kmx.rb"

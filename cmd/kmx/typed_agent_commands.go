@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentfile"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/app"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 func markdownOperation(state *commandState, name string) *cobra.Command {
@@ -73,6 +76,9 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 			return false
 		}
 		if len(args) > 0 && strings.HasSuffix(args[0], ".md") {
+			if _, err := os.Lstat(args[0]); errors.Is(err, os.ErrNotExist) && (operation == "run" || operation == "test") {
+				return false
+			}
 			if (operation == "run" || operation == "test") && isCanonicalCharter(args[0]) {
 				return false
 			}
@@ -147,10 +153,8 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 			if selectionError != nil {
 				return selectionError
 			}
-			for _, name := range []string{"runtime", "runtime-version", "namespace", "result-port", "wait", "workspace", "instructions", "members", "flow", "description", "kagent-runtime"} {
-				if cmd.Flags().Changed(name) {
-					return fmt.Errorf("--%s is not supported for md agents", name)
-				}
+			if err := validateMDFlags(cmd, operation); err != nil {
+				return err
 			}
 			if operation == "init" {
 				if cmd.Flags().Changed("model") {
@@ -183,7 +187,7 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 			_, err := localArgs(cmd, args)
 			return err
 		}
-		if operation == "test" || (operation == "run" && len(args) == 1 && isCanonicalCharter(args[0])) {
+		if operation == "test" || (operation == "run" && len(args) >= 1 && strings.HasSuffix(args[0], ".md")) {
 			if originalArgs != nil {
 				return originalArgs(cmd, args)
 			}
@@ -293,10 +297,51 @@ func isCanonicalCharter(path string) bool {
 	defer f.Close()
 	s := bufio.NewScanner(f)
 	s.Buffer(make([]byte, 1024), 64<<10)
-	if !s.Scan() {
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "# ") {
+			return true
+		}
+		break
+	}
+	// Main now supports Copilot frontmatter too. Dispatch only files accepted
+	// by that parser there; explicit --type md still selects persistent agents.
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return false
 	}
-	return strings.HasPrefix(strings.TrimSpace(s.Text()), "# ")
+	b, err := io.ReadAll(io.LimitReader(f, (64<<10)+1))
+	if err != nil || len(b) > 64<<10 {
+		return false
+	}
+	_, err = agentfile.Parse(path, b)
+	return err == nil
+}
+
+func validateMDFlags(cmd *cobra.Command, operation string) error {
+	allowed := map[string]bool{"type": true, "output": true, "directory": true}
+	if operation != "init" {
+		allowed["tests"], allowed["provider"], allowed["model"] = true, true, true
+	}
+	for _, name := range map[string][]string{
+		"run":  {"agent", "prompt", "prompt-file", "interactive", "update", "yes"},
+		"chat": {"session", "new", "label"},
+		"test": {"case", "show-content"},
+	}[operation] {
+		allowed[name] = true
+	}
+	var invalid string
+	cmd.Flags().Visit(func(flag *pflag.Flag) {
+		if !allowed[flag.Name] && invalid == "" {
+			invalid = flag.Name
+		}
+	})
+	if invalid != "" {
+		return fmt.Errorf("--%s is not supported for md agents", invalid)
+	}
+	return nil
 }
 
 func newTypedAgentCommand(state *commandState, name, operation string) *cobra.Command {

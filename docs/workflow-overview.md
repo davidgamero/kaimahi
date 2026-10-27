@@ -71,9 +71,13 @@ source-evidence `--promote`, partial outcomes, and fresh-evaluation requirements
 
 ## Getting Started: Get Your First Answer
 
-**On Windows, use WSL for now.** Install and run kmx inside your Linux
-WSL distribution, not PowerShell or Command Prompt. Native Windows builds
-are not supported yet; track [Windows support in #578](https://github.com/kaimahi-agents/kaimahi/issues/578).
+This first-answer path creates a cluster, so Windows users run it inside a Linux
+WSL distribution. Current `main` has a separate **unreleased**
+[native Windows day-zero CLI](windows.md), limited to version/help/completion,
+package-free fake file Run/Test and offline file Explain. It creates no suite
+evidence and cannot perform the workspace, model, publication or Deploy stages
+on this page. Stable v0.8.1 and `@latest` have no Windows `.exe`; use WSL for
+the install routes and broader workflow below.
 
 Install Docker or Podman (`CONTAINER_ENGINE=podman` selects Podman), then choose
 one independent install route for the latest stable release. Go installs require

@@ -265,6 +265,29 @@ test(`actual ${variant} extension opens its own provider and registers the kmx s
   } finally { hooks.deregister(); delete globalThis.__kmxJoin; }
 });
 
+for (const variant of ["copilot-wsl", "copilot"]) test(`${variant} skill help distinguishes a missing extension from a text fallback`, async () => {
+  const opener = await readFile(new URL(`../../${variant}/skills/kmx/SKILL.md`, import.meta.url), "utf8");
+  assert.ok(opener.includes("Select the kmx skill entry in your host's slash menu and give it open FULL_PATH, or ask: Open the kmx canvas for FULL_PATH."));
+  assert.doesNotMatch(opener, /`\/kmx(?: help| open|`)/);
+  assert.match(opener, /If `open_kmx_canvas` is offered/);
+  const absent = opener.split("## No opener available")[1];
+  assert.ok(absent?.includes("Canvas not opened: no canvas opener is available in this session. Use a Copilot host with the kmx canvas extension loaded."));
+  assert.doesNotMatch(absent, /\/agent-view/);
+  const builder = await readFile(new URL(`../../${variant}/skills/kmx-agent-builder/SKILL.md`, import.meta.url), "utf8");
+  assert.match(builder, /description: .*running an input.*saved tests/);
+  assert.ok(builder.includes("Added 1 test to <file>."));
+  assert.ok(builder.includes("Added <count> tests to <file>."));
+});
+
+for (const variant of ["copilot-wsl", "copilot"]) test(`${variant} builder waits for a saved revision without using execution as discovery`, async () => {
+  const skill = (await readFile(new URL(`../../${variant}/skills/kmx-agent-builder/SKILL.md`, import.meta.url), "utf8")).replaceAll("`", "").replace(/\s+/g, " ");
+  assert.ok(skill.includes("Never fabricate expectedRevision, including an all-zero hash, or call Run/Test solely to learn a revision."));
+  assert.ok(skill.includes("If the saved source or current revision is unavailable, do not call Edit; report that nothing was saved."));
+  assert.ok(skill.includes("For an add-tests request that cannot be saved, include this conditional next step: If your kmx canvas offers Suggest tests, use it to send the saved source and revision to chat."));
+  assert.ok(skill.includes("describe missing saved source and revision, not host implementation terms"));
+  assert.ok(skill.includes("If no agent-resource reader is available, follow the no-save recovery above."));
+});
+
 test("/kmx-canvas open resolves a relative path in the session folder and says what happened", async () => {
   for (const [folder, want] of [["C:\\Users\\ada\\walk", "C:\\Users\\ada\\walk/team/count.agent.md"], ["/home/ada/walk/", "/home/ada/walk/team/count.agent.md"]]) {
     const f = setup({ path: want });

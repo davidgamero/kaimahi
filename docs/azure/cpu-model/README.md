@@ -22,7 +22,8 @@ to helpers too: replace `kmx test cleanup` with `kmx eval cleanup` in the cleanu
 examples below. See [Test compatibility](../../kmx.md#test-compatibility-unreleased)
 and [Deploy compatibility](../../kmx.md#deploy-compatibility-unreleased).
 **Windows users:** run KMX in WSL; see [Windows setup](#windows-setup) for the
-PowerShell/Azure authentication handoff. Native Windows KMX is unsupported.
+PowerShell/Azure authentication handoff. This AKS/model workflow is unsupported
+by the [narrow native Windows CLI](../../windows.md).
 
 | Requirement | Development baseline |
 |---|---|

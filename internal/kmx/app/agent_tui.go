@@ -111,7 +111,7 @@ func (a *App) AgentTUI(opt AgentTUIOptions) error {
 	}
 	if !opt.Demo && opt.LocalContext == "" && opt.RemoteContext == "" {
 		// Prefer the configured context only in its independently classified column.
-		m.status = "Discovering agents and environments"
+		m.status = "Discovering environments and agents"
 	}
 	for {
 		ctx, cancel := context.WithCancel(a.operationContext())

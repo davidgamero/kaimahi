@@ -10,36 +10,76 @@ kmx keeps the prompt and tests in one Markdown file. The Copilot app opens that
 file in a canvas where you can edit and test it. This path needs no Kubernetes
 cluster, Docker or local model download.
 
-**Experimental.** This page describes v0.9.0-rc.3. The install below pins that
-binary; updating the plugin alone does not update kmx. Features merged after
-rc.3 need a newer binary too.
+**Experimental.** The app walkthrough describes v0.9.0-rc.4. The install below
+pairs that prerelease binary with plugin source pinned to its release commit.
+Updating the plugin alone does not update kmx. Features merged after rc.4 need
+a newer tested pair; a feature on main is not necessarily in your installed release.
 
 ## Install
 
 On Windows, you need the Copilot app and CLI, a signed-in Copilot account with
-model access, and a default WSL distribution. Native Windows kmx is not supported
-for this path.
+model access, and a default WSL distribution. The
+[native Windows day-zero CLI](windows.md) does not include `kmx mcp` or a native
+Copilot plugin, so this path remains explicitly WSL-hosted.
 
 1. In WSL, install kmx:
 
    ```sh
-   curl -fsSL https://raw.githubusercontent.com/kaimahi-agents/kaimahi/v0.9.0-rc.3/install.sh | sudo sh -s -- --version=v0.9.0-rc.3 --bin-dir=/usr/local/bin
+   curl -fsSL https://raw.githubusercontent.com/kaimahi-agents/kaimahi/v0.9.0-rc.4/install.sh | sudo sh -s -- --version=v0.9.0-rc.4 --bin-dir=/usr/local/bin
    ```
 
-2. In a Windows terminal, install the plugin:
+2. In a Windows terminal, register the marketplace and install the WSL variant:
 
    ```powershell
-   copilot plugin install kaimahi-agents/kaimahi:plugins/copilot-wsl
+   copilot plugin marketplace add kaimahi-agents/kaimahi
+   copilot plugin install kmx-agent-builder@kmx-plugins
    ```
 
 The installer checks the binary's published SHA256 over HTTPS, not its separate
 signature bundle. The plugin uses `/usr/local/bin/kmx` in your default WSL
 distribution. You do not select a folder or model during installation.
-The CLI warns that direct plugin installs are deprecated; a marketplace install
-is not available yet.
+A fresh install is three commands: binary, marketplace registration, plugin.
+The marketplace's `kmx-plugins` catalog pins each variant to a full release SHA.
+Choose only one variant per host profile; their MCP server and skill names are shared.
 
 On macOS, use the [macOS install instructions](../plugins/copilot/README.md#install-on-macos)
 instead. They install a macOS binary and the plain Copilot plugin, not WSL.
+
+### Existing direct installs and upgrades
+
+Close active Copilot sessions and inspect `copilot plugin list` in the host
+terminal. Existing direct installs do not move to a marketplace automatically.
+For the old WSL or pre-rename PATH source install, remove its old registration:
+
+```sh
+copilot plugin uninstall kmx-agent-builder
+```
+
+The renamed direct PATH source install uses `kmx-agent-builder-path` instead;
+uninstall that exact name if it is the installed source. The separate configured
+native bundle also uses `kmx-agent-builder`: inspect the source before removing
+it, and do not silently substitute a source plugin for its root-bound setup.
+Agent files and kmx state are not deleted by this registration change.
+
+Install the paired binary, then run the marketplace-add and selected-variant
+install commands above (macOS uses `kmx-agent-builder-path@kmx-plugins`). Restart
+Copilot and check `copilot plugin list`, `kmx version` in the binary's environment,
+and that only one kmx plugin/server is active. If manual MCP/skill definitions
+collide, inspect those separately; do not delete configuration or caches blindly.
+
+For later upgrades, install the binary named by the new catalog first, then:
+
+```sh
+copilot plugin marketplace update kmx-plugins
+copilot plugin update kmx-agent-builder
+```
+
+On macOS, use `copilot plugin update kmx-agent-builder-path` instead. Restart and
+check the pair. These operations are not atomic and the host does not enforce
+binary/plugin equality. Enterprise automatic plugin updates can also move the
+plugin independently; the external binary still needs its matching update.
+No direct-install removal date is assumed. Keep old source paths available;
+this changes the recommended install, not the user's agent-file format.
 
 ### Check model access
 
@@ -56,6 +96,65 @@ On macOS, run the same check in your Mac terminal. kmx can use that existing gh
 sign-in without copying it into kmx's keychain. If listing fails, follow the
 [Copilot authentication options](kmx.md#copilot-model-access) before continuing;
 kmx does not read the app's credentials or start sign-in during a test.
+
+## Launch commands and phrases
+
+Natural phrases select a skill through the chat model; they are not fixed
+commands. Naming kmx and the agent file makes the request explicit. Creating an
+agent and opening its canvas are separate calls; opening alone never runs tests.
+
+| Intent | What to type or select | What happens |
+|---|---|---|
+| Create and open | `Create a kmx agent called Release notes that writes a short release note from a supplied pull request title, and open its canvas.` | The builder creates the file, then calls the canvas opener. It does not automatically run tests. |
+| Open without a model turn | `/kmx-canvas open release-notes.agent.md` | The native command opens or focuses the existing file. `/kmx-canvas` or `/kmx-canvas help` shows usage. |
+| Open through chat | `Open the kmx canvas for release-notes.agent.md` | The model selects the opener skill. This uses a model turn. |
+| Run one input | `Use kmx to run release-notes.agent.md with input Add dark mode` | Run sends that input and returns the preview result. |
+| Run saved tests | `Use kmx to test release-notes.agent.md and show its test results` | Test checks the saved cases and reports their actual verdicts. |
+| Add tests from saved source | Select **Suggest tests** in the saved canvas | The request supplies source and revision to chat for a checked Edit, without automatically running tests. Wait for the save result. |
+| Read-only text | `/agent-view FULL_PATH` | The native command displays the file projection as text, not a canvas. |
+
+Use your own filename. For Windows+WSL, a full `/mnt/c/.../name.agent.md` path
+avoids depending on the MCP server's working directory. After native `open`, the
+path is literal: keep spaces within a filename, omit surrounding quotes and avoid
+trailing spaces.
+
+**Version limit:** native opening was checked in the Copilot app with a main
+build before rc.4 that includes the fix, not with the released rc.4 pair. If native
+opening fails or shows nothing, try the explicit chat-open phrase with a full path.
+
+### Copilot CLI spellings and fallback
+
+Start the interactive CLI with `copilot --experimental` to load the native
+extension commands and opener. Without that extension, the skills and MCP tools
+can still be available, but neither a canvas opener nor `/agent-view` is available.
+MCP results in chat are still text; `/agent-view` is not a remedy for a missing
+extension.
+
+In CLI 1.0.103 with the macOS/PATH plugin, the full skill entries are:
+
+```text
+/kmx-agent-builder-path:kmx open FULL_PATH
+/kmx-agent-builder-path:kmx-agent-builder Create an agent that summarizes a supplied paragraph.
+```
+
+These use a model turn. Short `/kmx help` and `/kmx open PATH` returned
+`Unknown command: /kmx` in that CLI. Use the full installed skill entry, not that
+short spelling or an ambiguous prefix. Other plugin variants and the app have
+their own menu entries; select the actual installed entry rather than assuming
+this CLI namespace.
+
+Submit native slash commands interactively. `copilot -p '/kmx-canvas open ...'`
+passes text to the model rather than exercising native command dispatch. In a
+headless environment, the CLI can acknowledge a canvas and offer a browser URL
+without displaying a native window; that is not proof of app rendering.
+
+Chat Edit and add-tests requests need a current revision. In a CLI check with
+shell deliberately denied, no saved snapshot and no model-facing resource reader,
+add-tests selected the builder but could not save. Supplying a saved snapshot or
+allowing a hash read let it save. This does not establish a failure under normal
+manual approval. **Suggest tests** supplies a snapshot by design; a similar CLI
+snapshot request saved one Edit without Run/Test, but the app button still needs
+its own check. Do not treat a suggestion or a successful trigger as a saved test.
 
 ## Create an agent
 
@@ -81,7 +180,7 @@ cannot render the canvas, Copilot can still use kmx's tools in text.
 
 ## Choose tools for tests
 
-With a matching rc.3 plugin and binary, **Add tools** opens this app's
+With a matching rc.4 plugin and binary, **Add tools** opens this app's
 MCP servers. Tick tools to add them to the agent. A ticked tool's **Enabled** or
 **Disabled** word flips a draft; Disabled tools stay declared but do not run in tests.
 Enter saves edits, then tests. Esc discards Tools edits without discarding prompt
@@ -92,7 +191,7 @@ physical target and also affect other agents in that folder. These are separate
 saves, not one transaction. If a save is partial or unconfirmed, tests do not run:
 keep the draft and deliberately reload to inspect what was saved. Do not retry
 an uncertain write. This switch uses `set_tool_state`, included in the pinned
-v0.9.0-rc.3 binary above.
+v0.9.0-rc.4 binary above.
 
 ![Tools section showing one selected tool from the GitHub MCP server, with earlier test results marked out of date](images/copilot-tools.png)
 
@@ -195,15 +294,32 @@ These comparison pictures are from a build before rc.3.
 ## Run the same tests in CI
 
 Commit the agent file, then run `kmx test FILE` in a GitHub Actions step after
-checkout. Use a file-preview-capable binary such as v0.9.0-rc.3, not v0.8.1.
-These steps install it on an Ubuntu runner and test `greeter.agent.md` using its
-authored `fake` model:
+checkout. `--github-summary` is currently unreleased on `main`; use an exact
+checkout build or future pinned release that documents the flag. Existing
+v0.9.0 release candidates do not contain it. After installing that binary, these
+steps test `greeter.agent.md` using its authored `fake` model:
 
 ```yaml
-- name: Install kmx
-  run: curl -fsSL https://raw.githubusercontent.com/kaimahi-agents/kaimahi/v0.9.0-rc.3/install.sh | sudo sh -s -- --version=v0.9.0-rc.3 --bin-dir=/usr/local/bin
 - name: Test the agent
-  run: kmx test ./greeter.agent.md
+  id: agent_test
+  shell: bash
+  run: |
+    set +e
+    kmx test ./greeter.agent.md -o json --github-summary > kmx-test.json
+    status=$?
+    set -e
+    if ! python3 -m json.tool kmx-test.json >/dev/null; then
+      rm -f kmx-test.json
+      status=1
+    fi
+    exit "$status"
+- name: Upload the test report
+  if: always() && hashFiles('kmx-test.json') != ''
+  uses: actions/upload-artifact@v4
+  with:
+    name: kmx-test-report
+    path: kmx-test.json
+    if-no-files-found: error
 ```
 
 For an offline check, start with the [complete greeter sample](../internal/kmx/agentfile/testdata/greeter.agent.md).
@@ -225,4 +341,9 @@ File-mode exit codes make this a CI gate without parsing the output:
 
 GitHub Actions fails the step on a nonzero exit. Do not use `continue-on-error`
 if these tests are meant to gate the pull request. This file-mode check does not
-publish a package or create evidence for deployment.
+publish a package or create evidence for deployment. The explicit status capture
+lets the upload step run while the test step still records the original
+0/1/2/130 file-mode result (passed/failed/could-not-run/cancelled). `--github-summary` adds a content-free table with revision,
+model/judge, scope, timings, checks and tool settings/sources/counts; the JSON
+artifact is the durable report you chose to retain. Neither output creates
+automatic local history.

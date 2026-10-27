@@ -28,17 +28,12 @@ func mdPrivateDir(path string) error {
 	if err != nil {
 		return err
 	}
-	for p := abs; ; p = filepath.Dir(p) {
-		info, e := os.Lstat(p)
-		if e == nil && info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("KMX state must not use symlink directories")
-		}
-		if e != nil && !errors.Is(e, os.ErrNotExist) {
-			return e
-		}
-		if p == filepath.Dir(p) {
-			break
-		}
+	// Platform-owned ancestors such as macOS /var may be links; the managed
+	// leaf must remain a real directory. Canonicalize state roots separately.
+	if info, e := os.Lstat(abs); e == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("KMX state must not use symlink directories")
+	} else if e != nil && !errors.Is(e, os.ErrNotExist) {
+		return e
 	}
 	if err = os.MkdirAll(abs, 0700); err != nil {
 		return err

@@ -10,6 +10,13 @@ changes in the package's Go doc comment.
 ## Command consistency
 
 - Native-header agents may declare final `yaml kmx-tool` blocks under Tool bindings.
+  CLI string patterns enforce full-value matches including alternation. Grant
+  identity canonicalizes parent paths without accepting symlinked source leaves.
+  Obsolete grants do not block a changed tool-free definition; exact-definition
+  reviewed GitHub overlays remain supported. Tests filter mocks to approved tools.
+  Activation probes run outside the manager mutex and recheck lifecycle/source/
+  binding identity before committing. Chat UI owns its attachment display state;
+  cached execution stays separate from source/test snapshots used by edit/test.
   Parse/validate strips bindings from model instructions and never executes them.
   `tools approve FILE --apply` explicitly reviews PATH resolution, binary hashes,
   fixed argv, operand constraints and optional fixed probes before saving a grant.
@@ -96,7 +103,8 @@ changes in the package's Go doc comment.
   a model. Keep modelaccess independent of App and Unix-only helpers. Foundry
   endpoint comes only from runtime status; no fixed port, catalog download,
   service start or silent model selection. Native model-access package tests
-  remain separate from Windows CLI qualification.
+  remain separate from Windows CLI qualification; native Windows model/provider
+  commands stay deferred.
 
 - `internal/kmx/fileaccess` is a package-independent checked filesystem
   foundation: existing-object reads, security/identity inspection, private first
@@ -106,9 +114,19 @@ changes in the package's Go doc comment.
   retained evaluation diagnostics use it; ordinary `StateDir` remains
   location-only. Publication errors distinguish positively observed visibility
   from unresolved visibility; false plus error is never absence. Native Windows
-  package tests qualify those local-NTFS day-zero internals only, not the guarded
-  CLI, native arm64 execution, a release artifact or general user support.
-  OCI/workspace and other deferred operation adapters remain inert.
+  amd64 executes the narrow CLI plus these local-NTFS internals; Windows arm64 is
+  cross-build/vet/checksum only, never native execution. Writable Windows state
+  requires local-disk NTFS with persistent ACLs, current-user ownership and a
+  protected owner-only DACL. Refuse unsafe existing ACLs without repair. Reject
+  non-NTFS, UNC/network, device, SUBST/remapped, alternate-stream and exposed
+  symlink/junction/reparse state roots. Synchronized folders are outside the
+  qualified boundary even when their current NTFS representation is not exposed
+  as a reparse point. This is not power-loss
+  certification or a backup guarantee. Native Windows and WSL state must be
+  physically separate because locks do not coordinate; WSL/Linux refuses
+  recognized Windows-drive mounts for writable KMX state. Read-only Windows
+  source input is a separate contract. OCI/workspace and other deferred operation
+  adapters remain inert. See [native Windows](docs/windows.md).
 
 - Follow the [command conventions](docs/command-conventions.md), the implemented
   interface in [docs/kmx.md](docs/kmx.md) and the
@@ -567,6 +585,16 @@ not the Copilot SDK.
 native evidence receipt. Subset is always partial, execution/journal failure is
 unknown, and only an explicit caller override changes the judge route. Keep
 live `run --agent`, native workspace Test/Explain and legacy Eval unchanged.
+The additive report includes monotonic total/per-test duration and content-free
+tool setting/source/count rows. Optional `test FILE -o json --github-summary`
+appends a bounded Markdown projection to the existing GitHub Actions summary
+file after writing the same JSON result; it never includes paths, prompts,
+answers, operands, tool arguments/results, credentials or provider diagnostics.
+Unset/unsafe summary paths refuse before execution; a missing regular-file target
+at a valid absolute path is created with mode 0600. Write failure exits 1.
+Preserve the original 0/2/1/130 Test status when report and summary writes work.
+This creates no automatic local history and grants no evidence, Publish or
+Deploy authority.
 File Run/Test `--verbose` is content-free stderr diagnostics only, never implicit
 `--show-content`. Keep transport errors classified without raw URLs/bodies;
 only validated local origins and standard endpoint paths may be shown. Failed
@@ -613,7 +641,12 @@ changes as well as revisions; never attribute another model's result as current.
 for charter content. After successful Create, open its returned file.path in the
 existing canvas. Give one plain notice before the first hosted-model send;
 ordinary agent-file creation stays confirmation-free, without path-character
-restrictions. Native Squad retains its existing proposal/setup-effects approval.
+restrictions. Before writing new or changed inline tests in a frontmatter-based
+Copilot file, canvas/MCP shows "Tests added here become part of this agent's
+prompt in Copilot." with go-ahead/cancel; MCP Create/Edit requires
+`acknowledgeCopilotTests: true` after user agreement. Prompt-only edits retain tests
+without another acknowledgment. MCP Run/Test uses the same acknowledgment before
+saving new pending tool recordings into a Copilot file's tests; replay is read-only. Native Squad retains its existing proposal/setup-effects approval.
 Safe model excerpts retain the existing showContent opt-in.
 Latest preview state is process-local, revision-bound and never inferred on read.
 The separate native Copilot view uses the host SDK and a private loopback asset
@@ -668,21 +701,27 @@ team runtime or native Squad canvas actions. See [native authoring](docs/agent-f
 
 ## Single-file charter boundary
 
-`internal/kmx/agentfile` keeps `Parse`/`Load` canonical as described in
-[agent-file.md](docs/agent-file.md), offline, with optional `## Tools` directly before required final Examples. Both are
-excluded from instructions; absent Tools preserves instruction bytes and all
-revisions bind exact original source. Tools declares at most 32 unique bounded
+`internal/kmx/agentfile` accepts Copilot YAML-frontmatter/free-form prompts,
+minimal Markdown agents and existing complete charters as described in
+[agent-file.md](docs/agent-file.md), offline. Model/Tools and structured final
+Examples are optional; frontmatter and control sections are excluded from preview
+instructions. Existing complete charter instructions stay unchanged and revisions
+bind exact original source. Unknown frontmatter remains visible and byte-preserved.
+Missing Copilot tools runs tool-free without refusal; canvas/CLI shows "Copilot
+gives this agent all tools; these tests run without tools. Add tools to choose
+which." and canvas offers Add tools. Never invent mappings for host tool sets,
+wildcards, model lists or imported MCP configurations. Tools declares at most 32 unique bounded
 names; parsing grants no schema, execution or endpoint/credential authority. Separate explicit `ParseSquad` accepts
 qualified Squad 1.1.0 native starters/enrichment with an approved cast mapping,
 original bytes and source spans. It returns a distinct `SquadCharter`, not a
-runnable `Agent`; ordinary file CLI/v1 MCP remain canonical-only. Explicit native
+runnable `Agent`; ordinary file CLI/v1 MCP never infer the native profile. Explicit native
 v2 preview projects a revalidated charter into the shared runner in memory only.
 Never auto-detect this profile, invent missing native identity fields or treat
 its release selector as cast-origin/registration proof. Reuse runtime assertion semantics;
 refuse tools and unsupported declarations. Parse/Load grant no execution,
 trusted route, source-write, Squad registration or native suite-loader authority.
-`Inspect` shares the scanner for read-only minimal titled-agent display while
-`Parse` remains the execution validator; inspection grants no Run/Test acceptance.
+`Inspect` shares parsing for display; Parse remains the Run/Test validator.
+Minimal and frontmatter files use the same validated preview path, not an importer.
 Keep payload-bearing parsed values out of default logs/results. Explicit offline
 `run-profile export FILE` instead emits content-bearing deterministic JSON on
 stdout, preserving authored models and ordered examples/hashes with every target
@@ -724,7 +763,8 @@ only explicit `JudgeEndpoint` overrides it. Journals keep content in cleartext,
   identity-bound, directory-flushed and rediscovers partial known families after
   interruption without touching unrelated entries. Journals stay under
   `config.StateDir` on every OS (`%LOCALAPPDATA%` on Windows). Native package
-  tests qualify local-NTFS storage, not the guarded Windows CLI.
+  and CLI tests qualify local-NTFS storage only within the narrow Windows
+  day-zero path.
 Completed non-pass `test FILE` outcomes additionally retain bounded diagnostics
 in the existing `eval-failures` store. A file subject is the checked physical
 parent identity plus normalized leaf name; records keep exact source revision,
@@ -764,6 +804,35 @@ traces cannot pass. Inspection replays with zero model/executor/judge calls,
 without bindings or credentials, and has no verdicts. Preview
 and replay never produce suite evidence, receipts, publication or Deploy
 authority.
+
+## Native Windows boundary
+
+Native Windows on `main` is unreleased and operation-specific. Permit only inert
+version/help/completion, package-free fake `run FILE` / `test FILE`, and offline
+`test explain ... --file FILE`; hidden `eval explain` may remain only as the
+deprecated compatibility spelling. File Run/Test may use inline `--prompt`, but
+provider, endpoint, tool-binding, prompt-file and GitHub-summary modes stay
+deferred. These previews create no suite evidence, publication or Deploy authority.
+
+Every other native Windows route refuses before configuration, state,
+subprocess, network, cluster or ordinary output effects: Docker/kind/Kubernetes,
+OCI/workspace/suite operations, model/provider/network routes, native MCP/Copilot,
+tool bindings, AgentKit/Buildx, cluster records/preferences, managed tools,
+publication and deployment. Never add WSL or shell fallback. WSL remains the
+explicit route for broader workflows and the existing WSL Copilot plugin.
+
+Hosted Windows amd64 must build/vet all packages and execute both the checkout
+CLI and exact staged release `.exe` through version/help/completion plus the
+package-free fake Run/failing Test/offline Explain journey with no skips. Windows
+arm64 is cross-built, vetted, metadata-checked and checksummed only; make no
+native-execution claim. Stable v0.8.1 and `@latest` have no Windows `.exe`.
+`install.sh`, Homebrew and generic Go `@latest` remain Unix/WSL routes where
+applicable; no Winget/package-manager claim. A future containing release uses
+exact `kmx-windows-{amd64,arm64}.exe` assets and signs their checksum manifest
+with Sigstore, not the executables with Authenticode. Current artifacts may be
+unsigned. Record clean-machine `Get-AuthenticodeSignature`, Zone.Identifier and
+SmartScreen results; never advise Unblock-File, disabled protections, execution-
+policy changes, Developer Mode or policy bypass. A policy block is a blocker.
 
 ## Offline multi-member workspace boundary
 

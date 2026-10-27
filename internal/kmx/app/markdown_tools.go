@@ -90,7 +90,7 @@ func mdToolPaths(source string) (root, current string, err error) {
 	}
 	root = filepath.Join(root, "tools")
 	if source != "" {
-		source, err = filepath.Abs(source)
+		source, err = canonicalMDSource(source)
 		if err != nil {
 			return "", "", err
 		}
@@ -99,6 +99,16 @@ func mdToolPaths(source string) (root, current string, err error) {
 	return
 }
 func readCurrentToolGrant(source string) (*MarkdownToolGrant, string, error) {
+	var err error
+	if source != "" {
+		source, err = canonicalMDSource(source)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, "", nil
+		}
+		if err != nil {
+			return nil, "", err
+		}
+	}
 	_, path, err := mdToolPaths(source)
 	if err != nil {
 		return nil, "", err
@@ -421,6 +431,10 @@ func attachApprovedTools(a *MarkdownAgent) error {
 		return nil
 	}
 	if g.AgentDigest != a.Revision {
+		if len(a.Tools) == 0 && len(a.CLITools) == 0 {
+			a.Grant, a.BindingDigest = nil, ""
+			return nil
+		}
 		return errors.New("tool grant belongs to a different definition; suggest/review tools for this revision")
 	}
 	for _, name := range a.Tools {

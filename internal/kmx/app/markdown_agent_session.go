@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -47,6 +48,7 @@ type MarkdownTestResult struct {
 	Cases         []MarkdownCaseResult `json:"cases"`
 }
 type MarkdownSession struct {
+	stateMu             sync.RWMutex
 	InitialTest         bool
 	Out, Err            io.Writer
 	Provider, Model     string
@@ -59,6 +61,17 @@ type MarkdownSession struct {
 	NewSession          bool
 	SessionLabel        string
 	conversationDisplay string // UI-owned identity; executor may be busy in a worker
+}
+
+func (s *MarkdownSession) executionState() (markdownExecutor, string) {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.executor, s.ownedManaged
+}
+func (s *MarkdownSession) setExecutionState(executor markdownExecutor, owned string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.executor, s.ownedManaged = executor, owned
 }
 
 func NewMarkdownSession(out, err io.Writer) *MarkdownSession {
@@ -95,8 +108,7 @@ func (s *MarkdownSession) finishInstance(cause error) {
 		if err != nil {
 			fmt.Fprintln(s.Err, "Could not stop managed agent:", err)
 		}
-		s.ownedManaged = ""
-		s.executor = &markdownCopilot{}
+		s.setExecutionState(&markdownCopilot{}, "")
 	}
 	if s.instance != nil {
 		if err := s.instance.finish(cause); err != nil {
@@ -119,10 +131,11 @@ func (s *MarkdownSession) StartAgent(ctx context.Context, a *MarkdownAgent) erro
 			return err
 		}
 		s.executor.Close()
-		s.executor = &attachedAgentExecutor{record: record}
+		owned := ""
 		if !alreadyRunning {
-			s.ownedManaged = record.ID
+			owned = record.ID
 		}
+		s.setExecutionState(&attachedAgentExecutor{record: record}, owned)
 		if err := s.executor.(*attachedAgentExecutor).selectSession(ctx, s.SelectedSession, s.NewSession, s.SessionLabel); err != nil {
 			s.finishInstance(err)
 			return err
@@ -226,6 +239,9 @@ func (s *MarkdownSession) Run(ctx context.Context, a *MarkdownAgent, input strin
 func (s *MarkdownSession) Evaluate(ctx context.Context, a *MarkdownAgent, selected string, emit func(MarkdownCaseResult)) (result MarkdownTestResult, err error) {
 	cases := a.Examples
 	grant, binding, grantErr := readCurrentToolGrant(a.Path)
+	if grant != nil && grant.AgentDigest != a.Revision && len(a.Tools) == 0 && len(a.CLITools) == 0 {
+		grant, binding, grantErr = nil, "", nil
+	}
 	if grantErr != nil {
 		return result, grantErr
 	}
@@ -235,6 +251,17 @@ func (s *MarkdownSession) Evaluate(ctx context.Context, a *MarkdownAgent, select
 		}
 		copy := *a
 		copy.Tools = append([]string{}, grant.Tools...)
+		copy.Mocks = make(map[string][]MarkdownMock, len(a.Mocks))
+		for id, mocks := range a.Mocks {
+			for _, mock := range mocks {
+				for _, tool := range copy.Tools {
+					if mock.Name == tool {
+						copy.Mocks[id] = append(copy.Mocks[id], mock)
+						break
+					}
+				}
+			}
+		}
 		a = &copy
 		for _, c := range cases {
 			if err := validateMarkdownMocks(a.Tools, a.Mocks[c.ID]); err != nil {
@@ -322,6 +349,10 @@ func (s *MarkdownSession) Evaluate(ctx context.Context, a *MarkdownAgent, select
 		result.Cases = append(result.Cases, row)
 		if emit != nil {
 			emit(row)
+		}
+		if answer.MockError != "" {
+			result.Status = "failed"
+			return result, ErrMarkdownTestsFailed
 		}
 	}
 	if err = ctx.Err(); err != nil {

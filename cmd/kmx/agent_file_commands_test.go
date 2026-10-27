@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,11 @@ func (f *cliPreviewFake) Run(ctx context.Context, r agentpreview.Request) (agent
 	f.deadline, _ = ctx.Deadline()
 	f.calls++
 	f.request = r
+	if r.BeforeExecute != nil && f.cause == nil {
+		if err := r.BeforeExecute(); err != nil {
+			return agentpreview.Outcome{State: agentpreview.Failed}, errors.Join(agentpreview.ErrDiagnosticsFailed, err)
+		}
+	}
 	complete := func(id string) agentpreview.Completion {
 		return agentpreview.Completion{State: agentpreview.Complete, ID: id, FileRevision: r.Agent.Revision, Provider: r.Route.Provider, Model: r.Route.Model, Answer: "PRIVATE ANSWER"}
 	}
@@ -79,7 +85,7 @@ func TestFileCommandsAgainstRunnerInterface(t *testing.T) {
 			deps, loads := testDependencies(&out, &diag)
 			f := &cliPreviewFake{verdict: runtime.EvaluationPass}
 			deps.fileRunner = f
-			args := []string{op, cliPreviewFile(t), "--case", "greeting", "-o", "json"}
+			args := []string{op, cliPreviewFile(t), "--case", "greeting", "-o", "json", "--no-content"}
 			if op == "run" {
 				args = append(args, "--prompt", "ad-hoc")
 			}
@@ -124,7 +130,7 @@ func TestFileCommandsCopilotRoute(t *testing.T) {
 				deps.fileRunner = runner
 				args := []string{operation, path, "--provider", "copilot", "-o", "json"}
 				if endpoint != "" {
-					args = append(args, "--endpoint", endpoint)
+					args = append(args, "--provider-url", endpoint)
 				}
 				err = execute(args, deps)
 				if endpoint == "https://private.invalid" {
@@ -165,7 +171,7 @@ func TestFileCommandsCopilotFailures(t *testing.T) {
 				if err == nil {
 					t.Fatal("authentication failure succeeded")
 				}
-				if text := out.String() + diag.String() + err.Error(); !strings.Contains(text, "copilot_auth_required") || strings.Contains(text, "PRIVATE") {
+				if text := out.String() + diag.String() + err.Error(); !strings.Contains(text, "gh auth login") || strings.Contains(text, "PRIVATE") {
 					t.Fatalf("unsafe or unclassified error: %s", text)
 				}
 				if output == "json" {
@@ -188,11 +194,11 @@ func TestFileCommandExitCodes(t *testing.T) {
 		code    string
 	}{
 		{runtime.EvaluationPass, nil, 0, "checks_passed"},
-		{runtime.EvaluationFail, nil, 2, "assertion_failed"},
+		{runtime.EvaluationFail, nil, 1, "assertion_failed"},
 		{runtime.EvaluationUnknown, nil, 2, "judge_unknown"},
-		{runtime.EvaluationPass, agentpreview.ErrJournalFailed, 1, "journal_failed"},
+		{runtime.EvaluationPass, agentpreview.ErrJournalFailed, 2, "journal_failed"},
 		{runtime.EvaluationPass, context.Canceled, 130, "cancelled"},
-		{runtime.EvaluationPass, context.DeadlineExceeded, 1, "deadline_exceeded"},
+		{runtime.EvaluationPass, context.DeadlineExceeded, 2, "deadline_exceeded"},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			var out, diag bytes.Buffer
@@ -209,6 +215,197 @@ func TestFileCommandExitCodes(t *testing.T) {
 		})
 	}
 }
+
+func TestFileCommandGitHubSummaryPreservesExitAndReport(t *testing.T) {
+	t.Setenv("KMX_HOME", privateCommandHome(t))
+	for _, tc := range []struct {
+		name    string
+		verdict runtime.EvaluationVerdict
+		cause   error
+		exit    int
+		state   string
+		code    string
+	}{
+		{"pass", runtime.EvaluationPass, nil, 0, "complete", "checks_passed"},
+		{"fail", runtime.EvaluationFail, nil, 1, "complete", "assertion_failed"},
+		{"unknown", runtime.EvaluationUnknown, nil, 2, "complete", "judge_unknown"},
+		{"journal", runtime.EvaluationPass, agentpreview.ErrJournalFailed, 2, "error", "journal_failed"},
+		{"cancelled", runtime.EvaluationPass, context.Canceled, 130, "cancelled", "cancelled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			summary := filepath.Join(t.TempDir(), "step-summary.md")
+			if err := os.WriteFile(summary, []byte("# Existing\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("GITHUB_STEP_SUMMARY", summary)
+			var out, diag bytes.Buffer
+			deps, loads := testDependencies(&out, &diag)
+			deps.fileRunner = &cliPreviewFake{verdict: tc.verdict, cause: tc.cause}
+			err := execute([]string{"test", cliPreviewFile(t), "-o", "json", "--github-summary"}, deps)
+			actual := 0
+			if err != nil {
+				actual = exitCode(err)
+			}
+			var result app.FilePreviewResult
+			if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil {
+				t.Fatal(decodeErr)
+			}
+			markdown, readErr := os.ReadFile(summary)
+			if readErr != nil || actual != tc.exit || *loads != 0 || result.State != tc.state || result.ReasonCode != tc.code || !bytes.HasPrefix(markdown, []byte("# Existing\n")) {
+				t.Fatalf("exit=%d result=%+v config=%d summary=%q read=%v err=%v", actual, result, *loads, markdown, readErr, err)
+			}
+			for _, want := range []string{"## kmx test:", result.File.Revision, "fake/fake", "### Tests", "### Checks", "Local preview report only"} {
+				if !strings.Contains(string(markdown), want) {
+					t.Fatalf("summary missing %q: %s", want, markdown)
+				}
+			}
+			for _, private := range []string{"PRIVATE", result.File.Path, "eval-failures", "local-preview"} {
+				if strings.Contains(string(markdown), private) {
+					t.Fatalf("summary leaked %q: %s", private, markdown)
+				}
+			}
+			if !strings.Contains(out.String(), `"durationMs":`) {
+				t.Fatalf("JSON report has no additive timing: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestFileCommandGitHubSummaryRefusesBeforeExecution(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		env  string
+	}{
+		{"missing environment", []string{"test", "FILE", "-o", "json", "--github-summary"}, ""},
+		{"relative environment", []string{"test", "FILE", "-o", "json", "--github-summary"}, "summary.md"},
+		{"requires json", []string{"test", "FILE", "--github-summary"}, filepath.Join(t.TempDir(), "unused.md")},
+		{"requires file", []string{"test", "--github-summary", "-o", "json"}, filepath.Join(t.TempDir(), "unused.md")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := cliPreviewFile(t)
+			args := append([]string(nil), tc.args...)
+			for i := range args {
+				if args[i] == "FILE" {
+					args[i] = file
+				}
+			}
+			t.Setenv("GITHUB_STEP_SUMMARY", tc.env)
+			var out, diag bytes.Buffer
+			deps, loads := testDependencies(&out, &diag)
+			runner := &cliPreviewFake{verdict: runtime.EvaluationPass}
+			deps.fileRunner = runner
+			if err := execute(args, deps); err == nil || runner.calls != 0 || *loads != 0 || out.Len() != 0 {
+				t.Fatalf("refusal crossed execution boundary: err=%v calls=%d config=%d stdout=%q", err, runner.calls, *loads, out.String())
+			}
+		})
+	}
+}
+
+func TestFileCommandGitHubSummaryIsNotWrittenAfterJSONOutputFailure(t *testing.T) {
+	summary := filepath.Join(t.TempDir(), "step-summary.md")
+	if err := os.WriteFile(summary, []byte("keep\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GITHUB_STEP_SUMMARY", summary)
+	var diag bytes.Buffer
+	deps, _ := testDependencies(&bytes.Buffer{}, &diag)
+	deps.stdout = previewBrokenWriter{}
+	deps.fileRunner = &cliPreviewFake{verdict: runtime.EvaluationPass}
+	err := execute([]string{"test", cliPreviewFile(t), "-o", "json", "--github-summary"}, deps)
+	got, readErr := os.ReadFile(summary)
+	if err == nil || exitCode(err) != 1 || readErr != nil || string(got) != "keep\n" {
+		t.Fatalf("output failure changed summary: err=%v read=%v summary=%q", err, readErr, got)
+	}
+}
+
+func TestFileCommandGitHubSummaryReportsPreExecutionRefusal(t *testing.T) {
+	file := cliPreviewFile(t)
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, bytes.ReplaceAll(raw, []byte("**Preferred:** fake"), []byte("**Preferred:** real-model")), 0600); err != nil {
+		t.Fatal(err)
+	}
+	summary := filepath.Join(t.TempDir(), "step-summary.md")
+	if err := os.WriteFile(summary, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GITHUB_STEP_SUMMARY", summary)
+	var out, diag bytes.Buffer
+	deps, _ := testDependencies(&out, &diag)
+	runner := &cliPreviewFake{verdict: runtime.EvaluationPass}
+	deps.fileRunner = runner
+	err = execute([]string{"test", file, "--provider", "compatible", "-o", "json", "--github-summary"}, deps)
+	markdown, readErr := os.ReadFile(summary)
+	if err == nil || exitCode(err) != 2 || runner.calls != 0 || readErr != nil || !strings.Contains(string(markdown), "model_unavailable") || strings.Contains(string(markdown), file) {
+		t.Fatalf("refusal report: err=%v calls=%d read=%v summary=%q", err, runner.calls, readErr, markdown)
+	}
+}
+
+func TestFileCommandGitHubSummaryReportsRedactedRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+		code  string
+	}{
+		{"unsafe tool content", agentpreview.ErrUnsafeToolContent, "unsafe_tool_content"},
+		{"credential content", agentpreview.ErrCredentialContent, "credential_content"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, summary bytes.Buffer
+			deps, _ := testDependencies(&out, &bytes.Buffer{})
+			runner := &cliPreviewFake{verdict: runtime.EvaluationPass, cause: tc.cause}
+			deps.fileRunner = runner
+			deps.openGitHubSummary = func() (io.WriteCloser, error) { return writeCloseBuffer{Buffer: &summary}, nil }
+			err := execute([]string{"test", cliPreviewFile(t), "-o", "json", "--github-summary"}, deps)
+			if err == nil || exitCode(err) != 2 || runner.calls != 1 || !strings.Contains(out.String(), `"reasonCode":"`+tc.code+`"`) || !strings.Contains(summary.String(), "`unavailable`") || !strings.Contains(summary.String(), tc.code) || strings.Contains(out.String()+summary.String(), "PRIVATE") {
+				t.Fatalf("redacted refusal: err=%v output=%s summary=%s", err, out.String(), summary.String())
+			}
+		})
+	}
+}
+
+type writeCloseBuffer struct{ *bytes.Buffer }
+
+func (writeCloseBuffer) Close() error { return nil }
+
+type brokenSummary struct {
+	writeErr error
+	closeErr error
+}
+
+func (b brokenSummary) Write(p []byte) (int, error) {
+	if b.writeErr != nil {
+		return 0, b.writeErr
+	}
+	return len(p), nil
+}
+func (b brokenSummary) Close() error { return b.closeErr }
+
+func TestFileCommandGitHubSummaryWriteAndCloseFailuresExitOneAfterExecution(t *testing.T) {
+	t.Setenv("KMX_HOME", privateCommandHome(t))
+	for _, tc := range []struct {
+		name string
+		sink brokenSummary
+	}{
+		{"write", brokenSummary{writeErr: errors.New("broken summary write")}},
+		{"close", brokenSummary{closeErr: errors.New("broken summary close")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, diag bytes.Buffer
+			deps, _ := testDependencies(&out, &diag)
+			runner := &cliPreviewFake{verdict: runtime.EvaluationFail}
+			deps.fileRunner = runner
+			deps.openGitHubSummary = func() (io.WriteCloser, error) { return tc.sink, nil }
+			err := execute([]string{"test", cliPreviewFile(t), "-o", "json", "--github-summary"}, deps)
+			if err == nil || exitCode(err) != 1 || runner.calls != 1 || !strings.Contains(out.String(), `"reasonCode":"assertion_failed"`) || !strings.Contains(err.Error(), "cannot write GitHub Actions summary") {
+				t.Fatalf("summary failure: err=%v exit=%d calls=%d stdout=%s", err, exitCode(err), runner.calls, out.String())
+			}
+		})
+	}
+}
 func TestFileCommandsRefuseMixedModesBeforeConfig(t *testing.T) {
 	for _, args := range [][]string{
 		{"run", "FILE", "--agent", "deployed", "--prompt", "x"},
@@ -221,6 +418,8 @@ func TestFileCommandsRefuseMixedModesBeforeConfig(t *testing.T) {
 		{"test", "FILE", "--case-timeout", "5m"},
 		{"test", "FILE", "--context", "kind-test"},
 		{"test", "FILE", "--container-engine", "docker"},
+		{"run", "FILE", "--github-summary"},
+		{"eval", "FILE", "--github-summary"},
 		{"test", "FILE", "--case", ""},
 		{"test", "FILE", "-o", "xml"},
 		{"eval", "FILE"},
@@ -314,7 +513,7 @@ func TestFilePreviewVerboseStderrOnly(t *testing.T) {
 				}
 				var out, diag bytes.Buffer
 				deps, loads := testDependencies(&out, &diag)
-				args := []string{op, path, "-o", "json"}
+				args := []string{op, path, "-o", "json", "--no-content"}
 				if verbose {
 					args = append(args, "--verbose")
 				}
@@ -426,7 +625,7 @@ func TestFileHelpIsCanonicalOnly(t *testing.T) {
 					}
 				}
 				if verb == "test" {
-					for _, disclosure := range []string{"eval-failures", "last 10 per resolved file subject", "test explain --file FILE", "deleting journals does not clear failure diagnostics"} {
+					for _, disclosure := range []string{"eval-failures", "last 10 per resolved file subject", "test explain --file FILE", "deleting journals does not clear failure diagnostics", "--github-summary", "GITHUB_STEP_SUMMARY"} {
 						if !strings.Contains(out.String(), disclosure) {
 							t.Errorf("test help omits file-failure disclosure %q", disclosure)
 						}

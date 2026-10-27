@@ -145,23 +145,51 @@ class AppShardWorkflowTests(unittest.TestCase):
         self.assertIn("python3 scripts/ci/app-tests.py --shard", body)
         self.assertIn("--shards 4", body)
         self.assertEqual(self.jobs["hygiene"]["needs"],
-                         ["hygiene-checks", "app-tests", "windows-day-zero-foundation"])
+                         ["hygiene-checks", "app-tests", "windows-amd64-native", "windows-arm64-cross"])
         self.assertEqual(self.jobs["hygiene"]["if"], "always()")
-        windows = self.jobs["windows-day-zero-foundation"]
+        windows = self.jobs["windows-amd64-native"]
         windows_body = "\n".join(step.get("run", "") for step in windows["steps"])
-        self.assertIn("./scripts/ci/windows-tests ./internal/kmx/fileaccess", windows_body)
+        self.assertEqual(windows["runs-on"], "windows-latest")
+        self.assertIn("ProcessArchitecture", windows_body)
+        self.assertIn("X64", windows_body)
+        self.assertIn("$ErrorActionPreference = 'Stop'", windows_body)
+        self.assertIn("./scripts/ci/windows-tests", windows_body)
+        self.assertIn("./internal/kmx/fileaccess", windows_body)
+        self.assertIn("TestWindowsPrivateCreationUsesExplicitProtectedDescriptor", windows_body)
         self.assertIn("TestWindowsStateAccessUsesLocalAppDataAndSeparatesCreation", windows_body)
         self.assertIn("./internal/kmx/config", windows_body)
         self.assertIn("./internal/kmx/localpreview", windows_body)
         self.assertIn("./internal/kmx/app", windows_body)
-        self.assertIn("config-arm64.test.exe", windows_body)
-        self.assertIn("localpreview-arm64.test.exe", windows_body)
-        self.assertIn("app-arm64.test.exe", windows_body)
-        self.assertIn("go vet ./internal/kmx/fileaccess ./internal/kmx/config ./internal/kmx/localpreview ./internal/kmx/app", windows_body)
+        self.assertIn("go build ./...", windows_body)
+        self.assertIn("go vet ./...", windows_body)
+        self.assertIn("GOARCH: amd64", yaml.safe_dump(windows))
+        self.assertIn("go build -trimpath -o \"$env:RUNNER_TEMP\\kmx.exe\" ./cmd/kmx", windows_body)
+        self.assertIn('$metadataLines -join "`n"', windows_body)
+        self.assertIn("windows-cli-day-zero.ps1", windows_body)
+        self.assertNotIn("kmx-windows-tests.exe\" powershell", windows_body)
+        self.assertIn("TestGuardedWindowsDeferredOperationsRefuseBeforeEffects", windows_body)
+        self.assertIn("TestGuardedWindowsFileCommandsRefuseEveryExternalRouteBeforeEffects", windows_body)
+        self.assertIn("TestGuardedWindowsExplainRequiresExplicitFileAndAllowsFileScopedClear", windows_body)
+        self.assertIn("TestGuardedWindowsVersionHelpAndCompletionRemainInert", windows_body)
+        self.assertIn("TestGuardedWindowsSupportedCommandFlagsAreExhaustivelyAllowlisted", windows_body)
         self.assertIn("$previewTests", windows_body)
         self.assertIn("$appTests", windows_body)
         self.assertIn("--- SKIP:", windows_body)
-        self.assertEqual(windows_body.count("did not pass"), 2)
+        self.assertEqual(windows_body.count("did not pass"), 5)
+        cross = self.jobs["windows-arm64-cross"]
+        cross_body = "\n".join(step.get("run", "") for step in cross["steps"])
+        self.assertEqual(cross["runs-on"], "windows-latest")
+        self.assertEqual(cross["name"], "Windows arm64 cross-build metadata only (not native execution)")
+        self.assertIn("GOARCH: arm64", yaml.safe_dump(cross))
+        self.assertIn("go build ./...", cross_body)
+        self.assertIn("go vet ./...", cross_body)
+        self.assertIn("$ErrorActionPreference = 'Stop'", cross_body)
+        for binary in ("kmx-windows-arm64.exe", "cmd-kmx-arm64.test.exe", "fileaccess-arm64.test.exe",
+                       "config-arm64.test.exe", "localpreview-arm64.test.exe", "app-arm64.test.exe",
+                       "windows-tests-arm64.test.exe"):
+            self.assertIn(binary, cross_body)
+        self.assertNotIn("windows-cli-day-zero.ps1", cross_body)
+        self.assertNotIn("& $path", cross_body)
 
     def test_hygiene_checks_run_independently_without_skip_paths(self):
         worker = self.jobs["hygiene-checks"]
@@ -170,6 +198,32 @@ class AppShardWorkflowTests(unittest.TestCase):
         self.assertNotIn("if", worker)
         self.assertEqual(len(self.jobs["hygiene"]["steps"]), 1)
 
+    def test_windows_day_zero_helper_is_direct_offline_and_fail_closed(self):
+        helper = (ROOT / "scripts/ci/windows-cli-day-zero.ps1").read_text()
+        for contract in (
+                "[Parameter(Mandatory = $true)][string]$Binary",
+                "[Parameter(Mandatory = $true)][string]$Fixture",
+                "[string]$ExpectedVersionLine",
+                "[Diagnostics.ProcessStartInfo]::new()",
+                "$start.FileName = $exe",
+                "'KMX_HOME'", "'KMX_TOOLCHAIN'", "'off'", "'PATH'",
+                "'COPILOT_GITHUB_TOKEN'", "'AZURE_OPENAI_API_KEY'",
+                "'HTTP_PROXY'", "'HTTPS_PROXY'", "'ALL_PROXY'", "'NO_PROXY'",
+                "[Net.WebRequest]::DefaultWebProxy",
+                "$savedDefaultProxy",
+                "ConvertFrom-Json -Depth 20", "-ExpectedExitCodes @(1)",
+                "@('completion', 'bash')", "__start_kmx()",
+                "retention.status -ceq 'retained'", "Assert-NoCanary",
+                "Assert-SnapshotEqual", "'historical'", "'create'",
+                "deferred state", "stateHome"):
+            self.assertIn(contract, helper)
+        self.assertIn("[char]0x96EA", helper)
+        self.assertIn("kmx day zero $nonAscii", helper)
+        self.assertNotIn("kmx-windows-tests.exe", helper)
+        for forbidden in ("Set-ExecutionPolicy", "Unblock-File", "-ExecutionPolicy Bypass",
+                          "wsl", "docker", "kubectl", "ollama pull"):
+            self.assertNotIn(forbidden.lower(), helper.lower())
+
     def test_final_gate_rejects_every_non_success_and_wrong_dependency_set(self):
         steps = self.jobs["hygiene"]["steps"]
         gate = steps[-1]
@@ -177,7 +231,8 @@ class AppShardWorkflowTests(unittest.TestCase):
         self.assertEqual(gate.get("if"), "always()")
         self.assertEqual(gate["env"]["SHARDS"], "${{ toJSON(needs) }}")
         success = {"hygiene-checks": {"result": "success"}, "app-tests": {"result": "success"},
-                   "windows-day-zero-foundation": {"result": "success"}}
+                   "windows-amd64-native": {"result": "success"},
+                   "windows-arm64-cross": {"result": "success"}}
         cases = [(success, True), ({}, False),
                  ({**success, "unexpected": {"result": "success"}}, False)]
         for dependency in success:

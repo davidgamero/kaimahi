@@ -180,10 +180,79 @@ class ReleaseTests(unittest.TestCase):
         for text in ("", "0" * 64 + "  ../engine\n", "0" * 64 + "  kmx-linux-amd64\n"):
             with self.subTest(text=text), self.assertRaisesRegex(ValueError, "inventory"):
                 release.read_inventory(text)
-        text = "".join(self.digest + "  kmx-" + p.replace("/", "-") + "\n" for p in release.TARGETS)
-        self.assertEqual(len(release.read_inventory(text)), 4)
+        text = "".join(self.digest + "  " + release.asset_name(p) + "\n"
+                       for p in release.CORE_TARGETS)
+        self.assertEqual(len(release.read_inventory(text)), 6)
+        self.assertEqual(set(release.PLUGIN_TARGETS), {
+            "linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64"})
+        self.assertEqual({release.asset_name(p) for p in release.CORE_TARGETS if p.startswith("windows/")},
+                         {"kmx-windows-amd64.exe", "kmx-windows-arm64.exe"})
+        legacy = "".join(self.digest + "  " + release.asset_name(p) + "\n"
+                         for p in release.PLUGIN_TARGETS)
+        with self.assertRaisesRegex(ValueError, "inventory"):
+            release.read_inventory(legacy)
         with self.assertRaisesRegex(ValueError, "inventory"):
             release.read_inventory(text + text.splitlines()[0] + "\n")
+
+    def test_build_all_validates_six_engines_but_archives_only_four_unix_targets(self):
+        assets = self.base / "assets"
+        assets.mkdir()
+        rows = []
+        for target in release.CORE_TARGETS:
+            binary = assets / release.asset_name(target)
+            binary.write_bytes((target + " engine").encode())
+            rows.append(hashlib.sha256(binary.read_bytes()).hexdigest() + "  " + binary.name + "\n")
+        (assets / "checksums.txt").write_text("".join(rows))
+        metadata = lambda target: json.dumps({
+            "Path": "github.com/kaimahi-agents/kaimahi/cmd/kmx",
+            "Settings": [
+                {"Key": "GOOS", "Value": target.split("/")[0]},
+                {"Key": "GOARCH", "Value": target.split("/")[1]},
+                {"Key": "vcs.revision", "Value": self.revision},
+                {"Key": "vcs.modified", "Value": "false"},
+            ],
+        }).encode()
+        outputs = [mock.Mock(stdout=metadata(target)) for target in release.CORE_TARGETS]
+        archived = []
+        def fake_archive(**kwargs):
+            archived.append(kwargs["target"])
+            kwargs["output"].write_bytes(kwargs["target"].encode())
+            return kwargs["output"]
+        with mock.patch.object(release.subprocess, "run", side_effect=outputs) as inspect, \
+             mock.patch.object(release, "archive", side_effect=fake_archive):
+            release.build_all(assets, "v0.1.0", self.revision)
+        self.assertEqual(inspect.call_count, 6)
+        self.assertEqual(archived, list(release.PLUGIN_TARGETS))
+        self.assertEqual(len((assets / "plugin-checksums.txt").read_text().splitlines()), 4)
+
+    def test_build_all_refuses_tampered_windows_engine_before_archiving(self):
+        assets = self.base / "tampered-assets"
+        assets.mkdir()
+        rows = []
+        for target in release.CORE_TARGETS:
+            binary = assets / release.asset_name(target)
+            binary.write_bytes(target.encode())
+            digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+            if target == "windows/arm64":
+                digest = "0" * 64
+            rows.append(digest + "  " + binary.name + "\n")
+        (assets / "checksums.txt").write_text("".join(rows))
+        outputs = []
+        for target in release.CORE_TARGETS:
+            outputs.append(mock.Mock(stdout=json.dumps({
+                "Path": "github.com/kaimahi-agents/kaimahi/cmd/kmx",
+                "Settings": [
+                    {"Key": "GOOS", "Value": target.split("/")[0]},
+                    {"Key": "GOARCH", "Value": target.split("/")[1]},
+                    {"Key": "vcs.revision", "Value": self.revision},
+                    {"Key": "vcs.modified", "Value": "false"},
+                ],
+            }).encode()))
+        with mock.patch.object(release.subprocess, "run", side_effect=outputs), \
+             mock.patch.object(release, "archive") as archive:
+            with self.assertRaisesRegex(ValueError, "digest"):
+                release.build_all(assets, "v0.1.0", self.revision)
+        archive.assert_not_called()
 
 
 if __name__ == "__main__":

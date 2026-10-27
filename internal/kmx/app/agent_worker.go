@@ -19,6 +19,11 @@ type agentWorkerConfig struct {
 	Record     AgentInstance `json:"record"`
 	RecordPath string        `json:"recordPath"`
 }
+
+// A decoded 64-KiB prompt/answer can expand sixfold under JSON escaping.
+// Include bounded instance/session metadata without changing decoded limits.
+const agentWireLimit = 1 << 20
+
 type agentWorkerRequest struct {
 	BindingDigest string `json:"bindingDigest,omitempty"`
 	NewVersion    string `json:"newVersion,omitempty"`
@@ -158,7 +163,7 @@ func RunAgentWorker() error {
 			defer conn.Close()
 			_ = conn.SetDeadline(time.Now().Add(6 * time.Minute))
 			var request agentWorkerRequest
-			if json.NewDecoder(io.LimitReader(conn, 128<<10)).Decode(&request) != nil {
+			if json.NewDecoder(io.LimitReader(conn, agentWireLimit)).Decode(&request) != nil {
 				_ = json.NewEncoder(conn).Encode(agentWorkerReply{Error: "invalid agent request"})
 				return
 			}
@@ -256,7 +261,7 @@ func agentSocketCall(ctx context.Context, socket string, request agentWorkerRequ
 		return agentWorkerReply{}, err
 	}
 	var reply agentWorkerReply
-	if err = json.NewDecoder(io.LimitReader(conn, 128<<10)).Decode(&reply); err != nil {
+	if err = json.NewDecoder(io.LimitReader(conn, agentWireLimit)).Decode(&reply); err != nil {
 		if ctx.Err() != nil {
 			return reply, ctx.Err()
 		}
@@ -264,6 +269,9 @@ func agentSocketCall(ctx context.Context, socket string, request agentWorkerRequ
 	}
 	if reply.Error != "" {
 		return reply, errors.New(reply.Error)
+	}
+	if len(reply.Answer) > 64<<10 {
+		return agentWorkerReply{}, errors.New("agent answer exceeds 64 KiB")
 	}
 	return reply, nil
 }

@@ -39,3 +39,17 @@
 - Approved per-agent SDK handlers, binding-aware version updates and mocked test
   identity, plus TUI suggestion/review actions and a PR-monitor example. Scope
   approval is separate from suggestion, and local tools do not authorize Deploy.
+
+### Fixed
+
+- Integrate current canonical Copilot-file Run/Test and native Windows CLI without
+  intercepting their supported routes. Persistent local agents remain --type md.
+- Enforce complete CLI argument regex matches; canonicalize grant/source parent
+  paths, ignore obsolete grants for changed tool-free definitions, and filter
+  mocked tests to the approved tool inventory.
+- Move activation probes outside the shared manager lock with post-probe identity
+  checks. Separate UI attachment state and cached execution from editable paired
+  tests; expand bounded RPC envelopes for escaped 64-KiB prompts/answers.
+- Preserve YAML for ordinary help-valued operands, accept leading-blank charters,
+  fix instance directory filtering/system symlink ancestors, isolate tests from
+  ambient state and correct stale documentation/discovery labels.

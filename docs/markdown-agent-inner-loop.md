@@ -476,8 +476,9 @@ This supersedes the catalog-only default described in the original design below.
 
 Same-file explicit CLI bindings and compatibility probes are now implemented;
 see [the concrete format and activation flow](copilot-inference.md#same-file-cli-tools-and-compatibility-checks).
-These are user-authored reviewed commands; inference suggestions remain limited
-to the maintained GitHub read templates and cannot invent executable bindings.
+Inference can propose scoped CLI declarations; acceptance edits source only and
+execution requires explicit approval. Only `--repo` limits suggestions to the
+maintained GitHub read templates. See `tools approve FILE --apply` or console approval.
 
 **First slice implemented.** Suggest/review supports the two fixed GitHub PR read
 templates, private definition-bound overlays, manager/session binding identity and

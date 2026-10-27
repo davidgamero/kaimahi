@@ -23,12 +23,12 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
-    # kmx drives a Linux container runtime, so the machine running it is a
-    # Linux host or a Mac running one in a VM (docs/releases.md#install) —
-    # the same four platforms as before, no windows/amd64.
+    # Keep the existing four Unix targets and add Windows amd64/arm64. The
+    # release workflow executes amd64 natively and treats arm64 as cross-only.
     #
     # Remove checkout paths from compiled binaries. The release workflow
     # separately checks the embedded VCS revision and clean-tree provenance.
@@ -40,7 +40,8 @@ builds:
 archives:
   # No archive: the release ships bare binaries, matching install.sh,
   # docs/releases.md's "by hand" instructions and the sha256sum-based
-  # checksum verification they document.
+  # checksum verification they document. GoReleaser appends .exe to the two
+  # Windows asset names; Unix asset names remain unchanged.
   - formats: ["binary"]
     name_template: "kmx-{{ .Os }}-{{ .Arch }}"
 
@@ -52,7 +53,9 @@ release:
   prerelease: auto
 
 # Rendered locally into dist/homebrew/Formula/kmx.rb and never pushed from
-# here (skip_upload: true). A maintainer downloads that exact asset and opens
+# here (skip_upload: true). GoReleaser renders Homebrew from Darwin/Linux
+# artifacts only; the release workflow additionally rejects Windows URLs in
+# the formula. A maintainer downloads that exact asset and opens
 # a reviewed pull request against kaimahi-agents/homebrew-tap — see
 # docs/releases.md#cutting-a-release, step 5.
 brews:

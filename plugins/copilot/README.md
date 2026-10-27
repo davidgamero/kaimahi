@@ -6,11 +6,13 @@ skills, a canvas and MCP configuration, not an engine or a fixed working folder.
 
 ## Install on macOS
 
-With Copilot installed, run these two commands in a Mac terminal:
+With Copilot installed, run these three commands in a Mac terminal to install
+the paired v0.9.0-rc.4 prerelease:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/kaimahi-agents/kaimahi/v0.9.0-rc.3/install.sh | sudo sh -s -- --version=v0.9.0-rc.3 --bin-dir=/usr/local/bin
-copilot plugin install kaimahi-agents/kaimahi:plugins/copilot
+curl -fsSL https://raw.githubusercontent.com/kaimahi-agents/kaimahi/v0.9.0-rc.4/install.sh | sudo sh -s -- --version=v0.9.0-rc.4 --bin-dir=/usr/local/bin
+copilot plugin marketplace add kaimahi-agents/kaimahi
+copilot plugin install kmx-agent-builder-path@kmx-plugins
 ```
 
 The first command selects `kmx-darwin-arm64` on Apple Silicon and
@@ -18,7 +20,8 @@ The first command selects `kmx-darwin-arm64` on Apple Silicon and
 and installs it at `/usr/local/bin/kmx`. It uses the same binary installer as WSL,
 not a plugin setup script. It does not verify the separate signature bundle.
 The Homebrew tap tracks final releases, not release candidates; use this binary
-for rc.3. Homebrew is the install path for final v0.9.0.
+for rc.4. Use Homebrew for a final release only when its formula matches the
+version named by the marketplace catalog.
 
 The plugin starts `kmx mcp` from PATH; `/usr/local/bin` must be on Copilot's PATH.
 No root, model or binary is configured inside the plugin. The MCP schema has no
@@ -27,11 +30,17 @@ source plugin is named `kmx-agent-builder-path`; WSL and legacy native bundles
 keep `kmx-agent-builder`. Use only one variant per host profile: their MCP server
 and skill names are still shared. An existing direct install under the old PATH
 name must be uninstalled as `kmx-agent-builder` before installing this variant.
-Direct repository installs currently work but Copilot warns that they are
-deprecated; a marketplace install will come later.
+The catalog pins source to the binary release's full commit SHA, not main.
+A plugin update never upgrades kmx. See [direct-install migration and paired upgrades](../../docs/copilot-app.md#existing-direct-installs-and-upgrades); keep native bundle setup separate.
 
-Ask Copilot to create an agent through kmx and open its canvas. Give it a full
-Mac path when the file is outside the current directory. Add or edit tests;
+Ask Copilot: `Create a kmx agent called Release notes that writes a short release
+note from a supplied pull request title, and open its canvas.` Give it a full
+Mac path when the file is outside the current directory. See the
+[launch table and CLI spellings](../../docs/copilot-app.md#launch-commands-and-phrases)
+for explicit create/open/run/test requests and saved-snapshot test additions.
+In the interactive CLI, use `copilot --experimental` for native commands; without
+the extension, both the canvas opener and `/agent-view` are unavailable.
+Add or edit tests;
 Enter saves and runs them. Change the prompt and press Enter again to see the
 results change. The runtime model is picker override → authored model → current
 chat model (when available) → `gpt-5.6-terra`; existing `gh` sign-in supplies credentials without an install-time
@@ -52,18 +61,21 @@ The existing Python developer tools and legacy templates below are inert files
 in the source plugin, not additional extensions or installation steps. Node
 tests live separately under `plugins/tests/copilot`.
 
-The `macos-install` CI job installs the published rc.2 darwin binary, checks its
-SHA256 and exercises the public plugin install command. On PRs, it additionally
-installs the PR's local plugin to verify the new bytes before merge; on main it
-checks the public source's installed contents. It verifies cached assets and
-Create → Test pass → prompt-only Edit → Test fail → restore → Test pass with
-`fake`. **CI does not exercise a Copilot model or the Copilot app.** An
-authenticated app walk on a Mac is still needed before claiming that path works.
+The `macos-install` CI job first requires a published tag and binary asset set,
+then installs the catalog's darwin binary and checks its SHA256.
+Private-profile marketplace checks cover both variants, direct-registration
+replacement, refresh/update and installed bytes against the frozen commit.
+The existing direct-source check still verifies the PR's own cache bytes before
+merge (public source on main pushes), not the older marketplace payload. Its
+offline Create → Test pass → prompt-only Edit → Test fail → restore → Test pass
+loop uses the catalog binary with `fake`. **CI does not exercise a Copilot model
+or the Copilot app.** Both Windows/WSL and Dock-launched Mac marketplace canvas
+providers need actual host walks before claiming support.
 
 ## Legacy native bundles
 
 The remaining sections describe the separate root-bound native archive tooling,
-not the two-command repository install above. Native bundles are generated and
+not the three-command marketplace install above. Native bundles are generated and
 signed by the release workflow. The legacy builder uses
 [native-mcp.json](native-mcp.json); the repository plugin uses [mcp.json](mcp.json).
 Canvas actions use existing MCP operations, not a second runner.
@@ -117,7 +129,7 @@ The existing native bundle builder below still produces the legacy
 to its configured directory; the new unbound server needs neither file nor a
 folder confirmation. Plugin installation is replaced separately.
 
-The v0.9.0-rc.3 engine pinned above exposes exactly lowercase `create`, `edit`,
+The v0.9.0-rc.4 engine pinned above exposes exactly lowercase `create`, `edit`,
 `run`, `test` and `set_tool_state`; internal preview children retain the first four.
 Older rc.2 binaries expose only those first four. Canonical branches require
 `schemaVersion: 1` and an agent `path`; Create
@@ -143,7 +155,7 @@ uses existing runtime credentials and an exact listed
 `Model.Preferred`, with a fixed endpoint. This sends instructions/inputs and
 any judge answers/rubrics to Copilot. Startup does not sign in or access credentials.
 In v0.9.0-rc.2 native bundles, Copilot previews use a direct, unjournaled runner.
-v0.9.0-rc.3 journals Copilot previews, including bound-tool calls, on embedded Sessions
+v0.9.0-rc.3 and later journal Copilot previews, including bound-tool calls, on embedded Sessions
 under `<kmx state>/local-preview/journals`, using the cleartext-content retention
 policy above, with one fresh Session per agent turn and judge sample. The provider
 owns pre-journal credential/content checks and captures one invocation-local
@@ -204,19 +216,32 @@ The remaining path is not trimmed, split or shell-unquoted: keep spaces within
 filenames, omit surrounding quotes and avoid accidental trailing spaces.
 Nested agent and canonical Squad paths work too.
 
-The separate **kmx** skill still accepts `/kmx open PATH` and `/kmx help`.
-Unlike **kmx-canvas**, it uses a host-model turn. The distinct native name avoids
-selecting that skill's `/kmx` menu alias by mistake. The skill
-asks for one built-in `open_canvas` call with the installed provider and a stable
+The separate **kmx** skill uses a host-model turn. In interactive CLI 1.0.103,
+this PATH plugin exposes `/kmx-agent-builder-path:kmx open FULL_PATH` and
+`/kmx-agent-builder-path:kmx help`; the builder entry is
+`/kmx-agent-builder-path:kmx-agent-builder` followed by a task. Short `/kmx open`
+and `/kmx help` were unknown commands there. App menu aliases are host-specific:
+select the full installed entry rather than assuming a short alias.
+
+The skill asks for one built-in `open_canvas` call with the installed provider and a stable
 instance ID. The provider checks the agent resource before every open, including
 reopening an existing instance. Full paths distinguish same-named agents in
 different repositories. An unreadable resource does not close an already-running
 view. Opening does not edit, run or test the agent; the existing authoring
 controls and their checks remain unchanged. No folder confirmation is required.
 
-Without the built-in canvas opener, the skill uses the native opener's text
-fallback. The manual native command `/agent-view greeter.agent.md` also displays
-the projection as read-only text; canonical Squad paths work there too.
+When the extension is loaded but the host cannot open a canvas, the native
+opener can return a text fallback. `/agent-view FULL_PATH` also displays the
+projection as read-only text; canonical Squad paths work there too. Neither
+fallback exists when the extension itself is absent. Native commands must be
+submitted interactively: slash text passed to `copilot -p` is interpreted by the
+model instead. A headless CLI canvas acknowledgement/browser URL does not prove
+that the Copilot app rendered the view.
+
+Native open was checked in the Windows Copilot app with a main build before rc.4
+that includes the fix, not the released rc.4 pair or the Mac app. If the native
+command fails or shows nothing, try `Open the kmx canvas for FULL_PATH`. Historical release notes retain their original
+command spellings; use this host/version-specific guidance for current commands.
 
 The main view shows the **Prompt** and an ordered list of **Tests**. Open a test
 for **The agent gets**, **Passes if** and the actual **The agent answered** excerpt.
@@ -349,9 +374,11 @@ Edit → partial Test → full Test pass using the skill's canonical sample.
 They check root isolation, unchanged expectations, overwrite/stale/path refusals,
 protocol stdout and result privacy. This uses kmx's deterministic fake model,
 not a substitute MCP process or real-model qualification.
-Linux/macOS CI runs the real CLI loop. **Windows runs mechanical packaging
-checks only: main still blocks native CLI builds.** A generated Windows command
-is not a qualified Windows release or installed Copilot chat.
+Linux/macOS CI runs the real plugin CLI loop. Windows still runs mechanical
+**plugin** packaging checks only. The separately qualified native Windows core
+CLI is limited to package-free fake file Run/Test and offline Explain; it does
+not enable `kmx mcp`, this plugin or installed Copilot chat. Windows users keep
+the [WSL plugin](../copilot-wsl/README.md).
 
 ## Delivery gates
 
@@ -369,10 +396,12 @@ Go command path, GOOS/GOARCH and clean source revision without executing foreign
 binaries; native version stamping is checked by the existing release gate.
 Go omits ldflags under trimpath, so cross-platform version identity also relies
 on the reviewed release job and signed checksum inventory, not a fabricated
-metadata field. No Windows archive is published while native CLI is guarded.
+metadata field. No native Windows plugin archive is published; Windows `.exe`
+core assets in a containing release remain separate.
 
-`plugin-checksums.txt` and its Sigstore bundle are separate from the unchanged
-four-binary `checksums.txt` consumed by the installer/Homebrew. Both use the
+`plugin-checksums.txt` and its Sigstore bundle are separate from the core binary
+checksum inventory; they cover the four Unix-only plugin archives. New core release manifests contain four Unix binaries
+plus two Windows `.exe` assets; Homebrew remains Unix-only. Both use the
 existing keyless release workflow identity and OIDC issuer; checks performed
 by the same job are not independent publisher authentication. Dry runs sign and
 upload artifacts but publish no release. Archives have an exact file
@@ -442,8 +471,10 @@ unchanged assertion and structured results; tool-call success alone is not pass.
 Deny shell/direct writes and enable only the kmx server; reading packaged skill
 resources uses the host read tool. Record host version and denied attempts too.
 The qualified CLI warns that local-directory installation is deprecated but
-still works; this does not authorize creating/publishing a marketplace. A future host
-removing that route is a compatibility blocker, not a reason to bypass approval.
+still works. These configured native archives are separate from the source
+plugins in `kmx-plugins`; the catalog does not install a bundled native engine.
+A future host removing direct-directory installation remains a native-bundle
+compatibility blocker, not a reason to bypass approval.
 
 ## Native archive CI qualification
 

@@ -62,9 +62,10 @@ jobs:
           path: kmx-app-test.json
           retention-days: 3
 
-  windows-day-zero-foundation:
+  windows-amd64-native:
+    name: Windows amd64 native CLI and package qualification
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -75,15 +76,47 @@ jobs:
       - name: Build isolated user-owner test launcher
         shell: pwsh
         run: go build -trimpath -o "$env:RUNNER_TEMP\kmx-windows-tests.exe" ./scripts/ci/windows-tests
-      - name: Native filesystem, state, preview, and retained diagnostics
+      - name: Assert native Windows x64 runner
         shell: pwsh
         run: |
+          if (-not [Environment]::Is64BitOperatingSystem -or -not [Environment]::Is64BitProcess) {
+            throw 'windows-amd64-native requires a native 64-bit Windows process.'
+          }
+          $arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+          if ($arch -ne 'X64') { throw "windows-amd64-native ran as $arch, not X64." }
+          if ((go env GOOS) -ne 'windows' -or (go env GOARCH) -ne 'amd64') {
+            throw 'Go did not select native windows/amd64.'
+          }
+      - name: Native selected package tests with no skips
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The launcher package intentionally contains host-capability skip
+          # branches; keep that complete package proof, then require zero skips
+          # for every operation-specific selection below.
           & "$env:RUNNER_TEMP\kmx-windows-tests.exe" go test -race -count=1 -timeout=600s -v ./scripts/ci/windows-tests ./internal/kmx/fileaccess
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & "$env:RUNNER_TEMP\kmx-windows-tests.exe" go test -race -count=1 -timeout=600s -v `
-            -run '^(TestStateDirUsesPortableOverrideAndNativeDefault|TestWindowsStateAccessUsesLocalAppDataAndSeparatesCreation|TestWindowsStateAccessRefusesUnsafeRootWithoutRepair|TestPrepareLocalPreviewJournalDirCreatesPrivateChain)$' `
-            ./internal/kmx/config
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $directFileAccessTests = @('TestWindowsFilesystemQualification','TestWindowsTemporaryVolumeIsQualified','TestWindowsPrivateCreationUsesExplicitProtectedDescriptor')
+          $output = go test -race -count=1 -timeout=600s -v `
+            -run ('^(' + ($directFileAccessTests -join '|') + ')$') ./internal/kmx/fileaccess 2>&1
+          $status = $LASTEXITCODE
+          $output | Write-Output
+          if ($status -ne 0) { exit $status }
+          if ($output -match '--- SKIP:') { throw 'a direct selected fileaccess test skipped' }
+          foreach ($test in $directFileAccessTests) {
+            if (-not ($output -match ("--- PASS: " + [regex]::Escape($test) + " \("))) { throw "$test did not pass" }
+          }
+          $configTests = @('TestStateDirUsesPortableOverrideAndNativeDefault','TestWindowsStateAccessUsesLocalAppDataAndSeparatesCreation','TestWindowsStateAccessRefusesUnsafeRootWithoutRepair','TestPrepareLocalPreviewJournalDirCreatesPrivateChain')
+          $output = & "$env:RUNNER_TEMP\kmx-windows-tests.exe" go test -race -count=1 -timeout=600s -v `
+            -run ('^(' + ($configTests -join '|') + ')$') `
+            ./internal/kmx/config 2>&1
+          $status = $LASTEXITCODE
+          $output | Write-Output
+          if ($status -ne 0) { exit $status }
+          if ($output -match '--- SKIP:') { throw 'a selected config test skipped' }
+          foreach ($test in $configTests) {
+            if (-not ($output -match ("--- PASS: " + [regex]::Escape($test) + " \("))) { throw "$test did not pass" }
+          }
           $previewTests = @('TestFakeInstructionRegressionFailsThenFixes','TestInspectReplaysWithoutModelCall','TestJournalRetentionAndClear','TestJournalLockCleanupFailureVetoesCompletion','TestClearDirectorySyncFailureReportsUncertainty','TestWindowsJournalFamilyIsPrivateAndReplayable','TestWindowsInterruptedJournalFamilyClearRecovers')
           $output = & "$env:RUNNER_TEMP\kmx-windows-tests.exe" go test -race -count=1 -timeout=600s -v `
             -run ('^(' + ($previewTests -join '|') + ')$') ./internal/kmx/localpreview 2>&1
@@ -104,16 +137,75 @@ jobs:
           foreach ($test in $appTests) {
             if (-not ($output -match ("--- PASS: " + [regex]::Escape($test) + " \("))) { Write-Error "$test did not pass"; exit 1 }
           }
-      - name: Windows amd64 package vet
+      - name: Focused native cmd/kmx tests with no skips
         shell: pwsh
-        run: go vet ./internal/kmx/fileaccess ./internal/kmx/config ./internal/kmx/localpreview ./internal/kmx/app ./scripts/ci/windows-tests
-      - name: Windows arm64 compile and vet (not native execution)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tests = @('TestGuardedWindowsDeferredOperationsRefuseBeforeEffects','TestGuardedWindowsAllowsPackageFreeFileCommands','TestGuardedWindowsFileCommandsRefuseEveryExternalRouteBeforeEffects','TestGuardedWindowsFileSnapshotCannotChangeRouteAfterAdmission','TestGuardedWindowsExplainRequiresExplicitFileAndAllowsFileScopedClear','TestGuardedWindowsFileExplainClearStaysSubjectScoped','TestGuardedWindowsSupportedCommandFlagsAreExhaustivelyAllowlisted','TestGuardedWindowsVersionHelpAndCompletionRemainInert','TestGuardedWindowsCommandTreeIsExhaustivelyClassified','TestFileCommandJournaledPreviewDemo')
+          $output = & "$env:RUNNER_TEMP\kmx-windows-tests.exe" go test -race -count=1 -timeout=600s -v `
+            -run ('^(' + ($tests -join '|') + ')$') ./cmd/kmx 2>&1
+          $status = $LASTEXITCODE
+          $output | Write-Output
+          if ($status -ne 0) { exit $status }
+          if ($output -match '--- SKIP:') { throw 'a selected cmd/kmx test skipped' }
+          foreach ($test in $tests) {
+            if (-not ($output -match ("--- PASS: " + [regex]::Escape($test) + " \("))) { throw "$test did not pass" }
+          }
+      - name: Native windows/amd64 build and vet all packages
+        shell: pwsh
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          go build ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go vet ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -trimpath -o "$env:RUNNER_TEMP\kmx.exe" ./cmd/kmx
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $metadataLines = @(go version -m "$env:RUNNER_TEMP\kmx.exe" 2>&1)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $metadataLines | Write-Output
+          $metadata = $metadataLines -join "`n"
+          if ($metadata -notmatch '(?m)^\s*build\s+GOOS=windows\s*$' -or $metadata -notmatch '(?m)^\s*build\s+GOARCH=amd64\s*$') {
+            throw 'native executable metadata is not windows/amd64'
+          }
+      - name: Direct executable day-zero journey
+        shell: pwsh
+        run: ./scripts/ci/windows-cli-day-zero.ps1 -Binary "$env:RUNNER_TEMP\kmx.exe" -Fixture ./internal/kmx/agentfile/testdata/greeter.agent.md
+
+  windows-arm64-cross:
+    name: Windows arm64 cross-build metadata only (not native execution)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - name: Cross-build and vet all packages without execution
         shell: pwsh
         env:
           GOOS: windows
           GOARCH: arm64
           CGO_ENABLED: '0'
         run: |
+          $ErrorActionPreference = 'Stop'
+          if ([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() -ne 'X64') {
+            throw 'Cross-build evidence expects the hosted x64 process and never executes arm64.'
+          }
+          go build ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go vet ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -trimpath -o "$env:RUNNER_TEMP\kmx-windows-arm64.exe" ./cmd/kmx
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go test -c -o "$env:RUNNER_TEMP\cmd-kmx-arm64.test.exe" ./cmd/kmx
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go test -c -o "$env:RUNNER_TEMP\fileaccess-arm64.test.exe" ./internal/kmx/fileaccess
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go test -c -o "$env:RUNNER_TEMP\config-arm64.test.exe" ./internal/kmx/config
@@ -124,8 +216,23 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go test -c -o "$env:RUNNER_TEMP\windows-tests-arm64.test.exe" ./scripts/ci/windows-tests
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          go vet ./internal/kmx/fileaccess ./internal/kmx/config ./internal/kmx/localpreview ./internal/kmx/app ./scripts/ci/windows-tests
-          exit $LASTEXITCODE
+          foreach ($path in @(
+            "$env:RUNNER_TEMP\kmx-windows-arm64.exe",
+            "$env:RUNNER_TEMP\cmd-kmx-arm64.test.exe",
+            "$env:RUNNER_TEMP\fileaccess-arm64.test.exe",
+            "$env:RUNNER_TEMP\config-arm64.test.exe",
+            "$env:RUNNER_TEMP\localpreview-arm64.test.exe",
+            "$env:RUNNER_TEMP\app-arm64.test.exe",
+            "$env:RUNNER_TEMP\windows-tests-arm64.test.exe"
+          )) {
+            $metadataLines = @(go version -m $path 2>&1)
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $metadataLines | Write-Output
+            $metadata = $metadataLines -join "`n"
+            if ($metadata -notmatch '(?m)^\s*build\s+GOOS=windows\s*$' -or $metadata -notmatch '(?m)^\s*build\s+GOARCH=arm64\s*$') {
+              throw "$path metadata is not windows/arm64"
+            }
+          }
 
   hygiene-checks:
     runs-on: ubuntu-latest
@@ -346,6 +453,31 @@ jobs:
           if "dist/homebrew/Formula/kmx.rb" not in release_text:
               print("release.yml must attach the rendered Homebrew formula as a release asset")
               sys.exit(1)
+          for asset in ("kmx-windows-amd64.exe", "kmx-windows-arm64.exe"):
+              if asset not in release_text:
+                  print(f"release.yml must stage and publish {asset}")
+                  sys.exit(1)
+          windows_release = wf["jobs"].get("release-windows-amd64", {})
+          windows_body = "\n".join(str(step.get("run", "")) for step in windows_release.get("steps", []))
+          windows_downloads = [step for step in windows_release.get("steps", [])
+                               if str(step.get("uses", "")).startswith("actions/download-artifact@")]
+          windows_trust_uploads = [step for step in windows_release.get("steps", [])
+                                   if str(step.get("uses", "")).startswith("actions/upload-artifact@")]
+          if (windows_release.get("needs") != "release" or windows_release.get("runs-on") != "windows-latest"
+                  or any(str(step.get("uses", "")).startswith("actions/setup-go@") for step in windows_release.get("steps", []))
+                  or any("continue-on-error" in step for step in windows_release.get("steps", []))
+                  or len(windows_downloads) != 1
+                  or windows_downloads[0].get("with", {}).get("name") != "kmx-" + "$" + "{{ needs.release.outputs.version }}"
+                  or windows_downloads[0].get("with", {}).get("path") != "$" + "{{ runner.temp }}/checked-release"
+                  or len(windows_trust_uploads) != 1
+                  or windows_trust_uploads[0].get("if") != "steps.authenticode.outputs.recorded == 'true'"
+                   or "windows-cli-day-zero.ps1" not in windows_body
+                   or "Get-AuthenticodeSignature" not in windows_body
+                   or "Zone.Identifier" not in windows_body
+                   or "SmartScreen: not evaluated" not in windows_body
+                   or "@('Valid', 'NotSigned')" not in windows_body):
+              print("release.yml must natively qualify the exact staged Windows amd64 binary without setup-go or protection bypass")
+              sys.exit(1)
           # Stable production URLs let Homebrew infer the version and strict
           # audit rejects restating it. Prerelease formulas retain an explicit
           # version because their URL inference is not reliable.
@@ -365,15 +497,15 @@ jobs:
               print("release.yml must upload the same checked assets for dry runs and native qualification")
               sys.exit(1)
           publish = wf["jobs"].get("publish", {})
-          if (set(wf["jobs"]) != {"release", "release-contracts", "plugin-install", "publish"}
+          if (set(wf["jobs"]) != {"release", "release-contracts", "plugin-install", "release-windows-amd64", "publish"}
                   or "needs" in wf["jobs"]["release"] or "if" in wf["jobs"]["release"]):
               print("release.yml must build immediately without cluster runtime qualification")
               sys.exit(1)
-          if (set(publish.get("needs", [])) != {"release", "plugin-install", "release-contracts"}
+          if (set(publish.get("needs", [])) != {"release", "plugin-install", "release-contracts", "release-windows-amd64"}
                   or publish.get("if") != "needs.release.outputs.dry_run == 'false'"):
-              print("release.yml must wait for native install checks and hermetic contracts and publish only outside dry runs")
+              print("release.yml must wait for native install, Windows day-zero and hermetic contracts and publish only outside dry runs")
               sys.exit(1)
-          if 'scripts/homebrew-formula.py "$VERSION" dist/checksums.txt' not in release_text:
+          if 'scripts/homebrew-formula.py "$VERSION" dist/checksums.txt --require-windows' not in release_text:
               print("release.yml must reject an incomplete or unexpected checksum manifest before publication")
               sys.exit(1)
           if re.search(r"goreleaser release(?! --clean --skip=publish,validate)", release_text):
@@ -820,7 +952,7 @@ jobs:
         run: go build ./...
       - name: kmx — filesystem and state race tests
         run: go test -race -count=1 ./internal/kmx/fileaccess ./internal/kmx/config
-      - name: kmx — Windows libraries (CLI remains guarded)
+      - name: kmx — Windows libraries
         run: |
           GOOS=windows GOARCH=amd64 go build ./internal/... ./pkg/...
           GOOS=windows GOARCH=arm64 go build ./internal/... ./pkg/...
@@ -970,7 +1102,7 @@ jobs:
   # Missing, skipped, cancelled or failed work must never produce a green gate.
   hygiene:
     runs-on: ubuntu-latest
-    needs: [hygiene-checks, app-tests, windows-day-zero-foundation]
+    needs: [hygiene-checks, app-tests, windows-amd64-native, windows-arm64-cross]
     if: always()
     steps:
       - name: Every required hygiene dependency succeeded
@@ -981,7 +1113,7 @@ jobs:
           python3 - <<'EOF'
           import json, os, sys
           needs = json.loads(os.environ["SHARDS"])
-          expected = {"hygiene-checks", "app-tests", "windows-day-zero-foundation"}
+          expected = {"hygiene-checks", "app-tests", "windows-amd64-native", "windows-arm64-cross"}
           if set(needs) != expected:
               print("missing or unexpected hygiene dependency — refusing success"); sys.exit(1)
           bad = {}

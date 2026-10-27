@@ -29,7 +29,7 @@ class SampleTests(unittest.TestCase):
         self.assertEqual(repaired.count(new), 1)
         self.assertEqual(source.split('## Examples\n', 1)[1], repaired.split('## Examples\n', 1)[1])
 
-    @unittest.skipIf(os.name == "nt", "native Windows CLI is guarded")
+    @unittest.skipIf(os.name == "nt", "native Windows MCP remains deferred")
     def test_real_mcp_create_parses_original_and_one_line_repair(self):
         with tempfile.TemporaryDirectory(prefix="sample parser ") as temp:
             base = Path(temp)

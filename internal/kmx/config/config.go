@@ -177,7 +177,8 @@ func (c *Config) KindUnset() []string {
 // StateDir locates, but does not create, kmx's local state directory. KMX_HOME
 // is the explicit cross-platform override for tests and isolated invocations.
 // Native defaults remain platform-owned; Windows uses machine-local
-// LocalAppData rather than roaming profile state.
+// LocalAppData rather than roaming profile state. Linux refuses state on a
+// recognized WSL Windows-drive mount so native and WSL writers cannot share it.
 func StateDir() (string, error) {
 	return stateDirPath()
 }

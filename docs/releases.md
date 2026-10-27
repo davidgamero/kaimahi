@@ -16,6 +16,12 @@ The official Homebrew namespace is limited to the public
 claimed; the remaining publication constraints are recorded in
 [NAMING.md](NAMING.md).
 
+**Windows release boundary:** stable v0.8.1, including the version selected by
+Go `@latest`, has no Windows `.exe`. Current `main` contains an unreleased,
+narrow native Windows day-zero CLI; only a future tag that actually publishes
+`kmx-windows-amd64.exe` or `kmx-windows-arm64.exe` makes that asset installable.
+See [native Windows](windows.md) for the exact command, trust and state limits.
+
 ## Test command (unreleased)
 
 Current main uses `kmx test` and all six helpers (`cleanup`, `diff`, `explain`,
@@ -56,37 +62,57 @@ ephemeral signing key, not a stored signing secret. Releases published before
 signing was enabled have no bundle.
 
 With cosign **v3.0.6 or newer** and GNU `sha256sum`, choose a signed release and
-download its four bare binaries, checksum manifest and bundle into an empty
-directory (the assets are not archives):
+download its checksum manifest, bundle and the one Unix bare binary you need into
+an empty directory (the assets are not archives):
 
 ```bash
+set -euo pipefail
 version='v<version>'
 base="https://github.com/kaimahi-agents/kaimahi/releases/download/$version"
-for asset in kmx-linux-amd64 kmx-linux-arm64 kmx-darwin-amd64 kmx-darwin-arm64 checksums.txt checksums.txt.sigstore.json; do
-  curl -fsSLO "$base/$asset"
+asset=kmx-linux-amd64 # select the matching Linux/macOS asset
+for file in "$asset" checksums.txt checksums.txt.sigstore.json; do
+  curl -fsSLO "$base/$file"
 done
 
 cosign verify-blob \
-  --certificate-identity-regexp '^https://github\.com/kaimahi-agents/kaimahi/\.github/workflows/release\.yml@refs/tags/v[0-9][0-9A-Za-z_.-]*$' \
+  --certificate-identity "https://github.com/kaimahi-agents/kaimahi/.github/workflows/release.yml@refs/tags/$version" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --bundle checksums.txt.sigstore.json \
-  checksums.txt && sha256sum -c checksums.txt
+  checksums.txt
+
+rows=$(grep -E "^[0-9a-f]{64}  ${asset}$" checksums.txt || true)
+if [ "$(printf '%s\n' "$rows" | grep -c .)" -ne 1 ]; then
+  echo "missing or duplicate checksum for $asset" >&2
+  exit 1
+fi
+want=${rows%% *}
+got=$(sha256sum "$asset" | cut -d' ' -f1)
+if [ "$want" != "$got" ]; then
+  echo "checksum mismatch for $asset" >&2
+  exit 1
+fi
 ```
 
-On macOS, use `shasum -a 256 -c checksums.txt` instead of `sha256sum -c`.
+On macOS, use `shasum -a 256 "$asset" | cut -d' ' -f1` for `got`.
 Verify the signature before checking digests or running a binary. The identity
 check accepts only this repo's release workflow running on a version tag.
 
-The signature covers the four binaries, **not** the separately published
-`kmx.rb` formula. `install.sh` and Homebrew check checksums only; they do not
-automatically verify this bundle.
+The signature covers the checksum manifest, which names the release's binary
+assets; it does not directly sign an executable and is **not Authenticode**. It
+does not cover the separately published `kmx.rb` formula. `install.sh` and
+Homebrew check checksums only; they do not automatically verify this bundle.
+Releases after v0.8.1 that contain native Windows add the exact
+`kmx-windows-amd64.exe` and `kmx-windows-arm64.exe` rows to this manifest.
+Follow the [Windows manual verification](windows.md#release-availability-and-installation)
+instead of adding those assets to the Unix loop above.
 
 Copilot plugin archives use a separate `plugin-checksums.txt` and Sigstore
 bundle, signed by the same workflow identity after exact engine/archive checks.
-They do not change the four-binary checksum inventory above. Verify the archive
+They do not change the core binary checksum inventory above. Verify the archive
 before extraction/execution, then explicitly configure the selected root before
 installation; see the [plugin package guide](../plugins/copilot/README.md#release-archives-and-explicit-setup).
-Windows plugin delivery remains unavailable while native CLI builds are guarded.
+Windows Copilot plugin delivery remains the separate WSL route; publishing a
+native CLI `.exe` does not create a native MCP/Copilot plugin.
 
 ## Versions
 
@@ -116,18 +142,30 @@ only Go module; no paired module release tag is needed.
 
 ### Release qualification
 
-A tag qualifies the shipped inner loop: the kmx binary, the WSL plugin and local
-previews on embedded Sessions. The release workflow builds, signs and packages
-immediately, alongside the existing hermetic canvas, plugin/WSL/MCP and Sessions
-preview contracts. After signing, native Linux and macOS workers verify and
-configure the exact cross-built native plugin archive in an owned temporary
+A tag qualifies the shipped inner loop: the kmx binaries, the WSL plugin and
+local previews on embedded Sessions. The release workflow builds, signs and
+packages immediately, alongside the existing hermetic canvas, plugin/WSL/MCP and
+Sessions preview contracts. After signing, native Linux and macOS workers verify
+and configure the exact cross-built native plugin archive in an owned temporary
 directory, then install/uninstall/reinstall it in a fresh Copilot CLI profile.
-Publication requires the build, hermetic contracts and both native install jobs.
-These checks do not exercise interactive desktop rendering, a real Windows/WSL
-app session, hosted inference or cluster runtimes. Dry-run artifacts contain
-`release-assets/` and `release-notes.md` under their common root.
+
+For a release containing Windows assets, a hosted native Windows amd64 worker
+also verifies and executes the exact staged `kmx-windows-amd64.exe`: version,
+help and completion plus package-free fake Markdown-file Run, failing Test and
+offline file Explain. The release is not published unless that exact artifact
+passes. `kmx-windows-arm64.exe` is cross-built, vetted, metadata-checked and
+checksummed only; it is not natively executed and must not be described that way.
+
+Publication requires the build, hermetic contracts, native plugin install jobs
+and the exact Windows amd64 artifact check. These checks do not exercise
+interactive desktop rendering, a real Windows/WSL app session, hosted inference,
+native MCP/Copilot, cluster runtimes or organization SmartScreen policy. Dry-run
+artifacts contain `release-assets/` and `release-notes.md` under their common
+root. The separate clean-machine Authenticode, Zone.Identifier and SmartScreen
+observation remains required before making an environment-specific trust claim.
 For Windows Copilot, use the [plain WSL plugin](../plugins/copilot-wsl/README.md):
-install the Linux binary in WSL, then install the plugin from the repository.
+install the paired Linux binary in WSL, register `kmx-plugins`, then install the
+WSL variant from the SHA-pinned catalog.
 On macOS, use the [plain PATH plugin](../plugins/copilot/README.md#install-on-macos)
 with the release's darwin binary. The tap is not updated for prereleases.
 The separate macOS plugin CI checks install and the offline fake-model loop;
@@ -155,9 +193,13 @@ Nightly schedules and runtime proof commands, pins and budgets are unchanged.
 
 ## Install
 
-**On Windows, use WSL for now.** Install and run the Linux build inside your
-WSL distribution, not PowerShell or Command Prompt. Native Windows builds and
-release binaries are not supported yet; track [Windows support in #578](https://github.com/kaimahi-agents/kaimahi/issues/578).
+On Windows, the Homebrew, `install.sh` and Go `@latest` instructions below remain
+Linux/WSL routes where applicable. Stable v0.8.1 and `@latest` have no native
+Windows `.exe`. Current `main` has a separate unreleased, narrow native CLI;
+follow [native Windows installation](windows.md#release-availability-and-installation)
+only after a future tag actually contains the exact `.exe` asset. There is no
+Winget or other Windows package-manager namespace claim. Use WSL for every
+cluster, workspace, model/provider, plugin, publication and deployment workflow.
 
 With Homebrew on macOS or Linux:
 
@@ -166,7 +208,7 @@ brew install kaimahi-agents/tap/kmx
 ```
 
 The fully qualified name automatically adds the tap and trusts only this
-formula. It selects the matching one of the four release binaries for the
+formula. It selects the matching one of the four Unix release binaries for the
 current OS and architecture, then verifies that asset's published SHA-256. The
 formula checksum detects a changed or truncated download;
 like `install.sh`, it is not an independent signature because both originate in
@@ -238,12 +280,18 @@ execution, and kmx independently verifies its pinned kind and kubectl downloads
 ([internal/kmx/toolchain](../internal/kmx/toolchain)); applying less care to
 its own binary would be indefensible.
 
-**Platforms**: `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64`.
-kmx drives a Linux container runtime, so the machine running it is a Linux
-host or a Mac running one in a VM. Those are the four release platforms the
-installer and pinned toolchain support. On Windows, use the Linux build
-matching your WSL distribution's architecture (`amd64` or `arm64`). Native
-Windows support is tracked in [#578](https://github.com/kaimahi-agents/kaimahi/issues/578).
+Stable v0.8.1 platforms are `linux/amd64`, `linux/arm64`, `darwin/amd64` and
+`darwin/arm64`; it has no Windows `.exe`. Those remain the platforms supported
+by `install.sh` and Homebrew. On Windows, use the Linux asset matching the WSL
+distribution's architecture (`amd64` or `arm64`) for the full CLI.
+
+A future containing release adds bare `kmx-windows-amd64.exe` and
+`kmx-windows-arm64.exe` assets without changing the Unix installer or formula.
+Download an exact Windows asset only from such a tag, verify the manifest's
+Sigstore bundle and then that asset's SHA-256, and retain Windows policy signals;
+the complete PowerShell procedure is in the [Windows guide](windows.md).
+Windows amd64 has native hosted execution for the narrow day-zero commands.
+Windows arm64 has cross-build/vet/checksum evidence only, not native execution.
 
 A downloaded CLI needs no Go toolchain for native setup and agent workflows;
 it still requires the external tools described in [getting started](getting-started.md#prerequisites).
@@ -520,7 +568,9 @@ than the first.
    publishes those same files together as one GitHub release. It refuses to
    publish if: the version is not semantic, the changelog has no section,
    the built binary does not report the tag, the checksums do not verify, or
-   the hermetic inner-loop contracts or either native plugin install check fails. The
+   the hermetic inner-loop contracts, either native plugin install check or the
+   exact Windows amd64 day-zero artifact check fails. Windows arm64 remains
+   cross-build/vet/checksum only. The
    release also carries `kmx.rb`, GoReleaser's rendered formula for those exact checksums
    (`brews.skip_upload: true` keeps it from being pushed to the tap on its own
    — that stays a human's job, next). A failed asset upload can leave a GitHub
@@ -620,6 +670,62 @@ than the first.
      kmx_prefix="$(brew --prefix kaimahi-agents/tap/kmx)" &&
      "$kmx_prefix/bin/kmx" version
    ```
+
+### Publish the paired Copilot catalog
+
+The source release is commit **S**. Publish the binary release and finish its
+qualification before advancing the catalog; the catalog PR merges later at
+commit **C** and points backward to S. Do not try to pin C to itself. An RC
+catalog is a prerelease pair, not a stable release or an automatic tap update.
+
+From fresh main, fetch the actual tag and resolve its commit (including annotated
+tags), substituting the real version including its RC suffix:
+
+```bash
+git fetch origin main
+git fetch origin tag vX.Y.Z
+git rev-parse 'refs/tags/vX.Y.Z^{commit}'
+```
+
+In a normal PR, change both `.github/plugin/marketplace.json` entries together:
+`version` is the tag without `v`, `source.sha` is the full resolved 40-character
+commit, and the variant paths/names stay unchanged. Update the prerequisite
+descriptions and install-version URLs in the front doors to the same pair.
+Then run:
+
+```bash
+python3 plugins/copilot/marketplace.py
+python3 plugins/copilot/marketplace.py --release
+```
+
+The offline check reads each `plugin.json` from S, not main. The release check
+also requires the tag to resolve to S and a published, non-draft GitHub release
+with all four platform binaries and `checksums.txt`. It reads public release
+metadata with `gh api`; it does not verify signatures or execute a binary.
+The existing installer and release signature guidance still apply. Missing tags,
+draft releases, inconsistent pins and source-version mismatches fail the check.
+A preparation PR for the next binary may legitimately have source manifests
+newer than the catalog: leave its old pin in place until the new pair is ready.
+No workflow writes the catalog or pushes to main, and no new secret is required.
+
+Verify actual remote catalog installation from the PR branch in private Copilot
+profiles. CLI 1.0.102 accepts branch/tag catalog refs, not raw commit SHAs.
+CI registers the PR branch (main on pushes) and requires the resolved checkout
+to match that run's expected head commit; a moving ref fails rather than testing
+other catalog bytes. Plugin entries independently retain full release-SHA pins.
+Local-directory catalogs load live and are not persistence evidence. Users
+normally add the repository without a ref so they can receive catalog updates. CI checks each installed variant's bytes against S and exercises direct
+registration replacement, refresh/update and uninstall. It separately retains
+the PR-source install check, so publishing S does not hide later source edits.
+Real Windows/WSL and Dock-launched Mac walks must also check both canvas provider
+identities; CLI cache checks are not desktop support evidence.
+
+Users update the external binary separately from the catalog/plugin. See
+[direct-install migration and paired upgrades](copilot-app.md#existing-direct-installs-and-upgrades).
+For a bad pin, use a reviewed catalog correction to the last known-good pair,
+then explicitly uninstall/reinstall the selected plugin and that paired binary.
+Do not assume `plugin update` downgrades an already installed higher version.
+Do not move a release tag, delete agent state or mutate cached plugin bytes.
 
 To rehearse without spending a version number, run the `release` workflow
 manually (`workflow_dispatch`) from a branch: it builds and checksums exactly

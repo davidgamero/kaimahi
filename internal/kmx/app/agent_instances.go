@@ -444,6 +444,9 @@ func ReadAgentInstances(directory string) ([]AgentInstance, error) {
 		if err != nil {
 			return nil, err
 		}
+		if canonical, e := filepath.EvalSymlinks(filter); e == nil {
+			filter = canonical
+		}
 	}
 	rows := []AgentInstance{}
 	for _, entry := range entries {
