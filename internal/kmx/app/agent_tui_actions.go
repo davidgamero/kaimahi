@@ -43,6 +43,21 @@ func (a *App) runAgentTUIAction(action agentTUIAction) (agentTUIEnvironment, err
 		if accepted {
 			s.Provider = "copilot"
 		}
+		if action.kind == "update" {
+			plan, err := s.PlanAgentUpdate(a.operationContext(), agent)
+			if err != nil {
+				return agentTUIEnvironment{}, err
+			}
+			if err := ConfirmAgentUpdate(a.operationContext(), a.Err, a.Stdin, plan, false); err != nil {
+				return agentTUIEnvironment{}, err
+			}
+			record, err := s.ApplyAgentUpdate(a.operationContext(), plan)
+			if err != nil {
+				return agentTUIEnvironment{}, err
+			}
+			_, err = fmt.Fprintf(a.Out, "Updated/unchanged %s · version %s\n", record.Name, record.Version)
+			return agentTUIEnvironment{}, err
+		}
 		if action.kind == "test" {
 			s.InitialTest = true
 		}

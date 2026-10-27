@@ -60,6 +60,12 @@ changes in the package's Go doc comment.
   edits source only. Created definitions remain visible for that console session
   without pretending they are running. Cluster `n` reviews/deploys an already
   authored workspace. Pane widths select compact tables or multiline inventories.
+  Console Review & approve tools prepares the existing CLI approval plan offline,
+  then explicit y after full review runs probes in a cancellable worker and saves
+  the grant. Enter never grants. Results keep probe/approval/test/instance state
+  separate, preserve acknowledged publication on late cancellation, and never
+  start/update the agent implicitly. Next actions reuse test/editor/chat handlers;
+  Update releases terminal ownership for the existing confirmation before applying.
 
 - `model list [-o table|json]` defaults to config-free bounded local discovery.
   Explicit `--provider copilot` lists available Chat/Responses routes without

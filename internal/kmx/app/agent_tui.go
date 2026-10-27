@@ -572,7 +572,7 @@ func (m agentTUIModel) agentActions(a agentTUIAgent) []agentTUIMenuAction {
 		actions = append(actions, agentTUIMenuAction{"c", "Chat with agent"})
 	}
 	if a.Runtime == "md" {
-		return append(actions, agentTUIMenuAction{"e", "Edit definition"}, agentTUIMenuAction{"t", "Edit tests"}, agentTUIMenuAction{"T", "Run tests"})
+		return append(actions, agentTUIMenuAction{"e", "Edit definition"}, agentTUIMenuAction{"t", "Edit tests"}, agentTUIMenuAction{"T", "Run tests"}, agentTUIMenuAction{"s", "Suggest tools"}, agentTUIMenuAction{"a", "Review & approve tools"}, agentTUIMenuAction{"u", "Update running agent"})
 	}
 	if !a.External {
 		actions = append(actions, agentTUIMenuAction{"f", "Edit inference"}, agentTUIMenuAction{"t", "Add / edit tools"})
@@ -636,6 +636,19 @@ func (m agentTUIModel) updateActions(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	m.actionsOpen = false
 	switch chosen {
+	case "a", "s":
+		if a.Runtime == "md" {
+			return m.openMDTools(*a, chosen == "s")
+		}
+	case "u":
+		if a.Runtime == "md" {
+			if m.opt.Demo {
+				m.status = "DEMO · update does not change running agents"
+				return m, nil
+			}
+			m.action = &agentTUIAction{kind: "update", agent: *a, source: m.columns[m.focus].Env}
+			return m, tea.Quit
+		}
 	case "e", "t", "T":
 		if a.Runtime == "md" {
 			kind := map[string]string{"e": "edit", "t": "edit-tests", "T": "test"}[chosen]

@@ -1,5 +1,11 @@
 ### Added
 
+- Console MD actions offer Suggest tools, Review & approve tools, and explicit
+  running-agent update. Creation connects accepted declarations to a scrollable
+  executable/scope/probe review; explicit confirmation runs cancellable probes
+  through the shared approval implementation. Results provide edit/test/chat/update
+  next steps while keeping approval, probe results, tests and instance state separate.
+
 - Tool suggestions use bounded, non-executing PATH name lookups to inform command
   availability. No candidate executable, compatibility probe, installer or login
   runs during suggestion; approval remains a separate identity-bound operation.

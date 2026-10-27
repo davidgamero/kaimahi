@@ -127,33 +127,44 @@ selects the reviewed project explicitly. The probe verifies Go compatibility;
 the actual invocation determines whether the project tests pass. Project code is
 read at invocation time, not pinned by the executable grant.
 
-### Proposed TUI tool workflow
+### Console tool approval and next steps
 
-The current `/suggest-tools` and `/review-tools` actions display proposals; source
-acceptance and executable approval still use the CLI. The next UI slice should
-reuse `AddSuggestedCLITools`, `PrepareCLIToolApproval`, `RenderCLIApproval` and
-`ApplyCLIToolApproval`, without shelling out to kmx or duplicating their checks:
+Select an MD definition in the console, press Enter for actions, then choose
+**Review & approve tools** (`a`). This works before the agent starts. Creation
+also offers this step immediately after saving suggested declarations.
 
-1. Select proposed declarations and save them explicitly; show unresolved scope
-   and retain a separate unapproved state.
-2. A proposed `/approve-tools` action prepares and displays the frozen source
-   digest, resolved executable/hash, fixed execution arguments, probe arguments
-   and limits. Preparation is a background UI job and executes no probes.
-3. Explicit confirmation runs `ApplyCLIToolApproval` in a cancellable job. Show
-   probe pending/passed/failed independently of agent tests; failed or stale plans
-   do not grant access. Never run this from disk polling or auto-test.
-4. After approval, offer the existing `/update` flow to activate the binding.
-   Approval alone does not replace a running instance or close conversations.
-5. Add correlated tool-call/result events with tool name, exit state and on-demand
-   bounded output. Background-managed chat needs a typed manager event/result
-   transport first: its current reply carries only the final answer. The generic
-   Copilot progress string is not a tool-result viewer.
+1. Preparation calls `PrepareCLIToolApproval` in a background job. Review the exact
+   source digest, resolved executable/hash, execution arguments, probe arguments
+   and limits. Preparation executes no candidate or probe.
+2. Scroll with arrows/PageUp/PageDown or End. After reaching the bottom, explicit
+   `y` runs probes and saves the grant through `ApplyCLIToolApproval`. Enter never
+   approves; `n` declines, and Escape closes without granting.
+3. While probes run, Escape requests cancellation and waits for completion. Source
+   drift, failed probes, and cancellation before publication do not grant access.
+   A successfully published grant is reported even if cancellation arrives afterward.
+4. The result separates tool approval and individual probe results from authored
+   test count and instance state. Approval does not test the agent, start it,
+   update it, or close any conversations. Errors may retain earlier successful
+   probe results, but the complete approval is still reported as not completed.
+5. Next-action keys are `t` edit tests, `T` run tests, `c` start/chat, `u` update,
+   `e` edit definition, and `a` prepare a fresh approval review. Update hands off
+   terminal ownership to the existing reviewed update confirmation, then returns
+   to the console. It never supplies automatic consent.
 
-UI results should be applied through generation/source-bound messages on the UI
-goroutine. Fix the existing session-state race and manager-wide probe locking
-before exposing asynchronous approval. Cover cancellation, stale source/grant
-changes, nonzero command exits, withheld diagnostics and late events. Recorded
-agent tests remain visibly separate from real compatibility probes and live calls.
+Existing definitions also have **Suggest tools** in their actions menu; the
+planner's current automatic source addition remains limited to tool-free agents.
+For a new draft the intended journey is Create → Suggest → save declarations →
+review/approve execution → edit reviewed tests/mocks → Test → start/chat.
+Empty tests remain untested; test generation is not implemented. Changed source
+requires new approval and changed running definitions require explicit update.
+
+Chat `/suggest-tools` and `/review-tools` retain their existing display/CLI hints;
+the executable approval action lives in the console, not a new chat slash command.
+Correlated live tool-result viewing remains follow-up work: background-managed
+chat needs a typed event/result transport beyond its final-answer reply. The
+existing chat session-state race and manager-wide activation-probe lock also remain
+separate correctness work; console approval runs outside that manager and never
+mutates a chat session. Recorded agent tests are distinct from real probes/calls.
 
 The checked-in [Go-version agent](../.github/agents/local-go-version.agent.md)
 demonstrates a harmless fixed CLI call with a compatibility probe; its
@@ -189,8 +200,9 @@ partial file-creation errors require inspecting the destination before retrying.
 The console selects the created, unstarted definition and retains it through
 refresh for the current session. Enter opens its actions for editing, tests, and
 chat. Add reviewed tests and mocks yourself; no passing result is fabricated.
-Before live tool use, run `kmx tools approve FILE --apply`. This flow does not
-approve tools or execute compatibility probes. In cluster panes, `n` remains
+Before live tool use, choose the offered execution approval step or use
+**Review & approve tools** in the actions menu. The equivalent CLI command is
+`kmx tools approve FILE --apply`. Only explicit approval runs probes. In cluster panes, `n` remains
 deployment of an already-authored native workspace, not local authoring.
 
 Agent panes show name/type/state/model as aligned table rows when space permits,

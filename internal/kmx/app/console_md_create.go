@@ -17,6 +17,9 @@ type consoleMDCreate struct {
 	input                                        textarea.Model
 	root, name, instructions, model, path, stage string
 	proposal                                     MarkdownToolProposal
+	approval                                     *CLIToolApproval
+	agent                                        *MarkdownAgent
+	approved                                     bool
 	choice, scroll                               int
 	selected                                     []string
 	running, cancelling                          bool
@@ -28,6 +31,8 @@ type consoleMDResult struct {
 	pane     *consoleMDCreate
 	agent    *MarkdownAgent
 	proposal MarkdownToolProposal
+	approval *CLIToolApproval
+	approved bool
 	err      error
 }
 
@@ -68,6 +73,82 @@ func (m *agentTUIModel) retainCreatedDefinition(a *MarkdownAgent) {
 	}
 }
 
+// Tool review is available from the inventory before an agent is started. The
+// creation pane also reuses this path after saving proposed declarations.
+func (m agentTUIModel) openMDTools(a agentTUIAgent, suggest bool) (tea.Model, tea.Cmd) {
+	if m.opt.Demo {
+		m.status = "DEMO · tool review does not read files, suggest or approve"
+		return m, nil
+	}
+	m.actionsOpen = false
+	next, _ := m.openMDCreate(m.columns[m.focus].Env.Directory)
+	m = next.(agentTUIModel)
+	p := m.mdCreation
+	p.path, p.name, p.model = a.DefinitionPath, a.Name, a.Model
+	if suggest {
+		p.stage = "offer"
+		return m, nil
+	}
+	return m.prepareMDApproval()
+}
+
+func (m agentTUIModel) prepareMDApproval() (tea.Model, tea.Cmd) {
+	path := m.mdCreation.path
+	m.mdCreation.approval, m.mdCreation.approved, m.mdCreation.scroll = nil, false, 0
+	return m.mdCreateJob("approval-preparing", func(ctx context.Context) consoleMDResult {
+		if err := ctx.Err(); err != nil {
+			return consoleMDResult{err: err}
+		}
+		plan, err := PrepareCLIToolApproval(path)
+		if err != nil {
+			return consoleMDResult{err: err}
+		}
+		a, err := ReadMarkdownAgent(path)
+		if err == nil && a.Revision != plan.Grant.AgentDigest {
+			err = fmt.Errorf("definition changed during review preparation; review again")
+		}
+		return consoleMDResult{approval: &plan, agent: a, err: err}
+	})
+}
+
+func (m *agentTUIModel) closeMDPane() {
+	p := m.mdCreation
+	m.status = "Local agent workflow closed"
+	if p.path != "" {
+		m.status = p.name + " · Enter actions: approve tools / edit tests / test / start or chat"
+		if p.approved {
+			m.status = p.name + " · tools approved · next: edit tests, test, then start/chat or update"
+		}
+	}
+	m.mdCreation = nil
+}
+
+func (m agentTUIModel) mdNextAction(key rune) (tea.Model, tea.Cmd) {
+	p := m.mdCreation
+	if p.path == "" {
+		return m, nil
+	}
+	if key == 'a' {
+		return m.prepareMDApproval()
+	}
+	kind := map[rune]string{'e': "edit", 't': "edit-tests", 'T': "test", 'c': "chat", 'u': "update"}[key]
+	if kind == "" {
+		return m, nil
+	}
+	row := agentTUIAgent{Name: p.name, Runtime: "md", DefinitionPath: p.path, TestsPath: MarkdownTestsPath(p.path)}
+	m.action = &agentTUIAction{kind: kind, agent: row, source: m.columns[m.focus].Env}
+	m.mdCreation = nil
+	return m, tea.Quit
+}
+
+func (m agentTUIModel) mdApprovalLines() []string {
+	var text strings.Builder
+	if p := m.mdCreation.approval; p != nil {
+		_ = RenderCLIApproval(&text, *p)
+	}
+	return strings.Split(ansi.Hardwrap(safeTerminal(text.String()), max(1, min(84, m.width-8)-4), true), "\n")
+}
+
 func (m agentTUIModel) updateMDCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	p := m.mdCreation
 	switch event := msg.(type) {
@@ -83,7 +164,24 @@ func (m agentTUIModel) updateMDCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.err = event.err
 		if event.agent != nil {
 			p.path = event.agent.Path
-			m.retainCreatedDefinition(event.agent)
+			p.agent = event.agent
+			if p.stage == "creating" || p.stage == "saving" {
+				m.retainCreatedDefinition(event.agent)
+			}
+		}
+		if event.approval != nil {
+			p.approval = event.approval
+		}
+		p.approved = event.approved
+		if event.approved {
+			// Approval enables a binding, not a running instance. Do not replace
+			// live inventory with the authored definition or invent test results.
+			if row, ok := m.createdDefinitions[p.path]; ok {
+				for i := range row.Tools {
+					row.Tools[i].Kind = "approved declaration; not activated"
+				}
+				m.createdDefinitions[p.path] = row
+			}
 		}
 		if p.cancelling || event.err != nil {
 			p.stage = "done"
@@ -99,6 +197,15 @@ func (m agentTUIModel) updateMDCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
 				p.stage = "done"
 			}
 		case "saving":
+			p.stage = "approve-offer"
+		case "approval-preparing":
+			if event.approval == nil {
+				p.err = fmt.Errorf("approval preparation returned no plan")
+				p.stage = "done"
+			} else {
+				p.stage, p.scroll = "approval-review", 0
+			}
+		case "approving":
 			p.stage = "done"
 		}
 		return m, nil
@@ -114,14 +221,51 @@ func (m agentTUIModel) updateMDCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-			m.mdCreation = nil
-			m.status = "Creation closed"
-			if p.path != "" {
-				m.status = "Created " + p.name + " · not running · i inspect / Enter actions"
-			}
+			m.closeMDPane()
 			return m, nil
 		}
 		if p.running {
+			return m, nil
+		}
+		if p.stage == "approve-offer" {
+			switch event.Code {
+			case 'y', 'a':
+				return m.prepareMDApproval()
+			case 'n', tea.KeyEnter:
+				p.stage = "done"
+			}
+			return m, nil
+		}
+		if p.stage == "approval-review" {
+			page := max(1, min(24, m.height-4)-6)
+			end := max(0, len(m.mdApprovalLines())-page)
+			switch event.Code {
+			case tea.KeyDown:
+				p.scroll = min(end, p.scroll+1)
+			case tea.KeyUp:
+				p.scroll = max(0, p.scroll-1)
+			case tea.KeyPgDown:
+				p.scroll = min(end, p.scroll+page)
+			case tea.KeyPgUp:
+				p.scroll = max(0, p.scroll-page)
+			case tea.KeyEnd:
+				p.scroll = end
+			case tea.KeyHome:
+				p.scroll = 0
+			case 'n':
+				p.stage = "done"
+			case 'y':
+				if p.scroll < end {
+					p.err = fmt.Errorf("read the complete scope and probe before approval (End to bottom)")
+					return m, nil
+				}
+				plan := *p.approval
+				plan.ProbeResults = nil
+				return m.mdCreateJob("approving", func(ctx context.Context) consoleMDResult {
+					err := ApplyCLIToolApproval(ctx, &plan)
+					return consoleMDResult{approval: &plan, approved: err == nil, err: err}
+				})
+			}
 			return m, nil
 		}
 		if p.stage == "choices" {
@@ -176,13 +320,10 @@ func (m agentTUIModel) updateMDCreate(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if p.stage == "done" {
 			if event.Code == tea.KeyEnter {
-				m.mdCreation = nil
-				m.status = "Creation closed; no completed creation reported"
-				if p.path != "" {
-					m.status = "Created " + p.name + " · not running · Enter actions to edit/test/chat"
-				}
+				m.closeMDPane()
+				return m, nil
 			}
-			return m, nil
+			return m.mdNextAction(event.Code)
 		}
 		if event.Code == tea.KeyEnter && event.Mod == 0 {
 			value := strings.TrimSpace(p.input.Value())
@@ -258,6 +399,7 @@ func (m agentTUIModel) mdCreateJob(stage string, work func(context.Context) cons
 		return m, nil
 	}
 	m.mdCreation.stage, m.mdCreation.running = stage, true
+	m.mdCreation.err, m.mdCreation.cancelling = nil, false
 	return m, m.startMDJob(m.mdCreation, work)
 }
 
@@ -271,14 +413,29 @@ func (m agentTUIModel) mdChoiceLines() []string {
 func (m agentTUIModel) mdCreationView() string {
 	p := m.mdCreation
 	width, height := max(12, min(84, m.width-8)), max(8, min(24, m.height-4))
-	rows := []string{"CREATE LOCAL MARKDOWN AGENT", "Directory: " + safeTerminal(p.root)}
+	title := "CREATE LOCAL MARKDOWN AGENT"
+	if strings.HasPrefix(p.stage, "approval-") || p.stage == "approving" || p.approval != nil {
+		title = "LOCAL TOOL EXECUTION APPROVAL"
+	}
+	rows := []string{title, "Agent: " + safeTerminal(valueOr(p.name, "new draft"))}
 	switch p.stage {
 	case "name", "instructions", "model":
 		rows = append(rows, strings.ToUpper(p.stage), p.input.View(), "Enter next · Shift+Enter newline · Esc cancel")
 	case "confirm":
 		rows = append(rows, "Name: "+p.name+" · Model: "+mdModelLabel(p.model), "Creates definition + empty tests; no execution.", "Enter create · Esc cancel")
 	case "offer":
-		rows = append(rows, "Created · not running · no tests yet", "Suggest tools? Sends definition and executable-name", "PATH availability to Copilot. No candidate commands run.", "y suggest · n / Enter skip · Esc close")
+		rows = append(rows, "Suggestion adds declarations, never execution grants.", "Suggest tools? Sends definition and executable-name", "PATH availability to Copilot. No candidate commands run.", "y suggest · n / Enter skip · Esc close")
+	case "approve-offer":
+		rows = append(rows, "Tool declarations saved · execution approval required", "Next: review executable identity, scope and probes.", "y review approval · n / Enter later · Esc close")
+	case "approval-review":
+		body := m.mdApprovalLines()
+		page := max(1, height-6)
+		start := min(p.scroll, max(0, len(body)-page))
+		rows = append(rows, "No probe executed yet · approval defaults to no")
+		rows = append(rows, body[start:min(len(body), start+page)]...)
+		rows = append(rows, "↑↓/PgUp/PgDn read · y run probes & approve · n decline")
+	case "approving":
+		rows = append(rows, "Probes: running · approval not yet completed", "Existing instance unchanged; no automatic start/update.", "Esc cancels; wait for the final result.")
 	case "choices":
 		body := m.mdChoiceLines()
 		page := max(1, height-6)
@@ -290,14 +447,26 @@ func (m agentTUIModel) mdCreationView() string {
 		rows = append(rows, "Selected: "+strings.Join(p.selected, ", "), "Enter saves declarations only; no grants or probes.", "Esc discards selections; created files remain.")
 	case "done":
 		if p.path != "" {
-			rows = append(rows, "Created definition: "+safeTerminal(p.path), "Not running. Add reviewed tests with Edit tests.")
+			rows = append(rows, "Definition: "+safeTerminal(p.path))
+			if p.approved {
+				rows = append(rows, "Tools: approved for this definition/executable")
+			} else {
+				rows = append(rows, "Tools: approval not completed by this operation")
+			}
+			if p.approval != nil {
+				rows = append(rows, p.approval.ProbeResults...)
+			}
+			if p.agent != nil {
+				rows = append(rows, fmt.Sprintf("Tests: %d authored cases · no test run by this operation", len(p.agent.Examples)))
+			}
+			rows = append(rows, "Instance: unchanged · approval does not start/update")
 		} else {
 			rows = append(rows, "No completed creation reported.")
 		}
 		for _, gap := range p.proposal.Gaps {
 			rows = append(rows, "Suggestion gap: "+safeTerminal(gap))
 		}
-		rows = append(rows, "CLI tools need: kmx tools approve FILE --apply", "Enter closes and selects the definition · Esc close")
+		rows = append(rows, "a approve · t edit tests · T test · c start/chat · u update", "e edit definition · Enter / Esc close")
 	default:
 		rows = append(rows, p.stage+"…", "Esc cancels; waiting for the operation to finish")
 	}

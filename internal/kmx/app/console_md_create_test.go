@@ -81,7 +81,7 @@ func TestConsoleMDCreationAndSelectedToolsNeverExecute(t *testing.T) {
 	m = next.(agentTUIModel)
 	next, _ = m.Update(cmd())
 	m = next.(agentTUIModel)
-	if p.err != nil || p.stage != "done" {
+	if p.err != nil || p.stage != "approve-offer" {
 		t.Fatalf("save failed: %v", p.err)
 	}
 	a, err = ReadMarkdownAgent(p.path)
@@ -91,7 +91,8 @@ func TestConsoleMDCreationAndSelectedToolsNeverExecute(t *testing.T) {
 	if g, _, err := readCurrentToolGrant(a.Path); err != nil || g != nil {
 		t.Fatal("creation granted execution")
 	}
-	m = tuiKey(m, tea.KeyEnter, "")
+	m = tuiKey(m, tea.KeyEnter, "") // postpone approval
+	m = tuiKey(m, tea.KeyEnter, "") // close workflow
 	next, _ = m.Update(agentTUIInventoryMsg{column: 0, generation: m.generation})
 	m = next.(agentTUIModel)
 	if m.selected() == nil || m.selected().DefinitionPath != a.Path || !m.selected().Tools[0].Disabled {
