@@ -3,11 +3,16 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	copilot "github.com/github/copilot-sdk/go"
 )
 
 const cliToolAgent = "---\nname: cluster-reader\ndescription: Read approved development clusters\ntools: [get_cluster]\n---\nUse get_cluster to inspect a development cluster.\n\n## Tool bindings\n\n```yaml kmx-tool\nname: get_cluster\ndescription: Read a dg cluster\ncommand: fixture-cli\nargs:\n  - show\n  - --name\n  - argument: cluster\nparameters:\n  cluster:\n    type: string\n    pattern: '^dg-[a-z0-9-]+$'\n    max-length: 63\nexecution:\n  timeout: 2s\n  max-output-bytes: 1024\n  approval: granted-scope\nvalidation:\n  args: [version]\n  exit-code: 0\n  stdout-pattern: '^fixture 2\\.[0-9]+\\n?$'\n  timeout: 1s\n```\n"
@@ -176,4 +181,126 @@ func TestCLIMocksNeedNoInstalledBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestCLIHandlerReportsNonzeroOutputAsFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"test failure", `printf '--- FAIL: TestAdd\n'; printf 'expected 4, got 5\n' >&2; exit 1`, "expected 4, got 5"},
+		{"compiler failure", `printf 'main.go:8: undefined: missing\n' >&2; exit 2`, "main.go:8: undefined: missing"},
+		{"terminal controls", `printf '\033[31mfailed\033[0m\n' >&2; exit 1`, "failed"},
+		{"no output", `exit 3`, "tool exited with code 3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, bin := cliFixture(t)
+			fakeTool(t, bin, "fixture-cli", tc.body)
+			plan, err := PrepareCLIToolApproval(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var budget atomic.Int32
+			budget.Store(8)
+			tool := cliReadTools(plan.Grant, &budget)[0]
+			result, err := tool.Handler(copilot.ToolInvocation{Arguments: map[string]any{"cluster": "dg-test"}, TraceContext: t.Context()})
+			if err != nil || result.ResultType != "failure" || !strings.Contains(result.TextResultForLLM, tc.want) || strings.Contains(result.TextResultForLLM, "\x1b") {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestCLIOutputWithholdsUnsafeAndIncompleteResults(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"stdout secret", `printf 'ghp_'; printf 'abcdefghijklmnopqrstuvwxyz1234567890'; exit 1`, "credential-shaped"},
+		{"stderr secret on success", `printf 'safe'; printf 'ghp_' >&2; printf 'abcdefghijklmnopqrstuvwxyz1234567890' >&2`, "credential-shaped"},
+		{"normalized secret", `printf 'ghp_\033[31m'; printf 'abcdefghijklmnopqrstuvwxyz1234567890'; exit 1`, "credential-shaped"},
+		{"invalid bytes", `printf '\377'; exit 1`, "invalid UTF-8"},
+		{"combined budget", `printf '%0600d' 0; printf '%0600d' 0 >&2; exit 1`, "output limit"},
+		{"timeout", `printf 'partial diagnostic'; while :; do :; done`, "timed out or was cancelled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, bin := cliFixture(t)
+			fakeTool(t, bin, "fixture-cli", tc.body)
+			plan, err := PrepareCLIToolApproval(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tool := plan.Grant.CLI[0]
+			tool.Spec.Execution.Timeout = "100ms"
+			text, err := executeCLITool(t.Context(), tool, map[string]any{"cluster": "dg-test"})
+			if err == nil || !strings.Contains(err.Error(), tc.want) || text != "" || strings.Contains(err.Error(), "partial diagnostic") {
+				t.Fatalf("text=%q err=%v", text, err)
+			}
+		})
+	}
+}
+
+func TestCLIProbeMatchesStdoutOnly(t *testing.T) {
+	path, bin := cliFixture(t)
+	fakeTool(t, bin, "fixture-cli", `printf 'fixture 2.4\n' >&2`)
+	plan, err := PrepareCLIToolApproval(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyCLIToolApproval(t.Context(), &plan); err == nil {
+		t.Fatal("stderr satisfied stdout-only probe")
+	}
+}
+
+func TestCLIHandlerPreservesSuccessfulStdoutAndReportsStderr(t *testing.T) {
+	for _, diagnostics := range []bool{false, true} {
+		path, bin := cliFixture(t)
+		body := `printf '{"ok":true}'`
+		if diagnostics {
+			body += `; printf 'compiler warning\n' >&2`
+		}
+		fakeTool(t, bin, "fixture-cli", body)
+		plan, err := PrepareCLIToolApproval(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var budget atomic.Int32
+		budget.Store(8)
+		result, err := cliReadTools(plan.Grant, &budget)[0].Handler(copilot.ToolInvocation{Arguments: map[string]any{"cluster": "dg-test"}, TraceContext: t.Context()})
+		if err != nil || result.ResultType != "success" {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+		if !diagnostics && result.TextResultForLLM != `{"ok":true}` {
+			t.Fatal("stdout-only success changed")
+		}
+		if diagnostics && (!strings.Contains(result.TextResultForLLM, "stderr:\ncompiler warning") || !strings.Contains(result.TextResultForLLM, `{"ok":true}`)) {
+			t.Fatal("successful command lost stream content")
+		}
+	}
+}
+
+func TestCLIGoTestFailurePreservesDiagnostics(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("Go executable unavailable")
+	}
+	t.Setenv("GOWORK", "off")
+	t.Setenv("GOTOOLCHAIN", "local")
+	root := t.TempDir()
+	for name, body := range map[string]string{
+		"go.mod":       "module example.invalid/tool-demo\n\ngo 1.24\n",
+		"demo_test.go": "package demo\nimport \"testing\"\nfunc TestAdd(t *testing.T) { t.Fatal(\"expected 4, got 5\") }\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tool := ApprovedCLITool{Spec: CLIToolSpec{Name: "go_test", Description: "Run the fixture tests", Command: "go", Args: []CLIToolArg{{Literal: "-C"}, {Literal: root}, {Literal: "test"}, {Literal: "-count=1"}, {Literal: "./..."}}, Parameters: map[string]CLIToolParameter{}}}
+	tool.Spec.Execution.Timeout, tool.Spec.Execution.MaxOutputBytes, tool.Spec.Execution.Approval = "30s", 16384, "granted-scope"
+	var err error
+	tool.Executable, tool.ExecutableDigest, err = resolveCLICommand("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := executeCLITool(t.Context(), tool, map[string]any{})
+	var exit *cliCommandExitError
+	if !errors.As(err, &exit) || exit.code != 1 || !strings.Contains(text, "--- FAIL: TestAdd") || !strings.Contains(text, "expected 4, got 5") {
+		t.Fatalf("Go test diagnostics lost: text=%q err=%v", text, err)
+	}
+	t.Logf("%v\n%s", err, text)
 }

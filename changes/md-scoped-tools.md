@@ -1,5 +1,11 @@
 ### Added
 
+- CLI tool failures retain their nonzero status and return bounded, sanitized
+  stdout/stderr to the model for compiler/test diagnosis. Both streams share the
+  declared output budget; credential-shaped, invalid or incomplete output is
+  withheld. Probe patterns remain stdout-only. Includes a real local failing
+  Go-test regression and a proposed TUI approval/result integration sequence.
+
 - Keep canonical Windows parser/MCP builds independent of Unix-only Markdown
   instance primitives; native Windows instance IO/execution refuses with WSL guidance.
 

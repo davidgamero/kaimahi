@@ -89,7 +89,8 @@ must explicitly use `--apply --yes`. Output can be text/JSON/YAML.
 
 Validation always uses the same resolved executable with **fixed args**, an expected
 exit code and Go-regex stdout match. It has its own default five-second timeout
-(maximum fifteen seconds) and 16 KiB output bound. The probe is optional; absence
+(maximum fifteen seconds) and 16 KiB combined stdout/stderr bound. Only stdout
+satisfies the probe pattern; probe diagnostics remain withheld. The probe is optional; absence
 is reported as "no probe declared". Failure, timeout, malformed output or source
 changes prevent approval. Approved probes run again on start/update before tools
 activate; failure leaves an existing running version unchanged. A version probe
@@ -107,10 +108,52 @@ This first slice supports **granted-scope** only: explicit approval enables the
 reviewed commands unattended. Per-call and once-per-session approval UI is not yet
 implemented; unsupported approval modes refuse rather than silently auto-approve.
 
-Execution has a default 15-second deadline (up to two minutes), bounded stdout,
-withheld stderr and process-group cancellation. Credential-shaped outputs are
-withheld. At most eight tool calls run per model turn. No binary is auto-installed,
+Execution has a default 15-second deadline (up to two minutes), a shared
+`max-output-bytes` budget across stdout and stderr, and process-group cancellation.
+Completed nonzero exits return a failed tool result with the exit code and bounded,
+terminal-sanitized output, so the agent can diagnose compiler or test failures.
+When stderr is present, streams are labeled; stdout-only success keeps its original
+text shape. Output reaches the selected model as tool content, including diagnostics
+from failed commands. Credential-shaped output (checked before and after terminal
+normalization), invalid UTF-8, overflow and incomplete execution withhold content.
+These known-shape checks are not a guarantee that arbitrary secrets are detected.
+At most eight tool calls run per model turn. No binary is auto-installed,
 no shell aliases/functions are resolved, and no automatic retry is performed.
+
+For a project test tool, use fixed arguments such as
+`args: [-C, /absolute/path/to/project, test, ./...]` with a separate
+`validation.args: [version]` probe. KMX uses a temporary working directory, so `-C`
+selects the reviewed project explicitly. The probe verifies Go compatibility;
+the actual invocation determines whether the project tests pass. Project code is
+read at invocation time, not pinned by the executable grant.
+
+### Proposed TUI tool workflow
+
+The current `/suggest-tools` and `/review-tools` actions display proposals; source
+acceptance and executable approval still use the CLI. The next UI slice should
+reuse `AddSuggestedCLITools`, `PrepareCLIToolApproval`, `RenderCLIApproval` and
+`ApplyCLIToolApproval`, without shelling out to kmx or duplicating their checks:
+
+1. Select proposed declarations and save them explicitly; show unresolved scope
+   and retain a separate unapproved state.
+2. A proposed `/approve-tools` action prepares and displays the frozen source
+   digest, resolved executable/hash, fixed execution arguments, probe arguments
+   and limits. Preparation is a background UI job and executes no probes.
+3. Explicit confirmation runs `ApplyCLIToolApproval` in a cancellable job. Show
+   probe pending/passed/failed independently of agent tests; failed or stale plans
+   do not grant access. Never run this from disk polling or auto-test.
+4. After approval, offer the existing `/update` flow to activate the binding.
+   Approval alone does not replace a running instance or close conversations.
+5. Add correlated tool-call/result events with tool name, exit state and on-demand
+   bounded output. Background-managed chat needs a typed manager event/result
+   transport first: its current reply carries only the final answer. The generic
+   Copilot progress string is not a tool-result viewer.
+
+UI results should be applied through generation/source-bound messages on the UI
+goroutine. Fix the existing session-state race and manager-wide probe locking
+before exposing asynchronous approval. Cover cancellation, stale source/grant
+changes, nonzero command exits, withheld diagnostics and late events. Recorded
+agent tests remain visibly separate from real compatibility probes and live calls.
 
 The checked-in [Go-version agent](../.github/agents/local-go-version.agent.md)
 demonstrates a harmless fixed CLI call with a compatibility probe; its

@@ -14,8 +14,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	copilot "github.com/github/copilot-sdk/go"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/secretshapes"
@@ -341,13 +343,18 @@ func RenderCLIApproval(out io.Writer, p CLIToolApproval) error {
 	return err
 }
 
+type cliCommandOutput struct {
+	stdout, stderr []byte
+}
+
 // Process cancellation covers the Unix process group, including script children.
-func runBoundCLI(ctx context.Context, path string, args []string, timeout time.Duration, limit int) ([]byte, int, error) {
+// Both streams share one byte budget. Incomplete execution never returns content.
+func runBoundCLI(ctx context.Context, path string, args []string, timeout time.Duration, limit int) (cliCommandOutput, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	dir, err := os.MkdirTemp("", "kmx-cli-tool-")
 	if err != nil {
-		return nil, -1, err
+		return cliCommandOutput{}, -1, err
 	}
 	defer os.RemoveAll(dir)
 	cmd := exec.CommandContext(ctx, path, args...)
@@ -356,38 +363,49 @@ func runBoundCLI(ctx context.Context, path string, args []string, timeout time.D
 	cmd.Stdin = nil
 	cmd.WaitDelay = time.Second
 	configureCLIProcess(cmd)
-	out := &cliToolOutput{remaining: limit}
-	cmd.Stdout = out
-	cmd.Stderr = io.Discard
+	budget := &cliOutputBudget{remaining: limit}
+	out, diagnostics := &cliToolOutput{budget: budget}, &cliToolOutput{budget: budget}
+	cmd.Stdout, cmd.Stderr = out, diagnostics
 	err = cmd.Run()
-	if out.overflow {
-		return nil, -1, errors.New("tool output limit exceeded")
+	if budget.overflow {
+		return cliCommandOutput{}, -1, errors.New("tool output limit exceeded")
 	}
 	if ctx.Err() != nil {
-		return nil, -1, errors.New("tool command timed out or was cancelled")
+		return cliCommandOutput{}, -1, errors.New("tool command timed out or was cancelled")
 	}
+	output := cliCommandOutput{stdout: out.buffer.Bytes(), stderr: diagnostics.buffer.Bytes()}
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			return out.buffer.Bytes(), exit.ExitCode(), nil
+			// A signal termination is incomplete execution, not a command exit.
+			if code := exit.ExitCode(); code >= 0 {
+				return output, code, nil
+			}
 		}
-		return nil, -1, errors.New("tool command failed or output limit exceeded")
+		return cliCommandOutput{}, -1, errors.New("tool command failed or output limit exceeded")
 	}
-	return out.buffer.Bytes(), 0, nil
+	return output, 0, nil
 }
 
-type cliToolOutput struct {
-	buffer    bytes.Buffer
+type cliOutputBudget struct {
+	mu        sync.Mutex
 	remaining int
 	overflow  bool
 }
 
+type cliToolOutput struct {
+	buffer bytes.Buffer
+	budget *cliOutputBudget
+}
+
 func (b *cliToolOutput) Write(data []byte) (int, error) {
-	if len(data) > b.remaining {
-		b.overflow = true
+	b.budget.mu.Lock()
+	defer b.budget.mu.Unlock()
+	if len(data) > b.budget.remaining {
+		b.budget.overflow = true
 		return 0, errors.New("tool output limit exceeded")
 	}
-	b.remaining -= len(data)
+	b.budget.remaining -= len(data)
 	return b.buffer.Write(data)
 }
 func cliToolEnv() []string {
@@ -415,7 +433,7 @@ func runCLIProbe(ctx context.Context, tool ApprovedCLITool) error {
 	if err != nil {
 		return fmt.Errorf("%s validation: %w", tool.Spec.Name, err)
 	}
-	if code != v.ExitCode || !regexp.MustCompile(v.StdoutPattern).Match(out) {
+	if code != v.ExitCode || !regexp.MustCompile(v.StdoutPattern).Match(out.stdout) {
 		return fmt.Errorf("%s validation failed: expected exit %d and stdout-pattern match (output withheld)", tool.Spec.Name, v.ExitCode)
 	}
 	return nil
@@ -546,13 +564,35 @@ func executeCLITool(ctx context.Context, tool ApprovedCLITool, input any) (strin
 	if err != nil {
 		return "", err
 	}
-	if code != 0 {
-		return "", fmt.Errorf("tool exited with code %d (diagnostics withheld)", code)
+	text, err := cliOutputText(out)
+	if err != nil {
+		return "", err
 	}
-	if secretshapes.Match(string(out)) != nil {
+	if code != 0 {
+		return text, &cliCommandExitError{code: code}
+	}
+	return text, nil
+}
+
+// Keep command status out of payload-bearing errors. The SDK handler explicitly
+// attaches the safe output only for a completed nonzero exit.
+type cliCommandExitError struct{ code int }
+
+func (e *cliCommandExitError) Error() string { return fmt.Sprintf("tool exited with code %d", e.code) }
+
+func cliOutputText(out cliCommandOutput) (string, error) {
+	if !utf8.Valid(out.stdout) || !utf8.Valid(out.stderr) {
+		return "", errors.New("tool output withheld: invalid UTF-8")
+	}
+	stdout, stderr := safeTerminal(string(out.stdout)), safeTerminal(string(out.stderr))
+	// Check before and after terminal normalization, including cross-stream shapes.
+	if secretshapes.Match(string(out.stdout)+string(out.stderr)) != nil || secretshapes.Match(stdout+stderr) != nil {
 		return "", errors.New("tool output withheld: credential-shaped content")
 	}
-	return safeTerminal(string(out)), nil
+	if stderr == "" {
+		return stdout, nil
+	}
+	return "stdout:\n" + stdout + "\nstderr:\n" + stderr, nil
 }
 func cliToolParameters(s CLIToolSpec) map[string]any {
 	properties := map[string]any{}
@@ -595,7 +635,12 @@ func cliReadTools(g MarkdownToolGrant, budget *atomic.Int32) []copilot.Tool {
 			}
 			text, err := executeCLITool(ctx, tool, i.Arguments)
 			if err != nil {
-				return copilot.ToolResult{TextResultForLLM: err.Error(), ResultType: "failure"}, nil
+				message := err.Error()
+				var exit *cliCommandExitError
+				if errors.As(err, &exit) && text != "" {
+					message += "\n" + text
+				}
+				return copilot.ToolResult{TextResultForLLM: message, ResultType: "failure"}, nil
 			}
 			return copilot.ToolResult{TextResultForLLM: text, ResultType: "success"}, nil
 		}})

@@ -17,6 +17,11 @@ changes in the package's Go doc comment.
   not a shell or sandbox. Probes repeat on activation/update and failure preserves
   the old running version. PATH/hash/source changes require reapproval. Unsupported
   per-call/session approval policies refuse. Local tool bindings never qualify Deploy.
+  Completed nonzero command exits stay failed SDK tool results with bounded sanitized
+  stdout/stderr, separate from payload-free error values. Streams share one output
+  budget; credential-shape checks precede and follow terminal normalization. Invalid
+  UTF-8, overflow, cancellation and abnormal execution withhold partial content.
+  Probes still match stdout only and never expose their captured diagnostics.
 
 - Local tools suggest/review is a separate scoped capability workflow, not retired
   gateway administration. Inference proposes catalog IDs only; explicit review
