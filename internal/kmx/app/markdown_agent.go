@@ -426,7 +426,15 @@ func parseMarkdownTests(a *MarkdownAgent, raw []byte) error {
 				caseTools = append(caseTools, mock.Name)
 			}
 		}
-		if err := validateMarkdownMocks(caseTools, c.Mocks.Tools); err != nil {
+		mockTools := caseTools
+		mockTools = nil
+		for _, m := range c.Mocks.Tools {
+			if !containsString(caseTools, m.Name) {
+				return mdError(a.TestsPath, start+1, "mock", "mock tool must be declared")
+			}
+			mockTools = append(mockTools, m.Name)
+		}
+		if err := validateMarkdownMocks(mockTools, c.Mocks.Tools); err != nil {
 			return mdError(a.TestsPath, start+1, "mock", err.Error())
 		}
 		for _, check := range c.Assertions {

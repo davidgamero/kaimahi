@@ -110,6 +110,13 @@ func runFileCommand(cmd *cobra.Command, state *commandState, file string, f file
 	}
 	var windowsAgent *agentfile.Agent
 	if state.deps.goos == "windows" {
+		// Native Windows retains its qualified single-file boundary. Never
+		// silently ignore companions through the preloaded-snapshot fast path.
+		for _, path := range []string{app.MarkdownToolsPath(file), app.MarkdownTestsPath(file)} {
+			if _, e := os.Lstat(path); e == nil || !errors.Is(e, os.ErrNotExist) {
+				return errWindowsOperationUnsupported
+			}
+		}
 		// Freeze the exact snapshot admitted by the native Windows policy before
 		// any optional host input or execution setup. A source edit between Cobra
 		// hooks must not turn a fake, tool-free invocation into another route.

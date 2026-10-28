@@ -292,6 +292,11 @@ func (s *MarkdownSession) Evaluate(ctx context.Context, a *MarkdownAgent, select
 			return result, errors.New("unknown test ID")
 		}
 	}
+	for _, c := range cases {
+		if e := validateMarkdownMocks(a.Tools, a.Mocks[c.ID]); e != nil {
+			return result, e
+		}
+	}
 	if err = s.prepare(ctx, a); err != nil {
 		return result, err
 	}

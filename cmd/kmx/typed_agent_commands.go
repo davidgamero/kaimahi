@@ -1,15 +1,12 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
-	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentfile"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/app"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -75,6 +72,12 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 		if operation == "init" {
 			return false
 		}
+		// Run/Test input shape never selects an execution engine. Companion
+		// files and directory input extend canonical preview; persistence is
+		// selected explicitly with --type md.
+		if operation == "run" || operation == "test" {
+			return false
+		}
 		if len(args) > 0 {
 			if info, e := os.Lstat(args[0]); e == nil && info.IsDir() {
 				return true
@@ -88,12 +91,6 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 			}
 		}
 		if len(args) > 0 && strings.HasSuffix(args[0], ".md") {
-			if _, err := os.Lstat(args[0]); errors.Is(err, os.ErrNotExist) && (operation == "run" || operation == "test") {
-				return false
-			}
-			if (operation == "run" || operation == "test") && isCanonicalCharter(args[0]) {
-				return false
-			}
 			return true
 		}
 		value, _ := cmd.Flags().GetString("agent")
@@ -200,7 +197,7 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 			_, err := localArgs(cmd, args)
 			return err
 		}
-		if operation == "test" || (operation == "run" && len(args) >= 1 && strings.HasSuffix(args[0], ".md")) {
+		if operation == "test" || (operation == "run" && len(args) >= 1) {
 			if originalArgs != nil {
 				return originalArgs(cmd, args)
 			}
@@ -303,43 +300,6 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 	if flag := cmd.Flags().Lookup("output"); flag != nil && operation == "run" {
 		flag.Usage = "output: text|json"
 	}
-}
-
-// Canonical Squad charters retain upstream Run/Test semantics. Copilot-native
-// front matter (or plain instructions to import) uses the explicit md instance path.
-func isCanonicalCharter(path string) bool {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return false
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	s := bufio.NewScanner(f)
-	s.Buffer(make([]byte, 1024), 64<<10)
-	for s.Scan() {
-		line := strings.TrimSpace(s.Text())
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "# ") {
-			return true
-		}
-		break
-	}
-	// Main now supports Copilot frontmatter too. Dispatch only files accepted
-	// by that parser there; explicit --type md still selects persistent agents.
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return false
-	}
-	b, err := io.ReadAll(io.LimitReader(f, (64<<10)+1))
-	if err != nil || len(b) > 64<<10 {
-		return false
-	}
-	_, err = agentfile.Parse(path, b)
-	return err == nil
 }
 
 func validateMDFlags(cmd *cobra.Command, operation string) error {

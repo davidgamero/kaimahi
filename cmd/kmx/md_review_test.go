@@ -43,13 +43,3 @@ func TestMDReviewYAMLAgentNamedHelp(t *testing.T) {
 		}
 	}
 }
-
-func TestMDReviewCanonicalLeadingBlankLines(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "agent.agent.md")
-	if err := os.WriteFile(file, []byte("\n \n# Agent\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if !isCanonicalCharter(file) {
-		t.Fatal("leading blank charter misrouted")
-	}
-}

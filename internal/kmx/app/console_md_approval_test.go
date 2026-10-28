@@ -144,3 +144,32 @@ func TestConsoleMDApprovalDemoNeverStartsWorker(t *testing.T) {
 		t.Fatal("demo approval was operational")
 	}
 }
+
+func TestConsoleCreatedDefinitionSurvivesAliasRefresh(t *testing.T) {
+	t.Setenv("KMX_HOME", t.TempDir())
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "project")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateMarkdownDraft(alias, "example", "Say hello.", ""); err != nil {
+		t.Fatal(err)
+	}
+	a, err := ReadMarkdownAgent(filepath.Join(alias, "example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newAgentTUIModel(AgentTUIOptions{})
+	m.columns[0].Env = agentTUIEnvironment{Name: "files:alias", Directory: alias, Local: true}
+	m.mdCreation = &consoleMDCreate{root: alias}
+	m.retainCreatedDefinition(a)
+	m.mdCreation = nil
+	next, _ := m.Update(agentTUIInventoryMsg{column: 0, generation: m.generation})
+	m = next.(agentTUIModel)
+	if m.selected() == nil || m.selected().DefinitionPath != a.Path {
+		t.Fatal("created definition disappeared through alias")
+	}
+}

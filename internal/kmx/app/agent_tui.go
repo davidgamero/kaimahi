@@ -383,8 +383,12 @@ func (m agentTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			selected = c.Agents[c.Selection].key()
 		}
 		c.Agents, c.Loading, c.Error = msg.agents, false, ""
+		envDir := c.Env.Directory
+		if resolved, err := filepath.EvalSymlinks(envDir); err == nil {
+			envDir = resolved
+		}
 		for path, row := range m.createdDefinitions {
-			if filepath.Dir(filepath.Dir(path)) != c.Env.Directory {
+			if filepath.Dir(filepath.Dir(path)) != envDir {
 				continue
 			}
 			found := false

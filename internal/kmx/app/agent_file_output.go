@@ -27,6 +27,9 @@ func WriteFilePreview(w io.Writer, r FilePreviewResult, format string) error {
 	for _, notice := range r.Notices {
 		fmt.Fprintln(&b, notice)
 	}
+	if r.SnapshotDigest != "" {
+		fmt.Fprintf(&b, "snapshot: %s\n", r.SnapshotDigest)
+	}
 	if r.SavedRevision != "" {
 		fmt.Fprintf(&b, "saved revision: %s (results use the executed revision above)\n", r.SavedRevision)
 	}

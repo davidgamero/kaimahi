@@ -52,6 +52,13 @@ changes in the package's Go doc comment.
   MCP/charter execution, model-access auth and the test/eval alias contracts.
   The SDK-managed Copilot CLI route uses its own installed CLI authentication;
   it is separate from modelaccess direct inference and does not consume its tokens.
+  Ordinary CLI Run/Test always use canonical preview, including optional companions
+  and directories; file presence never selects persistence. Companion results retain
+  file.revision and add snapshotDigest; execution journals bind composed identity.
+  Live command tools resolve approved bindings through the canonical host callback.
+  Nonzero command observations carry exitCode/succeeded/output; incomplete execution
+  remains an error. Multi-file recording writes/retained failures are unavailable
+  and disclosed; snapshot-only MCP callers do not discover sibling files implicitly.
 - Local list/status show instances (running by default, --all includes stopped),
   short IDs, lifecycle/activity, sessions, inference and age. Inspect reads cached
   definition/identity; source discovery is explicit with --definitions. Chat/new/

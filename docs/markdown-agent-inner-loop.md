@@ -2,7 +2,8 @@
 
 Start with a Copilot `.agent.md` or plain Markdown file. No companion files,
 workspace marker, container or cluster are required for an ordinary tool-free
-file preview. The persistent Copilot SDK instance path is explicit `--type md`;
+file preview. Adding companions or selecting a directory keeps the same canonical
+provider, journal, output and exit contracts. The persistent Copilot SDK instance path is explicit `--type md`;
 its execution requires the installed authenticated Copilot CLI.
 
 ## Layout
@@ -27,7 +28,8 @@ kmx import weather.agent.md --into ./weather
 kmx validate ./weather
 kmx inspect ./weather -o yaml
 kmx test ./weather --provider copilot
-kmx run ./weather --provider copilot
+kmx run ./weather 'What should I wear?' --provider copilot
+kmx run ./weather --type md --provider copilot # explicit persistent instance
 kmx chat weather
 kmx stop weather
 ```
@@ -92,8 +94,11 @@ assertions:
 
 Root cases run first, then referenced files in listed order. Case IDs are globally
 unique; leaf test files cannot include more files. Missing tests means untested.
-Tool-using cases require deterministic `mocks.tools` with name, description,
-parameters and ordered calls (`arguments`, `result`); there is no live fallback.
+Tool-using cases may supply deterministic `mocks.tools` with name, description,
+parameters and calls (`arguments`, `result`); recorded tools never fall back live.
+Canonical preview requires exactly one object-valued recorded result per tool;
+incompatible scalar/multiple-call fixtures refuse rather than being coerced.
+Cases without recordings use the canonical host's live/unavailable tool behavior.
 `toolCalled`/`toolNotCalled` assertions inspect actual mock calls. A mismatch fails
 and stops the invocation. `--case ID` reports a partial result. Recordings remain
 inline in these test blocks; external result-file references are not implemented.
@@ -130,7 +135,7 @@ output is withheld. No automatic retry occurs.
 
 ## Console and lifecycle
 
-`kmx console --type md --directory ./weather --definitions` opens source inventory.
+`kmx cluster console --type md --directory ./weather --definitions` opens source inventory.
 File-pane `n` authors an agent with empty companions. Suggestions, source acceptance
 and executable approval are separate steps. Approval requires explicit `y` after
 review; Enter never grants. Next actions open editors, tests, chat or reviewed
@@ -142,9 +147,30 @@ execution separate from editable source/tests. Test-only edits change test ident
 tool edits require reapproval and explicit update. Local grants/cache/history are
 private KMX state and are never copied as portable execution authority.
 
+## Additive preview identity and boundaries
+
+Canonical CLI Run/Test composes optional companions into the existing preview
+request without starting a background instance or changing providers. JSON retains
+`file.revision` for the agent's original bytes and adds `snapshotDigest` for the
+agent plus tool/test file sets. Journals bind the composed identity when execution
+depends on companion cases/tools. Source drift prevents a full-pass claim.
+An empty companion does not change model selection or single-file retention.
+
+Approved CLI bindings are exposed through a host resolver only when needed live;
+recorded cases do not require a grant or installed binary. Command observations
+return `{exitCode, succeeded, output}`: a nonzero process exit is explicitly
+`succeeded: false`, not a successful command. Timeout, invalid output and abnormal
+execution remain errors. No probes run implicitly during ordinary preview.
+
+Multi-file input currently replays existing recordings but refuses automatic
+recording writes and does not retain single-file failure history; results disclose
+that boundary. Snapshot-only MCP/canvas calls never discover sibling files from a
+display path. Native Windows retains its qualified standalone-file support and
+explicitly refuses companion preview until its loader/host path is qualified.
+
 ## Packaging boundary
 
-The current `suite map` / Markdown Deploy bridge supports text-only one-member
+The current `package map` / Markdown Deploy bridge supports text-only one-member
 Orka mapping and requires native evaluation. Local tool grants and mock results
 never qualify deployment. Frozen directory compilation and package-bound testing
 remain the shared follow-up under #669/#670; this source layout is not itself an

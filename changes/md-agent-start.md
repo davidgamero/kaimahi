@@ -1,5 +1,13 @@
 ### Added
 
+- Companion files now extend canonical CLI Run/Test without switching provider,
+  journaling or exit semantics; persistent execution requires explicit --type md.
+  Add composed snapshot identity and an approved CLI-command host adapter, with
+  recorded/live source distinction and explicit nonzero command exit observations.
+  Multi-file recording writes/history and native Windows companions refuse or
+  disclose their unsupported boundary rather than silently ignoring authored input.
+- Preserve created console definitions across refresh through symlinked project roots.
+
 - Same-stem agent/tool/test files work beside a standalone agent or inside one
   directory. Create writes NAME/NAME.agent.md, NAME.tools.yaml and NAME.tests.md;
   import --into copies exact source and referenced companions without execution.

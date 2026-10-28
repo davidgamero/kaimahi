@@ -175,7 +175,7 @@ func TestRunAndTestResolveStoppedShortIDToSource(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
 		want string
-	}{{[]string{"test", short, "--case", "does-not-exist", "--provider", "copilot"}, "unknown test ID"}, {[]string{"run", short, "--prompt", "", "--provider", "copilot"}, "nonempty prompt"}} {
+	}{{[]string{"test", short, "--type", "md", "--case", "does-not-exist", "--provider", "copilot"}, "unknown test ID"}, {[]string{"run", short, "--type", "md", "--prompt", "", "--provider", "copilot"}, "nonempty prompt"}} {
 		out.Reset()
 		err := execute(tc.args, deps)
 		if err == nil || !strings.Contains(err.Error(), tc.want) || *loads != 0 {
