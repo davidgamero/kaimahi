@@ -499,10 +499,10 @@ class CandidateProofTests(unittest.TestCase):
             request.pop("status", None)
             for field in ("uid", "generation", "resourceVersion"):
                 request["metadata"].pop(field)
-            if kind == "Task":
-                dry = A.classify(["create", "--dry-run=server", "-f", "-", "-o", "json"], json.dumps(request).encode())
-                frames.extend([{**dry, "returnCode": 0, "response": A.response_snapshot(json.dumps(request).encode())},
-                               {**dry, "returnCode": 0, "response": A.response_snapshot(json.dumps(request).encode())}])
+            dry = A.classify(["create", "--dry-run=server", "-f", "-", "-o", "json"], json.dumps(request).encode())
+            dry_runs = 2 if kind == "Task" else 3
+            frames.extend({**dry, "returnCode": 0, "response": A.response_snapshot(json.dumps(request).encode())}
+                          for _ in range(dry_runs))
             create = A.classify(["create", "-f", "-", "-o", "json"], json.dumps(request).encode())
             pending = copy.deepcopy(doc); pending["status"] = None
             frames.append({**create, "returnCode": 0, "response": A.response_snapshot(json.dumps(pending).encode())})
@@ -539,7 +539,8 @@ class CandidateProofTests(unittest.TestCase):
                 lambda annotations: annotations.pop(Q.CREATED_BY_VERSION),
                 lambda annotations: annotations.update({Q.CREATED_BY_VERSION: "foreign"})):
             changed = copy.deepcopy(frames)
-            edit(changed[0]["response"]["metadata"]["annotations"])
+            created = next(f for f in changed if f["persistent"] and f["resource"] == "Provider")
+            edit(created["response"]["metadata"]["annotations"])
             with self.subTest(edit=edit), self.assertRaisesRegex(ValueError, "candidate-(created-(version|markers)|get-drift)"):
                 Q.verify_candidate(receipt, changed, cases, specs)
         without_version = copy.deepcopy(frames)

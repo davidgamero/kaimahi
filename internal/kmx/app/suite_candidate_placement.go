@@ -301,10 +301,12 @@ func (a *App) placeSuiteNativeCandidate(ctx context.Context, p *suiteNativePrepa
 			return nil, err
 		}
 		id, raw, err := worker.createOrkaObjectObserved(ctx, ns, doc)
-		if err != nil {
-			return nil, err
+		if id.UID != "" {
+			if acknowledgeErr := r.acknowledge(ctx, id, raw); acknowledgeErr != nil {
+				return nil, acknowledgeErr
+			}
 		}
-		if err := r.acknowledge(ctx, id, raw); err != nil {
+		if err != nil {
 			return nil, err
 		}
 		if err := validateSuiteCandidatePair(raw, doc, owner); err != nil {

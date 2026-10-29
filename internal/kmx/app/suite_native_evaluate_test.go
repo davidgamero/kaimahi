@@ -482,6 +482,9 @@ func TestSuiteNativeEvaluationAdmittedFrameAndOneShot(t *testing.T) {
 			} else if err == nil || observation.Verdict == agentruntime.EvaluationPass {
 				t.Fatalf("unsafe result credited: %+v %v", observation, err)
 			}
+			if stage == "create identity" && observation.TaskUID == "" {
+				t.Fatal("post-create validation failure lost acknowledged Task UID")
+			}
 			if stage != "placement" && !reached {
 				t.Fatal("Task boundary not reached")
 			}

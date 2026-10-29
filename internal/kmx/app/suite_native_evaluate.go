@@ -246,19 +246,20 @@ func (a *App) evaluateSuiteNativeTracked(ctx context.Context, placement *suiteNa
 		}
 	}
 	id, created, err := worker.createOrkaObjectObserved(caseCtx, ns, task)
+	if id.UID != "" {
+		observation.TaskUID = id.UID
+		if run != nil {
+			if acknowledgeErr := run.acknowledge(caseCtx, id, created); acknowledgeErr != nil {
+				return observation, acknowledgeErr
+			}
+		}
+	}
 	if err != nil {
 		return observation, err
-	}
-	if run != nil {
-		observation.TaskUID = id.UID
-		if err = run.acknowledge(caseCtx, id, created); err != nil {
-			return observation, err
-		}
 	}
 	if err = validateSuiteNativeTask(created, task); err != nil {
 		return observation, err
 	}
-	observation.TaskUID = id.UID
 	// The installed Task CRD has a status subresource: a spec change bumps
 	// generation. Existing UID/generation polls bind this CREATE spec frame.
 	answer, err = worker.waitOrkaTaskResult(caseCtx, ns, id, session)
