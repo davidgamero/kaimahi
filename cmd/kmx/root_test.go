@@ -406,14 +406,14 @@ func TestGuardedWindowsSupportedCommandFlagsAreExhaustivelyAllowlisted(t *testin
 		allFlags   []string
 		allowFlags []string
 	}{
-		{[]string{"run"}, []string{file}, []string{"agent", "case", "container-engine", "context", "model", "namespace", "no-content", "output", "prompt", "prompt-file", "provider", "provider-url", "result-port", "tool-bindings", "verbose", "wait"}, []string{"case", "no-content", "output", "prompt", "verbose"}},
-		{[]string{"test"}, []string{file}, []string{"case", "container-engine", "context", "github-summary", "model", "no-content", "output", "provider", "provider-url", "tool-bindings", "verbose"}, []string{"case", "no-content", "output", "verbose"}},
-		{[]string{"test", "explain"}, nil, []string{"clear", "container-engine", "context", "file", "show-content", "workspace"}, []string{"clear", "file", "show-content"}},
-		{[]string{"eval", "explain"}, nil, []string{"clear", "container-engine", "context", "file", "show-content", "workspace"}, []string{"clear", "file", "show-content"}},
+		{[]string{"run"}, []string{file}, []string{"agent", "case", "container-engine", "context", "mcp-server", "model", "namespace", "no-content", "no-mcp-servers", "output", "prompt", "prompt-file", "provider", "provider-url", "result-port", "tests", "tool-bindings", "verbose", "wait"}, []string{"case", "no-content", "output", "prompt", "tests", "verbose"}},
+		{[]string{"test"}, []string{file}, []string{"case", "container-engine", "context", "github-summary", "mcp-server", "model", "no-content", "no-mcp-servers", "output", "provider", "provider-url", "tests", "tool-bindings", "verbose"}, []string{"case", "no-content", "output", "tests", "verbose"}},
+		{[]string{"test", "explain"}, nil, []string{"clear", "container-engine", "context", "file", "show-content", "tests", "workspace"}, []string{"clear", "file", "show-content", "tests"}},
+		{[]string{"eval", "explain"}, nil, []string{"clear", "container-engine", "context", "file", "show-content", "tests", "workspace"}, []string{"clear", "file", "show-content", "tests"}},
 	}
 	for _, tc := range cases {
 		if len(tc.path) == 1 && (tc.path[0] == "run" || tc.path[0] == "test") {
-			tc.allFlags = append(tc.allFlags, "directory", "tests", "type")
+			tc.allFlags = append(tc.allFlags, "directory", "type")
 			if tc.path[0] == "run" {
 				tc.allFlags = append(tc.allFlags, "interactive", "update", "yes")
 			}
@@ -838,7 +838,7 @@ func TestTheCommandTreeIsExactlyWhatIsListedHere(t *testing.T) {
 		"model", "model list", "model login", "model logout", "version",
 		"cluster", "cluster up", "cluster down", "cluster status", "cluster aks", "cluster aks up", "cluster aks down", "cluster context", "cluster context show", "cluster context use",
 		"cluster orka", "cluster orka install", "cluster orka status", "cluster orka show", "cluster orka list", "cluster quickstart", "cluster quickstart-wizard", "cluster console", "cluster targets", "cluster task", "cluster task result",
-		"package", "package ctx", "package deploy", "package push", "package status", "package run-profile", "package run-profile export", "package suite", "package suite push", "package build", "package validate", "package policy", "package pull", "package push-image",
+		"package", "package create", "package ctx", "package deploy", "package push", "package status", "package run-profile", "package run-profile export", "package suite", "package suite push", "package build", "package validate", "package policy", "package pull", "package push-image",
 		"package test", "package test cleanup", "package test diff", "package test explain", "package test export", "package test from-sessions", "package test verify",
 	}
 

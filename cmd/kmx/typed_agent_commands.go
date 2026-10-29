@@ -203,7 +203,7 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 			}
 			return nil
 		}
-		for _, name := range []string{"tests", "directory"} {
+		for _, name := range []string{"directory"} {
 			if cmd.Flags().Changed(name) {
 				return fmt.Errorf("--%s requires --type md", name)
 			}
@@ -244,7 +244,7 @@ func addAgentTypeRoute(state *commandState, cmd *cobra.Command, operation string
 		if selectionError != nil {
 			return selectionError
 		}
-		for _, name := range []string{"provider", "model", "case", "show-content"} {
+		for _, name := range []string{"provider", "model", "case", "show-content", "tests"} {
 			if cmd.Flags().Changed(name) && local.Flags().Lookup(name) != nil {
 				if err := local.Flags().Set(name, cmd.Flags().Lookup(name).Value.String()); err != nil {
 					return err

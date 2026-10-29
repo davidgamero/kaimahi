@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentfile"
 	"github.com/kaimahi-agents/kaimahi/internal/kmx/agentpreview"
 	kmxsuite "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite"
 	agentkitbuilder "github.com/kaimahi-agents/kaimahi/internal/kmx/agentsuite/agentkit"
@@ -40,7 +41,7 @@ type dependencies struct {
 
 func productionDependencies() dependencies {
 	return dependencies{
-		fileRunner: app.NewLocalFileRunner(),
+		fileRunner: newFileMCPRunner(app.NewLocalFileRunner()),
 		stdin:      os.Stdin, stdout: os.Stdout, stderr: os.Stderr,
 		executable:        invocationExecutable(os.Args[0]),
 		goos:              runtime.GOOS,
@@ -73,6 +74,7 @@ type commandState struct {
 	app                 *app.App
 	argv                []string
 	evalNoticeShown     bool
+	windowsFilePair     *agentfile.Pair
 }
 
 func (s *commandState) executable() string {
@@ -257,7 +259,7 @@ func newRootCommand(state *commandState) *cobra.Command {
 	root.PersistentPreRunE = validateContainerEngineFlag
 	_ = root.RegisterFlagCompletionFunc("context", completeContexts)
 	_ = root.RegisterFlagCompletionFunc("container-engine", staticCompletion([]string{"docker", "podman"}))
-	create, chat, run := newAgentCreateCommand(state), newAgentChatCommand(state), newAgentRunCommand(state)
+	create, chat, run := newFileCreateCommand(state), newAgentChatCommand(state), newAgentRunCommand(state)
 	addAgentTypeRoute(state, create, "init")
 	addAgentTypeRoute(state, chat, "chat")
 	addAgentTypeRoute(state, run, "run")
