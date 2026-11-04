@@ -71,6 +71,13 @@ reader. Run returns answers without checks; Test evaluates the checks. Add
 input. No source migration is automatic. A missing or empty test source is not
 a passing Test.
 
+`kmx validate FILE [--tests FILE]` checks that same selected pair offline and
+prints only identity metadata. `kmx inspect FILE [--tests FILE]` deliberately
+prints the authored instructions, inputs, mocks and assertion definitions. Both
+read checked sources only: no configuration, KMX state, provider, model, command,
+network, journal, failure history or evidence is used or created. Native Windows
+keeps refusing both commands pending explicit qualification; use WSL for this slice.
+
 MCP has separate read-only source/history resources and paired offline export.
 The existing Run/Test tools also accept version 3 with a checked `sourceVersion`
 from the source resource: Run answers without checks; Test evaluates selected

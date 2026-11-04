@@ -29,6 +29,12 @@ changes in the package's Go doc comment.
   privacy and evidence caveats. Retain native/package safety disclosures and
   legacy Eval/Lift help/errors. Canonical flag-parse errors include a safely
   quoted executable/topic `--help` hint; runtime and argument errors do not.
+- Hidden root `validate FILE` and `inspect FILE` use the canonical checked
+  `agentfile.LoadPair` selection. Both are state/config/provider/network-free;
+  Validate emits metadata only, while Inspect deliberately emits authored
+  instructions, inputs, mocks and assertion definitions. Neither executes tests
+  or creates history, evidence, publication or deployment authority. Native
+  Windows keeps refusing both commands pending explicit qualification.
 
 - Infrastructure and Orka commands live under `kmx cluster`; native workspace
   Test, publication, Deploy, destination inventory and artifact operations live

@@ -826,7 +826,7 @@ func commandPaths(root *cobra.Command) []string {
 // Adding or removing a subcommand fails this test until the list follows.
 func TestTheCommandTreeIsExactlyWhatIsListedHere(t *testing.T) {
 	want := []string{
-		"test", "test explain", "create", "chat", "run", "eval", "eval cleanup", "eval diff", "eval explain", "eval export", "eval from-sessions", "eval verify", "lift", "completion", "mcp",
+		"test", "test explain", "create", "chat", "run", "validate", "inspect", "eval", "eval cleanup", "eval diff", "eval explain", "eval export", "eval from-sessions", "eval verify", "lift", "completion", "mcp",
 		"model", "model list", "model login", "model logout", "version",
 		"cluster", "cluster up", "cluster down", "cluster status", "cluster aks", "cluster aks up", "cluster aks down", "cluster context", "cluster context show", "cluster context use",
 		"cluster orka", "cluster orka install", "cluster orka status", "cluster orka show", "cluster orka list", "cluster quickstart", "cluster quickstart-wizard", "cluster console", "cluster targets", "cluster task", "cluster task result",

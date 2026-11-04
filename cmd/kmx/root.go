@@ -275,7 +275,8 @@ func newRootCommand(state *commandState) *cobra.Command {
 	root.AddCommand(
 		newVersionCommand(state), newMCPCommand(state), newCompletionCommand(root), newModelCommand(state),
 		newFileCreateCommand(state), newAgentChatCommand(state), newAgentRunCommand(state),
-		newAgentTestCommand(state), newAgentEvalCommand(state), newReleaseLiftCommand(state),
+		newAgentTestCommand(state), newAgentFileValidateCommand(state), newAgentFileInspectCommand(state),
+		newAgentEvalCommand(state), newReleaseLiftCommand(state),
 		newClusterCommand(state), newPackageCommand(state),
 	)
 	configureCommandHelp(root, state)
